@@ -1,0 +1,18 @@
+# ADR provenance: docs/adr/ADR-0001-require-commit-governance-references.md; modified 2026-08-08.
+#
+# <type>(<scope>): <subject>
+#
+# type: feat | fix | docs | style | refactor | perf | test | chore | ci | build | revert
+# scope: optional, e.g. core, api, ui
+# subject: imperative, lowercase start, no period at the end
+#
+# Body (optional): explain what and why (not how)
+#
+# Required governance references: replace every value; do not omit any line.
+ADR: <repository-relative ADR path(s), or N/A — reason>
+OCR: <repository-relative OCR path(s), or N/A — reason>
+Trello: <stable Trello card URL(s), or N/A — reason>
+#
+# Additional footer entries (optional):
+# BREAKING CHANGE: <description>
+# Closes: #<issue-number>
