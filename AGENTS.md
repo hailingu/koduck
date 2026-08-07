@@ -38,6 +38,10 @@ informative and never override a rule.
   configuration, first read `docs/README.md` and every matching
   language or platform standard listed there in full. When a change spans
   multiple languages or platforms, read every matching standard.
+- Before planning or performing a release or creating, pushing, changing, or
+  deleting a Git tag, read `docs/delivery/releases.md` and
+  `docs/delivery/git-tags.md` in full. These standards do not waive the
+  decision-record, approval, or external-write gates.
 - Inspect the affected code, applicable standards, and existing internal
   capability before implementation. Reuse a suitable component, client,
   helper, schema, or script.
@@ -257,7 +261,8 @@ An OCR cannot modify a Dockerfile, Makefile, CI, pipeline, artifact format,
 signing, credentials, deployment topology, API/schema/protocol,
 authentication, security policy, data lifecycle, dependency, provider, or
 irreversible behavior. Those changes require a Full ADR even when paired with
-a release operation.
+a release operation. Every release or remote Git tag operation MUST also follow
+`docs/delivery/releases.md` and `docs/delivery/git-tags.md`.
 
 #### Approval and Status
 
@@ -332,9 +337,10 @@ above before implementation continues.
    operational use.
 9. Run the narrowest relevant non-interactive checks, then the broader checks
    required by the affected routing rows.
-10. For a governed build or local Kubernetes action, create and accept an OCR
-    before execution, then bind its actual image, target, verification, stop,
-    and recovery evidence.
+10. For a governed build, release, Git tag, or local Kubernetes action, read
+    its applicable delivery or platform standards, create and accept an OCR
+    before execution, then bind its actual source, artifact or tag, target,
+    verification, stop, and recovery evidence.
 11. Update the decision record's evidence and its row in `docs/adr/INDEX.md` whenever
    an indexed field changes. If the record is now archival-eligible, archive it
    in this same change.
@@ -350,6 +356,7 @@ above before implementation continues.
 | --- | --- | --- | --- | --- |
 | `AGENTS.md`, `AGENTS.template.md`, `CLAUDE.md` | This guide's Non-Negotiable Gates, Execution Workflow, and Version-Control Safety sections | repository root | None | Perform a structured review of the affected instructions and report the inspected contracts; no automated governance check is configured. |
 | `docs/**` | `docs/README.md` and this guide's Decision Records section | repository root | None | Perform a structured review of affected navigation, templates, records, index rows, paths, and cross-references; no automated governance check is configured. |
+| Release or Git tag operation | `docs/delivery/releases.md`, `docs/delivery/git-tags.md`, and the governing Accepted OCR | repository root | Commands approved by the OCR | Treat tag creation or mutation, release publication, and artifact publication as external operational writes. |
 
 If no Scope Routing row matches, discover and run the narrowest relevant
 non-interactive check for every affected path. If no automated check exists,
@@ -415,7 +422,9 @@ available, and record what was inspected instead of inventing a command.
   create a record or card solely to populate the commit message.
 
 This is a starting policy for a single-branch repository; revisit it with a
-Full ADR once release branching or multi-environment promotion is needed.
+Full ADR once release branching, independent component versioning, or
+multi-environment promotion is needed. Release and Git tag operations follow
+`docs/delivery/releases.md` and `docs/delivery/git-tags.md`.
 
 ## Verification And Completion Evidence
 
@@ -436,7 +445,9 @@ Full ADR once release branching or multi-environment promotion is needed.
 | --- | --- |
 | All project and service ADR/OCR identities and current statuses | `docs/adr/INDEX.md` |
 | Decision-record templates | `docs/adr/template/` |
-| Documentation navigation and development standards catalog | `docs/README.md` |
+| Documentation navigation and standards catalog | `docs/README.md` |
+| Release eligibility, publication, evidence, and recovery | `docs/delivery/releases.md` |
+| Git tag format, creation, verification, and immutability | `docs/delivery/git-tags.md` |
 | Web and native-client visual and interaction design | Specific Figma file or node identified by the task, ADR, or PR |
 | Demand, ownership, priority, progress, blockers, and discussion | [Koduck Trello board](https://trello.com/b/Kz9qnd3D/koduck), as a mutable coordination view only |
 | Versioned source, configuration, automatic-review scope, and implementation evidence | Git commit and pull-request revisions |

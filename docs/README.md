@@ -49,6 +49,20 @@ local conventions and use its configured formatter, linter, and non-interactive
 checks. A local convention may preserve consistency within its module unless it
 conflicts with an Accepted decision or another binding requirement.
 
+## Delivery Standards
+
+Before planning or performing a release or Git tag operation, read both files
+in full:
+
+| File | Scope |
+| --- | --- |
+| [delivery/releases.md](delivery/releases.md) | Release eligibility, versioning, publication, evidence, and recovery |
+| [delivery/git-tags.md](delivery/git-tags.md) | Release-tag naming, creation, verification, and immutability |
+
+These standards govern repository releases and tags. They do not replace the
+ADR/OCR classification and operational authorization rules in
+[`AGENTS.md`](../AGENTS.md).
+
 ### Reference Freshness
 
 Each standard records a `Last reviewed` date. It may be used without
