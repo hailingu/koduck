@@ -1,0 +1,51 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors
+.idea/
+*.swp
+*.swo
+
+# General
+*.log
+.env
+.env.*.local
+tmp/
+.cache/
+
+# Rust (docs/development/rust.md)
+/target/
+**/target/
+
+# Swift (docs/development/swift.md)
+.build/
+.swiftpm/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+
+# Python (docs/development/python.md)
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+
+# TypeScript / Node (docs/development/typescript.md)
+node_modules/
+dist/
+build/
+.next/
+coverage/
+
+# Java (docs/development/java.md)
+*.class
+.gradle/
+
+# Kubernetes (docs/development/kubernetes.md) — never commit rendered secrets
+*.local.yaml
+*.local.yml
