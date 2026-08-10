@@ -6,6 +6,11 @@
 - Route the ADD before assigning its number: repository-wide or cross-boundary
   documents use `docs/architecture/`; single-service or single-package internal
   documents use `<service-or-package>/docs/architecture/`.
+- For a new ADD sourced from Trello requirements, inspect the worktree and
+  create and switch to a new task branch dedicated to this ADD before copying
+  this template, assigning the number, creating the file, or adding the index
+  row. Do not reuse the current task branch; if unrelated work prevents a safe
+  switch, stop without stashing or moving it.
 - After routing, numbering, and naming this ADD, add its row to
   `docs/architecture/INDEX.md` in the same change that creates the file.
 - Capture the Trello baseline used for this revision and report later drift;

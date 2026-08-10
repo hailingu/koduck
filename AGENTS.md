@@ -207,6 +207,14 @@ requirement-level compliance.
   the requirement and acceptance-outcome baseline used for the design, and
   record when that baseline was last checked. Later card edits do not silently
   modify the ADD; report drift and revise the versioned document deliberately.
+- Reading, triaging, and routing a Trello requirement are read-only and MAY
+  occur before branch creation. Before copying the ADD template, assigning an
+  ADD number, creating the ADD file, or adding its index row for a new ADD, the
+  agent MUST inspect the worktree and create and switch to a new task branch
+  dedicated to that ADD under the Branch, Pull Request, And Commit Policy. This
+  requirement applies even when the current non-protected branch is otherwise
+  authorized. If unrelated work prevents a safe branch switch, stop before
+  drafting; do not stash, commit, or move that work without authorization.
 - An ADD may propose architecture choices, but those choices become binding for
   implementation only through an Accepted ADR. Existing Accepted ADRs,
   security and contract documents, and platform constraints remain
@@ -690,14 +698,17 @@ implementation or operation continues.
    requested scope.
 2. Inspect the relevant code, documentation, build files, and current worktree
    before proposing or making changes.
-3. Classify the change. Read-only work needs no task branch. Keep an existing
-   authorized task branch or worktree. When files will change and no authorized
-   task branch exists, follow the version-control policy below before drafting
-   or submitting a required decision record.
-4. For product demand, route and draft or update the ADD from the Trello
-   requirement baseline, complete its solution-level design and traceability,
-   and make it `Current` before selecting an implementation task. Do not add
-   task-level implementation design to the ADD.
+3. Classify the change. Read-only work needs no task branch. Except for the
+   mandatory new-ADD branch in step 4, keep an existing authorized task branch
+   or worktree. When files will change and no authorized task branch exists,
+   follow the version-control policy below before drafting or submitting a
+   required decision record.
+4. For product demand, inspect and route the Trello requirement baseline. When
+   creating a new ADD, create and switch to its new dedicated task branch before
+   copying the template, assigning its number, creating its file, or adding its
+   index row. Then draft or update the ADD, complete its solution-level design
+   and traceability, and make it `Current` before selecting an implementation
+   task. Do not add task-level implementation design to the ADD.
 5. Before drafting an ADR, enforce the repository-wide ADR serialization gate.
    Select one eligible ADD task candidate when the work derives from product
    demand, route the permitted decision record to the correct ADR root and
@@ -780,12 +791,18 @@ writes.
 
 - **Protected branches**: `main` is the protected branch; no direct commits or
   pushes to `main`.
-- **Task branches**: Keep an existing authorized task branch or worktree rather
-  than switching solely to satisfy naming. When a new branch is needed, create
-  it from the current local `main` after inspecting the worktree, using a
-  project-appropriate `feature/`, `fix/`, `docs/`, or `chore/` prefix or a
-  tool-mandated prefix. Do not fetch, pull, or otherwise synchronize a branch
-  unless the user authorizes it.
+- **Task branches**: Except for the mandatory new-ADD branch below, keep an
+  existing authorized task branch or worktree rather than switching solely to
+  satisfy naming. When a new branch is needed, create it from the current local
+  `main` after inspecting the worktree, using a project-appropriate `feature/`,
+  `fix/`, `docs/`, or `chore/` prefix or a tool-mandated prefix. Do not fetch,
+  pull, or otherwise synchronize a branch unless the user authorizes it.
+- **New ADD branches**: A task that creates a new ADD from identified Trello
+  requirements MUST use a newly created task branch dedicated to that ADD. This
+  workflow rule authorizes creating and switching to that branch; it does not
+  authorize Trello mutation, remote synchronization, pushing, or other external
+  writes. Create the branch from the current local `main` before the first ADD
+  mutation. Updating an existing ADD follows the normal task-branch rule.
 - **Pull requests**: target `main`; include the verification commands run and
   their results, link the governing decision record when one applies, and link
   the coordinating Trello card when one exists. Apply the automatic-review rule

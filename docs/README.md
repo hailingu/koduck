@@ -18,6 +18,10 @@ Do not duplicate those rules in directory-local README files.
   functional capabilities, data models, architecture, control flows,
   interaction flows, cross-cutting concerns, traceability, and future ADR task
   candidates.
+- Reading and routing Trello requirements may happen before branch creation,
+  but each new ADD MUST be created on a newly created task branch dedicated to
+  that ADD before its template is copied, number assigned, file created, or
+  index row added.
 - ADDs do not authorize implementation and do not contain task-level
   implementation design. A product-development ADR selects exactly one task
   candidate from a `Current` ADD and owns detailed design, implementation, and
