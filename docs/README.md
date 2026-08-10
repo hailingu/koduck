@@ -109,6 +109,7 @@ file.
 
 | File | Language / platform |
 | --- | --- |
+| [development/software-engineering-standard.md](development/software-engineering-standard.md) | Common software-engineering baseline for all maintained source code |
 | [development/rust-standard.md](development/rust-standard.md) | Rust |
 | [development/swift-standard.md](development/swift-standard.md) | Swift |
 | [development/python-standard.md](development/python-standard.md) | Python |
@@ -116,11 +117,17 @@ file.
 | [development/java-standard.md](development/java-standard.md) | Java |
 | [development/kubernetes-standard.md](development/kubernetes-standard.md) | Kubernetes manifests and operations |
 
-Each standard applies to every current or future service, package, or script
-using that language or platform. Inspect the affected module for established
-local conventions and use its configured formatter, linter, and non-interactive
-checks. A local convention may preserve consistency within its module unless it
-conflicts with an Accepted decision or another binding requirement.
+The common software-engineering baseline and every matching language or
+platform standard apply to each current or future service, package, or script.
+Inspect the affected module for established local conventions and use its
+configured formatter, linter, and non-interactive checks. A local convention
+may preserve consistency within its module unless it conflicts with the common
+baseline, an Accepted decision, or another binding requirement.
+
+The common baseline applies to maintained programming-language source.
+Kubernetes manifests are configuration governed by
+[`development/kubernetes-standard.md`](development/kubernetes-standard.md) and
+intentionally do not inherit or link the source-code baseline.
 
 ## Delivery Standards
 

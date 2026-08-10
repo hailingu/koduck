@@ -24,6 +24,11 @@
 - In Decision Rationale, do not repeat option pros and cons verbatim.
 - Define one to three subtasks that together deliver the complete task outcome;
   do not use lifecycle gates as subtasks unless they are actual deliverables.
+- When implementation exceeds or waives the common software-engineering
+  standard, complete the Engineering Exceptions subsection with one row per
+  affected unit before approval. A pull request may link to the exception but
+  cannot authorize it. Replace the sample table with `N/A — <reason>` when no
+  engineering exception applies.
 - Define every acceptance check before approval. Each row verifies one subtask
   and must supply deterministic pass/fail inputs, method, expected result, and
   evidence under the canonical wording rules in `AGENTS.md`.
@@ -125,6 +130,14 @@ Variable Dictionary
 | `{{SUBTASK_ID}}` | Implementation Plan | Stable identifier from T-1 through T-3 |
 | `{{SUBTASK_OBJECTIVE}}` | Implementation Plan | One objective or deliverable that contributes to the single task outcome |
 | `{{SUBTASK_SCOPE}}` | Implementation Plan | Included paths, systems, or boundaries for this subtask |
+| `{{EXCEPTION_RULE_AND_UNIT}}` | Engineering Exceptions | Exact exceeded or waived rule plus affected repository-relative path and symbol |
+| `{{EXCEPTION_MEASURED_VALUE}}` | Engineering Exceptions | Measured value or structural condition that triggers the exception |
+| `{{EXCEPTION_RATIONALE}}` | Engineering Exceptions | Why the unit remains cohesive or why compliance is currently unsafe |
+| `{{EXCEPTION_RISKS}}` | Engineering Exceptions | Risks created by retaining the exceptional condition |
+| `{{EXCEPTION_CONTROLS}}` | Engineering Exceptions | Compensating controls, including focused tests or ownership restrictions |
+| `{{EXCEPTION_OWNER}}` | Engineering Exceptions | One accountable `@<actor-id>` |
+| `{{EXCEPTION_REVIEW_OR_REMOVAL}}` | Engineering Exceptions | Removal or review date, or specific permanent rationale |
+| `{{EXCEPTION_VERIFICATION}}` | Engineering Exceptions | Evidence that demonstrates the compensating controls |
 | `{{CHECK_ID}}` | Acceptance Checks | Stable check identifier, e.g. AC-1 |
 | `{{CHECK_SUBTASK_ID}}` | Acceptance Checks | Exactly one declared subtask ID verified by this check |
 | `{{ACCEPTANCE_POINT}}` | Acceptance Checks | One binary pass/fail assertion with an unambiguous subject and condition |
@@ -275,6 +288,12 @@ or `N/A — <specific reason>`.
 **Migration and rollback strategy [Conditionally Required — this replaces or
 changes existing behavior]**: {{MIGRATION_AND_ROLLBACK_STRATEGY}}
 
+### Engineering Exceptions [Conditionally Required — an engineering rule is exceeded or waived]
+
+| Rule and affected unit | Measured value or condition | Rationale | Risks | Compensating controls | Owner | Removal, review, or permanent rationale | Verification evidence |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| {{EXCEPTION_RULE_AND_UNIT}} | {{EXCEPTION_MEASURED_VALUE}} | {{EXCEPTION_RATIONALE}} | {{EXCEPTION_RISKS}} | {{EXCEPTION_CONTROLS}} | {{EXCEPTION_OWNER}} | {{EXCEPTION_REVIEW_OR_REMOVAL}} | {{EXCEPTION_VERIFICATION}} |
+
 ## Acceptance Checks [Required]
 
 | Check ID | Subtask | Binary acceptance point | Preconditions or input | Verification method | Exact expected result | Expected evidence | Status | Actual result and evidence |
@@ -294,6 +313,7 @@ precondition demonstrably does not apply.
 | A-3 | Reciprocal ADD link synchronized, when applicable | The selected candidate records this exact ADR path, this ADR records the exact ADD path and candidate ID, both references agree, and the candidate reaches `Complete` only with this ADR's `Complete` or `Verified` status | Exact ADD path, candidate ID, ADR path, and Git blob or commit | Not Started / N/A | Pending |
 | A-4 | Requirement levels satisfied | Every required section is complete, every conditional trigger is assessed and completed or marked `N/A — <reason>`, and optional sections are complete or removed | Structured document review | Not Started | Pending |
 | A-5 | Acceptance checks are decidable | Every check names one subtask, preconditions or input, deterministic method, exact expected result, and evidence; no unqualified subjective criterion remains | Structured acceptance-check review | Not Started | Pending |
+| A-6 | Engineering exceptions governed, when applicable | Every exceeded or waived engineering rule has one complete exception row, an accountable owner, a lifecycle, and verification evidence before approval; otherwise the conditional subsection records `N/A — <reason>` | Engineering Exceptions subsection and affected-file evidence | Not Started | Pending |
 
 ## Supporting Notes [Optional]
 
