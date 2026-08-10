@@ -19,8 +19,18 @@
   conceptual or logical, and keep architecture and flows at solution level.
   Leave physical schema, source-file plans, commands, and other task-level
   implementation mechanics to selected ADRs.
-- Add a small context, container, flowchart, or sequence diagram only when it
-  materially clarifies relationships or flow.
+- In Architecture Design, provide Mermaid source beginning with `flowchart`
+  that represents every component ID plus applicable system boundaries,
+  dependencies, and conceptual data, event, or control directions. Keep the
+  diagram consistent with the structured component table.
+- For every triggered Control Flow Design section, provide Mermaid source that
+  starts with `flowchart` or `sequenceDiagram` and represents every declared
+  control-flow ID, including applicable ordering, branches, retries, failure,
+  and recovery. For every triggered Interaction Flow Design section, provide
+  Mermaid source that starts with `sequenceDiagram` or `stateDiagram-v2` and
+  represents every interaction ID, actor, action or transition, feedback,
+  cancellation, failure, and recovery. Keep each diagram consistent with its
+  table; a diagram does not replace the table.
 - In Assumptions And Open Questions, retain resolved material questions and do
   not request approval while any material question remains unresolved.
 - Define each ADR task candidate as one complete outcome with boundaries and no
@@ -76,12 +86,15 @@ Variable Dictionary
 | `{{CONTEXT}}` | Requirement context and the problem the solution must address |
 | `{{SOLUTION_SUMMARY}}` | Concise end-to-end solution view |
 | `{{DESIGN_BOUNDARY}}` | Explicit boundary between solution design and later ADR implementation design |
+| `{{ARCHITECTURE_DIAGRAM}}` | Mermaid `flowchart` source covering every Architecture Design component ID, boundary, dependency, and applicable conceptual flow |
 
 ### Conditional Variables
 
 | Variable | Trigger and meaning |
 | --- | --- |
 | `{{FIGMA_SOURCES}}` | UI is in scope — exact Figma file/node URLs; otherwise `N/A — <reason>` |
+| `{{CONTROL_FLOW_DIAGRAM}}` | Control Flow Design is triggered — Mermaid source beginning with `flowchart` or `sequenceDiagram` and covering every control-flow ID |
+| `{{INTERACTION_FLOW_DIAGRAM}}` | Interaction Flow Design is triggered — Mermaid source beginning with `sequenceDiagram` or `stateDiagram-v2` and covering every interaction ID |
 | `{{SUPERSEDES}}` | This ADD replaces another — repository-relative replaced ADD path; otherwise the explicit template value `None` |
 
 ### Optional Variables
@@ -266,17 +279,35 @@ Non-goals:
 | --- | --- | --- | --- | --- | --- |
 | {{COMPONENT_ID}} | {{COMPONENT}} | {{RESPONSIBILITY}} | {{INPUTS_OUTPUTS}} | {{DEPENDENCIES}} | {{ARCHITECTURE_CONSTRAINTS}} |
 
+### Mermaid Architecture Diagram [Required]
+
+```mermaid
+{{ARCHITECTURE_DIAGRAM}}
+```
+
 ## Control Flow Design [Conditionally Required — the solution has multiple steps, branches, retries, asynchronous work, or failure recovery]
 
 | ID | Trigger and precondition | Happy path | Branches and retries | Failure handling | Observable result |
 | --- | --- | --- | --- | --- | --- |
 | {{CONTROL_FLOW_ID}} | {{CONTROL_TRIGGER}} / {{CONTROL_PRECONDITION}} | {{CONTROL_HAPPY_PATH}} | {{CONTROL_BRANCHES}} | {{CONTROL_FAILURE}} | {{CONTROL_RESULT}} |
 
+### Mermaid Control Flow [Conditionally Required — Control Flow Design is triggered]
+
+```mermaid
+{{CONTROL_FLOW_DIAGRAM}}
+```
+
 ## Interaction Flow Design [Conditionally Required — a human or external system interacts with the solution]
 
 | ID | Actor and entry state | Actions | System feedback and transitions | Exit state | Figma reference |
 | --- | --- | --- | --- | --- | --- |
 | {{INTERACTION_ID}} | {{ENTRY_STATE}} | {{USER_ACTIONS}} | {{SYSTEM_FEEDBACK}} | {{EXIT_STATE}} | {{FIGMA_REFERENCE}} |
+
+### Mermaid Interaction Flow [Conditionally Required — Interaction Flow Design is triggered]
+
+```mermaid
+{{INTERACTION_FLOW_DIAGRAM}}
+```
 
 ## Cross-Cutting Design [Required]
 
@@ -320,8 +351,8 @@ Allowed task-candidate statuses: `Ready`, `Selected`, `Complete`, or `Deferred`.
 - [ ] Every Trello source has a captured baseline, acceptance outcome, and last-checked date.
 - [ ] Every functional capability cites captured requirement IDs, and every stated behavior traces to those cited baselines.
 - [ ] When Data Model Design is triggered, ownership, lifecycle, sensitivity, relationships, and invariants are populated; otherwise the section records `N/A — <reason>`.
-- [ ] Every architecture component has a responsibility, conceptual inputs and outputs, dependencies, and cited accepted constraints.
-- [ ] Every triggered control or interaction section covers success, applicable branches, failure, and recovery; each untriggered section records `N/A — <reason>`.
+- [ ] Every architecture component has a responsibility, conceptual inputs and outputs, dependencies, and cited accepted constraints; the required Mermaid architecture diagram covers every component ID, boundary, dependency, and applicable conceptual flow and agrees with the table.
+- [ ] Every triggered control or interaction section includes its required Mermaid diagram and structured table; the diagram covers every declared flow ID plus applicable ordering or transitions, branches, feedback, failure, and recovery, and agrees with the table. Each untriggered section records `N/A — <reason>`.
 - [ ] UI scope cites exact accessible Figma context and does not override it.
 - [ ] Cross-cutting concerns, risks, and assumptions are documented with their treatment, and every material question is resolved.
 - [ ] Traceability connects every requirement to capabilities and ADR task candidates.

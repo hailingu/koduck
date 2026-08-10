@@ -197,6 +197,22 @@ requirement-level compliance.
   capabilities, conceptual or logical data model, system architecture, control
   flows, interaction flows, cross-cutting constraints, traceability, and ADR
   task candidates.
+- The required Architecture Design section MUST include at least one fenced
+  Mermaid `flowchart` representing every component ID and the applicable system
+  boundaries, dependencies, and conceptual data, event, or control directions.
+  Its structured component table and Mermaid diagram MUST agree; neither may
+  substitute for the other. A missing architecture diagram blocks the ADD from
+  becoming `Current`.
+- Every triggered Control Flow Design section MUST include at least one fenced
+  Mermaid `flowchart` or `sequenceDiagram` in addition to its structured flow
+  table. The diagram MUST represent every flow ID in that section and show the
+  applicable ordering, branches, retries, failure termination, and recovery.
+  Every triggered Interaction Flow Design section MUST likewise include at
+  least one fenced Mermaid `sequenceDiagram` or `stateDiagram-v2` representing
+  every interaction ID and its actors, actions or transitions, system feedback,
+  cancellation, failure, and recovery. Tables and diagrams MUST agree; neither
+  may substitute for the other. A triggered section without its required
+  diagram blocks the ADD from becoming `Current`.
 - An ADD MUST NOT authorize source, configuration, build, deployment, or other
   operational changes. It MUST NOT contain task-level implementation designs,
   file-by-file change plans, code or schema definitions, executable commands,
@@ -222,9 +238,9 @@ requirement-level compliance.
   authoritative and MUST be cited as constraints.
 - When Web or native UI is in scope, the ADD MUST cite the specific accessible
   Figma file or node. Its interaction-flow section may describe actors, states,
-  transitions, and system feedback, but MUST NOT override Figma's visual or
-  interaction decisions. Missing or ambiguous Figma context blocks the ADD
-  from becoming `Current` for that UI scope.
+  transitions, and system feedback in the required Mermaid diagram, but MUST
+  NOT override Figma's visual or interaction decisions. Missing or ambiguous
+  Figma context blocks the ADD from becoming `Current` for that UI scope.
 
 #### Scope Routing, Identity, And Storage
 
