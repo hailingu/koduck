@@ -27,7 +27,7 @@ not server-side or cross-platform Swift.
   detailed, widely used formatting and construct-level style guide that is
   compatible with and extends the guidelines above.
 
-## Baseline Tooling
+## Baseline Practices
 
 - Use `swift-format` or `SwiftFormat`/`SwiftLint` (whichever the target
   package already uses) for mechanical formatting instead of hand-formatting.

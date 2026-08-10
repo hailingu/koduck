@@ -56,7 +56,7 @@ from the execution machine's login. A revision may be recorded only as
 informational, non-binding context when it exactly represents the approved
 document. When approval is invalidated, its prior metadata and any Approval
 Context Revision move to the Change Log; active Approver, Approval Time, and
-Approval Evidence become `Pending — reapproval required`, and the active
+Approval Evidence become `Pending — re-approval required`, and the active
 Approval Context Revision is removed until a later approval records a new one.
 
 A Proposed ADR or OCR is rejected only when its Decision Owner or an actor
@@ -109,12 +109,12 @@ file.
 
 | File | Language / platform |
 | --- | --- |
-| [development/rust.md](development/rust.md) | Rust |
-| [development/swift.md](development/swift.md) | Swift |
-| [development/python.md](development/python.md) | Python |
-| [development/typescript.md](development/typescript.md) | TypeScript |
-| [development/java.md](development/java.md) | Java |
-| [development/kubernetes.md](development/kubernetes.md) | Kubernetes manifests and operations |
+| [development/rust-standard.md](development/rust-standard.md) | Rust |
+| [development/swift-standard.md](development/swift-standard.md) | Swift |
+| [development/python-standard.md](development/python-standard.md) | Python |
+| [development/typescript-standard.md](development/typescript-standard.md) | TypeScript |
+| [development/java-standard.md](development/java-standard.md) | Java |
+| [development/kubernetes-standard.md](development/kubernetes-standard.md) | Kubernetes manifests and operations |
 
 Each standard applies to every current or future service, package, or script
 using that language or platform. Inspect the affected module for established

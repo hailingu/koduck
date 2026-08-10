@@ -15,7 +15,7 @@
   a more detailed style guide (linting, typing, exceptions, naming) that is
   compatible with and extends PEP 8/257.
 
-## Baseline Tooling
+## Baseline Practices
 
 - Format and lint with the tool the target package already uses (for example
   `ruff`, `black`, or `pylint`); do not hand-format around it.

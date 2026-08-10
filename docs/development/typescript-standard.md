@@ -12,7 +12,7 @@
   naming, module, type-system, and formatting conventions (named exports
   only, `const`/`let` over `var`, structural typing, avoiding `any`, etc.).
 
-## Baseline Tooling
+## Baseline Practices
 
 - Format with the project's configured formatter (for example Prettier) and
   lint with its configured linter (for example ESLint); do not hand-format

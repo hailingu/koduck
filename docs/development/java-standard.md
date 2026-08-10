@@ -10,7 +10,7 @@
   the canonical formatting, naming, and Javadoc reference used for Java code
   in this repository.
 
-## Baseline Tooling
+## Baseline Practices
 
 - Format with the project's configured formatter (for example
   `google-java-format`); do not hand-format around it.

@@ -15,7 +15,7 @@
 - [The Rust Programming Language book](https://doc.rust-lang.org/book/) —
   background reading for language features and idioms not covered above.
 
-## Baseline Tooling
+## Baseline Practices
 
 - Format with `cargo fmt`; do not hand-format around it.
 - Lint with `cargo clippy`; treat new warnings as defects to fix or explicitly
