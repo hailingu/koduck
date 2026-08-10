@@ -15,6 +15,11 @@ development standards — that future services will build on.
   contributors) work in this repository: change classification, decision
   records, branch/PR/commit policy, and verification requirements.
 - [CLAUDE.md](CLAUDE.md) — a thin entry point that defers to `AGENTS.md`.
+- [docs/README.md](docs/README.md) — the navigation entry point for
+  everything under `docs/`; read it before drafting documents or writing code.
+- [docs/architecture/](docs/architecture/) — Architecture Design Documents
+  (ADDs). See [docs/architecture/INDEX.md](docs/architecture/INDEX.md) for the
+  status of every ADD.
 - [docs/adr/](docs/adr/) — project-level Architecture Decision Records (ADRs)
   and Operational Change Records (OCRs). See [docs/adr/INDEX.md](docs/adr/INDEX.md)
   for the current, fast-scan status of every record.
@@ -22,6 +27,8 @@ development standards — that future services will build on.
   real-world reference documentation for each language/platform this
   repository expects to use (Rust, Swift, Python, TypeScript, Java,
   Kubernetes). Read the matching file before writing code in that language.
+- [docs/delivery/](docs/delivery/) — release and Git tag standards. Read both
+  files before planning a release or tag operation.
 
 ## Repository Structure
 
@@ -29,7 +36,9 @@ development standards — that future services will build on.
 AGENTS.md              Agent/contributor guide and governance rules
 CLAUDE.md              Claude-specific entry point (defers to AGENTS.md)
 docs/
+  architecture/        Architecture Design Documents (ADDs), template, and index
   adr/                 Project-level ADRs, OCRs (in ocr/), templates, and indexes
+  delivery/            Release and Git tag standards
   development/         Per-language development standards catalog
 LICENSE                MIT License
 ```

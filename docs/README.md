@@ -30,7 +30,7 @@ Do not duplicate those rules in directory-local README files.
 
 Template:
 
-- [Architecture Design Document](architecture/template/0000-template.md)
+- [Architecture Design Document](architecture/template/0000-add-template.md)
 
 Read the Architecture Design Documents section of [`AGENTS.md`](../AGENTS.md)
 before drafting, reviewing, routing, indexing, superseding, or archiving an ADD.

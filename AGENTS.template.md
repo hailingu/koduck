@@ -306,7 +306,7 @@ precedence and stop at the first matching row:
   to a minimum width of four digits (`0001` through `9999`, then `10000` and
   higher without truncation). The record identity is its repository-relative
   path, never the bare number.
-- The shared template is `docs/architecture/template/0000-template.md`.
+- The shared template is `docs/architecture/template/0000-add-template.md`.
 - `docs/architecture/INDEX.md` is the single repository-wide index for active
   and archived ADDs at every scope. Update its one row whenever the title,
   Design Status, scope level, scope, path, coordination source, or supersession
@@ -920,7 +920,7 @@ Release and Git tag operations follow `docs/delivery/releases.md` and
 | Concern | Authoritative path or discovery command |
 | --- | --- |
 | Architecture solution views and future ADR task candidates | `docs/architecture/INDEX.md` and the indexed ADD paths |
-| Architecture design template | `docs/architecture/template/0000-template.md` |
+| Architecture design template | `docs/architecture/template/0000-add-template.md` |
 | All project and service ADR/OCR identities and current statuses | `docs/adr/INDEX.md` |
 | Decision-record templates | `docs/adr/template/` |
 | Documentation navigation and standards catalog | `docs/README.md` |
