@@ -282,7 +282,8 @@ requirement-level compliance.
   MAY occur before branch creation. Before copying the ADD template, assigning
   an ADD number, creating the ADD file, or adding its index row for a new ADD,
   the agent MUST inspect the worktree and create and switch to a new task branch
-  dedicated to that ADD under the Branch, Pull Request, And Commit Policy. This
+  from the current local `dev`, dedicated to that ADD under the Branch, Pull
+  Request, And Commit Policy. `main` MUST NOT be used as its branch point. This
   requirement applies even when the current non-protected branch is otherwise
   authorized. If unrelated work prevents a safe branch switch, stop before
   drafting; do not stash, commit, or move that work without authorization.
@@ -782,12 +783,12 @@ implementation or operation continues.
    follow the version-control policy below before drafting or submitting a
    required decision record.
 4. For product demand, inspect and route the coordination requirement baseline.
-   When creating a new ADD, create and switch to its new dedicated task branch
-   before copying the template, assigning its number, creating its file, or
-   adding its index row. Then draft or update the ADD, complete its
-   solution-level design and traceability, and make it `Current` before
-   selecting an implementation task. Do not add task-level implementation
-   design to the ADD.
+   When creating a new ADD, create and switch from the current local `dev` to
+   its new dedicated task branch before copying the template, assigning its
+   number, creating its file, or adding its index row; never use `main` as the
+   branch point. Then draft or update the ADD, complete its solution-level
+   design and traceability, and make it `Current` before selecting an
+   implementation task. Do not add task-level implementation design to the ADD.
 5. Before drafting an ADR, enforce the repository-wide ADR serialization gate.
    Select one eligible ADD task candidate when the work derives from product
    demand, route the permitted decision record to the correct ADR root and
@@ -873,10 +874,14 @@ writes.
 
 - **Protected branches**: `main` is the protected branch; no direct commits or
   pushes to `main`.
+- **Task-branch base**: `dev` is the sole permitted base for every new task
+  branch. Create from the current local `dev`; `main` MUST NOT be used as a
+  branch point. Do not fetch, pull, or otherwise synchronize `dev` unless the
+  user authorizes it.
 - **Task branches**: Except for the mandatory new-ADD branch below, keep an
   existing authorized task branch or worktree rather than switching solely to
   satisfy naming. When a new branch is needed, create it from the current local
-  `main` after inspecting the worktree, using a project-appropriate `feature/`,
+  `dev` after inspecting the worktree, using a project-appropriate `feature/`,
   `fix/`, `docs/`, or `chore/` prefix or a tool-mandated prefix. Do not fetch,
   pull, or otherwise synchronize a branch unless the user authorizes it.
 - **New ADD branches**: A task that creates a new ADD from identified
@@ -884,7 +889,7 @@ writes.
   that ADD. This workflow rule authorizes creating and switching to that branch;
   it does not authorize coordination-system mutation, remote synchronization,
   pushing, or other external writes. Create the branch from the current local
-  `main` before the first ADD mutation. Updating an existing ADD follows the
+  `dev` before the first ADD mutation. Updating an existing ADD follows the
   normal task-branch rule.
 - **Pull requests**: target `main`; include the verification commands run and
   their results, link the governing decision record when one applies, and link
@@ -906,10 +911,10 @@ writes.
   and manually authored merge commits whose messages can be edited are not
   exempt.
 
-This is a starting policy with one protected long-lived branch (`main`) and
-temporary task branches; revisit it with a Full ADR once additional long-lived
-release branches, independent component versioning, or multi-environment
-promotion is needed.
+This policy uses protected `main` as the pull-request target, `dev` as the sole
+task-branch base, and temporary task branches. Revisit it with a Full ADR once
+additional long-lived release branches, independent component versioning, or
+multi-environment promotion is needed.
 <!-- OPTIONAL MODULE FRAGMENT: DELIVERY_OPERATIONS -->
 Release and Git tag operations follow `docs/delivery/releases.md` and
 `docs/delivery/git-tags.md`.
