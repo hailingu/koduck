@@ -8,18 +8,19 @@
 
 ## 元数据 [Required]
 
-- **设计状态**：Draft
+- **设计状态**：Current
 - **日期**：2026-08-10
 - **作者**：Codex
 - **架构负责人**：@linhai
 - **所需审批人**：@linhai
-- **审批人 [Conditionally Required — 设计状态为或曾为 `Current`]**：N/A — 当前设计状态为 `Draft`
-- **审批时间 [Conditionally Required — 设计状态为或曾为 `Current`]**：N/A — 当前设计状态为 `Draft`
-- **审批证据 [Conditionally Required — 设计状态为或曾为 `Current`]**：N/A — 当前设计状态为 `Draft`
-- **退役执行人 [Conditionally Required — 设计状态为 `Deprecated` 或 `Superseded`]**：N/A — 当前设计状态为 `Draft`
-- **退役时间 [Conditionally Required — 设计状态为 `Deprecated` 或 `Superseded`]**：N/A — 当前设计状态为 `Draft`
-- **退役证据 [Conditionally Required — 设计状态为 `Deprecated` 或 `Superseded`]**：N/A — 当前设计状态为 `Draft`
-- **退役原因 [Conditionally Required — 设计状态为 `Deprecated` 或 `Superseded`]**：N/A — 当前设计状态为 `Draft`
+- **审批人 [Conditionally Required — 设计状态为或曾为 `Current`]**：@linhai
+- **审批时间 [Conditionally Required — 设计状态为或曾为 `Current`]**：2026-08-10T17:24:17Z
+- **审批证据 [Conditionally Required — 设计状态为或曾为 `Current`]**：Approve
+- **审批上下文修订 [Optional — 信息性且非约束]**：`541598139e4903942b309ccb075b46473b117f7f` — 与提交审批的文档内容完全一致的已提交修订
+- **退役执行人 [Conditionally Required — 设计状态为 `Deprecated` 或 `Superseded`]**：N/A — 当前设计状态为 `Current`，文档未退役
+- **退役时间 [Conditionally Required — 设计状态为 `Deprecated` 或 `Superseded`]**：N/A — 当前设计状态为 `Current`，文档未退役
+- **退役证据 [Conditionally Required — 设计状态为 `Deprecated` 或 `Superseded`]**：N/A — 当前设计状态为 `Current`，文档未退役
+- **退役原因 [Conditionally Required — 设计状态为 `Deprecated` 或 `Superseded`]**：N/A — 当前设计状态为 `Current`，文档未退役
 - **范围级别**：Repository / Cross-project
 - **范围**：未来 Koduck AI 运行时，以及它与 API 客户端、模型提供商、认证、记忆、工具执行、后台任务和扩展提供方之间的契约
 - **Trello 来源**：[Koduck 卡片 4WI4sszw](https://trello.com/c/4WI4sszw/2-%E8%B0%83%E7%A0%94-adr-%E6%98%8E%E7%A1%AE-ai-%E6%9C%8D%E5%8A%A1%E9%87%8D%E6%9E%84%E8%BE%B9%E7%95%8C%E4%B8%8E-codex-%E5%AF%B9%E9%BD%90%E7%9B%AE%E6%A0%87)
@@ -606,11 +607,11 @@ sequenceDiagram
 - [x] 候选项只有结果/边界，无源文件和可执行实施设计。
 - [x] 没有候选项为 `Selected`/`Complete`，当前不需要 ADR 双向链接。
 - [x] 必填和条件触发内容完整。
-- [ ] 在变为 `Current` 前记录合格非作者审批人、时间及精确 `Approval Evidence: Approve`。
+- [x] 在变为 `Current` 前记录合格非作者审批人、时间及精确 `Approval Evidence: Approve`；所记录的审批上下文修订为信息性、非约束，且与获批文档完全一致。
 
 ## 归档 [Conditionally Required — 设计状态为 `Deprecated` 或 `Superseded`]
 
-当前为 `Draft`，本节不激活。触发时：
+当前为 `Current`，本节不激活。触发时：
 
 - [ ] 所有候选项为 `Deferred` 或 `Complete`，且关联 ADR 无非终态状态，双向路径均正确。
 - [ ] 移动到本架构根目录下的 `archive/ADD-0001-ai-service-codex-alignment.md`。
@@ -627,3 +628,4 @@ sequenceDiagram
 | 2026-08-11 | 增加必需的架构、控制流程和交互流程 Mermaid 图；恢复图表评审项；明确 R-2 不是 Trello 来源；并记录 @linhai 是确认 Q-2 的评审者。 | Codex |
 | 2026-08-11 | 解决生命周期、审批权威、精确 Attempt Scope、Append-only 更正、CAND-1 存储和迁移共存冲突；同步统一来源丢失、持久化、重试元数据、取消语义、契约方向、审计保留以及 C-1/C-7 交互。 | Codex |
 | 2026-08-11 | 将前台孤儿 Turn 活性归属明确为 C-2/C-6 带 Fencing 租约与对账，阻止旧 Owner 分发工具或提交结果，增加 CAND-1/CAND-2 崩溃/过期/Fencing 检查，并把迁移前提统一到 ADR Acceptance。 | Codex |
+| 2026-08-10 | @linhai 在当前评审对话中批准；记录审批元数据与信息性、非约束的审批上下文修订 `541598139e4903942b309ccb075b46473b117f7f`，并将设计状态置为 `Current`。 | @kimi |

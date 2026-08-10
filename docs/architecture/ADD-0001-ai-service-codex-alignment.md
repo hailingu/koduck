@@ -2,18 +2,19 @@
 
 ## Metadata [Required]
 
-- **Design Status**: Draft
+- **Design Status**: Current
 - **Date**: 2026-08-10
 - **Author**: Codex
 - **Architecture Owner**: @linhai
 - **Required Approver**: @linhai
-- **Approver [Conditionally Required — Design Status is or has been `Current`]**: N/A — Design Status is `Draft`
-- **Approval Time [Conditionally Required — Design Status is or has been `Current`]**: N/A — Design Status is `Draft`
-- **Approval Evidence [Conditionally Required — Design Status is or has been `Current`]**: N/A — Design Status is `Draft`
-- **Retired By [Conditionally Required — Design Status is `Deprecated` or `Superseded`]**: N/A — Design Status is `Draft`
-- **Retirement Time [Conditionally Required — Design Status is `Deprecated` or `Superseded`]**: N/A — Design Status is `Draft`
-- **Retirement Evidence [Conditionally Required — Design Status is `Deprecated` or `Superseded`]**: N/A — Design Status is `Draft`
-- **Retirement Reason [Conditionally Required — Design Status is `Deprecated` or `Superseded`]**: N/A — Design Status is `Draft`
+- **Approver [Conditionally Required — Design Status is or has been `Current`]**: @linhai
+- **Approval Time [Conditionally Required — Design Status is or has been `Current`]**: 2026-08-10T17:24:17Z
+- **Approval Evidence [Conditionally Required — Design Status is or has been `Current`]**: Approve
+- **Approval Context Revision [Optional — informational and non-binding]**: `541598139e4903942b309ccb075b46473b117f7f` — the committed revision that exactly represents the document content present for approval
+- **Retired By [Conditionally Required — Design Status is `Deprecated` or `Superseded`]**: N/A — Design Status is `Current`; the document has not been retired
+- **Retirement Time [Conditionally Required — Design Status is `Deprecated` or `Superseded`]**: N/A — Design Status is `Current`; the document has not been retired
+- **Retirement Evidence [Conditionally Required — Design Status is `Deprecated` or `Superseded`]**: N/A — Design Status is `Current`; the document has not been retired
+- **Retirement Reason [Conditionally Required — Design Status is `Deprecated` or `Superseded`]**: N/A — Design Status is `Current`; the document has not been retired
 - **Scope Level**: Repository / Cross-project
 - **Scope**: The future Koduck AI runtime and its contracts with API clients, model providers, authentication, memory, tool execution, background work, and extension providers
 - **Trello Sources**: [Koduck card 4WI4sszw](https://trello.com/c/4WI4sszw/2-%E8%B0%83%E7%A0%94-adr-%E6%98%8E%E7%A1%AE-ai-%E6%9C%8D%E5%8A%A1%E9%87%8D%E6%9E%84%E8%BE%B9%E7%95%8C%E4%B8%8E-codex-%E5%AF%B9%E9%BD%90%E7%9B%AE%E6%A0%87)
@@ -655,11 +656,11 @@ deterministic checks.
 - [x] Task candidates contain outcomes and boundaries but no source-file or executable implementation design.
 - [x] No candidate is `Selected` or `Complete`; no reciprocal ADR path is currently required.
 - [x] Every required section is complete; every conditional trigger is assessed and completed or marked `N/A — <reason>`; optional content is complete.
-- [ ] An eligible non-author approver, approval time, and exact `Approval Evidence: Approve` are recorded before `Current`.
+- [x] An eligible non-author approver, approval time, and exact `Approval Evidence: Approve` are recorded before `Current`; the recorded Approval Context Revision is informational, non-binding, and exactly represents the approved document.
 
 ## Archival [Conditionally Required — Design Status is `Deprecated` or `Superseded`]
 
-This section is inactive because Design Status is `Draft`. When triggered:
+This section is inactive because Design Status is `Current`. When triggered:
 
 - [ ] Confirm every candidate is `Deferred` or `Complete`, no linked ADR has a non-terminal Implementation Status, and all reciprocal paths are current.
 - [ ] Move it to `archive/ADD-0001-ai-service-codex-alignment.md` under this architecture root.
@@ -676,3 +677,4 @@ This section is inactive because Design Status is `Draft`. When triggered:
 | 2026-08-11 | Added the required architecture, control-flow, and interaction-flow Mermaid diagrams; restored the diagram review checks; clarified the non-Trello R-2 source; and recorded @linhai as the reviewer confirming Q-2. | Codex |
 | 2026-08-11 | Resolved lifecycle, approval authority, exact-attempt scope, append-only correction, CAND-1 storage, and migration-coexistence conflicts; aligned source-loss, durability, retry metadata, cancellation semantics, contract direction, audit retention, and C-1/C-7 interaction in both language versions. | Codex |
 | 2026-08-11 | Assigned foreground orphan-turn liveness to C-2/C-6 fenced leases and reconciliation, fenced stale-owner tool dispatch and result commitment, added CAND-1/CAND-2 crash/expiry/fencing checks, and aligned migration preconditions to ADR acceptance. | Codex |
+| 2026-08-10 | Approved by @linhai in the active review conversation; recorded approval metadata and the informational, non-binding Approval Context Revision `541598139e4903942b309ccb075b46473b117f7f`, and set Design Status to `Current`. | @kimi |
