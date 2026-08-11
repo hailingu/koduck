@@ -1,17 +1,22 @@
 // ADR: docs/adr/ADR-0001-provider-neutral-turn-kernel.md
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::io::{Read, Write};
+use std::net::TcpListener;
 use std::sync::{Arc, Condvar, Mutex};
+use std::thread;
 use std::time::Duration;
 
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode};
 use koduck_ai::adapters::history::postgres::{PostgresExecutor, SqlxPostgresExecutor};
 use koduck_ai::adapters::http::{ServiceError, TurnService};
-use koduck_ai::adapters::provider::{OpenAiProtocolTransport, ReqwestOpenAiTransport};
+use koduck_ai::adapters::provider::{
+    OpenAiCompatibleProvider, OpenAiProtocolTransport, ReqwestOpenAiTransport,
+};
 use koduck_ai::application::{
     AcceptedTurn, HistoryError, ModelInput, ModelProvider, NewItem, ProviderError, ProviderEvent,
-    ProviderStream, TurnCommand, TurnHistory, TurnResult, TurnRunner,
+    ProviderStream, TurnCommand, TurnHistory, TurnResult, TurnRunner, TurnStreamEvent,
 };
 use koduck_ai::domain::{
     Item, ItemPayload, LeaseGeneration, TenantId, TerminalOutcome, ThreadId, TrustContext, TurnId,
@@ -142,6 +147,80 @@ async fn axum_router_hands_validated_identity_to_owned_http_adapter() {
     assert!(String::from_utf8_lossy(&body).contains("\"status\":\"completed\""));
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn invalid_utf8_request_body_is_rejected() {
+    let mut body = br#"{"input":"hel"#.to_vec();
+    body.push(0xff);
+    body.extend_from_slice(br#"lo"}"#);
+
+    let response = build_router(StubService)
+        .oneshot(
+            Request::post("/api/v1/ai/chat")
+                .header("content-type", "application/json")
+                .header("x-koduck-tenant-id", "tenant-a")
+                .header("x-koduck-subject-id", "subject-a")
+                .body(Body::from(body.clone()))
+                .expect("valid request envelope"),
+        )
+        .await
+        .expect("router response");
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    let missing_identity = build_router(StubService)
+        .oneshot(
+            Request::post("/api/v1/ai/chat")
+                .header("content-type", "application/json")
+                .body(Body::from(body))
+                .expect("valid request envelope"),
+        )
+        .await
+        .expect("router response");
+    assert_eq!(missing_identity.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[derive(Clone)]
+struct MidTurnFailureService;
+
+impl TurnService for MidTurnFailureService {
+    fn execute(&mut self, _command: TurnCommand) -> Result<TurnResult, ServiceError> {
+        Err(ServiceError::DurabilityUnavailable)
+    }
+
+    fn execute_stream(
+        &mut self,
+        _command: TurnCommand,
+        observer: &mut dyn FnMut(TurnStreamEvent),
+    ) -> Result<TurnResult, ServiceError> {
+        observer(TurnStreamEvent::Started {
+            thread_id: ThreadId::new(),
+            turn_id: TurnId::new(),
+        });
+        Err(ServiceError::DurabilityUnavailable)
+    }
+
+    fn interrupt(&mut self, _trust: &TrustContext, _turn_id: TurnId) -> Result<(), ServiceError> {
+        Ok(())
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mid_turn_failure_is_reported_inside_an_started_sse_stream() {
+    let response = build_router(MidTurnFailureService)
+        .oneshot(chat_request("/api/v1/ai/chat/stream"))
+        .await
+        .expect("stream response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), 1_048_576)
+        .await
+        .expect("bounded stream body");
+    let body = String::from_utf8(body.to_vec()).expect("SSE is UTF-8");
+    assert!(body.contains("event: turn.started"));
+    assert!(body.contains("event: error"));
+    assert!(body.contains("\"code\":\"durability-unavailable\""));
+}
+
 #[derive(Default)]
 struct BlockingServiceState {
     started: bool,
@@ -257,6 +336,7 @@ impl ModelProvider for GatedProvider {
 #[derive(Default)]
 struct ConcurrentHistoryState {
     items: BTreeMap<TurnId, Vec<Item>>,
+    interrupts: BTreeSet<TurnId>,
 }
 
 #[derive(Clone, Default)]
@@ -268,13 +348,23 @@ impl TurnHistory for ConcurrentHistory {
     fn request_interrupt(
         &mut self,
         _trust: &TrustContext,
-        _turn_id: TurnId,
+        turn_id: TurnId,
     ) -> Result<(), HistoryError> {
+        let mut state = self.state.lock().expect("history state lock");
+        if !state.items.contains_key(&turn_id) {
+            return Err(HistoryError::NotFound);
+        }
+        state.interrupts.insert(turn_id);
         Ok(())
     }
 
-    fn interruption_requested(&self, _turn: &AcceptedTurn) -> Result<bool, HistoryError> {
-        Ok(false)
+    fn interruption_requested(&self, turn: &AcceptedTurn) -> Result<bool, HistoryError> {
+        Ok(self
+            .state
+            .lock()
+            .expect("history state lock")
+            .interrupts
+            .contains(&turn.turn_id))
     }
 
     fn prior_thread_items(
@@ -330,6 +420,19 @@ impl TurnHistory for ConcurrentHistory {
     }
 }
 
+impl ConcurrentHistory {
+    fn accepted_turn_id(&self) -> TurnId {
+        *self
+            .state
+            .lock()
+            .expect("history state lock")
+            .items
+            .keys()
+            .next()
+            .expect("one turn was accepted")
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn streaming_response_starts_before_provider_completion() {
     let provider = GatedProvider {
@@ -367,6 +470,106 @@ async fn streaming_response_starts_before_provider_completion() {
     }
     assert!(remainder.contains("event: item.created"));
     assert!(remainder.contains("event: turn.completed"));
+}
+
+struct IdleUpstream {
+    base_url: String,
+    gate: Arc<(Mutex<bool>, Condvar)>,
+    thread: Option<thread::JoinHandle<()>>,
+}
+
+impl IdleUpstream {
+    fn start() -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind idle upstream");
+        let base_url = format!(
+            "http://{}",
+            listener.local_addr().expect("upstream address")
+        );
+        let gate = Arc::new((Mutex::new(false), Condvar::new()));
+        let server_gate = Arc::clone(&gate);
+        let thread = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept provider request");
+            let mut request = [0_u8; 4096];
+            let _ = stream.read(&mut request).expect("read provider request");
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n",
+                )
+                .expect("write provider headers");
+            stream.flush().expect("flush provider headers");
+            let (lock, ready) = &*server_gate;
+            let mut released = lock.lock().expect("upstream gate lock");
+            while !*released {
+                released = ready.wait(released).expect("upstream gate wait");
+            }
+            stream
+                .write_all(b"0\r\n\r\n")
+                .expect("finish provider body");
+        });
+        Self {
+            base_url,
+            gate,
+            thread: Some(thread),
+        }
+    }
+
+    fn release(&self) {
+        let (lock, ready) = &*self.gate;
+        *lock.lock().expect("upstream gate lock") = true;
+        ready.notify_all();
+    }
+}
+
+impl Drop for IdleUpstream {
+    fn drop(&mut self) {
+        self.release();
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn interrupt_is_observed_while_the_provider_stream_is_idle() {
+    let upstream = IdleUpstream::start();
+    let transport = ReqwestOpenAiTransport::new(
+        reqwest::Client::new(),
+        tokio::runtime::Handle::current(),
+        &upstream.base_url,
+        "test-model",
+        "test-key",
+    );
+    let history = ConcurrentHistory::default();
+    let router = build_router(TurnRunner::new(
+        OpenAiCompatibleProvider::new(transport),
+        history.clone(),
+    ));
+    let response = router
+        .clone()
+        .oneshot(chat_request("/api/v1/ai/chat/stream"))
+        .await
+        .expect("stream response");
+    let mut body = response.into_body().into_data_stream();
+    let started = body
+        .next()
+        .await
+        .expect("turn.started chunk")
+        .expect("turn.started is readable");
+    assert!(String::from_utf8_lossy(&started).contains("event: turn.started"));
+
+    let interrupt = router
+        .oneshot(interrupt_request(history.accepted_turn_id()))
+        .await
+        .expect("interrupt response");
+    assert_eq!(interrupt.status(), StatusCode::ACCEPTED);
+
+    let interrupted = timeout(Duration::from_millis(500), body.next()).await;
+    let Ok(Some(Ok(interrupted))) = interrupted else {
+        upstream.release();
+        panic!("idle provider prevented the accepted interrupt from terminalizing");
+    };
+    assert!(String::from_utf8_lossy(&interrupted).contains("event: turn.interrupted"));
+    upstream.release();
 }
 
 fn completed_result() -> TurnResult {

@@ -118,6 +118,8 @@ pub enum ProviderEvent {
     Completed,
     /// Terminal provider failure with a stable owned code.
     Error { code: String },
+    /// No provider frame is ready yet; orchestration may poll control state.
+    Pending,
 }
 
 /// A lazy owned provider stream that can be dropped to stop consumption.

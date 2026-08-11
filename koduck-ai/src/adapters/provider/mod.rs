@@ -2,9 +2,14 @@
 
 //! OpenAI-compatible protocol translation into provider-neutral application events.
 
+use std::thread;
+use std::time::Duration;
+
+use serde_json::Value;
 use thiserror::Error;
 use tokio::runtime::Handle;
 use tokio::sync::mpsc;
+use tokio::sync::mpsc::error::TryRecvError;
 
 use crate::application::{ModelInput, ModelProvider, ProviderError, ProviderEvent, ProviderStream};
 use crate::domain::{ItemPayload, Usage};
@@ -31,8 +36,18 @@ pub trait OpenAiProtocolTransport {
     ) -> Result<OpenAiFrameStream, OpenAiTransportError>;
 }
 
-/// A lazy sequence of OpenAI-compatible SSE data frames.
-pub type OpenAiFrameStream = Box<dyn Iterator<Item = Result<String, OpenAiTransportError>> + Send>;
+/// One data frame or bounded idle poll from an OpenAI-compatible stream.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum OpenAiFrame {
+    /// One complete `data:` line.
+    Data(String),
+    /// No frame arrived during the bounded control-poll interval.
+    Pending,
+}
+
+/// A lazy sequence of OpenAI-compatible SSE frames and idle polls.
+pub type OpenAiFrameStream =
+    Box<dyn Iterator<Item = Result<OpenAiFrame, OpenAiTransportError>> + Send>;
 
 /// Reqwest transport for one explicitly configured OpenAI-compatible endpoint.
 #[derive(Clone)]
@@ -91,14 +106,21 @@ impl OpenAiProtocolTransport for ReqwestOpenAiTransport {
         let (sender, mut receiver) = mpsc::channel(64);
         self.runtime.spawn(pump_response(response, sender));
         Ok(Box::new(std::iter::from_fn(move || {
-            receiver.blocking_recv()
+            match receiver.try_recv() {
+                Ok(frame) => Some(frame),
+                Err(TryRecvError::Empty) => {
+                    thread::sleep(Duration::from_millis(50));
+                    Some(Ok(OpenAiFrame::Pending))
+                }
+                Err(TryRecvError::Disconnected) => None,
+            }
         })))
     }
 }
 
 async fn pump_response(
     mut response: reqwest::Response,
-    sender: mpsc::Sender<Result<String, OpenAiTransportError>>,
+    sender: mpsc::Sender<Result<OpenAiFrame, OpenAiTransportError>>,
 ) {
     let mut pending = Vec::new();
     let mut saw_frame = false;
@@ -145,7 +167,7 @@ async fn pump_response(
 }
 
 async fn send_frame(
-    sender: &mpsc::Sender<Result<String, OpenAiTransportError>>,
+    sender: &mpsc::Sender<Result<OpenAiFrame, OpenAiTransportError>>,
     line: Vec<u8>,
     saw_frame: &mut bool,
 ) -> Result<(), ()> {
@@ -154,7 +176,10 @@ async fn send_frame(
         return Ok(());
     }
     *saw_frame = true;
-    sender.send(Ok(line)).await.map_err(|_| ())
+    sender
+        .send(Ok(OpenAiFrame::Data(line)))
+        .await
+        .map_err(|_| ())
 }
 
 fn provider_messages(input: &ModelInput) -> Vec<serde_json::Value> {
@@ -214,14 +239,8 @@ where
             }
             let frame = frames.next()?;
             match frame {
-                Ok(frame) => match parse_frame(&frame) {
-                    Ok(Some(event)) => Some(event),
-                    Ok(None) => None,
-                    Err(error) => {
-                        terminated = true;
-                        Some(ProviderEvent::Error { code: error.code })
-                    }
-                },
+                Ok(OpenAiFrame::Pending) => Some(ProviderEvent::Pending),
+                Ok(OpenAiFrame::Data(frame)) => Some(parse_owned_frame(&frame, &mut terminated)),
                 Err(error) => {
                     terminated = true;
                     Some(ProviderEvent::Error { code: error.code })
@@ -232,6 +251,17 @@ where
     }
 }
 
+fn parse_owned_frame(frame: &str, terminated: &mut bool) -> ProviderEvent {
+    match parse_frame(frame) {
+        Ok(Some(event)) => event,
+        Ok(None) => ProviderEvent::Pending,
+        Err(error) => {
+            *terminated = true;
+            ProviderEvent::Error { code: error.code }
+        }
+    }
+}
+
 fn parse_frame(frame: &str) -> Result<Option<ProviderEvent>, ProviderError> {
     let data = frame
         .strip_prefix("data: ")
@@ -239,17 +269,29 @@ fn parse_frame(frame: &str) -> Result<Option<ProviderEvent>, ProviderError> {
     if data == "[DONE]" {
         return Ok(Some(ProviderEvent::Completed));
     }
-    if data.contains("\"error\"") {
-        return extract_string(data, "code")
-            .map(|code| Some(ProviderEvent::Error { code }))
-            .ok_or_else(|| protocol_error("INVALID_ERROR_FRAME"));
+    let document: Value =
+        serde_json::from_str(data).map_err(|_| protocol_error("INVALID_FRAME"))?;
+    if let Some(error) = document.get("error").filter(|error| !error.is_null()) {
+        let code = error
+            .get("code")
+            .and_then(Value::as_str)
+            .ok_or_else(|| protocol_error("INVALID_ERROR_FRAME"))?;
+        return Ok(Some(ProviderEvent::Error {
+            code: code.to_owned(),
+        }));
     }
-    if data.contains("\"usage\"") {
-        let input_tokens = extract_u64(data, "prompt_tokens")
+    if let Some(usage_value) = document.get("usage").filter(|usage| !usage.is_null()) {
+        let input_tokens = usage_value
+            .get("prompt_tokens")
+            .and_then(Value::as_u64)
             .ok_or_else(|| protocol_error("INVALID_USAGE_FRAME"))?;
-        let output_tokens = extract_u64(data, "completion_tokens")
+        let output_tokens = usage_value
+            .get("completion_tokens")
+            .and_then(Value::as_u64)
             .ok_or_else(|| protocol_error("INVALID_USAGE_FRAME"))?;
-        let total_tokens = extract_u64(data, "total_tokens")
+        let total_tokens = usage_value
+            .get("total_tokens")
+            .and_then(Value::as_u64)
             .ok_or_else(|| protocol_error("INVALID_USAGE_FRAME"))?;
         let usage = Usage::new(input_tokens, output_tokens)
             .map_err(|_| protocol_error("INVALID_USAGE_FRAME"))?;
@@ -258,55 +300,17 @@ fn parse_frame(frame: &str) -> Result<Option<ProviderEvent>, ProviderError> {
         }
         return Ok(Some(ProviderEvent::Usage(usage)));
     }
-    extract_string(data, "content")
-        .filter(|content| !content.is_empty())
-        .map(|content| Some(ProviderEvent::Delta(content)))
-        .ok_or_else(|| protocol_error("INVALID_DELTA_FRAME"))
+    match document.pointer("/choices/0/delta/content") {
+        Some(Value::String(content)) if !content.is_empty() => {
+            Ok(Some(ProviderEvent::Delta(content.clone())))
+        }
+        None | Some(Value::Null | Value::String(_)) => Ok(None),
+        Some(_) => Err(protocol_error("INVALID_DELTA_FRAME")),
+    }
 }
 
 fn protocol_error(code: &str) -> ProviderError {
     ProviderError {
         code: code.to_owned(),
     }
-}
-
-fn extract_u64(document: &str, field: &str) -> Option<u64> {
-    let marker = format!("\"{field}\":");
-    let suffix = document.split_once(&marker)?.1;
-    let digits = suffix
-        .chars()
-        .take_while(char::is_ascii_digit)
-        .collect::<String>();
-    if digits.is_empty() {
-        None
-    } else {
-        digits.parse().ok()
-    }
-}
-
-fn extract_string(document: &str, field: &str) -> Option<String> {
-    let marker = format!("\"{field}\":\"");
-    let suffix = document.split_once(&marker)?.1;
-    let mut escaped = false;
-    let mut value = String::new();
-    for character in suffix.chars() {
-        if escaped {
-            value.push(match character {
-                'n' => '\n',
-                'r' => '\r',
-                't' => '\t',
-                '\\' => '\\',
-                '"' => '"',
-                _ => return None,
-            });
-            escaped = false;
-        } else if character == '\\' {
-            escaped = true;
-        } else if character == '"' {
-            return Some(value);
-        } else {
-            value.push(character);
-        }
-    }
-    None
 }

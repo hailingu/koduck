@@ -34,6 +34,19 @@ impl AppendPolicy {
         self.deadline
     }
 
+    /// Validates one unpublished item against the approved payload cap.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BufferLimitError::PayloadBytes`] when the item exceeds 1 MiB.
+    pub fn check_item(self, item: &NewItem) -> Result<(), BufferLimitError> {
+        if payload_bytes(item) > self.max_payload_bytes {
+            Err(BufferLimitError::PayloadBytes)
+        } else {
+            Ok(())
+        }
+    }
+
     /// Checks whether one append completed inside the exact deadline.
     ///
     /// # Errors

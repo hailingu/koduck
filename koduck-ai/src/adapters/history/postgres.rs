@@ -312,9 +312,15 @@ impl<E: PostgresExecutor + Send + 'static> TurnHistory for PostgresTurnHistory<E
                 if renewal_stop.load(Ordering::Acquire) {
                     break;
                 }
-                if let Err(error) = executor.renew_lease(&key, unix_time_ms()) {
-                    eprintln!("event=lease_renewal_stopped error={error}");
-                    break;
+                match executor.renew_lease(&key, unix_time_ms()) {
+                    Ok(()) => {}
+                    Err(HistoryError::Unavailable) => {
+                        eprintln!("event=lease_renewal_retry error=durability-unavailable");
+                    }
+                    Err(error) => {
+                        eprintln!("event=lease_renewal_stopped error={error}");
+                        break;
+                    }
                 }
             }
         });

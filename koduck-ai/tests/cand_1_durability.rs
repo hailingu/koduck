@@ -217,3 +217,48 @@ fn append_deadline_and_buffer_caps() {
     assert!(item_buffer.take_durable_prefix().is_empty());
     assert!(payload_buffer.take_durable_prefix().is_empty());
 }
+
+struct OversizedProvider {
+    consumed: Rc<Cell<usize>>,
+}
+
+impl ModelProvider for OversizedProvider {
+    fn stream(&mut self, _input: ModelInput) -> Result<ProviderStream<'_>, ProviderError> {
+        let consumed = Rc::clone(&self.consumed);
+        Ok(Box::new(
+            vec![
+                ProviderEvent::Delta("x".repeat(1_048_577)),
+                ProviderEvent::Completed,
+            ]
+            .into_iter()
+            .inspect(move |_| consumed.set(consumed.get() + 1)),
+        ))
+    }
+}
+
+#[test]
+fn execution_rejects_an_oversized_provider_delta_before_append() {
+    let items = Rc::new(RefCell::new(Vec::new()));
+    let consumed = Rc::new(Cell::new(0));
+    let result = TurnRunner::new(
+        OversizedProvider {
+            consumed: Rc::clone(&consumed),
+        },
+        FaultHistory {
+            fail_initial: false,
+            fail_append_at: None,
+            accepted: Rc::new(Cell::new(0)),
+            append_calls: 0,
+            items: Rc::clone(&items),
+        },
+    )
+    .execute(TurnCommand::new(trust(), None, "hello").expect("valid command"));
+
+    let Err(TurnRunError::Durability(failure)) = result else {
+        panic!("oversized delta must fail as a durability boundary violation");
+    };
+    assert!(failure.accepted);
+    assert!(failure.published.is_empty());
+    assert_eq!(consumed.get(), 1);
+    assert_eq!(items.borrow().len(), 1);
+}

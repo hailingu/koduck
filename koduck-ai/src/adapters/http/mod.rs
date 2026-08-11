@@ -16,7 +16,8 @@ use crate::application::{
 use crate::domain::{TrustContext, TurnId};
 
 use self::wire::{
-    interrupt_body, parse_turn_request, problem_body, sse_body, stream_event_body, sync_body,
+    interrupt_body, parse_turn_request, problem_body, sse_body, stream_error_body,
+    stream_event_body, sync_body,
 };
 
 /// Supported HTTP methods for the owned v1 routes.
@@ -203,11 +204,18 @@ impl<S: TurnService> HttpAdapter<S> {
         let Ok(command) = parse_turn_request(&request.body, trust) else {
             return problem(400, "invalid-request", false);
         };
-        match self
-            .service
-            .execute_stream(command, &mut |event| emit(stream_event_body(event)))
-        {
+        let mut started = false;
+        let result = self.service.execute_stream(command, &mut |event| {
+            started = true;
+            emit(stream_event_body(event));
+        });
+        match result {
             Ok(_) => response(200, "text/event-stream", String::new()),
+            Err(error) if started => {
+                let problem = map_service_error(&error);
+                emit(stream_error_body(&problem.body));
+                response(200, "text/event-stream", String::new())
+            }
             Err(error) => map_service_error(&error),
         }
     }
@@ -215,6 +223,9 @@ impl<S: TurnService> HttpAdapter<S> {
     fn execute(&mut self, command: TurnCommand, stream: bool) -> HttpResponse {
         match self.service.execute(command) {
             Ok(result) if stream => response(200, "text/event-stream", sse_body(&result)),
+            Ok(result) if result.status == crate::domain::TurnStatus::Failed => {
+                map_service_error(&ServiceError::ProviderUnavailable)
+            }
             Ok(result) => response(200, "application/json", sync_body(&result)),
             Err(error) => map_service_error(&error),
         }
@@ -234,6 +245,11 @@ impl<S: TurnService> HttpAdapter<S> {
             Err(error) => map_service_error(&error),
         }
     }
+}
+
+/// Returns the owned invalid-request problem response for transport validation.
+pub(crate) fn invalid_request_response() -> HttpResponse {
+    problem(400, "invalid-request", false)
 }
 
 fn interrupt_turn_id(path: &str) -> Option<TurnId> {

@@ -20,7 +20,9 @@ use tokio::sync::{mpsc, oneshot};
 use tokio_stream::wrappers::ReceiverStream;
 
 use crate::adapters::history::postgres::{PostgresTurnHistory, SqlxPostgresExecutor};
-use crate::adapters::http::{HttpAdapter, HttpMethod, HttpRequest, TurnService};
+use crate::adapters::http::{
+    HttpAdapter, HttpMethod, HttpRequest, TurnService, invalid_request_response,
+};
 use crate::adapters::provider::{OpenAiCompatibleProvider, ReqwestOpenAiTransport};
 use crate::application::TurnRunner;
 use crate::domain::{TenantId, TrustContext};
@@ -167,12 +169,18 @@ async fn handle_request<S>(
 where
     S: TurnService + Clone + Send + Sync + 'static,
 {
+    let trust = trust_context(&headers);
+    let body = match String::from_utf8(body.to_vec()) {
+        Ok(body) => body,
+        Err(_) if trust.is_none() => String::new(),
+        Err(_) => return into_axum_response(invalid_request_response()),
+    };
     let request = HttpRequest {
         method: HttpMethod::Post,
         path: uri.path().to_owned(),
         content_type: header(&headers, "content-type").map(str::to_owned),
-        body: String::from_utf8_lossy(&body).into_owned(),
-        trust: trust_context(&headers),
+        body,
+        trust,
     };
     if request.path == "/api/v1/ai/chat/stream" {
         return handle_stream_request((*service).clone(), request).await;

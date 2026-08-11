@@ -138,6 +138,32 @@ fn sync_chat_v1_contract() {
 }
 
 #[test]
+fn synchronous_failed_turn_returns_provider_unavailable() {
+    let terminal = Item::new(
+        2,
+        ItemPayload::Terminal(TerminalOutcome::Failed {
+            code: "UPSTREAM_RESET".to_owned(),
+        }),
+    );
+    let mut adapter = adapter(TurnResult {
+        thread_id: ThreadId::new(),
+        turn_id: TurnId::new(),
+        status: TurnStatus::Failed,
+        published: vec![terminal.clone()],
+        replay: vec![terminal],
+    });
+
+    let response = adapter.handle(post(
+        "/api/v1/ai/chat",
+        r#"{"input":"hello"}"#,
+        Some(trust()),
+    ));
+
+    assert_eq!(response.status, 503);
+    assert!(response.body.contains("\"code\":\"provider-unavailable\""));
+}
+
+#[test]
 fn sse_v1_contract_and_append_before_publish() {
     let result = completed_result(&["A", "B"]);
     let durable = result.replay.clone();

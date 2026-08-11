@@ -26,6 +26,8 @@ struct SimulatedState {
     last_renewal_ms: u64,
     fenced: bool,
     terminal: bool,
+    renewal_attempts: usize,
+    transient_renewal_failures: usize,
 }
 
 impl SimulatedPostgres {
@@ -68,6 +70,8 @@ impl SimulatedPostgres {
                     last_renewal_ms: 0,
                     fenced: false,
                     terminal: false,
+                    renewal_attempts: 0,
+                    transient_renewal_failures: 0,
                 })),
             },
             key,
@@ -77,6 +81,17 @@ impl SimulatedPostgres {
 
     fn set_available(&self, available: bool) {
         self.state.lock().expect("state lock").available = available;
+    }
+
+    fn fail_next_renewals(&self, attempts: usize) {
+        self.state
+            .lock()
+            .expect("state lock")
+            .transient_renewal_failures = attempts;
+    }
+
+    fn renewal_attempts(&self) -> usize {
+        self.state.lock().expect("state lock").renewal_attempts
     }
 }
 
@@ -139,6 +154,11 @@ impl PostgresExecutor for SimulatedPostgres {
 
     fn renew_lease(&self, key: &LeaseKey, now_ms: u64) -> Result<(), HistoryError> {
         let mut state = self.state.lock().expect("state lock");
+        state.renewal_attempts += 1;
+        if state.transient_renewal_failures > 0 {
+            state.transient_renewal_failures -= 1;
+            return Err(HistoryError::Unavailable);
+        }
         if !state.available {
             return Err(HistoryError::Unavailable);
         }
@@ -200,6 +220,24 @@ impl PostgresExecutor for SimulatedPostgres {
             state.accepted.generation,
         )])
     }
+}
+
+#[test]
+fn lease_renewal_retries_after_a_transient_store_failure() {
+    let (executor, _, accepted) = SimulatedPostgres::seeded();
+    executor.fail_next_renewals(1);
+    let history = PostgresTurnHistory::new(executor.clone());
+    let guard = history
+        .start_turn_liveness(&accepted)
+        .expect("renewal worker starts");
+
+    thread::sleep(Duration::from_millis(10_500));
+    drop(guard);
+
+    assert!(
+        executor.renewal_attempts() >= 2,
+        "one transient failure must not stop all later heartbeat attempts"
+    );
 }
 
 #[test]

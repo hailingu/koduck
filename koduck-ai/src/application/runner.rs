@@ -4,6 +4,7 @@
 
 use crate::domain::{Item, TenantId, TerminalOutcome, TrustContext, Turn, TurnId, Usage};
 
+use super::AppendPolicy;
 use super::ports::{
     AcceptedTurn, DurabilityFailure, HistoryError, ModelInput, ModelProvider, NewItem,
     ProviderEvent, TurnCommand, TurnHistory, TurnResult, TurnRunError, TurnStreamEvent,
@@ -218,34 +219,43 @@ fn handle_event<H: TurnHistory>(
 ) -> Result<bool, TurnRunError> {
     match event {
         ProviderEvent::Delta(content) => {
-            let durable = history.append(accepted, NewItem::AgentMessageDelta { content })?;
+            let item = NewItem::AgentMessageDelta { content };
+            validate_item(&item)?;
+            let durable = history.append(accepted, item)?;
             state.published.push(durable);
             Ok(false)
         }
         ProviderEvent::Usage(observed) => {
             state.usage = observed;
-            history.append(accepted, NewItem::Usage(observed))?;
+            let item = NewItem::Usage(observed);
+            validate_item(&item)?;
+            history.append(accepted, item)?;
             Ok(false)
         }
         ProviderEvent::Completed => {
             state.lifecycle = state.lifecycle.complete()?;
-            let terminal = history.append(
-                accepted,
-                NewItem::Terminal(TerminalOutcome::Completed { usage: state.usage }),
-            )?;
+            let item = NewItem::Terminal(TerminalOutcome::Completed { usage: state.usage });
+            validate_item(&item)?;
+            let terminal = history.append(accepted, item)?;
             state.published.push(terminal);
             Ok(true)
         }
         ProviderEvent::Error { code } => {
             state.lifecycle = state.lifecycle.fail()?;
-            let terminal = history.append(
-                accepted,
-                NewItem::Terminal(TerminalOutcome::Failed { code }),
-            )?;
+            let item = NewItem::Terminal(TerminalOutcome::Failed { code });
+            validate_item(&item)?;
+            let terminal = history.append(accepted, item)?;
             state.published.push(terminal);
             Ok(true)
         }
+        ProviderEvent::Pending => Ok(false),
     }
+}
+
+fn validate_item(item: &NewItem) -> Result<(), HistoryError> {
+    AppendPolicy::cand_1()
+        .check_item(item)
+        .map_err(|_| HistoryError::Unavailable)
 }
 
 fn history_failure(error: HistoryError, accepted: bool, published: &[Item]) -> TurnRunError {

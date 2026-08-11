@@ -113,6 +113,10 @@ pub(super) fn stream_event_body(event: TurnStreamEvent) -> String {
     }
 }
 
+pub(super) fn stream_error_body(problem: &str) -> String {
+    sse_event("error", problem)
+}
+
 pub(super) fn interrupt_body(turn_id: TurnId) -> String {
     format!(
         "{{\"turn_id\":\"{}\",\"status\":\"interrupt-requested\"}}",
