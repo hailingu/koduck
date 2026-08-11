@@ -125,7 +125,11 @@ async fn pump_response(
     let mut pending = Vec::new();
     let mut saw_frame = false;
     loop {
-        match response.chunk().await {
+        let chunk = tokio::select! {
+            () = sender.closed() => return,
+            chunk = response.chunk() => chunk,
+        };
+        match chunk {
             Ok(Some(chunk)) => {
                 pending.extend_from_slice(&chunk);
                 while let Some(newline) = pending.iter().position(|byte| *byte == b'\n') {

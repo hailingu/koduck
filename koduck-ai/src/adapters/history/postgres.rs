@@ -16,6 +16,8 @@ use crate::domain::{
 
 mod recovery;
 mod sqlx_executor;
+#[cfg(test)]
+mod tests;
 
 pub use sqlx_executor::SqlxPostgresExecutor;
 
@@ -233,7 +235,9 @@ impl Drop for LeaseRenewalGuard {
         self.stop.store(true, Ordering::Release);
         if let Some(thread) = self.thread.take() {
             thread.thread().unpark();
-            let _ = thread.join();
+            // A renewal may be blocked inside a degraded database call. Dropping
+            // the handle lets request shutdown return while the owned worker
+            // observes `stop` as soon as that call completes.
         }
     }
 }

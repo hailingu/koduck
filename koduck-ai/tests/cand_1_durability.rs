@@ -210,6 +210,13 @@ fn append_deadline_and_buffer_caps() {
         Err(BufferLimitError::PayloadBytes)
     );
     assert!(payload_buffer.is_stopped());
+    assert_eq!(
+        policy.check_item(&NewItem::AgentMessageDelta {
+            content: "\"".repeat(600_000),
+        }),
+        Err(BufferLimitError::PayloadBytes),
+        "JSON escaping and payload object overhead count toward the serialized cap"
+    );
     for error in [
         BufferLimitError::AppendDeadline,
         BufferLimitError::ItemCount,

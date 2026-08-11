@@ -170,10 +170,39 @@ impl UnpublishedBuffer {
 
 fn payload_bytes(item: &NewItem) -> usize {
     match item {
-        NewItem::AgentMessageDelta { content } => content.len(),
-        NewItem::Usage(_) => 24,
-        NewItem::Terminal(TerminalOutcome::Completed { .. }) => 32,
-        NewItem::Terminal(TerminalOutcome::Failed { code }) => code.len(),
-        NewItem::Terminal(TerminalOutcome::Interrupted | TerminalOutcome::Cancelled) => 0,
+        NewItem::AgentMessageDelta { content } => {
+            "{\"content\":".len() + json_string_bytes(content) + "}".len()
+        }
+        NewItem::Usage(usage) | NewItem::Terminal(TerminalOutcome::Completed { usage }) => {
+            usage_payload_bytes(*usage)
+        }
+        NewItem::Terminal(TerminalOutcome::Failed { code }) => {
+            "{\"code\":".len() + json_string_bytes(code) + "}".len()
+        }
+        NewItem::Terminal(TerminalOutcome::Interrupted | TerminalOutcome::Cancelled) => "{}".len(),
     }
+}
+
+fn json_string_bytes(value: &str) -> usize {
+    value.chars().fold(2_usize, |size, character| {
+        size.saturating_add(match character {
+            '"' | '\\' | '\u{0008}' | '\t' | '\n' | '\u{000c}' | '\r' => 2,
+            '\u{0000}'..='\u{001f}' => 6,
+            other => other.len_utf8(),
+        })
+    })
+}
+
+fn usage_payload_bytes(usage: crate::domain::Usage) -> usize {
+    "{\"input_tokens\":".len()
+        + decimal_bytes(usage.input_tokens)
+        + ",\"output_tokens\":".len()
+        + decimal_bytes(usage.output_tokens)
+        + ",\"total_tokens\":".len()
+        + decimal_bytes(usage.total_tokens)
+        + "}".len()
+}
+
+fn decimal_bytes(value: u64) -> usize {
+    value.to_string().len()
 }
