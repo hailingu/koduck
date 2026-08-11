@@ -14,7 +14,12 @@ use tokio::sync::mpsc::error::TryRecvError;
 use crate::application::{ModelInput, ModelProvider, ProviderError, ProviderEvent, ProviderStream};
 use crate::domain::{ItemPayload, Usage};
 
-const MAX_OPENAI_FRAME_BYTES: usize = 1_048_576;
+const MAX_SERIALIZED_ITEM_PAYLOAD_BYTES: usize = 1_048_576;
+// Keep transport buffering bounded without applying the Item payload contract
+// to the provider's `data:` prefix and JSON envelope.
+const MAX_OPENAI_FRAME_OVERHEAD_BYTES: usize = 65_536;
+const MAX_OPENAI_FRAME_BYTES: usize =
+    MAX_SERIALIZED_ITEM_PAYLOAD_BYTES + MAX_OPENAI_FRAME_OVERHEAD_BYTES;
 
 /// A transport-level failure before OpenAI-compatible frames are available.
 #[derive(Clone, Debug, Error, Eq, PartialEq)]

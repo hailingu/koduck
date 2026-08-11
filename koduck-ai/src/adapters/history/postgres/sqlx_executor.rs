@@ -462,7 +462,7 @@ impl SqlxPostgresExecutor {
     ) -> Result<ReconcileOutcome, HistoryError> {
         let mut transaction = self.pool.begin().await.map_err(unavailable)?;
         let ownership = sqlx::query(
-            "SELECT t.status, t.next_sequence, l.fenced, \
+            "SELECT t.status, t.next_sequence, t.interrupt_requested, l.fenced, \
              (EXTRACT(EPOCH FROM l.renewed_at) * 1000)::BIGINT AS renewed_ms \
              FROM turns t JOIN turn_leases l USING (tenant_id, thread_id, turn_id) \
              WHERE t.tenant_id = $1 AND t.thread_id = $2 AND t.turn_id = $3 \
@@ -489,10 +489,34 @@ impl SqlxPostgresExecutor {
         if now_ms < renewed_ms.saturating_add(timing.reconcile_after_ms()) {
             return Ok(ReconcileOutcome::TooEarly);
         }
+        let interrupt_requested: bool = ownership
+            .try_get("interrupt_requested")
+            .map_err(unavailable)?;
         let sequence: i64 = ownership.try_get("next_sequence").map_err(unavailable)?;
+        let (terminal, terminal_status, outcome) = if interrupt_requested {
+            (
+                TerminalOutcome::Interrupted,
+                "interrupted",
+                ReconcileOutcome::Interrupted,
+            )
+        } else if status == "recovery-pending" {
+            (
+                TerminalOutcome::Failed {
+                    code: "DURABILITY_UNAVAILABLE".to_owned(),
+                },
+                "failed",
+                ReconcileOutcome::Failed,
+            )
+        } else {
+            (
+                TerminalOutcome::Cancelled,
+                "cancelled",
+                ReconcileOutcome::Cancelled,
+            )
+        };
         let item = Item::new(
             u64::try_from(sequence).map_err(|_| HistoryError::Unavailable)?,
-            ItemPayload::Terminal(TerminalOutcome::Cancelled),
+            ItemPayload::Terminal(terminal),
         );
         insert_item(
             &mut transaction,
@@ -503,14 +527,16 @@ impl SqlxPostgresExecutor {
         )
         .await?;
         sqlx::query(
-            "UPDATE turns SET status = 'cancelled', next_sequence = next_sequence + 1 \
+            "UPDATE turns SET status = $5, next_sequence = next_sequence + 1 \
              WHERE tenant_id = $1 AND thread_id = $2 AND turn_id = $3 \
-             AND next_sequence = $4",
+             AND next_sequence = $4 AND status = $6",
         )
         .bind(key.tenant_id.as_str())
         .bind(key.thread_id.as_uuid())
         .bind(key.turn_id.as_uuid())
         .bind(sequence_i64(item.sequence)?)
+        .bind(terminal_status)
+        .bind(status)
         .execute(&mut *transaction)
         .await
         .map_err(unavailable)?;
@@ -527,7 +553,7 @@ impl SqlxPostgresExecutor {
         .await
         .map_err(unavailable)?;
         transaction.commit().await.map_err(unavailable)?;
-        Ok(ReconcileOutcome::Cancelled)
+        Ok(outcome)
     }
 
     async fn expired_lease_keys_async(

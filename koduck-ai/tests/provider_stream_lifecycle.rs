@@ -6,8 +6,10 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::Duration;
 
-use koduck_ai::adapters::provider::{OpenAiProtocolTransport, ReqwestOpenAiTransport};
-use koduck_ai::application::ModelInput;
+use koduck_ai::adapters::provider::{
+    OpenAiCompatibleProvider, OpenAiProtocolTransport, ReqwestOpenAiTransport,
+};
+use koduck_ai::application::{AppendPolicy, ModelInput, ModelProvider, NewItem, ProviderEvent};
 use koduck_ai::domain::{TenantId, ThreadId, TurnId};
 
 struct DisconnectAwareUpstream {
@@ -63,13 +65,13 @@ impl Drop for HeaderStallingUpstream {
     }
 }
 
-struct OversizedFrameUpstream {
+struct FrameUpstream {
     base_url: String,
     thread: Option<thread::JoinHandle<()>>,
 }
 
-impl OversizedFrameUpstream {
-    fn start() -> Self {
+impl FrameUpstream {
+    fn start(frame: Vec<u8>) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind test upstream");
         let base_url = format!(
             "http://{}",
@@ -84,10 +86,8 @@ impl OversizedFrameUpstream {
                     b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n",
                 )
                 .expect("write provider headers");
-            let mut frame = b"data: ".to_vec();
-            frame.resize(1_048_577, b'x');
             write!(stream, "{:X}\r\n", frame.len()).expect("write provider chunk size");
-            stream.write_all(&frame).expect("write oversized frame");
+            stream.write_all(&frame).expect("write provider frame");
             stream
                 .write_all(b"\r\n0\r\n\r\n")
                 .expect("finish provider body");
@@ -99,7 +99,7 @@ impl OversizedFrameUpstream {
     }
 }
 
-impl Drop for OversizedFrameUpstream {
+impl Drop for FrameUpstream {
     fn drop(&mut self) {
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
@@ -251,7 +251,9 @@ async fn provider_stream_is_pollable_before_response_headers_arrive() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn oversized_unterminated_provider_frame_is_rejected() {
-    let upstream = OversizedFrameUpstream::start();
+    let mut frame = b"data: ".to_vec();
+    frame.resize(1_114_113, b'x');
+    let upstream = FrameUpstream::start(frame);
     let runtime = tokio::runtime::Handle::current();
     let base_url = upstream.base_url.clone();
     let mut frames = tokio::task::spawn_blocking(move || {
@@ -282,4 +284,45 @@ async fn oversized_unterminated_provider_frame_is_rejected() {
     .expect("provider frame consumer joins");
 
     assert_eq!(error.code, "OPENAI_FRAME_TOO_LARGE");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn exact_limit_item_payload_allows_the_provider_envelope() {
+    const ITEM_PAYLOAD_LIMIT: usize = 1_048_576;
+    const DELTA_PAYLOAD_OVERHEAD: usize = r#"{"content":""}"#.len();
+
+    let content = "x".repeat(ITEM_PAYLOAD_LIMIT - DELTA_PAYLOAD_OVERHEAD);
+    let frame = format!(
+        "data: {}\n",
+        serde_json::json!({"choices": [{"delta": {"content": content}}]})
+    )
+    .into_bytes();
+    assert!(frame.len() > ITEM_PAYLOAD_LIMIT);
+    let upstream = FrameUpstream::start(frame);
+    let runtime = tokio::runtime::Handle::current();
+    let base_url = upstream.base_url.clone();
+    let event = tokio::task::spawn_blocking(move || {
+        let transport = ReqwestOpenAiTransport::new(
+            reqwest::Client::new(),
+            runtime,
+            &base_url,
+            "test-model",
+            "test-key",
+        );
+        let mut provider = OpenAiCompatibleProvider::new(transport);
+        provider
+            .stream(model_input())
+            .expect("provider stream setup succeeds")
+            .find(|event| !matches!(event, ProviderEvent::Pending))
+            .expect("provider returns one owned event")
+    })
+    .await
+    .expect("provider consumer joins");
+
+    let ProviderEvent::Delta(content) = event else {
+        panic!("exact-limit payload must remain a provider delta: {event:?}");
+    };
+    AppendPolicy::cand_1()
+        .check_item(&NewItem::AgentMessageDelta { content })
+        .expect("the decoded serialized Item payload is exactly within the contract limit");
 }

@@ -45,3 +45,27 @@ fn durability_recovery_arbitrates_an_accepted_interrupt() {
         "recovery must commit interrupted instead of failed when the request was accepted"
     );
 }
+
+#[test]
+fn lease_reconciliation_preserves_the_persisted_terminal_priority() {
+    let executor = include_str!("../src/adapters/history/postgres/sqlx_executor.rs");
+    let reconciliation = executor
+        .split("async fn reconcile_expired_async")
+        .nth(1)
+        .and_then(|tail| tail.split("async fn expired_lease_keys_async").next())
+        .expect("reconciliation implementation remains inspectable");
+
+    assert!(
+        reconciliation.contains("t.interrupt_requested"),
+        "reconciliation must read the accepted interrupt under its turn-row lock"
+    );
+    assert!(
+        reconciliation.contains("status == \"recovery-pending\"")
+            && reconciliation.contains("ReconcileOutcome::Failed"),
+        "recovery-pending turns must retain the failed recovery terminal"
+    );
+    assert!(
+        reconciliation.contains("ReconcileOutcome::Interrupted"),
+        "an accepted interrupt must outrank orphan cancellation"
+    );
+}

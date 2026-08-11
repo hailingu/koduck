@@ -98,8 +98,12 @@ impl LeaseTiming {
 pub enum ReconcileOutcome {
     /// Lease has not passed its 20-second expiry plus 2-second skew margin.
     TooEarly,
-    /// This reconciler fenced the generation and appended `cancelled`.
+    /// This reconciler fenced an active orphan and appended `cancelled`.
     Cancelled,
+    /// This reconciler finished a durability recovery with `failed`.
+    Failed,
+    /// This reconciler preserved an accepted interrupt as `interrupted`.
+    Interrupted,
 }
 
 /// Progress made by one conditional durability-recovery attempt.
@@ -169,7 +173,7 @@ pub trait PostgresExecutor: Clone {
     /// Returns [`HistoryError`] when ownership is stale, terminal, or storage fails.
     fn renew_lease(&self, key: &LeaseKey, now_ms: u64) -> Result<(), HistoryError>;
 
-    /// Atomically fences an eligible expired generation and appends one cancellation.
+    /// Atomically fences an eligible expired generation and appends its persisted-state terminal.
     ///
     /// # Errors
     ///
@@ -268,7 +272,7 @@ impl<E: PostgresExecutor> PostgresTurnHistory<E> {
         self.executor.renew_lease(key, now_ms)
     }
 
-    /// Conditionally fences an expired generation and appends one cancellation.
+    /// Conditionally fences an expired generation and appends its persisted-state terminal.
     ///
     /// # Errors
     ///
