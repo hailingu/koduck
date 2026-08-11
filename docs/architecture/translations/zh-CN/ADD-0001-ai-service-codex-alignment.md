@@ -14,9 +14,8 @@
 - **架构负责人**：@linhai
 - **所需审批人**：@linhai
 - **审批人 [Conditionally Required — 设计状态为或曾为 `Current`]**：@linhai
-- **审批时间 [Conditionally Required — 设计状态为或曾为 `Current`]**：2026-08-10T17:24:17Z
+- **审批时间 [Conditionally Required — 设计状态为或曾为 `Current`]**：2026-08-11T10:37:34+08:00
 - **审批证据 [Conditionally Required — 设计状态为或曾为 `Current`]**：Approve
-- **审批上下文修订 [Optional — 信息性且非约束]**：`541598139e4903942b309ccb075b46473b117f7f` — 与提交审批的文档内容完全一致的已提交修订
 - **退役执行人 [Conditionally Required — 设计状态为 `Deprecated` 或 `Superseded`]**：N/A — 当前设计状态为 `Current`，文档未退役
 - **退役时间 [Conditionally Required — 设计状态为 `Deprecated` 或 `Superseded`]**：N/A — 当前设计状态为 `Current`，文档未退役
 - **退役证据 [Conditionally Required — 设计状态为 `Deprecated` 或 `Superseded`]**：N/A — 当前设计状态为 `Current`，文档未退役
@@ -39,15 +38,14 @@
 
 ## 背景与方案摘要 [Required]
 
-Koduck 是 `koduck-quant` 的全新重建版本。新仓库目前只有治理脚手架，尚未加入任何服务，因此以前身仓库 `koduck-ai` 在提交
-`c414ddccdbc45a99fcd3d606ca0fe1f75730b7fe` 的代码作为现状证据基线。该 Rust crate 同时承载 REST/SSE API、模型适配、原生工具循环、MCP 客户端、Agent Profile、Skill、Memory/Multitask 客户端、后台 Worker、认证和可靠性策略。基线共有 161 个受 Git 跟踪的 Rust 源文件，多处编排、模型适配、配置和 Worker 文件超过 800 物理行，其中原生工具循环为 2,073 行。这些数字只是需要架构审查的信号，不意味着目标是机械拆文件。
+Koduck 是 `koduck-quant` 的全新重建版本。新仓库目前只有治理脚手架，尚未加入任何服务。前身仓库 `koduck-ai` 在提交 `c414ddccdbc45a99fcd3d606ca0fe1f75730b7fe` 的代码只作为功能调研证据：对应基础设施已经移除，它不是实际运行基线，其契约也不是兼容或回滚要求。该 Rust crate 同时承载 REST/SSE API、模型适配、原生工具循环、MCP 客户端、Agent Profile、Skill、Memory/Multitask 客户端、后台 Worker、认证和可靠性策略。基线共有 161 个受 Git 跟踪的 Rust 源文件，多处编排、模型适配、配置和 Worker 文件超过 800 物理行，其中原生工具循环为 2,073 行。这些数字只是需要架构审查的信号，不意味着目标是机械拆文件。
 
 公开参考固定为 OpenAI Codex 提交
 `3c60d4da648bfa98e3c51c5161ac2720519c733e`。与本任务相关的设计信号包括：与模型提供商解耦的核心、明确的 thread/turn/item 生命周期、类型化应用协议、可替换 Thread Store、分离的执行与沙箱职责、显式审批请求，以及独立加载的 MCP、Skill、Plugin 和仓库指令能力。Codex 不是 Koduck 的产品规格，它的目录结构也不是迁移实施计划。
 
-**方案摘要**：未来 Koduck AI 围绕自有的、与模型提供商无关的 Agent Core 和版本化 thread/turn/item 领域模型建设。迁移期通过 Adapter 保留现有北向 REST/SSE 与南向 Memory/Tool/Multitask 契约。能力发现、策略评估、审批和执行放到显式端口之后；任何高权限执行都必须经过最小权限执行边界。模型提供商、存储、MCP、Skill、仓库指令和展示协议均作为可独立替换的 Adapter。保留 Koduck 的多模型、租户隔离、分布式记忆和后台任务语义，不采用 Codex 产品特有的本地持久化和认证模型。
+**方案摘要**：未来 Koduck AI 围绕自有的、与模型提供商无关的 Agent Core 和版本化 thread/turn/item 领域模型建设。由目标模型定义新的北向 REST/SSE 与自有持久化契约；前身行为只用于识别功能场景。能力发现、策略评估、审批和执行放到显式端口之后；任何高权限执行都必须经过最小权限执行边界。模型提供商、存储、MCP、Skill、仓库指令和展示协议均作为可独立替换的 Adapter。保留预期的多模型、租户隔离、语义记忆和后台任务能力，不采用 Codex 产品特有的本地持久化/认证模型，也不继承已移除的前身基础设施。
 
-**迁移运行模型**：引入替代 Koduck 服务期间，前身 `koduck-ai` 部署继续作为回滚目标；新旧部署在 APISIX 后并行存在，并按明确限定的用户群或能力切片切流。每个切片的新旧路径只使用该切片已声明兼容的权威历史表示。CAND-1 的 ADR 被接受前，必须确认不可变旧制品、可路由旧路径、共享历史兼容边界和已验证的回切条件。如果这些前提不存在，本 ADD 的并行迁移切片就不可执行，必须重新设计，不能把仓库 Checkout 当作回滚。
+**Greenfield 运行模型**：不存在前身部署、APISIX 旧 Route、共享 History 或 Fallback Path。每个候选项在首次晋级前定义并验证自己拥有的新契约。失败候选项不晋级；只回退 Source 或隔离 Artifact，不尝试回切到已移除基础设施。首个已验证 Koduck AI Release 存在后，任何部署回滚只能在独立 Accepted OCR 下选择已验证的新 Artifact。
 
 **设计边界**：本 ADD 只定义方案能力、逻辑数据、组件职责、流程、约束和按顺序排列的 ADR 候选项。它不授权实现，不指定源文件或 crate，不定义物理 Schema，不冻结线协议字段，不增加依赖，也不规定可执行的构建、测试、部署或回滚命令。
 
@@ -62,10 +60,10 @@ Koduck 是 `koduck-quant` 的全新重建版本。新仓库目前只有治理脚
 
 目标：
 
-- 固定一个可审计的现状版本和一个不可变的 Codex 参考版本。
+- 固定一个可审计的前身功能调研版本和一个不可变的 Codex 参考版本。
 - 明确哪些 Codex 概念直接采用、调整后采用或不采用。
 - 将编排策略与传输、模型提供商、存储、扩展和高权限执行解耦。
-- 通过兼容边界保留现有外部行为，同时允许渐进替换。
+- 把前身功能意图保留为调研场景，同时定义新的自有 Koduck 契约，不承担 Wire Parity 或运行时 Fallback 义务。
 - 在扩展工具执行前先确定最小权限、审批、隔离、审计、取消和恢复边界。
 - 提供按依赖排序、可独立评审且具备二元验收上下文的 ADR 候选项。
 - 为中文评审者提供同步翻译。
@@ -83,11 +81,11 @@ Koduck 是 `koduck-quant` 的全新重建版本。新仓库目前只有治理脚
 
 | ID | 参与者 | 触发条件 | 能力与结果 | 业务规则和边界情况 | 需求 |
 | --- | --- | --- | --- | --- | --- |
-| F-1 | API 客户端或兼容 Facade | 用户开始、恢复、Fork、Steer、中断或读取工作 | 将工作表达为包含有序 Turn 和类型化 Item 的稳定 Thread，并明确活动与终态。 | Resume 始终依据权威历史在同一 Thread 新建 Turn，绝不重新激活终态 Turn。已认证客户端主动停止产生 `interrupted`；平台、策略或依赖停止产生 `cancelled`，两者都是终态。迁移期映射旧 REST/SSE。 | R-1 |
+| F-1 | API 客户端或展示 Adapter | 用户开始、恢复、Fork、Steer、中断或读取工作 | 将工作表达为包含有序 Turn 和类型化 Item 的稳定 Thread，并明确活动与终态。 | Resume 始终依据权威历史在同一 Thread 新建 Turn，绝不重新激活终态 Turn。已认证客户端主动停止产生 `interrupted`；平台、策略或依赖停止产生 `cancelled`，两者都是终态。行为由新版本化 REST/SSE 自有契约定义。 | R-1 |
 | F-2 | Agent Core | Turn 被接受 | 将指令、上下文、能力、模型输入和策略组织为一个可观测编排生命周期。 | Provider 类型不进入领域模型；状态迁移只有一个 Owner；部分结果和终态错误可区分。 | R-1 |
-| F-3 | 模型 Adapter | Core 请求推理 | 在不向 Core 泄漏模型线协议类型的前提下转换输入与流式输出。 | Fallback 必须显式；时间、Token、重试和输出有界；Usage 与终态被保留。 | R-1 |
+| F-3 | 模型 Adapter | Core 请求推理 | 在不向 Core 泄漏模型线协议类型的前提下转换输入与流式输出。 | CAND-1 无 Provider Fallback；时间、Token、重试和输出有界；Usage 与终态被保留。任何后续自动 Fallback 需要独立 Accepted ADR。 | R-1 |
 | F-4 | Tool 或 MCP Provider | Core 需要发现或调用能力 | 发现类型化工具、校验请求、评估策略、必要时请求审批，并经执行边界分发。 | 不可信描述/结果不能授予权限；未知高权限效果默认拒绝；审批绑定精确动作和范围。 | R-1 |
-| F-5 | Thread Store Adapter | Thread 状态变化 | 通过自有 Store Port 持久化权威 Thread/Turn/Item 历史与元数据，并由 Koduck 服务承载。 | 每项数据只有一个权威 Owner；Append 有序且幂等；本地 Cache 可重建且不能静默成为真值。 | R-1 |
+| F-5 | Thread Store Adapter | Thread 状态变化 | 通过自有 Store Port 和 AI 自有 Durable Store 持久化权威 Thread/Turn/Item 历史与元数据。 | 每项数据只有一个权威 Owner；Append 有序且幂等；本地 Cache 可重建且不能静默成为真值。Semantic Memory 与后台 Multitask 不拥有权威 Turn History。 | R-1 |
 | F-6 | 扩展所有者 | 指令、Skill、Plugin 或 MCP 能力变化 | 加载经过校验且带来源的扩展元数据，不修改 Core 编排代码。 | 优先级确定；无效扩展显式失败；保留租户/Thread 隔离；扩展声明不能扩大权限。 | R-1 |
 | F-7 | 运维或评审者 | 高权限动作、失败或恢复发生 | 在不泄漏密钥或敏感 Prompt 的前提下观察生命周期、策略、审批、执行和恢复证据。 | 默认最小化并脱敏内容；相关 ID 串联事件；审计区分请求、决策、尝试和结果。 | R-1 |
 | F-8 | 中文评审者 | 评审 ADD | 阅读同步中文翻译，同时保持唯一英文权威身份。 | 状态、ID、证据、候选项和规范含义与英文一致；冲突以英文为准。 | R-2 |
@@ -98,7 +96,7 @@ Koduck 是 `koduck-quant` 的全新重建版本。新仓库目前只有治理脚
 
 | ID | 实体 | 用途 | 所有权 | 分类 | 生命周期 |
 | --- | --- | --- | --- | --- | --- |
-| D-1 | Thread | 一组用户可见工作的稳定容器及其血缘。 | Koduck Thread Store 领域；持久化由获批的 Memory/Multitask Adapter 提供。 | 可能敏感的租户/用户内容与元数据。 | 创建、可选 Fork、活动、归档或按 Owner 策略删除。删除 Thread 不会静默级联删除按独立策略保留的 D-6/D-7 安全证据。 |
+| D-1 | Thread | 一组用户可见工作的稳定容器及其血缘。 | Koduck AI Thread Store 领域；持久化由获批的 AI 自有 Store Adapter 提供。 | 可能敏感的租户/用户内容与元数据。 | 创建、可选 Fork、活动、归档或按 Owner 策略删除。删除 Thread 不会静默级联删除按独立策略保留的 D-6/D-7 安全证据。 |
 | D-2 | Turn | Thread 内一次从输入到终态的执行尝试。 | 活状态与前台活性对账归 Agent Core；持久历史和带 fencing 的活性租约归 Thread Store。 | 可能敏感的 Prompt、上下文引用和策略元数据。 | 排队或开始；持久化不可用时 `recovery-pending` 是 started 的非终态子状态；随后进入完成、中断、失败或取消。每个前台 started Turn 都有 C-2 Owner 心跳，并对应一个 C-6 持久化的租约 Generation。超过确定性活性窗口后，健康的 C-2 对账器隔离失联 Owner 并追加 `cancelled`；若 C-6 当时不可用，则在恢复后对账。终态不可重新活动。`interrupted` 表示已认证客户端主动停止；`cancelled` 表示平台、策略或依赖停止。Resume 新建 Turn。 |
 | D-3 | Item | Turn 内有序类型单元，例如输入、推理摘要、Tool Call、审批状态投影、Tool Result、文件变更或 Agent Message。 | Core 创建领域 Item，Store 持久化，展示 Adapter 投影；审批权威属于 D-6 而不是 D-3。 | 随 Payload 分类；模型与工具输出均不可信。审批投影只携带 D-6 身份和状态，不拥有独立授权能力。 | 以稳定身份和顺序追加。更正是引用原 Item 的新版本化 Item；原 Item 永不修改或删除。 |
 | D-4 | Capability Descriptor | 经过校验的 Tool、MCP、Skill 或 Plugin 描述和 Schema，并包含效果分类、幂等性、重试安全性以及适用的 Deadline/输出约束。 | 扩展/工具 Registry。 | 公开或内部元数据；描述和自声明执行属性在策略校验前均不可信。 | 发现、校验、启用、刷新、禁用或撤回，带来源和稳定版本。 |
@@ -125,12 +123,12 @@ Koduck 是 `koduck-quant` 的全新重建版本。新仓库目前只有治理脚
 
 | ID | 组件或依赖 | 职责 | 概念输入与输出 | 依赖 | 已接受约束 |
 | --- | --- | --- | --- | --- | --- |
-| C-1 | 展示与兼容边界 | 暴露现有 REST/SSE、已认证审批协议和未来类型化协议，并转换为自有领域请求、审批决策与事件。 | 客户端/审批者请求、网关上下文、Thread/Turn 操作、审批决策；生命周期事件和兼容响应。 | C-2、C-5、C-7。 | C-1 把 Signed Claim 校验和信任上下文构造委托给 C-7，自身不校验身份。独立 Accepted ADR 授权前保持现有公开行为；UI 不在范围。 |
+| C-1 | 展示边界 | 暴露新的版本化 REST/SSE、已认证审批协议和未来类型化协议，并转换为自有领域请求、审批决策与事件。 | 客户端/审批者请求、网关上下文、Thread/Turn 操作、审批决策；生命周期事件和自有 REST/SSE 响应。 | C-2、C-5、C-7。 | C-1 把 Signed Claim 校验和信任上下文构造委托给 C-7，自身不校验身份。新契约权威，不要求前身 Wire Parity；UI 不在范围。 |
 | C-2 | Agent Core | 管理 Thread/Turn 编排、状态迁移、上下文、预算、取消、前台租约心跳、孤儿 Turn 对账和 Provider 无关策略。 | 自有 Turn 输入、指令、上下文引用、能力、租约过期信号；类型化 Item 和终态。 | C-3、C-4、C-5、C-6、C-7。 | 任一健康 C-2 实例都可对账过期前台租约，但只能通过 C-6 Generation Fencing。Core 不包含 Provider 线类型、Web Handler、数据库类型或高权限宿主机执行。 |
-| C-3 | Provider Adapter | 将自有推理请求/Stream 转换到 OpenAI-compatible 和其他配置 Provider。 | 模型中立消息、工具 Schema、预算；模型事件、Usage、归一化错误。 | 外部模型 API。 | Provider 与 Fallback 显式；密钥只存在于 Adapter 配置边界。 |
+| C-3 | Provider Adapter | 将自有推理请求/Stream 转换到 OpenAI-compatible 和其他配置 Provider。 | 模型中立消息、工具 Schema、预算；模型事件、Usage、归一化错误。 | 外部模型 API。 | Provider 选择显式；初始基线无自动 Fallback。密钥只存在于 Adapter 配置边界。 |
 | C-4 | Capability 与 Extension Registry | 按优先级和来源加载仓库指令、Agent Profile、Skill、Plugin、MCP/Tool Descriptor。 | 配置 Root 和远程 Catalog；已校验 Descriptor 和诊断。 | MCP/Tool Provider、配置。 | 元数据不可信；扩展声明不能授予执行权限。 |
 | C-5 | 策略、审批与执行边界 | 解析 Permission Profile、评估效果、持有权威 D-6、把接受绑定到一个 D-7、经 C-6 校验当前前台租约 Generation，并通过沙箱/隔离 Executor 执行。 | 动作、不可变信任上下文和适用的 Turn 租约 Generation；经 C-1 传入的已认证审批决策；经 C-2 返回的策略决策、D-6 状态、执行事件与结果。 | C-6、Tool Service、MCP Provider、平台沙箱或隔离 Worker。 | C-5 暴露自有 Port，不依赖 C-1；拒绝被隔离前台 Owner 的分发与结果提交。默认拒绝、取消、超时、输出上限和审计必需；C-2 不直接执行，本设计无可复用 Session/Turn 审批。 |
-| C-6 | Thread Store Port 与 Adapter | 使用 Koduck 服务持久化/读取权威历史、元数据、血缘、前台活性租约、Checkpoint 和幂等状态。 | Thread/Turn/Item Append/Query，租约 Acquire/Renew/Expire；有序历史、元数据和带 Fencing 的租约 Generation。 | Memory、Multitask。 | 租约过期和孤儿终态迁移按 Turn + Generation 条件执行且幂等；过期或被重分配 Generation 不得继续 Append。分布式 Store 保持权威；本地持久化只可作为可重建 Cache。 |
+| C-6 | Thread Store Port 与 AI 自有持久化 Adapter | 在 AI 服务边界拥有的共享持久 Store 中保存/读取权威历史、元数据、血缘、前台活性租约、Checkpoint 和幂等状态。 | Thread/Turn/Item Append/Query，租约 Acquire/Renew/Expire；有序历史、元数据和带 Fencing 的租约 Generation。 | AI 自有 PostgreSQL Datastore；后续 Semantic Memory/后台 Multitask Adapter 消费自有 Projection 或 Command。 | 租约过期和孤儿终态迁移按 Turn + Generation 条件执行且幂等；旧 Generation 被 Fence 后不得 Append。Thread/Turn/Item 以 AI 自有 Store 为权威；进程本地状态只能重建。 |
 | C-7 | 身份与信任上下文 Adapter | 校验 Gateway/JWT 身份，构造不可变租户/用户/Thread 信任上下文。 | Credential 和 Gateway 上下文；已验证 Principal 与 Scope。 | APISIX、Auth/JWKS。 | Header 不能补造缺失签名 Claim；密钥和原始 Credential 不进入历史或日志。 |
 | C-8 | 可观测与审计边界 | 输出生命周期、Provider、策略、审批、执行、重试和恢复信号。 | C-1 至 C-7 的关联事件；脱敏日志、指标、Trace 和证据引用。 | 日志、指标、Trace 后端。 | 默认最小化内容；敏感诊断需安全环境显式开启并脱敏。 |
 
@@ -146,20 +144,21 @@ flowchart LR
     Gateway["APISIX / Auth / JWKS"]
   end
   subgraph Runtime ["Koduck AI 运行时边界"]
-    C1["C-1 展示与兼容边界"]
+    C1["C-1 展示边界"]
     C7["C-7 身份与信任上下文 Adapter"]
     C2["C-2 Agent Core"]
     C4["C-4 Capability 与 Extension Registry"]
     C5["C-5 策略、审批与执行边界"]
     C3["C-3 Provider Adapter"]
-    C6["C-6 Thread Store Port 与 Adapter"]
+    C6["C-6 Thread Store Port 与 AI 自有持久化 Adapter"]
     C8["C-8 可观测与审计边界"]
   end
   subgraph External ["外部系统与隔离执行"]
     Providers["模型 Provider"]
     Extensions["指令 / Profile / Skill / Plugin / MCP 与 Tool Catalog"]
     Executor["沙箱或隔离 Executor / Tool Service"]
-    Stores["Memory / Multitask"]
+    Stores["AI 自有 PostgreSQL Datastore"]
+    MemoryJobs["Semantic Memory / 后台 Multitask"]
     Telemetry["日志 / 指标 / Trace / 审计证据"]
   end
 
@@ -184,9 +183,10 @@ flowchart LR
   C2 -->|"有序历史、血缘、带 Fencing 的活性租约与 Checkpoint"| C6
   C6 -->|"权威存储操作"| Stores
   Stores -->|"持久状态、租约过期与恢复输入"| C6
+  C6 -->|"版本化 Semantic Memory Projection 与后台状态契约"| MemoryJobs
   C6 -->|"持久状态与重放"| C2
   C2 -->|"类型化 Item 与终态"| C1
-  C1 -->|"兼容响应与生命周期事件"| Client
+  C1 -->|"自有 REST / SSE 响应与生命周期事件"| Client
   C1 -.->|"入口与投影事件"| C8
   C2 -.->|"生命周期与预算事件"| C8
   C3 -.->|"Provider 事件"| C8
@@ -201,7 +201,7 @@ flowchart LR
 
 | ID | 触发与前置条件 | 正常路径 | 分支与重试 | 失败处理 | 可观测结果 |
 | --- | --- | --- | --- | --- | --- |
-| CF-1 | 客户端开始/继续 Turn；身份与 Thread 访问有效 | C-1 标准化输入；C-2 持久创建 started Turn 与输入，经 C-6 获取并续租带 Fencing 的前台租约，解析上下文/能力/策略、调用 C-3，并在 C-1 发布前经 C-6 持久化每个外部可见 Item 和终态。 | Provider 重试受预算限制，只允许显式 Fallback。已认证客户端中断产生 `interrupted`；平台、策略、依赖或对账确认的 Owner 失联产生 `cancelled`。 | 身份无效在模型/工具前失败。初始 started Turn/输入/租约写入失败时不接受 Turn。后续 Append 失败进入 `recovery-pending`，C-6 恢复后以 `failed` 关闭。心跳超过确定性窗口后旧 Generation 被隔离；健康 C-2 对账器通过同一条件式幂等 Key 竞争，因此恰好一个追加 `cancelled`，包括 C-6 恢复后的延迟判断。 | 客户端看到无 Turn 的拒绝、持久前缀加 `durability-unavailable`，或孤儿 Turn 最终持久化的 `cancelled`；过期 Owner 不能继续 Append 或报告完成。 |
+| CF-1 | 客户端开始/继续 Turn；身份与 Thread 访问有效 | C-1 标准化输入；C-2 持久创建 started Turn 与输入，经 C-6 获取并续租带 Fencing 的前台租约，解析上下文/能力/策略、调用 C-3，并在 C-1 发布前经 C-6 持久化每个外部可见 Item 和终态。 | 已选 Provider 的重试受预算限制；不发生 Provider 或旧 Runtime Fallback。已认证客户端中断产生 `interrupted`；平台、策略、依赖或对账确认的 Owner 失联产生 `cancelled`。 | 身份无效在模型/工具前失败。初始 started Turn/输入/租约写入失败时不接受 Turn。后续 Append 失败进入 `recovery-pending`，C-6 恢复后以 `failed` 关闭。心跳超过确定性窗口后旧 Generation 被隔离；健康 C-2 对账器通过同一条件式幂等 Key 竞争，因此恰好一个追加 `cancelled`，包括 C-6 恢复后的延迟判断。 | 客户端看到无 Turn 的拒绝、持久前缀加 `durability-unavailable`，或孤儿 Turn 最终持久化的 `cancelled`；过期 Owner 不能继续 Append 或报告完成。 |
 | CF-2 | 模型请求能力；Descriptor 活动且兼容 | C-4 解析已校验的效果、幂等、重试和预算元数据；C-5 校验精确动作与当前前台租约 Generation，并在需要审批时创建权威 D-6、经 C-1/C-7 获取决策、把接受绑定到一个 D-7。允许的工作在隔离环境执行，并向 C-2 返回适用的 D-6 投影和不可信结果。 | 策略可拒绝、要求收窄输入、免审批允许或要求审批。效果发生前工作可按元数据/预算重试；高权限 D-7 开始后，任何重试都是新 Attempt，必须重新校验当前租约、评估策略并在需要时审批。 | 租约被隔离、拒绝、取消或过期变成类型化不执行结果；执行中被隔离时不提交结果，并按已观测效果状态记录 cancelled/failed Attempt。Descriptor 变化重新评估且不复用审批。 | 权威审计证据关联 Descriptor 版本、策略、租约 Generation、适用时的 D-6、D-7、结果和 D-3 投影，投影不拥有授权能力。 |
 | CF-3 | Resume 或 Fork Thread；调用者有权限 | C-6 加载权威有序历史与血缘；C-2 按当前预算重建上下文。Resume 在同一 Thread 新建 Turn；Fork 创建 Child Thread 后再新建 Turn。 | 可重建缺失 Cache；版本化 Adapter 转换兼容历史 Item。前台孤儿 Turn 关闭属于 CF-1；仍活动后台 Turn 的进程恢复属于 CF-5，两者都不是 Resume。 | 权威历史损坏/不完整时显式失败，不创建静默截断 Turn；终态 Turn 永不重新激活。 | 原终态 Turn 保持不变；新 Turn 或 Child Thread 保留稳定身份、血缘和确定可见历史。 |
 | CF-4 | 扩展清单变化或已配置来源不可达 | 来源可达时，C-4 发现、解析、校验、记录来源，并原子发布新 Snapshot。 | 无效项排除并诊断。来源不可达时，只有显式 Stale 策略允许其年龄和范围，才保留旧有效 Snapshot；否则新解析 Fail Closed。 | 来源丢失或加载失败不能扩大权限，也不能发布半成品 Catalog；在途 Turn 保留已解析 Snapshot。 | 新 Turn 使用一个一致的新鲜或显式陈旧 Snapshot，或得到带来源诊断的类型化能力不可用失败。 |
@@ -228,7 +228,6 @@ flowchart TB
     CF1ItemStored -->|"是"| CF1Publish["C-1 发布持久 Item"] --> CF1Provider
     CF1ItemStored -->|"否"| CF1StoreFail["停止生成；发出带外 durability-unavailable"]
     CF1Outcome -->|"可重试且预算剩余"| CF1Provider
-    CF1Outcome -->|"显式配置 Fallback"| CF1Fallback["选择 Fallback Provider"] --> CF1Provider
     CF1Outcome -->|"已认证客户端中断"| CF1Interrupt["准备 interrupted 终态"] --> CF1Persist
     CF1Outcome -->|"平台、策略或依赖停止"| CF1Cancel["准备 cancelled 终态"] --> CF1Persist
     CF1Outcome -->|"Provider 终态失败"| CF1Fail["准备 failed 终态"] --> CF1Persist
@@ -327,7 +326,7 @@ flowchart TB
 sequenceDiagram
   participant Client as API 客户端
   participant Approver as 人类审批者
-  participant C1 as C-1 展示与兼容边界
+  participant C1 as C-1 展示边界
   participant Identity as C-7 身份 Adapter
   participant Core as C-2 Agent Core
   participant Store as C-6 Thread Store
@@ -464,7 +463,7 @@ sequenceDiagram
 | 隐私与密钥安全 | Credential 留在 Adapter 配置；按分类最小化/脱敏 Prompt、Tool 参数/结果、路径和日志。删除 Thread 时按 Owner 策略删除用户内容历史与审批投影；权威 D-6/D-7 安全证据遵循独立保留/删除周期，并最小化或伪名化关联。 | Thread 历史和诊断契约无 Secret 字段；审计 Payload 不超过批准的安全/隐私保留期；可选内容诊断必须由安全环境显式开启。 |
 | 可靠性 | 显式状态、取消/超时/重试/Token 预算、幂等、先持久化后发布、带 Fencing 的前台活性租约、Checkpoint 所有权和真实部分/终态。 | 每个外部可见 Item 发布前已持久化；取消、超时、依赖失败、Store 失败、审批拒绝、重复输入和前台 Owner 失联均有精确状态；租约过期恰好产生一个 `cancelled`，并拒绝旧 Owner 写入。 |
 | 可观测性 | 关联 Thread、Turn、Item、Provider Call、Descriptor、Approval 和 Execution Attempt。 | 可在不依赖敏感内容的情况下追踪请求到持久终态。 |
-| 兼容性 | 北向 REST/SSE 客户端契约和南向 gRPC 服务契约分别保留在各自 Adapter 后；新内部类型版本化且 Provider 中立。 | 分别验证 C-1 客户端行为和 C-6 南向服务行为，不暗示存在客户端 gRPC API；不兼容变化另行决策。 |
+| 契约演进 | 新北向 REST/SSE 与自有 Store 契约版本化且 Provider 中立；前身契约只作调研证据。 | Contract Test 直接验证新的 C-1/C-6 契约；后续不兼容变化另行决策，不设旧 Parity 或 Route-back Gate。 |
 | 可维护性 | 编排、展示、Provider 转换、扩展发现、策略/执行、身份和存储各有一个清晰 Owner。 | 依赖指向自有契约、无环、Core 无 Provider/Store/Transport 外部类型。 |
 | 可扩展性 | 展示/Core 尽量无状态；持久共享状态在 Adapter 后；前台 Turn 使用带 Fencing 的活性租约，后台执行使用 Lease 与 Checkpoint。 | 横向实例不依赖进程本地真值；任一健康 C-2 实例都能对账孤儿 Turn，且不接受过期 Owner 写入或重复非幂等效果。 |
 | 供应链与来源 | 外部参考固定不可变版本；扩展和 Descriptor 带来源与版本。 | 每个活动扩展可追溯到确切来源/版本。 |
@@ -473,11 +472,11 @@ sequenceDiagram
 
 | ID | 假设或问题 | Owner | 状态 | 结论与证据 |
 | --- | --- | --- | --- | --- |
-| Q-1 | 当前仓库没有服务代码时，现状 AI 服务基线是什么？ | @linhai | Resolved | 使用前身 `koduck-quant` 的 `koduck-ai@c414ddcc…`。当前仓库 [README](../../../../README.md) 明确说明它是全新重建，且尚未加入服务。 |
+| Q-1 | 当前仓库没有服务代码时，AI 服务调研基线是什么？ | @linhai | Resolved | 仅把前身 `koduck-quant` 的 `koduck-ai@c414ddcc…` 用于功能调研。当前仓库 [README](../../../../README.md) 明确说明它是全新重建且尚未加入服务；2026-08-11 仓库 Owner 指示确认前身基础设施已移除，并非运行基线。 |
 | Q-2 | 对比哪个 Codex 版本？ | @linhai | Resolved | 使用 2026-08-10 读取到的公开 `openai/codex@3c60d4da…`；@linhai 在 2026-08-10 的 ADD 评审中确认了这份不可变证据基线。 |
 | Q-3 | “与 Codex 对齐”是否意味着 Fork 或实现全部产品能力？ | @linhai | Resolved | 否。Trello 要求目标边界和迁移方案；本 ADD 选择自有 Koduck 契约下的概念对齐，并明确排除 Fork/功能对等。 |
 | Q-4 | 中英文冲突时哪一份权威？ | @linhai | Resolved | 已索引的英文文件 `docs/architecture/ADD-0001-ai-service-codex-alignment.md` 权威；本文件只是同步翻译。 |
-| Q-5 | 什么运行共存模型让迁移回滚路径真实可用？ | @linhai | Resolved | 本设计在 APISIX 后并行部署前身与替代服务，按有界用户群或能力切流，每个切片有共享历史兼容边界。CAND-1 的 ADR 只有在验证不可变旧制品、可路由旧路径、兼容权威历史子集和回切条件后才可被接受。 |
+| Q-5 | 前身基础设施已经移除时采用什么运行模型？ | @linhai | Resolved | 2026-08-11 当前 Codex 任务中的仓库 Owner 指示确立 Greenfield 模型：新实现契约权威；旧基线只作功能调研证据；不适用前身 Artifact、APISIX 旧 Route、共享 History、Fallback 或 Route-back Gate。 |
 
 当前不存在阻止审批的重大开放问题。审批者若发现重大未决问题，应指出问题并让文档继续保持 `Draft`，而不是回复 `Approve`。
 
@@ -486,11 +485,11 @@ sequenceDiagram
 | ID | 风险或权衡 | 影响 | 缓解 |
 | --- | --- | --- | --- |
 | RK-1 | 把 Codex 目录当复制目标。 | 引入无关的本地产品、认证、UI 和持久化约束。 | 使用采用矩阵；每项实现决策必须对应 Koduck 结果并独立获批。 |
-| RK-2 | 兼容 Adapter 永久化。 | 长期维护两套领域/事件语义。 | 每个 Adapter 有明确退役条件，消费者迁移后才经 Accepted ADR 删除。 |
+| RK-2 | 把调研证据误作兼容义务。 | 新契约可能继承已移除基础设施和未经验证的 Wire 行为。 | 明确前身材料只作功能证据，并直接测试新的自有契约。 |
 | RK-3 | 拆 Monolith 变成分布式耦合。 | crate/服务增加却无清晰所有权，成本和延迟更高。 | 只按失败、信任、数据和生命周期边界定义 Port，不按行数机械拆分。 |
 | RK-4 | 有审批 UI 但执行可绕过。 | 高权限效果未经评审范围即可执行。 | 所有路径在 C-5 下统一强制策略，包括 MCP 和后台 Worker。 |
-| RK-5 | History 与 Memory 所有权重叠。 | 重复真值、重放不一致或跨租户泄漏。 | CAND-3 先冻结逻辑所有权矩阵，Cache 只作可重建投影。 |
-| RK-6 | 新协议破坏 REST/SSE。 | 结构迁移引发产品回归。 | 先放在 C-1 后验证语义一致，单独决策退役旧契约。 |
+| RK-5 | 权威 History 与 Semantic Memory 所有权重叠。 | 重复真值、重放不一致或跨租户泄漏。 | Thread/Turn/Item 保持在 AI 自有 Store；CAND-3 定义 Memory/Multitask 的版本化 Projection 与所有权。 |
+| RK-6 | 首个自有 REST/SSE 契约漏掉必要功能场景。 | Greenfield Release 内部一致却功能不完整。 | 从前身调研和当前产品需求提取场景覆盖，但以新版本化契约和确定性测试为权威。 |
 | RK-7 | 扩展描述或 Tool Result 操纵权限。 | Prompt Injection 导致未授权行为或数据访问。 | 所有扩展/模型/工具内容不可信；权限只来自身份、策略和显式审批。 |
 | RK-8 | 多 Agent 扩大未完成的生命周期与权限风险。 | 并发、血缘、预算和审批含糊。 | CAND-1 至 CAND-4 验证完成前保持延期。 |
 | RK-9 | 单 Attempt 审批相较可复用 Session/Turn 授权增加交互次数和延迟。 | 高频高权限工作可能变慢，甚至产生绕过审批的压力。 | CAND-2 保持精确可审计基线；任何可复用授权必须有测量需求、有界撤销/Scope 模型和独立 Accepted ADR。 |
@@ -503,11 +502,11 @@ sequenceDiagram
 
 | ID | 完整结果 | 范围边界 | 依赖 | 验收上下文 | 建议 ADR 类型 | 状态 | 状态原因或证据 | ADR 路径 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| CAND-1 | 一个 Provider 中立的 Thread/Turn/Item 编排内核可让单个已认证、无工具 Turn 经旧 REST/SSE 兼容边界执行，持久化有序历史，并产生明确完成、失败、中断、持久化宕机和前台 Owner 失联结果。 | 包含领域生命周期、Core Port、兼容映射、一个 Provider 路径，以及覆盖当前权威历史路径、足以支持先持久化后发布、重放和带 Fencing 前台活性租约的最小 C-6 兼容 Adapter；不含最终 Memory/Multitask 所有权、Fork/Checkpoint/幂等迁移、高权限工具、扩展、后台任务、公开契约退役或部署。 | 本 ADD 必须 `Current`；ADR 接受前验证外部契约基线、不可变旧制品、APISIX 并行路由、兼容权威历史子集和回切条件。 | 一个无工具 Turn 的二元映射，以及 Resume 新建 Turn、先持久化后发布、有界 Append/Backpressure 与活性窗口、重放、Provider/Store 失败、进程崩溃、租约过期、旧 Owner Fencing、并发对账幂等、恰好一个孤儿 `cancelled` 和回滚检查。 | Full | Selected | 已由 `docs/adr/ADR-0001-provider-neutral-turn-kernel.md` 中 Proposed、Not Started 的项目级 Full ADR 选中 | `docs/adr/ADR-0001-provider-neutral-turn-kernel.md` |
-| CAND-2 | 所有 Tool/MCP 调用经过统一默认拒绝策略和隔离 D-7 执行边界；需要审批时使用一份权威精确动作 D-6，并具备取消、超时、输出上限、租约 Fencing 和可审计终态。 | 包含 C-1/C-7 审批传输、C-5 权威、C-6 前台租约校验、D-3 状态投影和当前 Tool/MCP Adapter；不含可复用 Session/Turn 授权、UI 和新增高权限能力。 | CAND-1 完成；已认证审批协议和现有效果清单可用。 | 覆盖免审批 Allow、拒绝、无效审批者、接受/拒绝/取消/过期、Scope/Attempt/Lease 漂移、过期 Owner 分发与结果拒绝、效果前重试再审批、超时、取消和不可信输出；回滚恢复上个获批 Tool Path。 | Full | Ready | N/A — Ready；依赖阻止提前选择 | None |
-| CAND-3 | 通过可替换 Store Port 由 Memory/Multitask 提供权威 Thread/Turn/Item、血缘、活性租约、Checkpoint 和幂等所有权，不依赖进程本地真值。 | 用完整逻辑所有权和 Adapter 模型替换 CAND-1 的最小历史/活性兼容 Adapter，包含重放、前台孤儿对账、Fork、Checkpoint、后台恢复和投影语义；不含物理数据库重构和无关记忆排序。 | CAND-1 完成；Memory/Multitask Owner 参与。 | 重放/顺序/Append-only 更正/租约 Fencing/租户隔离/重复提交有精确结果；迁移保留 CAND-1 历史和前台终态语义，回滚保留权威数据，只丢弃可重建投影。 | Full | Ready | N/A — Ready；依赖阻止提前选择 | None |
+| CAND-1 | 一个 Provider 中立的 Thread/Turn/Item 编排内核可让单个已认证、无工具 Turn 经新版本化 REST/SSE 边界执行，持久化有序历史，并产生明确完成、失败、中断、持久化宕机和前台 Owner 失联结果。 | 包含领域生命周期、Core Port、新 REST/SSE v1 契约、一个 Provider 路径，以及足以支持先持久化后发布、重放和带 Fencing 前台活性租约的 AI 自有 C-6 持久化 Adapter；不含 Semantic Memory、后台 Multitask、Fork/Checkpoint、高权限工具、扩展、部署和任何旧兼容/Fallback Path。 | 本 ADD 必须 `Current`；ADR 接受前，新 REST/SSE v1、TurnHistory、Trust Context Handoff 和 AI 自有持久 Store 边界必须完整且可确定验证。 | 一个无工具 Turn 的二元契约检查，以及 Resume 新建 Turn、先持久化后发布、有界 Append/Backpressure 与活性窗口、重放、Provider/Store 失败、进程崩溃、租约过期、旧 Owner Fencing、并发对账幂等和恰好一个孤儿 `cancelled`。 | Full | Selected | 已由 `docs/adr/ADR-0001-provider-neutral-turn-kernel.md` 中 Accepted、Not Started 的项目级 Full ADR 选中 | `docs/adr/ADR-0001-provider-neutral-turn-kernel.md` |
+| CAND-2 | 所有 Tool/MCP 调用经过统一默认拒绝策略和隔离 D-7 执行边界；需要审批时使用一份权威精确动作 D-6，并具备取消、超时、输出上限、租约 Fencing 和可审计终态。 | 包含 C-1/C-7 审批传输、C-5 权威、C-6 前台租约校验、D-3 状态投影和新 Tool/MCP Adapter；不含可复用 Session/Turn 授权、UI 和新增高权限能力。 | CAND-1 完成；已认证审批协议和预期 Tool Effect 清单可用。 | 覆盖免审批 Allow、拒绝、无效审批者、接受/拒绝/取消/过期、Scope/Attempt/Lease 漂移、过期 Owner 分发与结果拒绝、效果前重试再审批、超时、取消和不可信输出；恢复时禁用或回退未晋级 Dispatcher，让 Tool 不可用，而不是调用旧 Path。 | Full | Ready | N/A — Ready；依赖阻止提前选择 | None |
+| CAND-3 | AI 自有 Store Port 扩展权威血缘、Checkpoint 与幂等能力；Memory/Multitask 通过独立版本化 Semantic Memory/后台任务契约集成，不依赖进程本地真值。 | 扩展 CAND-1 History/Liveness 所有权，加入 Fork、Checkpoint、后台 Resume、Projection 与集成语义；不含无关 Memory Ranking 和部署。Memory/Multitask 不取代 AI 对权威 Thread/Turn/Item 的所有权。 | CAND-1 完成；Memory/Multitask Owner 参与。 | 重放/顺序/Append-only 更正/租约 Fencing/租户隔离/重复提交有精确结果；Schema 演进保留 CAND-1 历史和终态语义，回滚只使用最后验证的新 Schema/Artifact，并只丢弃可重建投影。 | Full | Ready | N/A — Ready；依赖阻止提前选择 | None |
 | CAND-4 | 仓库指令、Agent Profile、Skill、Plugin 和 MCP Descriptor 经过一个带来源的扩展边界加载，且不能扩大执行权限。 | 包含发现、校验、优先级、Snapshot、诊断和现有 Adapter；不含 Marketplace UI、远程安装和新高权限工具。 | CAND-1、CAND-2 完成；需要时使用 CAND-3 Snapshot 语义。 | 优先级、无效扩展、来源丢失、Stale 策略、隔离、Snapshot 一致性和权限不升级可确定验证；回滚到静态安全清单。 | Full | Ready | N/A — Ready；依赖阻止提前选择 | None |
-| CAND-5 | 前台/后台和支持 Provider 均使用新 Core，REST/SSE 客户端观察到兼容行为，并为旧编排路径建立验证过的退役边界。 | 包含 Provider、后台生命周期、兼容证据、切换和旧路径退役；不含新产品功能/UI。 | CAND-1 至 CAND-4 完成并验证；消费者清单完整。 | Provider/Stream/后台一致性、恢复、SLO 和回滚触发器有精确结果；回滚保持同一权威 Store 与外部契约。 | Full | Ready | N/A — Ready；最终迁移候选项 | None |
+| CAND-5 | 前台/后台和支持 Provider 均使用新 Core，并满足自有 REST/SSE、生命周期、恢复和首次生产晋级契约。 | 包含 Provider、后台生命周期、Consumer Readiness、SLO 证据和首发准备；不含新产品功能/UI。 | CAND-1 至 CAND-4 完成并验证；预期 Consumer 清单完整。 | Provider/Stream/后台契约、恢复、SLO、Error Budget 和晋级停止检查精确；首次晋级前失败就隔离候选项，之后只能在 OCR 下回滚到最后验证的新 Artifact。 | Full | Ready | N/A — Ready；最终 Readiness 候选项 | None |
 | CAND-6 | 多 Agent 执行的生命周期、血缘、预算、权限、审批、取消和存储模型获得批准，或经证据审查后明确拒绝。 | 包含架构决策和有界试点结果；不含生产发布/UI。 | CAND-1 至 CAND-5 完成并验证；单 Agent 指标和事故证据可用。 | 需求有测量证据，安全/所有权审查可确定；拒绝/延期不留下休眠生产路径。 | Full | Deferred | 单 Agent 目标边界完成且证据证明需要前保持延期 | None |
 
 ## 可追溯性 [Required]
@@ -539,12 +538,12 @@ sequenceDiagram
 | 领域 | 前身现状 | Codex 信号 | Koduck 目标 | 处理方式 |
 | --- | --- | --- | --- | --- |
 | 生命周期 | Session/Chat/Task 分散在 Handler、Native Loop、Memory Client、Registry 和 Worker。 | Thread/Turn/Typed Item、Resume/Fork/Interrupt。 | 前后台统一使用自有 Thread/Turn/Item。 | 调整后采用，映射现有身份与契约。 |
-| 应用协议 | REST/SSE 直接暴露编排行为。 | 类型化双向 App Server 协议与生成 Schema。 | REST/SSE 先作为兼容 Facade；有消费者需求时再引入版本化协议。 | 调整后采用。 |
+| 应用协议 | 前身暴露 REST/SSE，但只作调研证据，不是 Live Contract。 | 类型化双向 App Server 协议与生成 Schema。 | 定义自有版本化 REST/SSE v1；有消费者需求时再引入 Provider 中立 Typed Protocol。 | 调整后采用，不要求旧 Wire Parity。 |
 | Core 边界 | 单 crate 混合传输、编排、Provider、Tool、MCP、后台、存储和策略。 | Core、Protocol、Store、Exec、Sandbox、Skill、App Server 分离。 | 以 Port 构建 Provider 中立 Core，只按 Owner/失败/信任/生命周期拆分。 | 采用边界原则，不复制 crate 列表。 |
 | Tool | Native Tool Use 已存在，但前后台策略、Allowlist、Tool Service 和审批逻辑分散。 | 集中 Tool Routing、审批和沙箱。 | 所有 Tool Path 下沉到一个策略/审批/执行边界。 | 调整后采用，保留 Tool Service/MCP。 |
 | Sandbox | 有服务隔离和 Allowlist，但未发现覆盖所有 Tool Path 的 Turn 级文件/网络/进程沙箱契约。 | 跨平台 Sandbox 与 Permission Profile。 | 隔离 Worker 或平台沙箱 + 显式 Profile + 默认拒绝。 | 采用安全模型，平台实现由 ADR 决定。 |
-| Store | Memory/Multitask 为分布式依赖，同时存在进程内 Registry/Checkpoint。 | 可替换 ThreadStore，本地 JSONL/SQLite。 | 自有 Store Port 由 Memory/Multitask 实现；本地状态只作 Cache。 | 采用抽象，不采用本地真值。 |
-| Provider | 已有多模型 Adapter、路由、归一化类型、Stream、重试与 Fallback。 | Core Client/Model Provider 偏 OpenAI/Codex 产品。 | 保留多 Provider，自有接口统一生命周期事件。 | 保留并收敛，不改成 ChatGPT 专属。 |
+| Store | 前身使用 Memory/Multitask 和进程内 Registry/Checkpoint，但该基础设施不再是运行基线。 | 可替换 ThreadStore，本地 JSONL/SQLite。 | 自有 Store Port 由 AI 自有共享 PostgreSQL Datastore 实现；Memory/Multitask 后续消费独立 Semantic Memory/后台契约。 | 采用 Store 抽象和共享持久化，不采用前身所有权或进程本地真值。 |
+| Provider | 前身展示多模型 Adapter、路由、归一化类型、Stream、重试与 Fallback，但只作调研证据。 | Core Client/Model Provider 偏 OpenAI/Codex 产品。 | 从一个显式选择 Provider 开始，无自动 Fallback；保留 Adapter 边界供后续独立决策。 | 采用边界，不采用前身 Fallback 行为。 |
 | MCP | 自研最小 stdio/HTTP Client，适配进 Native Loop。 | MCP Client/Resource/Approval/Control/App Integration 分离，部分实验性。 | 标准兼容 Adapter，带版本、来源、Elicitation/Approval 和不可信输出处理。 | 调整后采用，不把实验 RPC 作为权威 API。 |
 | 指令/Skill/Plugin | Agent Profile、Skill、MCP 已有但激活程度和所有权不均。 | 指令、Skill Root、Plugin、Injection 独立 Loader/Service。 | 一个 Extension Registry 管理优先级、Snapshot、校验、来源和权限不升级。 | 按租户/Thread 隔离调整后采用。 |
 | Auth | APISIX/JWT/JWKS 与租户/用户 Claim。 | ChatGPT Account Login。 | 保留 APISIX/Auth/JWKS，向 Core 传不可变信任上下文。 | 不采用 Codex Auth。 |
@@ -557,7 +556,7 @@ sequenceDiagram
 | --- | --- | --- | --- |
 | AD-1 | Thread/Turn/Item + 类型化事件 | 调整后采用 | 获得统一可重放生命周期，但 Resume 新建 Turn、终态 Turn 永不重新激活、更正采用 Append-only Item，并映射 Koduck Session/Task。 |
 | AD-2 | Provider 中立 Core 支持多个展示面 | 采用 | 直接解决传输、Provider 与编排耦合。 |
-| AD-3 | 可替换 Thread Store | 调整后采用 | CAND-1 先在现有权威历史上使用最小兼容 Adapter，CAND-3 再建立完整 Memory/Multitask 所有权，不采用本地 JSONL/SQLite 真值。 |
+| AD-3 | 可替换 Thread Store | 调整后采用 | CAND-1 建立 Consumer-owned Port 与 AI 自有共享 PostgreSQL Adapter，作为 Thread/Turn/Item 权威；CAND-3 扩展血缘/Checkpoint/幂等并集成 Memory/Multitask，但不转移权威所有权。 |
 | AD-4 | Permission Profile、有界审批和隔离 | 调整后采用 | 模型/扩展内容不能授予权限；C-5 持有权威 D-6，C-1/C-7 传输已认证决策，D-3 只是投影，初始安全基线只授权一次精确 D-7，而不是可复用 Session/Turn 授权。 |
 | AD-5 | 独立应用协议与生成 Schema | 调整后采用 | 提升兼容性，但 Codex App Server 和实验 MCP RPC 不是 Koduck 契约。 |
 | AD-6 | 指令、Skill、Plugin、MCP 分离加载 | 调整后采用 | 需要补充租户/Thread 隔离、来源和权限不升级。 |
@@ -571,27 +570,27 @@ sequenceDiagram
 
 | 边界 | 需保留/评估的现有契约 | 目标 Owner | 安全与兼容规则 |
 | --- | --- | --- | --- |
-| Client/Approver→AI | REST/SSE Chat、Stream、Session、Memory BFF、Task、Tool 与审批协议 | C-1，身份由 C-7 校验 | 迁移期行为兼容；C-1 在状态/模型/工具/审批前把 Signed Claim 校验委托给 C-7；Body 有界、Stream 终态持久有序、审批携带精确 D-6 身份。 |
+| Client/Approver→AI | 新版本化 REST/SSE Chat 与审批协议 | C-1，身份由 C-7 校验 | 自有契约权威；C-1 在状态/模型/工具/审批前把 Signed Claim 校验委托给 C-7；Body 有界、Stream 终态持久有序、审批携带精确 D-6 身份。前身 Route 只提供功能场景。 |
 | Gateway/Auth→AI | APISIX 与 JWT/JWKS 租户/用户身份 | C-7 | Signed Claim 权威；Header 不造身份；JWKS 失败有显式策略。 |
-| AI→Memory | gRPC Session/History/Fact/Plan | C-6 Adapter | 租户/用户/Thread Owner、Deadline、幂等、版本和数据所有权必需。 |
-| AI→Multitask | 后台 Submit、Lease、Checkpoint、Retry、Terminal | C-6 Adapter | 重复提交一个逻辑任务；丢 Lease 不重复非幂等效果；Credential 不进历史。 |
+| AI→Memory | 未来版本化 Semantic Memory Projection/Retrieval Contract | C-6 权威所有权外的专用 Adapter | 租户/用户/Thread Owner、Deadline、幂等、版本以及与权威 Turn History 的明确分离必需。 |
+| AI→Multitask | 未来后台 Submit、Lease、Checkpoint、Retry、Terminal Contract | 与 C-2/C-6 协作的后台 Adapter | 重复提交一个逻辑任务；丢 Lease 不重复非幂等效果；Credential 不进历史；Multitask 不拥有前台权威 Turn。 |
 | AI→Tool | 能力发现、Schema 校验、执行 | C-4/C-5 | 来源、精确版本、默认拒绝、幂等、超时、输出上限、审计。 |
 | AI→MCP | JSON-RPC 初始化、发现、调用、Resource、Elicitation | C-4/C-5 | 内容不可信；Transport 不授予权限；本地强制审批和访问控制。 |
-| AI→Model | Provider-native HTTP/Stream | C-3 | Secret 在 Adapter；Provider/Model/Fallback 显式；脱敏和预算有界。 |
+| AI→Model | Provider-native HTTP/Stream | C-3 | Secret 在 Adapter；Provider/Model 显式；CAND-1 无 Fallback；脱敏和预算有界。 |
 | Core→Executor | 自有 Action/Profile/Approval/Execution Event | C-5 | 最强信任边界：不可绕过、范围绑定、隔离、取消、超时、输出限制、审计。 |
 | Extension→Core | 指令/Profile/Skill/Plugin/Tool Descriptor | C-4 | 优先级、来源、Schema、租户隔离，内容不能升级权限。 |
 
-### 迁移顺序、验证与回滚边界
+### Greenfield 交付顺序、验证与恢复边界
 
-顺序为 CAND-1 → CAND-2 → CAND-3 → CAND-4 → CAND-5；CAND-6 保持延期。CAND-1 在当前已验证权威历史路径上引入最小 C-6 兼容 Adapter；CAND-3 再以完整 Memory/Multitask 所有权模型替换这个临时边界。CAND-5 关闭回滚窗口前，所有切片都假设前身与替代部署在 APISIX 后并行存在。每个被选择候选项必须创建一份双向链接的 Full ADR，最多三个实施子任务，并预先定义确定性检查。
+顺序为 CAND-1 → CAND-2 → CAND-3 → CAND-4 → CAND-5；CAND-6 保持延期。CAND-1 建立新 C-1 Contract 与 AI 自有 C-6 持久化边界；CAND-3 扩展 Store，并按独立职责集成 Memory/Multitask。任何切片都不假设前身部署、旧 Route、共享 History 或 Fallback。每个被选择候选项必须创建一份双向链接的 Full ADR，最多三个实施子任务，并预先定义确定性检查。
 
-| 切片 | 最小架构结果 | 架构级验证 | 回滚边界 |
+| 切片 | 最小架构结果 | 架构级验证 | 恢复边界 |
 | --- | --- | --- | --- |
-| 1 / CAND-1 | 单个无工具认证 Turn 通过兼容层→Core→Provider→最小 C-6 兼容 Adapter，并到达唯一持久终态。 | 旧契约映射、Resume 新建 Turn、先持久化后发布延迟/Backpressure、前台活性窗口、进程崩溃、租约过期、旧 Owner Fencing、恰好一次孤儿取消、有序重放、Provider/Store 失败和 APISIX 回切均有二元结果。 | 把有界用户群切回已验证前身部署；只保留双方理解的权威历史子集。Checkout 或重建不是回滚目标。 |
-| 2 / CAND-2 | 所有 Tool/MCP 效果通过统一 C-5 权威和隔离的一次 Attempt D-7；需要审批时使用精确 D-6，D-3 只承载投影。 | 免审批 Allow、Deny、无效审批者、接受/拒绝/取消/过期、Scope/Attempt 变化、重试再审批、超时、输出上限、不可信结果。 | 关闭新 Dispatcher，回上一个已批准 Tool Path；任何 Pending 投影或部分授权 Scope 都不能执行。 |
-| 3 / CAND-3 | Memory/Multitask 用完整权威 Thread Store 与恢复模型替换 CAND-1 的最小 Adapter。 | 有序重放、Append-only 更正、Fork 血缘、租户隔离、Checkpoint 恢复、重复提交、Cache 丢失和 CAND-1 历史迁移有精确结果。 | 保留原权威数据，只丢弃/重建投影；Owner 含糊时停止恢复。 |
+| 1 / CAND-1 | 单个无工具认证 Turn 通过新 REST/SSE v1→Core→Provider→AI 自有 C-6 Adapter，并到达唯一持久终态。 | 自有契约映射、Resume 新建 Turn、先持久化后发布延迟/Backpressure、前台活性窗口、进程崩溃、租约过期、旧 Owner Fencing、恰好一次孤儿取消、有序重放和 Provider/Store 失败均有二元结果。 | 首次晋级前隔离或回退失败候选项并保留证据，不存在前身 Route-back。存在已验证新 Release 后，OCR 只能选择已验证的新 Artifact。 |
+| 2 / CAND-2 | 所有 Tool/MCP 效果通过统一 C-5 权威和隔离的一次 Attempt D-7；需要审批时使用精确 D-6，D-3 只承载投影。 | 免审批 Allow、Deny、无效审批者、接受/拒绝/取消/过期、Scope/Attempt 变化、重试再审批、超时、输出上限、不可信结果。 | 禁用或回退未晋级 Dispatcher；晋级后只能通过 OCR 恢复最后验证的新 Dispatcher Artifact。任何 Pending 投影或部分授权 Scope 都不能执行。 |
+| 3 / CAND-3 | AI 自有 Store 增加完整血缘/Checkpoint/幂等，并集成 Semantic Memory/后台 Multitask，但不转移权威 Turn 所有权。 | 有序重放、Append-only 更正、Fork 血缘、租户隔离、Checkpoint 恢复、重复提交、Cache 丢失和 CAND-1 Schema 演进有精确结果。 | 保留原权威数据，只丢弃/重建投影；Owner 含糊时停止恢复，并只使用验证过的新 Schema/Artifact Pair。 |
 | 4 / CAND-4 | 指令/Profile/Skill/Plugin/MCP 共享一致 Snapshot 且不升级权限。 | 优先级、来源、无效项、来源丢失、Stale、跨租户、权限不升级。 | 禁用 Registry 并恢复静态安全清单，保留历史来源证据。 |
-| 5 / CAND-5 | 前后台与支持 Provider 使用新 Core；兼容验证后才退役旧编排。 | 契约一致、Stream 顺序、Provider、后台恢复、SLO、Error Budget 和回滚触发器。 | 切回最后验证路径，保持同一 Store/外部契约；回滚窗口关闭后才删旧代码。 |
+| 5 / CAND-5 | 前后台与支持 Provider 使用新 Core，并满足首次生产晋级 Gate。 | 自有契约、Stream 顺序、Provider、后台恢复、SLO、Error Budget 和晋级停止触发器。 | 失败首发候选项不晋级；首次晋级后只能回滚到最后验证的新 Path，并保留权威 Store/自有外部契约。 |
 
 ## 审批与评审检查表 [Required]
 
@@ -607,7 +606,7 @@ sequenceDiagram
 - [x] 候选项只有结果/边界，无源文件和可执行实施设计。
 - [x] 每个 `Selected`/`Complete` 候选项均有精确双向 ADR 路径；CAND-1 已由 `docs/adr/ADR-0001-provider-neutral-turn-kernel.md` 选中，且该 ADR 的 Architecture Source 指回本 ADD 与候选项 ID。
 - [x] 必填和条件触发内容完整。
-- [x] 在变为 `Current` 前记录合格非作者审批人、时间及精确 `Approval Evidence: Approve`；所记录的审批上下文修订为信息性、非约束，且与获批文档完全一致。
+- [x] 在变为 `Current` 前已记录合格非作者审批人、审批时间及精确 `Approval Evidence: Approve`；由于尚无不可变 Revision 表示本次获批的未提交内容，因此不记录 Approval Context Revision。
 
 ## 归档 [Conditionally Required — 设计状态为 `Deprecated` 或 `Superseded`]
 
@@ -630,3 +629,6 @@ sequenceDiagram
 | 2026-08-11 | 将前台孤儿 Turn 活性归属明确为 C-2/C-6 带 Fencing 租约与对账，阻止旧 Owner 分发工具或提交结果，增加 CAND-1/CAND-2 崩溃/过期/Fencing 检查，并把迁移前提统一到 ADR Acceptance。 | Codex |
 | 2026-08-10 | @linhai 在当前评审对话中批准；记录审批元数据与信息性、非约束的审批上下文修订 `541598139e4903942b309ccb075b46473b117f7f`，并将设计状态置为 `Current`。 | @kimi |
 | 2026-08-11 | 通过 Proposed、Not Started 的项目级 Full ADR `docs/adr/ADR-0001-provider-neutral-turn-kernel.md` 选中 CAND-1，并同步双向路径与评审清单。 | @codex |
+| 2026-08-11 | 2026-08-11T09:48:15+08:00 的使审批失效修订，把前身并行迁移、旧兼容、共享 History 与 Route-back 模型改为 Greenfield 实施模型。保留旧审批历史：Approver `@linhai`、Approval Time `2026-08-10T17:24:17Z`、Approval Evidence `Approve`、Approval Context Revision `541598139e4903942b309ccb075b46473b117f7f`；设计状态重置为 `Draft`，等待重新审批。 | @codex |
+| 2026-08-11 | 人类审批人先自声明 `@linhai`、明确审批对象 ADD-0001，再精确回复 `Approve`，从而重新批准 Greenfield 修订；记录 Approval Time `2026-08-11T10:37:34+08:00` 并把设计状态恢复为 `Current`。由于获批内容尚无对应不可变 Commit，不记录 Approval Context Revision。 | @linhai |
+| 2026-08-11 | `@linhai` 接受 `docs/adr/ADR-0001-provider-neutral-turn-kernel.md` 后同步 CAND-1 Evidence；ADR 为 `Accepted`、`Not Started` 时，Candidate 保持 `Selected`。 | @codex |

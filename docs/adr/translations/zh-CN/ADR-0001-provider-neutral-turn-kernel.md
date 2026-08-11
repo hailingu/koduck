@@ -9,23 +9,23 @@
 
 ## 元数据 [Required]
 
-- **决策状态**：Proposed
+- **决策状态**：Accepted
 - **实施状态**：Not Started
 - **日期**：2026-08-11
 - **作者**：@codex
 - **决策负责人**：@linhai
 - **所需审批人**：@linhai
 - **记录范围**：Project
-- **审批人 [Conditionally Required — Decision Status 为或曾为 `Accepted`]**：N/A — Decision Status 为 `Proposed`
-- **审批时间 [Conditionally Required — Decision Status 为或曾为 `Accepted`]**：N/A — Decision Status 为 `Proposed`
-- **审批证据 [Conditionally Required — Decision Status 为或曾为 `Accepted`]**：N/A — Decision Status 为 `Proposed`
-- **拒绝执行人 [Conditionally Required — Decision Status 为 `Rejected`]**：N/A — Decision Status 为 `Proposed`
-- **拒绝时间 [Conditionally Required — Decision Status 为 `Rejected`]**：N/A — Decision Status 为 `Proposed`
-- **拒绝证据 [Conditionally Required — Decision Status 为 `Rejected`]**：N/A — Decision Status 为 `Proposed`
-- **退役执行人 [Conditionally Required — Decision Status 为 `Deprecated` 或 `Superseded`]**：N/A — Decision Status 为 `Proposed`
-- **退役时间 [Conditionally Required — Decision Status 为 `Deprecated` 或 `Superseded`]**：N/A — Decision Status 为 `Proposed`
-- **退役证据 [Conditionally Required — Decision Status 为 `Deprecated` 或 `Superseded`]**：N/A — Decision Status 为 `Proposed`
-- **退役原因 [Conditionally Required — Decision Status 为 `Deprecated` 或 `Superseded`]**：N/A — Decision Status 为 `Proposed`
+- **审批人 [Conditionally Required — Decision Status 为或曾为 `Accepted`]**：@linhai
+- **审批时间 [Conditionally Required — Decision Status 为或曾为 `Accepted`]**：2026-08-11T10:40:42+08:00
+- **审批证据 [Conditionally Required — Decision Status 为或曾为 `Accepted`]**：Approve
+- **拒绝执行人 [Conditionally Required — Decision Status 为 `Rejected`]**：N/A — Decision Status 为 `Accepted`
+- **拒绝时间 [Conditionally Required — Decision Status 为 `Rejected`]**：N/A — Decision Status 为 `Accepted`
+- **拒绝证据 [Conditionally Required — Decision Status 为 `Rejected`]**：N/A — Decision Status 为 `Accepted`
+- **退役执行人 [Conditionally Required — Decision Status 为 `Deprecated` 或 `Superseded`]**：N/A — Decision Status 为 `Accepted`
+- **退役时间 [Conditionally Required — Decision Status 为 `Deprecated` 或 `Superseded`]**：N/A — Decision Status 为 `Accepted`
+- **退役证据 [Conditionally Required — Decision Status 为 `Deprecated` 或 `Superseded`]**：N/A — Decision Status 为 `Accepted`
+- **退役原因 [Conditionally Required — Decision Status 为 `Deprecated` 或 `Superseded`]**：N/A — Decision Status 为 `Accepted`
 - **阻塞前状态 [Conditionally Required — Implementation Status 为 `Blocked`]**：N/A — Implementation Status 为 `Not Started`
 - **阻塞项与证据 [Conditionally Required — Implementation Status 为 `Blocked`]**：N/A — Implementation Status 为 `Not Started`
 - **阻塞项负责人 [Conditionally Required — Implementation Status 为 `Blocked`]**：N/A — Implementation Status 为 `Not Started`
@@ -45,17 +45,18 @@
 
 ## 背景与问题陈述 [Required]
 
-Koduck 仓库目前还没有服务实现。其前身把 REST/SSE 展示、认证、Provider
-选择、编排、持久化、工具使用和后台任务都放在一个 Rust 服务中。这使得
-替换某个关注点时，很难不同时改变 Provider、Transport 或持久化语义。
+Koduck 仓库目前还没有服务实现。其前身曾把 REST/SSE 展示、认证、Provider
+选择、编排、持久化、工具使用和后台任务都放在一个 Rust 服务中，但对应
+基础设施已经移除。因此前身只作为功能调研证据，不是运行、Wire Contract、
+存储、部署或回滚基线。
 
 `docs/architecture/ADD-0001-ai-service-codex-alignment.md` 定义了目标边界，
 并把 CAND-1 选为第一个可执行切片。本 ADR 必须决定如何让单个已认证、
-无工具 Turn 通过现有 `POST /api/v1/ai/chat` 和
-`POST /api/v1/ai/chat/stream` 兼容面执行，同时引入自有 Thread、Turn、Item
+无工具 Turn 通过新的自有 v1 `POST /api/v1/ai/chat` 和
+`POST /api/v1/ai/chat/stream` 接口执行，同时引入自有 Thread、Turn、Item
 类型、唯一的 Provider 中立编排 Owner、先持久化后发布的历史，以及带
-Fencing 的前台活性机制。它必须保留前身路径作为回滚目标，且不得提前决定
-最终 Memory/Multitask 所有权模型。
+Fencing 的前台活性机制。它定义 AI 自有的持久化 Thread/Turn/Item 基线，
+不承担旧兼容、共享历史、前身制品、回切或运行时 Fallback 要求。
 
 ## 范围 [Required]
 
@@ -67,20 +68,20 @@ Fencing 的前台活性机制。它必须保留前身路径作为回滚目标，
 - 一个编排状态机，以及由 Consumer 拥有的 Provider 和 History Port。
 - 一个 OpenAI-compatible Provider Adapter；通过确定性协议测试服务器验证，
   不访问真实网络。
-- 为前身已认证的同步 Chat 与 SSE Chat Route 提供兼容 Adapter，范围仅限
-  纯文本、无附件、无工具切片。
-- 一个最小兼容 History Adapter，支持初始接受、先持久化后发布、有序重放、
+- 实现新的已认证同步 Chat、SSE Chat 和 Interrupt v1 契约，范围仅限纯文本、
+  无附件、无工具切片。
+- 一个 AI 自有 PostgreSQL History Adapter，支持初始接受、先持久化后发布、有序重放、
   条件终态 Append、Lease Acquire/Renew/Fence 和孤儿 Turn 对账。
-- 本记录验收检查要求的契约、状态机、持久化故障、崩溃、租约和回滚测试。
+- 本记录验收检查要求的契约、状态机、持久化故障、崩溃、租约和无 Fallback 测试。
 
 范围外：
 
 - 高权限工具、MCP 调用、审批、Sandbox、扩展、Agent Profile、Skill、
   Plugin、后台任务、Fork 和 Checkpoint。
-- 最终 Memory/Multitask 数据所有权、物理数据库重构，以及留给 CAND-3 的
-  完整幂等模型。
-- 一个以上的生产 Provider 协议、Provider Fallback、新增公共 Typed
-  Protocol，或退役前身 REST/SSE 接口。
+- Semantic Memory、后台 Multitask、Fork、Checkpoint，以及留给 CAND-3 的
+  扩展幂等模型。
+- 一个以上的生产 Provider 协议、Provider Fallback，或超出自有 REST/SSE v1
+  契约的公共 Typed Protocol。
 - 附件、图片输入、Memory Ranking、Ask/Clarification Flow、Task API、
   主动式多 Agent 执行、Web/原生 UI、部署和流量切换。
 
@@ -98,19 +99,23 @@ Fencing 的前台活性机制。它必须保留前身路径作为回滚目标，
 
 - 权威架构来源是 `docs/architecture/ADD-0001-ai-service-codex-alignment.md`
   CAND-1；本 ADR 只能细化该切片，不得扩大范围。
-- 现有 APISIX/JWT/JWKS Identity 继续权威。兼容 Adapter 接收已验证且不可变的
-  Trust Context；Core 不解析或验证 Bearer Token。
+- `@linhai` 于 `2026-08-11T10:37:34+08:00` 重新批准 Greenfield 修订后，架构
+  来源已恢复为 `Current`，且双方 CAND-1 内容一致。这满足架构来源前置条件，
+  但不批准这份独立治理的 ADR。
+- 新 Identity/Trust Context 契约权威。Presentation Adapter 从配置的
+  Gateway/Auth 边界接收已验证且不可变的 Trust Context；Core 不解析或验证
+  Bearer Token。
 - Provider Wire Type、Axum Request/Response Type、Persistence Record 和
   Service Client Type 不得进入 Domain 或 Application Module。
 - Terminal Turn 不得重新 Active。Resume 必须从持久化有序历史中，在同一
   Thread 上创建新的 Turn。
 - 每个外部可见 Item 或 Terminal Outcome 必须在发布 REST Response 或 SSE
   Event 前完成持久化 Append。
-- Compatibility Boundary 确认接受前，初始 Turn、Input Item 和 Lease
+- Presentation Boundary 确认接受前，初始 Turn、Input Item 和 Lease
   Generation 必须全部持久化。初始写失败时返回错误，且不得暴露已接受 Turn。
 - 每个 Turn 的未发布 Buffer 上限为 64 Items 或 1 MiB 序列化 Item Payload，
   以先达到者为准。每次 Append Deadline 为 2 秒。达到上限或 Deadline 时停止
-  消费 Provider，不发布未提交 Item，并在 Live Compatibility Response 中返回
+  消费 Provider，不发布未提交 Item，并在 Live REST/SSE Response 中返回
   `durability-unavailable`。
 - 前台 Owner 每 5 秒 Renew Lease。Lease 在最后一次持久化续租后 20 秒过期；
   额外经过 2 秒时钟偏差 Margin 后才能对账。只有当前 Generation 可以 Append。
@@ -126,9 +131,9 @@ Fencing 的前台活性机制。它必须保留前身路径作为回滚目标，
 
 | ID | 问题 | Owner | 截止日期 | 状态 | 结论与证据 |
 | --- | --- | --- | --- | --- | --- |
-| Q-1 | 哪些不可变 Fixture 定义两个旧 Route 的 CAND-1 Request、Response、SSE Event、Header、Status Code 和 Interrupt 基线？ | @linhai | 2026-08-12 | Open | Pending — 从前身 Commit `c414ddccdbc45a99fcd3d606ca0fe1f75730b7fe` 捕获 Fixture，并在审批前把其仓库路径和 SHA-256 记录到本 ADR。 |
-| Q-2 | 哪个不可变前身 Artifact、可路由 APISIX 旧路径、有界替代路径和确定性回切观测使回滚可执行？ | @linhai | 2026-08-12 | Open | Pending — 审批前在本 ADR 记录 Artifact Digest、Route ID、Health Probe 和回切观测；执行 Route 变更仍在范围外，且需要 OCR。 |
-| Q-3 | 当前权威历史的哪些 Operation 和 Field 构成初始接受、有序 Append/Replay、条件终态 Append 和带 Fencing Lease Generation 的共享子集？ | @linhai | 2026-08-12 | Open | Pending — 取得 Memory/Multitask Contract Owner 的映射，并在审批前记录精确 Contract Revision 和 Field/Operation Matrix。 |
+| Q-1 | 哪个契约定义 CAND-1 的 Request、Response、SSE Event、Header、Status Code 和 Interrupt 行为？ | @linhai | 2026-08-12 | Resolved | 新实现权威。本 ADR 的详细设计定义 REST/SSE v1；`koduck-ai/docs/contracts/cand-1-rest-sse-v1.md` 是实施副本及 Golden Fixture。前身 Commit `c414ddccdbc45a99fcd3d606ca0fe1f75730b7fe` 只能提供功能场景，不产生 Parity 要求。结论来自 2026-08-11 当前 Codex 任务中的仓库 Owner 指示。 |
+| Q-2 | 前身基础设施已移除时，适用什么回滚或 Fallback 目标？ | @linhai | 2026-08-12 | Resolved | CAND-1 不适用：这是部署前的 Greenfield 实施决策；失败候选项不晋级，并回退 Source 或隔离 Artifact。首次部署需要 Accepted OCR；存在已验证新 Artifact 后，后续 OCR 只能选择已验证的新 Artifact。无需前身 Artifact、APISIX 旧 Route、Route-back 或运行时 Fallback。结论来自 2026-08-11 当前 Codex 任务中的仓库 Owner 指示。 |
+| Q-3 | 谁拥有初始接受、有序 Append/Replay、条件终态 Append 和带 Fencing Lease Generation？ | @linhai | 2026-08-12 | Resolved | Consumer-owned `TurnHistory` Port 与 AI 自有 PostgreSQL Adapter 权威拥有 Thread/Turn/Item 和前台 Lease。Memory 留给后续 Semantic Memory 集成，Multitask 留给后续后台任务集成；二者都不是 CAND-1 History 依赖。结论来自 2026-08-11 当前 Codex 任务中的仓库 Owner 指示。 |
 
 ## 决策驱动因素 [Required]
 
@@ -137,12 +142,12 @@ Fencing 的前台活性机制。它必须保留前身路径作为回滚目标，
    Owner 丢失。
 2. **重放一致性**：客户端不得看到权威 History Adapter 无法按相同顺序重放的
    Domain Item。
-3. **兼容性**：有界旧 REST/SSE 切片必须保留外部可观察的 Request、Response、
-   Header、Event 和 Status 行为。
+3. **自有契约**：有界 REST/SSE v1 切片必须精确符合本 ADR 定义的新 Request、
+   Response、Header、Event、Status 和 Interrupt 行为。
 4. **可替换边界**：Provider、Presentation 和 History 细节必须作为 Adapter
    位于 Consumer-owned Port 外部。
-5. **安全渐进迁移**：在替代切片验证期间，前身 Artifact 与 Route 必须继续是
-   可执行的回滚目标。
+5. **Greenfield 隔离**：实施不得依赖已移除的前身 Artifact、Route、共享历史
+   或运行时 Fallback。
 6. **故障隔离**：Process Crash、Store Outage、Lease Expiry 和并发 Reconcile
    必须有精确终态与 Fencing 结果。
 
@@ -213,21 +218,22 @@ Crate 可以建立向内依赖方向与 Consumer-owned Trait，而无需过早�
 
 - Thread、Turn、Item 和 Terminal State Invariant 由一个 Owner 持有，不依赖
   REST/SSE、Provider 或 Persistence Representation。
-- Legacy Compatibility、Provider Protocol 与 History 行为可独立测试和替换。
+- Presentation Contract、Provider Protocol 与 History 行为可独立测试和替换。
 - 先持久化后发布与 Lease Generation Fencing 成为 Application Invariant，
   而不是 Handler 约定。
 - 首次实施保持足够窄，CAND-2 至 CAND-5 仍可作为独立决策。
 
 负面：
 
-- 最小 History Adapter 是刻意的过渡方案，将由 CAND-3 替换。
+- CAND-1 History Adapter 刻意只覆盖前台 Turn；CAND-3 扩展 Lineage、Checkpoint、
+  Semantic Memory Projection 与后台任务集成，但不转移权威所有权。
 - 持久化延迟成为响应延迟的一部分；Store Outage 会让 Stream 停在持久化前缀。
 - 在后续决策证明拆 Crate 合理前，Module Dependency Rule 需要专门的
   Architecture Test 和 Review。
 
 缓解：
 
-- 所有外部 Representation 保持在 Adapter 内；过渡 History Surface 只通过
+- 所有外部 Representation 保持在 Adapter 内；权威 History Surface 只通过
   CAND-1 Consumer-owned Port 定义。
 - 强制 2 秒 Append Deadline 和未发布 Buffer 上限，并在确定性测试中捕获
   Latency/Failure 证据。
@@ -241,7 +247,7 @@ Crate 可以建立向内依赖方向与 Consumer-owned Trait，而无需过早�
 ```text
 REST/SSE adapter ─┐
 Provider adapter ─┼─> application turn runner ─> domain lifecycle and values
-History adapter  ─┘             │
+PostgreSQL adapter ─┘           │
                                 └─> consumer-owned provider/history ports
 ```
 
@@ -273,19 +279,58 @@ Application Layer 消费两个 Port：
   下 Append Item；读取有序 History；Renew 当前 Generation；有条件地 Fence
   过期 Generation；并在 Thread/Turn/Generation Key 下有条件 Append 一个终态。
 
-对 REST 和 SSE，Compatibility Adapter 都先取得不可变且已验证的 Trust
-Context，把有界旧 Request 映射为新 Turn Command，再把自有 Item 映射回 Q-1
-冻结的 Fixture。同步 Chat 只 Buffer 已持久化 Item，然后返回 Legacy Response。
-SSE 只有在对应 Item Append 成功后才发布 Event。Resume 加载之前的持久化历史，
-在同一 Thread 上创建不同 Turn ID；不修改此前的 Terminal Turn。
+首个 `TurnHistory` Adapter 使用 PostgreSQL 作为共享持久状态。它拥有四个逻辑
+Relation：租户范围 Thread 身份 `threads`、Lifecycle 与下一个 Sequence 的
+`turns`、以 `(turn_id, sequence)` 为 Key 的 Append-only `turn_items`，以及当前
+Generation/持久化 Expiry 的 `turn_leases`。初始 Thread/Turn/Input/Lease 在同一
+Transaction 提交。每次 Append 在 Expected Lease Generation 下 Lock 或条件更新
+Turn，只分配一个 Next Sequence，并在发布前提交。每个 Turn 只能有一个终态；
+Fence/Reconcile 同时比较 Generation 与 Expiry。每个读写 Predicate 都包含 Tenant
+和 Thread Ownership。CAND-1 不得把进程内 Store、Memory Client、Multitask
+Client、前身服务或其他 Adapter 作为运行时 Fallback。
+
+REST/SSE v1 权威 Wire Contract 为：
+
+- `POST /api/v1/ai/chat` 接受可选 UUID `thread_id` 与不超过 65,536 Bytes 的非空
+  UTF-8 `input` JSON，`Content-Type: application/json`；未知 Field 被拒绝。成功
+  返回 `200`；JSON 恰好包含 `thread_id`、
+  `turn_id`、`status`、`items`、`usage`；`status` 为 `completed`；每个 Item 包含
+  且仅包含 `item_id`、正整数 `sequence`、`type: agent_message_delta` 和非空字符串
+  `content`。`usage` 恰好包含非负整数 `input_tokens`、`output_tokens`、
+  `total_tokens`，且 `total_tokens = input_tokens + output_tokens`。
+- `POST /api/v1/ai/chat/stream` 接受同一 JSON，返回 `200` 与
+  `Content-Type: text/event-stream`。Event Name 为 `turn.started`、
+  `item.created`，以及恰好一个 `turn.completed`、`turn.failed`、
+  `turn.interrupted` 或 `turn.cancelled`。每个 Event JSON 包含一致的
+  `thread_id`、`turn_id` 和严格递增正整数 `sequence`。`turn.started` Data 恰好
+  包含 `thread_id`、`turn_id`、`sequence`、`status: started`；`item.created`
+  另外恰好包含 `item_id`、`type: agent_message_delta`、非空 `content`；Terminal
+  Data 恰好包含 `thread_id`、`turn_id`、`sequence` 和匹配的 `status`，且仅
+  `turn.completed` 额外包含上述精确 `usage` Object。
+- `POST /api/v1/ai/turns/{turn_id}/interrupt` 在调用者 Trust Context 拥有 Active
+  Turn 时返回 `202`，Body 恰好包含 `turn_id` 与
+  `status: interrupt-requested`，无其他 Field；Request 无 Body。Stream 后续发出唯一持久化
+  `turn.interrupted`。未知或非 Owner Turn 都返回 `404` 且不泄露差异；已终态
+  Turn 返回 `409` 与 Error Code `turn-already-terminal`。
+- 缺失或无效 Identity 返回 `401`、`WWW-Authenticate: Bearer`，并用
+  `application/problem+json` 返回 `invalid-identity`。无效 JSON/Input 返回
+  `400`；初始或中途持久化失败返回 `503` 与 `durability-unavailable`。每个 Error
+  Body 恰好包含 `type: about:blank`、`title`、数值 `status`、稳定 `code` 和 UUID
+  `correlation_id`；`title` 是把 Code 从 Kebab Case 转成单词并把首字母大写。
+  初始 Transaction 失败时，错误响应不得暴露 Accepted Turn。
+
+同步 Chat 只 Buffer 已持久化 Item 后返回；SSE 只有在对应 Item/Terminal Append
+成功后才发布 Event。Resume 加载之前的持久化历史，在同一 Thread 上创建不同
+Turn ID，且不修改此前 Terminal Turn。契约副本和 Golden Fixture 只是实施证据，
+不是第二权威来源。
 
 ## 实施计划 [Required]
 
 **完整任务结果**：一个 Provider 中立的 Thread/Turn/Item 内核，通过
 OpenAI-compatible Provider Path 让单个已认证、纯文本、无工具 Turn 经两个
-有界旧 Chat Route 执行；确定性证据证明有序持久化重放，以及本文定义的精确
+自有 REST/SSE v1 Route 执行；确定性证据证明有序持久化重放，以及本文定义的精确
 完成、Provider Failure、已认证 Interrupt、Durability Outage、Crash、Lease
-Expiry、Stale Owner、Concurrent Reconciler 和 Route-back 结果。
+Expiry、Stale Owner、Concurrent Reconciler 和无旧 Fallback 结果。
 
 允许的子任务状态：`Not Started`、`In Progress`、`Blocked`、`Complete` 或
 `N/A — <具体原因>`。
@@ -293,29 +338,26 @@ Expiry、Stale Owner、Concurrent Reconciler 和 Route-back 结果。
 | ID | 目标或交付物 | 包含范围 | 状态 | 实际实施证据 |
 | --- | --- | --- | --- | --- |
 | T-1 | 创建自有 Domain Lifecycle、Application Turn Runner、Consumer-owned Port 和一个 OpenAI-compatible Provider Adapter。 | 根 Cargo Workspace；`koduck-ai` Domain、Application、Provider Adapter、Typed Error、Unit Test 和 Dependency Direction Test。 | Not Started | Pending |
-| T-2 | 实现有界已认证 REST/SSE 兼容映射并冻结不可变 Parity Fixture。 | 纯文本无工具 `POST /api/v1/ai/chat` 与 `POST /api/v1/ai/chat/stream`；Trust Context Handoff；Request/Response/Header/Status/SSE Fixture Hash；Contract Test。 | Not Started | Pending |
-| T-3 | 实现过渡 History 与带 Fencing Liveness Adapter，并证明故障、恢复与回滚行为。 | 初始持久化接受、Append/Replay、Deadline/Buffer Cap、Lease Acquire/Renew/Fence、Orphan Reconciliation、Crash/Fault Test、共享历史映射和回滚证据。 | Not Started | Pending |
+| T-2 | 实现自有已认证 REST/SSE v1 契约并冻结 Golden Fixture。 | 纯文本无工具 `POST /api/v1/ai/chat`、`POST /api/v1/ai/chat/stream` 与 Interrupt Route；Trust Context Handoff；Request/Response/Header/Status/SSE Fixture Hash；Contract Test。 | Not Started | Pending |
+| T-3 | 实现 AI 自有 PostgreSQL History 与带 Fencing Liveness Adapter，并证明故障、恢复与无 Fallback 行为。 | 初始持久化接受、Append/Replay、Migration、Deadline/Buffer Cap、Lease Acquire/Renew/Fence、Orphan Reconciliation、Crash/Fault Test 和无旧运行依赖证据。 | Not Started | Pending |
 
 **受影响路径**：`Cargo.toml`；`koduck-ai/Cargo.toml`；
 `koduck-ai/src/domain/**`；`koduck-ai/src/application/**`；
 `koduck-ai/src/adapters/http/**`；`koduck-ai/src/adapters/provider/**`；
 `koduck-ai/src/adapters/history/**`；`koduck-ai/src/main.rs`；
-`koduck-ai/tests/**`；`koduck-ai/docs/contracts/cand-1-legacy-compatibility.md`；
+`koduck-ai/migrations/**`；`koduck-ai/tests/**`；
+`koduck-ai/docs/contracts/cand-1-rest-sse-v1.md`；
 `docs/adr/ADR-0001-provider-neutral-turn-kernel.md`；
 `docs/adr/translations/zh-CN/ADR-0001-provider-neutral-turn-kernel.md`；
 `docs/adr/INDEX.md`；`docs/architecture/ADD-0001-ai-service-codex-alignment.md`；
 以及 `docs/architecture/translations/zh-CN/ADD-0001-ai-service-codex-alignment.md`。
 
-**迁移与回滚策略 [Conditionally Required — 替换或改变现有行为]**：以并行方式
-引入替代切片，不退役或修改前身 Artifact。审批前，Q-1 至 Q-3 必须记录不可变
-Legacy Contract Fixture、前身 Artifact Digest、APISIX 旧/替代 Route ID、共享
-History Subset、Health Probe 和确定性 Route-back Observation。实施只能写入已证明
-与两条 Path 兼容的共享子集。流量切换和回切执行是本 ADR 范围外的运维动作，
-需要 Accepted OCR。回滚停止条件为任一 Fixture Mismatch、发布未提交 Item、
-Stale Generation Append、重复 Orphan Terminal，或旧 Path 无法读取 History
-Record。回滚时停止替代路径 Admission，把有界 Cohort 返回到已记录旧 Route，
-验证旧 Path Health Probe 和最后一个共享 History Turn 的 Replay，并保留权威历史，
-只丢弃替代路径本地可重建 Cache。
+**迁移与回滚策略 [Conditionally Required — 替换或改变现有行为]**：N/A — 这是
+Greenfield Source 决策，不存在现有 Koduck AI Runtime、前身 Artifact、APISIX
+旧 Route、共享 History 或 Fallback Path。任何未通过验收的候选项不得晋级，可在
+保留证据后回退或隔离。本 ADR 不授权部署。首次部署需要 Accepted OCR，并记录
+不可变新 Artifact 与恢复流程；存在已验证新 Artifact 后，后续回滚只能在
+Accepted OCR 下选择已验证的新 Artifact。
 
 ### 工程例外 [Conditionally Required — 超出或豁免工程规则]
 
@@ -329,16 +371,16 @@ N/A — 所提设计不超出或豁免仓库工程规则。实施期间发现的
 | AC-1 | T-1 | Domain 与 Application Source 不依赖 Axum、Provider Wire 或 Persistence Adapter。 | T-1 Source 已存在。 | 运行 `cargo test -p koduck-ai --test architecture domain_and_application_dependencies_are_inward -- --exact`。 | Exit Code 0；测试报告 `src/domain/**` 与 `src/application/**` 中 Forbidden Import 或 Cargo Dependency 数量均为 0。 | Command Output 和 Tested Commit。 | Not Started | Pending |
 | AC-2 | T-1 | 相同已认证输入与确定性 Provider Stream 产生一个与 Adapter Representation 无关的有序 Turn Lifecycle。 | 进程内 Provider 发出 Delta `A`、`B`、Usage 与 Completion；In-memory History Port 接受全部 Append。 | 运行 `cargo test -p koduck-ai --test cand_1_kernel tool_free_turn_completes_with_ordered_items -- --exact`。 | Exit Code 0；一个 Turn 进入 `completed`；Replay 顺序为 Input、`A`、`B`、Usage、Terminal；每个 Published Sequence Number 等于其 Durable Append Sequence。 | Command Output 和 Serialized Replay Fixture。 | Not Started | Pending |
 | AC-3 | T-1 | Provider Terminal Error 产生 `failed`，且绝不产生 `completed`。 | 进程内 Provider 发出 `A`，随后发出 Error Code `UPSTREAM_RESET`。 | 运行 `cargo test -p koduck-ai --test cand_1_kernel provider_error_is_failed_terminal -- --exact`。 | Exit Code 0；Durable Replay 包含 Input、`A` 和恰好一个携带 `UPSTREAM_RESET` 的 `failed` Terminal；`completed` Terminal 数量为 0。 | Command Output 和 Replay Fixture。 | Not Started | Pending |
-| AC-4 | T-2 | 有界同步 Legacy Route 与冻结的前身 Contract 一致。 | 已记录 Q-1 Fixture Hash；有效 Trust Context；Plain-text Request；确定性 Provider Response。 | 运行 `cargo test -p koduck-ai --test cand_1_contract legacy_sync_chat_parity -- --exact`。 | Exit Code 0；只移除 Fixture 声明的非确定性 ID/Timestamp 后，Response Status、Required Header 和 Canonicalized JSON 与 Q-1 同步 Fixture 逐字节相等。 | Command Output、Fixture Hash 和 Comparison Report。 | Not Started | Pending |
-| AC-5 | T-2 | 有界 Legacy SSE Route 与冻结 Event Contract 一致，且 Item Append 前不发布 Event。 | 已记录 Q-1 Fixture Hash；有效 Trust Context；Provider 发出两个 Delta 和 Completion。 | 运行 `cargo test -p koduck-ai --test cand_1_contract legacy_sse_parity_and_append_before_publish -- --exact`。 | Exit Code 0；Event Name/Data/Terminal Order 与 Q-1 SSE Fixture 相同；每个 Publish Observation 均有同一 Item ID、序号更低且成功的 Append Observation。 | Command Output、Fixture Hash 和 Append/Publish Trace。 | Not Started | Pending |
+| AC-4 | T-2 | 同步 Route 符合自有 REST v1 契约。 | 有效 Trust Context；Input `hello` 的新 Thread Request；确定性 Provider Response `A`；按本 ADR 契约生成 Golden Fixture。 | 运行 `cargo test -p koduck-ai --test cand_1_contract sync_chat_v1_contract -- --exact`。 | Exit Code 0；Status `200`；`Content-Type` 为 `application/json`；Canonicalized Body 恰好包含 `thread_id`、`turn_id`、`status`、`items`、`usage`；`status` 为 `completed`；ID 均为 UUID；Item Sequence 为严格递增正整数；仅把 UUID 与 Usage Counter 替换为 Fixture Token 后，Body/Required Header 等于自有 v1 Golden Fixture。 | Command Output、Fixture Hash 和 Comparison Report。 | Not Started | Pending |
+| AC-5 | T-2 | SSE Route 符合自有 Event Contract，且 Durable Append 前不发布 Event。 | 有效 Trust Context；Provider 发出两个 Delta 和 Completion；记录自有 v1 Fixture Hash。 | 运行 `cargo test -p koduck-ai --test cand_1_contract sse_v1_contract_and_append_before_publish -- --exact`。 | Exit Code 0；Status `200`；Content Type 为 `text/event-stream`；Event 为一个 `turn.started`、两个有序 `item.created` 与恰好一个 `turn.completed`；全部 ID 一致且 Sequence 严格递增；每个 Publish Observation 都有同一 Item/Terminal Identity 且序号更低的成功 Append Observation。 | Command Output、Fixture Hash 和 Append/Publish Trace。 | Not Started | Pending |
 | AC-6 | T-2 | Resume 在同一 Thread 创建新 Turn，且不修改此前 Terminal Turn。 | 已存在一个 Completed Turn 及其不可变 Replay Hash。 | 运行 `cargo test -p koduck-ai --test cand_1_contract resume_creates_new_turn -- --exact`。 | Exit Code 0；Resumed Turn ID 不同、Thread ID 相同、Prior Replay Hash 不变，且新 Provider Input 恰好包含一次有序 Durable History。 | Command Output 和前后 Replay Hash。 | Not Started | Pending |
-| AC-7 | T-2 | 已认证 Client Stop 与 Platform/Dependency Cancellation 可区分。 | 一个 Active SSE Turn；一次有效 Client Interrupt；第二个 Turn 注入 Dependency Stop。 | 运行 `cargo test -p koduck-ai --test cand_1_contract interrupt_and_cancel_are_distinct -- --exact`。 | Exit Code 0；Client-stopped Turn 恰有一个 `interrupted` Terminal，Dependency-stopped Turn 恰有一个 `cancelled` Terminal；两个 Turn 均无其他 Terminal。 | Command Output 和两个 Replay Fixture。 | Not Started | Pending |
+| AC-7 | T-2 | Interrupt Contract 精确，且已认证 Client Stop 与 Platform/Dependency Cancellation 可区分。 | 一个 Owner Active SSE Turn、一个未知 UUID、一个非 Owner Turn、一个已终态 Turn，以及第二个注入 Dependency Stop 的 Turn。 | 运行 `cargo test -p koduck-ai --test cand_1_contract interrupt_and_cancel_are_distinct -- --exact`。 | Exit Code 0；Owner Active Case 返回 `202`，Body 仅含自身 `turn_id` 与 `status: interrupt-requested`，随后恰好一个 Durable `interrupted`；未知与非 Owner Case 在归一化 Correlation ID 后返回不可区分的 `404` Problem Body；已终态 Case 返回 `409` 与 `turn-already-terminal`；Dependency-stopped Turn 恰有一个 `cancelled`；所有测试 Turn 均无其他 Terminal。 | Command Output、Normalized Response Hash 和 Replay Fixture。 | Not Started | Pending |
 | AC-8 | T-3 | 初始 History Failure 不暴露 Accepted Turn；后续 Append Outage 只暴露 Durable Prefix 和 `durability-unavailable`。 | Fault Adapter 在 Case A 让初始 Transaction 失败；在 Case B 的一个 Durable Delta 后让下一次 Append 失败。 | 运行 `cargo test -p koduck-ai --test cand_1_durability initial_and_mid_turn_outages_fail_closed -- --exact`。 | Exit Code 0；Case A 的 Accepted Turn Record 和 Provider Call 均为 0；Case B 只发布 Durable Delta，不发布失败 Append Payload，停止 Provider Consumption，并发出 `durability-unavailable`。 | Command Output、Adapter Trace 和 Replay Fixture。 | Not Started | Pending |
 | AC-9 | T-3 | Append Deadline 与 Unpublished Buffer Limit 精确且 Fail Closed。 | Virtual Clock；分别测试 2.001 秒 Append、65 Items、Payload Size 1,048,577 Bytes。 | 运行 `cargo test -p koduck-ai --test cand_1_durability append_deadline_and_buffer_caps -- --exact`。 | Exit Code 0；每个 Case 都停止 Provider Consumption、发布 0 个超限 Item、发出 `durability-unavailable`，且 Replay 等于 Case 前的 Durable Prefix。 | Command Output 和每个 Case 的 Trace。 | Not Started | Pending |
 | AC-10 | T-3 | Process Crash 对账 Fence 过期 Generation，并 Append 一个孤儿 `cancelled` Terminal。 | Virtual Clock；最后续租 t=0；Heartbeat 5 秒、Lease 20 秒、Clock-skew Margin 2 秒；Owner Process 在一个 Durable Delta 后立即终止。 | 运行 `cargo test -p koduck-ai --test cand_1_liveness process_crash_fences_and_cancels_once -- --exact`。 | Exit Code 0；t=22 秒前对账被拒绝；t=22 秒时 Fence Generation；Delta 后恰有一个 Durable `cancelled` Terminal；Fencing 后每个 Old-generation Append 返回 `FENCED`。 | Command Output 和 Lease/Append Trace。 | Not Started | Pending |
 | AC-11 | T-3 | 并发 Reconciler 与延迟 Store Recovery 不能重复或覆盖 Orphan Terminal。 | 32 个 Reconciler 在 Store 不可用时争抢同一过期 Thread/Turn/Generation，随后 Store 恢复。 | 运行 `cargo test -p koduck-ai --test cand_1_liveness concurrent_reconcilers_are_idempotent -- --exact`。 | Exit Code 0；恢复后恰有一个 Conditional Write 成功；Durable History 恰有一个 `cancelled` Terminal；31 个 Reconciler 收到 `ALREADY_TERMINAL` 或 `FENCED`；Late `completed` Append 被拒绝。 | Command Output、Race Summary 和 Replay Hash。 | Not Started | Pending |
-| AC-12 | T-3 | 已记录回滚路径可读取最后一个共享 Turn，并恢复旧 Route Observation。 | 已记录 Q-2/Q-3 证据；Accepted OCR 授权 Disposable Route Drill；共享子集中存在一个 Replacement Turn。 | 遵循 Q-2/Q-3 和 Governing OCR 记录的确定性 Inspection/Probe Procedure；不得只凭本 ADR 执行。 | 有界 Cohort 的 Old Route ID 为 Active；其 Health Probe 返回 Q-2 预期 Status/Body；Old-path Replay 的 Replacement Turn 等于 Shared-history Fixture Hash；不删除或改写权威 Record。 | OCR Path、不可变 Route Observation、Health Response 和 Replay Hash。 | Not Started | Pending |
-| AC-13 | T-2 | 无 Validated Trust Context 的 Request 不得抵达 Application Turn Runner 或 Provider/History Port。 | 已记录 Q-1 Unauthorized-response Fixture；Request 缺少 Bearer Credential 或 Credential 无效。 | 运行 `cargo test -p koduck-ai --test cand_1_contract invalid_identity_stops_at_compatibility_boundary -- --exact`。 | Exit Code 0；Status、Required Header 和 Body 与 Q-1 Unauthorized Fixture 相同；Provider Call Count、Initial History-write Count 和 Accepted Turn Count 均为 0。 | Command Output、Fixture Hash 和 Adapter Call Counter。 | Not Started | Pending |
+| AC-12 | T-3 | CAND-1 不得运行时依赖或 Fallback 到前身基础设施、Memory 或 Multitask。 | T-1 至 T-3 Source、Manifest、Configuration Schema 和 Migration 已存在。 | 运行 `cargo test -p koduck-ai --test architecture cand_1_has_no_legacy_or_external_history_fallback -- --exact`。 | Exit Code 0；Dependency Inspection 报告前身 Repository/Artifact/Route Identifier 为 0，CAND-1 Execution Graph 中 Memory/Multitask Client 为 0，且只配置一个权威 `TurnHistory` 实现：AI 自有 PostgreSQL Adapter。 | Command Output 和 Dependency/Configuration Report。 | Not Started | Pending |
+| AC-13 | T-2 | 无 Validated Trust Context 的 Request 不得抵达 Application Turn Runner 或 Provider/History Port。 | Request 缺失或携带无效 Identity；加载自有 v1 Error Contract。 | 运行 `cargo test -p koduck-ai --test cand_1_contract invalid_identity_stops_at_presentation_boundary -- --exact`。 | Exit Code 0；Status `401`；`WWW-Authenticate` 为 `Bearer`；Content Type 为 `application/problem+json`；Body 恰好包含 `type: about:blank`、`title: Invalid identity`、数值 `status: 401`、`code: invalid-identity` 与 UUID `correlation_id`；Provider Call、Initial History Write 和 Accepted Turn 数量均为 0。 | Command Output、Response Fixture Hash 和 Adapter Call Counter。 | Not Started | Pending |
 
 允许的最终检查状态为 `Pass`、`Fail` 或 `N/A — <具体原因>`。`Fail` 会阻止完成。
 只有可证明检查触发条件或前置条件不适用时，`N/A` 才有效。
@@ -347,19 +389,19 @@ N/A — 所提设计不超出或豁免仓库工程规则。实施期间发现的
 
 | ID | 项目 | 完成条件 | 预期证据 | 状态 | 实际证据 |
 | --- | --- | --- | --- | --- | --- |
-| A-1 | ADR 已审批 | 记录合格非作者审批人、审批时间和精确 `Approval Evidence: Approve`；可选 Approval Context Revision 仅为信息性、非约束，且准确表示获批内容 | ADR Metadata | Not Started | Pending |
+| A-1 | ADR 已审批 | 记录合格非作者审批人、审批时间和精确 `Approval Evidence: Approve`；可选 Approval Context Revision 仅为信息性、非约束，且准确表示获批内容 | ADR Metadata | Complete | `@linhai` 自声明审批身份、明确 ADR-0001 并精确回复 `Approve`；Metadata 记录 `2026-08-11T10:40:42+08:00`。由于尚无不可变 Revision 表示获批的未提交内容，不记录 Approval Context Revision。 |
 | A-2 | 完整任务已交付 | 每个已声明子任务都有实际实施证据；每个适用验收检查均为 `Pass` 且有实际结果和证据；它们共同满足完整任务结果 | Implementation Plan 与 Acceptance Checks Row | Not Started | Pending |
-| A-3 | 适用时同步 ADD 双向链接 | Selected Candidate 记录本 ADR 精确路径，本 ADR 记录精确 ADD 路径和 Candidate ID，双方一致；只有本 ADR 为 `Complete`/`Verified` 后 Candidate 才到 `Complete` | ADD Path、Candidate ID、ADR Path 和 Git Blob/Commit | Not Started | Pending — 双向 Draft Reference 已存在，但在记录实施证据且 CAND-1 可以如实进入 `Complete` 前，本检查项仍未完成。 |
-| A-4 | 满足要求级别 | 每个 Required Section 完整；每个 Conditional Trigger 已评估并完成或标为 `N/A — <原因>`；Optional Section 完整或删除 | Structured Document Review | Not Started | Pending — Q-1 至 Q-3 仍未解决，因此阻止 Approval-stage Requirement-level Completion。 |
-| A-5 | 验收检查可判定 | 每个检查指定一个 Subtask、Precondition/Input、Deterministic Method、Exact Expected Result 和 Evidence，且无无约束主观标准 | Structured Acceptance-check Review | Not Started | Pending — AC-4、AC-5、AC-12、AC-13 仍需 Q-1 至 Q-3 的 Fixture 与 Procedure Evidence，完整检查集才能在审批时可判定。 |
+| A-3 | 适用时同步 ADD 双向链接 | Selected Candidate 记录本 ADR 精确路径，本 ADR 记录精确 ADD 路径和 Candidate ID，双方一致；只有本 ADR 为 `Complete`/`Verified` 后 Candidate 才到 `Complete` | ADD Path、Candidate ID、ADR Path 和 Git Blob/Commit | Not Started | Pending — 双向链接一致，但在记录实施证据且 CAND-1 可以如实进入 `Complete` 前，本检查项仍未完成。 |
+| A-4 | 满足要求级别 | 每个 Required Section 完整；每个 Conditional Trigger 已评估并完成或标为 `N/A — <原因>`；Optional Section 完整或删除 | Structured Document Review | Complete | Structured Review 确认 Q-1 至 Q-3 已解决、治理 ADD 为 `Current`、每个 Required Section 已填充，且每个 Conditional Trigger 已完成或记录具体 `N/A`。 |
+| A-5 | 验收检查可判定 | 每个检查指定一个 Subtask、Precondition/Input、Deterministic Method、Exact Expected Result 和 Evidence，且无无约束主观标准 | Structured Acceptance-check Review | Complete | Structured Review 确认全部 13 个检查均指定一个 Subtask、确定性 Input/Method、精确可观察结果和 Evidence，且不存在无约束主观成功标准。 |
 | A-6 | 适用时治理工程例外 | 每个超出或豁免规则都有完整 Exception Row、Accountable Owner、Lifecycle 和 Verification Evidence；否则条件章节记录 `N/A — <原因>` | Engineering Exceptions 与 Affected-file Evidence | N/A — 未提出例外 | Engineering Exceptions 记录 `N/A`；实施发现例外时必须执行使审批失效的更新。 |
 
 ## 补充说明 [Optional]
 
-- 前身基线 Commit `c414ddccdbc45a99fcd3d606ca0fe1f75730b7fe` 在
-  `/api/v1/ai/chat` 与 `/api/v1/ai/chat/stream` 暴露有界 Route，并已包含
-  `LlmProvider` 抽象和 OpenAI-compatible Adapter。这些是证据输入，不是应整体
-  复制的 Source。
+- 前身基线 Commit `c414ddccdbc45a99fcd3d606ca0fe1f75730b7fe` 展示了
+  Chat/Stream 功能场景、`LlmProvider` 抽象和 OpenAI-compatible Adapter。它只
+  是功能调研证据；其中任何 Route、Field、Artifact、Datastore 或 Fallback 行为
+  都不是 CAND-1 权威要求。
 - 2 秒 Append Deadline、64-Item/1-MiB Unpublished Cap、5 秒 Heartbeat、
   20 秒 Lease 和 2 秒 Clock-skew Margin 都是对审批敏感的决策值。Accepted
   后改变任一值，都必须执行使审批失效的流程。
@@ -392,3 +434,6 @@ N/A — 所提设计不超出或豁免仓库工程规则。实施期间发现的
 | 2026-08-11 | 通过选择 CAND-1 创建 Proposed 项目级 Full ADR，包含详细边界、精确时序与 Buffer 决策、三个子任务、确定性验收检查和未解决的审批前置条件。 | @codex |
 | 2026-08-11 | 创建非权威中文翻译，并从英文权威 ADR 建立链接；未创建第二个决策身份或索引行。 | @codex |
 | 2026-08-11 | 将完成检查表 A-3 至 A-5 从 `In Progress` 恢复为 `Not Started`，并使实际证据与尚未解决的审批前置条件一致。 | @codex |
+| 2026-08-11 | 按当前 Codex 任务中的仓库 Owner 指示解决 Q-1 至 Q-3：以新 REST/SSE v1 与 AI 自有 PostgreSQL History Contract 为权威，移除旧 Parity、共享 History、APISIX Route-back 与运行时 Fallback 要求，并按 Greenfield 边界重写子任务与验收检查。 | @codex |
+| 2026-08-11 | `@linhai` 于 `2026-08-11T10:37:34+08:00` 把 ADD-0001 重新批准为 `Current` 后，同步架构来源 Gate；ADR Decision Status 仍独立保持 `Proposed`。 | @codex |
+| 2026-08-11 | 人类审批人先自声明 `@linhai`、明确 ADR-0001，再精确回复 `Approve`，从而接受本 ADR；记录 Approval Time `2026-08-11T10:40:42+08:00`。Implementation Status 保持 `Not Started`；由于获批内容尚无对应不可变 Commit，不记录 Approval Context Revision。 | @linhai |
