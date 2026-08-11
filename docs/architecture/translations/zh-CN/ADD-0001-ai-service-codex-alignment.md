@@ -503,7 +503,7 @@ sequenceDiagram
 
 | ID | 完整结果 | 范围边界 | 依赖 | 验收上下文 | 建议 ADR 类型 | 状态 | 状态原因或证据 | ADR 路径 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| CAND-1 | 一个 Provider 中立的 Thread/Turn/Item 编排内核可让单个已认证、无工具 Turn 经旧 REST/SSE 兼容边界执行，持久化有序历史，并产生明确完成、失败、中断、持久化宕机和前台 Owner 失联结果。 | 包含领域生命周期、Core Port、兼容映射、一个 Provider 路径，以及覆盖当前权威历史路径、足以支持先持久化后发布、重放和带 Fencing 前台活性租约的最小 C-6 兼容 Adapter；不含最终 Memory/Multitask 所有权、Fork/Checkpoint/幂等迁移、高权限工具、扩展、后台任务、公开契约退役或部署。 | 本 ADD 必须 `Current`；ADR 接受前验证外部契约基线、不可变旧制品、APISIX 并行路由、兼容权威历史子集和回切条件。 | 一个无工具 Turn 的二元映射，以及 Resume 新建 Turn、先持久化后发布、有界 Append/Backpressure 与活性窗口、重放、Provider/Store 失败、进程崩溃、租约过期、旧 Owner Fencing、并发对账幂等、恰好一个孤儿 `cancelled` 和回滚检查。 | Full | Ready | N/A — Ready；仅在 ADD 为 `Current` 时可选择 | None |
+| CAND-1 | 一个 Provider 中立的 Thread/Turn/Item 编排内核可让单个已认证、无工具 Turn 经旧 REST/SSE 兼容边界执行，持久化有序历史，并产生明确完成、失败、中断、持久化宕机和前台 Owner 失联结果。 | 包含领域生命周期、Core Port、兼容映射、一个 Provider 路径，以及覆盖当前权威历史路径、足以支持先持久化后发布、重放和带 Fencing 前台活性租约的最小 C-6 兼容 Adapter；不含最终 Memory/Multitask 所有权、Fork/Checkpoint/幂等迁移、高权限工具、扩展、后台任务、公开契约退役或部署。 | 本 ADD 必须 `Current`；ADR 接受前验证外部契约基线、不可变旧制品、APISIX 并行路由、兼容权威历史子集和回切条件。 | 一个无工具 Turn 的二元映射，以及 Resume 新建 Turn、先持久化后发布、有界 Append/Backpressure 与活性窗口、重放、Provider/Store 失败、进程崩溃、租约过期、旧 Owner Fencing、并发对账幂等、恰好一个孤儿 `cancelled` 和回滚检查。 | Full | Selected | 已由 `docs/adr/ADR-0001-provider-neutral-turn-kernel.md` 中 Proposed、Not Started 的项目级 Full ADR 选中 | `docs/adr/ADR-0001-provider-neutral-turn-kernel.md` |
 | CAND-2 | 所有 Tool/MCP 调用经过统一默认拒绝策略和隔离 D-7 执行边界；需要审批时使用一份权威精确动作 D-6，并具备取消、超时、输出上限、租约 Fencing 和可审计终态。 | 包含 C-1/C-7 审批传输、C-5 权威、C-6 前台租约校验、D-3 状态投影和当前 Tool/MCP Adapter；不含可复用 Session/Turn 授权、UI 和新增高权限能力。 | CAND-1 完成；已认证审批协议和现有效果清单可用。 | 覆盖免审批 Allow、拒绝、无效审批者、接受/拒绝/取消/过期、Scope/Attempt/Lease 漂移、过期 Owner 分发与结果拒绝、效果前重试再审批、超时、取消和不可信输出；回滚恢复上个获批 Tool Path。 | Full | Ready | N/A — Ready；依赖阻止提前选择 | None |
 | CAND-3 | 通过可替换 Store Port 由 Memory/Multitask 提供权威 Thread/Turn/Item、血缘、活性租约、Checkpoint 和幂等所有权，不依赖进程本地真值。 | 用完整逻辑所有权和 Adapter 模型替换 CAND-1 的最小历史/活性兼容 Adapter，包含重放、前台孤儿对账、Fork、Checkpoint、后台恢复和投影语义；不含物理数据库重构和无关记忆排序。 | CAND-1 完成；Memory/Multitask Owner 参与。 | 重放/顺序/Append-only 更正/租约 Fencing/租户隔离/重复提交有精确结果；迁移保留 CAND-1 历史和前台终态语义，回滚保留权威数据，只丢弃可重建投影。 | Full | Ready | N/A — Ready；依赖阻止提前选择 | None |
 | CAND-4 | 仓库指令、Agent Profile、Skill、Plugin 和 MCP Descriptor 经过一个带来源的扩展边界加载，且不能扩大执行权限。 | 包含发现、校验、优先级、Snapshot、诊断和现有 Adapter；不含 Marketplace UI、远程安装和新高权限工具。 | CAND-1、CAND-2 完成；需要时使用 CAND-3 Snapshot 语义。 | 优先级、无效扩展、来源丢失、Stale 策略、隔离、Snapshot 一致性和权限不升级可确定验证；回滚到静态安全清单。 | Full | Ready | N/A — Ready；依赖阻止提前选择 | None |
@@ -605,7 +605,7 @@ sequenceDiagram
 - [x] 横切关注点、风险和假设完整，重大问题均已解决。
 - [x] 需求与能力、候选项建立可追溯性，或说明为何无运行时候选项。
 - [x] 候选项只有结果/边界，无源文件和可执行实施设计。
-- [x] 没有候选项为 `Selected`/`Complete`，当前不需要 ADR 双向链接。
+- [x] 每个 `Selected`/`Complete` 候选项均有精确双向 ADR 路径；CAND-1 已由 `docs/adr/ADR-0001-provider-neutral-turn-kernel.md` 选中，且该 ADR 的 Architecture Source 指回本 ADD 与候选项 ID。
 - [x] 必填和条件触发内容完整。
 - [x] 在变为 `Current` 前记录合格非作者审批人、时间及精确 `Approval Evidence: Approve`；所记录的审批上下文修订为信息性、非约束，且与获批文档完全一致。
 
@@ -629,3 +629,4 @@ sequenceDiagram
 | 2026-08-11 | 解决生命周期、审批权威、精确 Attempt Scope、Append-only 更正、CAND-1 存储和迁移共存冲突；同步统一来源丢失、持久化、重试元数据、取消语义、契约方向、审计保留以及 C-1/C-7 交互。 | Codex |
 | 2026-08-11 | 将前台孤儿 Turn 活性归属明确为 C-2/C-6 带 Fencing 租约与对账，阻止旧 Owner 分发工具或提交结果，增加 CAND-1/CAND-2 崩溃/过期/Fencing 检查，并把迁移前提统一到 ADR Acceptance。 | Codex |
 | 2026-08-10 | @linhai 在当前评审对话中批准；记录审批元数据与信息性、非约束的审批上下文修订 `541598139e4903942b309ccb075b46473b117f7f`，并将设计状态置为 `Current`。 | @kimi |
+| 2026-08-11 | 通过 Proposed、Not Started 的项目级 Full ADR `docs/adr/ADR-0001-provider-neutral-turn-kernel.md` 选中 CAND-1，并同步双向路径与评审清单。 | @codex |

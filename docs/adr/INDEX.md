@@ -8,3 +8,4 @@ metadata changes. Never delete a row during archival; update its status and
 
 | Type | ID | Title | Decision Status | Implementation Status | Scope | Architecture Source | Path | Superseded By |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Full ADR | ADR-0001 | Provider-Neutral Tool-Free Turn Kernel | Proposed | Not Started | Project | `docs/architecture/ADD-0001-ai-service-codex-alignment.md` — CAND-1 | `docs/adr/ADR-0001-provider-neutral-turn-kernel.md` | None |
