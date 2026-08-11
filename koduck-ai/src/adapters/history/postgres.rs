@@ -10,7 +10,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use crate::application::{
     AcceptedTurn, HistoryError, NewItem, TurnCommand, TurnHistory, TurnLiveness,
 };
-use crate::domain::{Item, LeaseGeneration, TenantId, ThreadId, TrustContext, TurnId};
+use crate::domain::{
+    Item, LeaseGeneration, TenantId, TerminalOutcome, ThreadId, TrustContext, TurnId,
+};
 
 mod recovery;
 mod sqlx_executor;
@@ -378,6 +380,14 @@ impl<E: PostgresExecutor + Send + 'static> TurnHistory for PostgresTurnHistory<E
 
     fn append(&mut self, turn: &AcceptedTurn, item: NewItem) -> Result<Item, HistoryError> {
         self.executor.append(turn, item)
+    }
+
+    fn append_provider_terminal(
+        &mut self,
+        turn: &AcceptedTurn,
+        outcome: TerminalOutcome,
+    ) -> Result<Item, HistoryError> {
+        self.executor.append(turn, NewItem::Terminal(outcome))
     }
 
     fn replay(&self, tenant_id: &TenantId, turn_id: TurnId) -> Result<Vec<Item>, HistoryError> {

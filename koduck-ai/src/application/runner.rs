@@ -153,21 +153,20 @@ fn run_accepted<P: ModelProvider, H: TurnHistory>(
     let mut stream = match provider.stream(input) {
         Ok(stream) => stream,
         Err(error) => {
-            append_terminal(
+            append_provider_terminal_observed(
                 history,
                 accepted,
                 &mut state,
                 TerminalOutcome::Failed { code: error.code },
                 observer,
             )?;
-            state.lifecycle = state.lifecycle.fail()?;
             return Ok(state);
         }
     };
     let reached_terminal = drive_stream(history, accepted, &mut state, &mut *stream, observer)?;
     drop(stream);
     if !reached_terminal {
-        append_terminal(
+        append_provider_terminal_observed(
             history,
             accepted,
             &mut state,
@@ -176,7 +175,6 @@ fn run_accepted<P: ModelProvider, H: TurnHistory>(
             },
             observer,
         )?;
-        state.lifecycle = state.lifecycle.fail()?;
     }
     Ok(state)
 }
@@ -245,6 +243,41 @@ fn append_terminal<H: TurnHistory>(
     Ok(())
 }
 
+fn append_provider_terminal_observed<H: TurnHistory>(
+    history: &mut H,
+    accepted: &AcceptedTurn,
+    state: &mut ExecutionState,
+    outcome: TerminalOutcome,
+    observer: &mut dyn FnMut(TurnStreamEvent),
+) -> Result<(), TurnRunError> {
+    append_provider_terminal(history, accepted, state, outcome)?;
+    let terminal = state.published.last().ok_or(HistoryError::Unavailable)?;
+    observe_item(observer, accepted, terminal);
+    Ok(())
+}
+
+fn append_provider_terminal<H: TurnHistory>(
+    history: &mut H,
+    accepted: &AcceptedTurn,
+    state: &mut ExecutionState,
+    outcome: TerminalOutcome,
+) -> Result<(), TurnRunError> {
+    let terminal = history
+        .append_provider_terminal(accepted, outcome)
+        .map_err(|error| recover_append_failure(history, accepted, state, error))?;
+    let crate::domain::ItemPayload::Terminal(actual) = &terminal.payload else {
+        return Err(HistoryError::Unavailable.into());
+    };
+    state.lifecycle = match actual {
+        TerminalOutcome::Completed { .. } => state.lifecycle.complete()?,
+        TerminalOutcome::Failed { .. } => state.lifecycle.fail()?,
+        TerminalOutcome::Interrupted => state.lifecycle.interrupt()?,
+        TerminalOutcome::Cancelled => state.lifecycle.cancel()?,
+    };
+    state.published.push(terminal);
+    Ok(())
+}
+
 fn observe_item(observer: &mut dyn FnMut(TurnStreamEvent), accepted: &AcceptedTurn, item: &Item) {
     observer(TurnStreamEvent::Item {
         thread_id: accepted.thread_id,
@@ -277,22 +310,19 @@ fn handle_event<H: TurnHistory>(
         ProviderEvent::Completed => {
             let item = NewItem::Terminal(TerminalOutcome::Completed { usage: state.usage });
             validate_provider_item(state, &item)?;
-            let terminal = history.append_completion(accepted, state.usage)?;
-            state.lifecycle = match terminal.payload {
-                crate::domain::ItemPayload::Terminal(TerminalOutcome::Interrupted) => {
-                    state.lifecycle.interrupt()?
-                }
-                _ => state.lifecycle.complete()?,
-            };
-            state.published.push(terminal);
+            append_provider_terminal(
+                history,
+                accepted,
+                state,
+                TerminalOutcome::Completed { usage: state.usage },
+            )?;
             Ok(true)
         }
         ProviderEvent::Error { code } => {
-            let item = NewItem::Terminal(TerminalOutcome::Failed { code });
+            let outcome = TerminalOutcome::Failed { code };
+            let item = NewItem::Terminal(outcome.clone());
             validate_provider_item(state, &item)?;
-            let terminal = history.append(accepted, item)?;
-            state.lifecycle = state.lifecycle.fail()?;
-            state.published.push(terminal);
+            append_provider_terminal(history, accepted, state, outcome)?;
             Ok(true)
         }
         ProviderEvent::Pending => Ok(false),

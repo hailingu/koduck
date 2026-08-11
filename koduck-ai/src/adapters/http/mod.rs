@@ -205,12 +205,22 @@ impl<S: TurnService> HttpAdapter<S> {
             return problem(400, "invalid-request", false);
         };
         let mut started = false;
+        let mut terminal_emitted = false;
         let result = self.service.execute_stream(command, &mut |event| {
             started = true;
+            terminal_emitted |= matches!(
+                &event,
+                TurnStreamEvent::Item { item, .. }
+                    if matches!(
+                        &item.payload,
+                        crate::domain::ItemPayload::Terminal(_)
+                    )
+            );
             emit(stream_event_body(event));
         });
         match result {
             Ok(_) => response(200, "text/event-stream", String::new()),
+            Err(_) if terminal_emitted => response(200, "text/event-stream", String::new()),
             Err(error) if started => {
                 let problem = map_service_error(&error);
                 emit(stream_error_body(&problem.body));

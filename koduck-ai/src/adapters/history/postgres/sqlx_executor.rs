@@ -251,7 +251,7 @@ impl SqlxPostgresExecutor {
             .try_get("interrupt_requested")
             .map_err(unavailable)?;
         let new_item = match new_item {
-            NewItem::Terminal(TerminalOutcome::Completed { .. }) if interrupt_requested => {
+            NewItem::Terminal(_) if interrupt_requested => {
                 NewItem::Terminal(TerminalOutcome::Interrupted)
             }
             other => other,

@@ -28,6 +28,8 @@ struct SimulatedState {
     terminal: bool,
     renewal_attempts: usize,
     transient_renewal_failures: usize,
+    interrupt_checks: usize,
+    interrupt_read_error: Option<HistoryError>,
 }
 
 impl SimulatedPostgres {
@@ -72,6 +74,8 @@ impl SimulatedPostgres {
                     terminal: false,
                     renewal_attempts: 0,
                     transient_renewal_failures: 0,
+                    interrupt_checks: 0,
+                    interrupt_read_error: None,
                 })),
             },
             key,
@@ -93,6 +97,15 @@ impl SimulatedPostgres {
     fn renewal_attempts(&self) -> usize {
         self.state.lock().expect("state lock").renewal_attempts
     }
+
+    fn fail_interrupt_reads(&self) {
+        self.state.lock().expect("state lock").interrupt_read_error =
+            Some(HistoryError::Unavailable);
+    }
+
+    fn interrupt_checks(&self) -> usize {
+        self.state.lock().expect("state lock").interrupt_checks
+    }
 }
 
 impl PostgresExecutor for SimulatedPostgres {
@@ -105,6 +118,11 @@ impl PostgresExecutor for SimulatedPostgres {
     }
 
     fn interruption_requested(&self, _turn: &AcceptedTurn) -> Result<bool, HistoryError> {
+        let mut state = self.state.lock().expect("state lock");
+        state.interrupt_checks += 1;
+        if let Some(error) = state.interrupt_read_error.clone() {
+            return Err(error);
+        }
         Ok(false)
     }
 
@@ -234,6 +252,23 @@ impl PostgresExecutor for SimulatedPostgres {
         )?;
         Ok(RecoveryOutcome::Failed)
     }
+}
+
+#[test]
+fn postgres_completion_uses_one_atomic_append_operation() {
+    let (executor, _key, accepted) = SimulatedPostgres::seeded();
+    executor.fail_interrupt_reads();
+    let mut history = PostgresTurnHistory::new(executor.clone());
+
+    let terminal = history
+        .append_completion(&accepted, Usage::zero())
+        .expect("completion delegates directly to the bounded atomic append");
+
+    assert!(matches!(
+        terminal.payload,
+        ItemPayload::Terminal(TerminalOutcome::Completed { .. })
+    ));
+    assert_eq!(executor.interrupt_checks(), 0);
 }
 
 #[test]
