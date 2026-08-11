@@ -62,16 +62,16 @@ impl Turn {
     }
 
     /// Completes a live turn after the provider finishes successfully.
-    pub const fn complete(self) -> Result<Self, TurnTransitionError> {
+    pub fn complete(self) -> Result<Self, TurnTransitionError> {
         self.transition(TurnStatus::Completed)
     }
 
     /// Interrupts a live turn at the authenticated owner's request.
-    pub const fn interrupt(self) -> Result<Self, TurnTransitionError> {
+    pub fn interrupt(self) -> Result<Self, TurnTransitionError> {
         self.transition(TurnStatus::Interrupted)
     }
 
-    const fn transition(self, to: TurnStatus) -> Result<Self, TurnTransitionError> {
+    fn transition(self, to: TurnStatus) -> Result<Self, TurnTransitionError> {
         if self.status == TurnStatus::Started {
             Ok(Self { status: to })
         } else {
