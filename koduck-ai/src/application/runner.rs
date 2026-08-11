@@ -198,6 +198,9 @@ fn drive_stream<H: TurnHistory>(
     observer: &mut dyn FnMut(TurnStreamEvent),
 ) -> Result<bool, TurnRunError> {
     for event in stream {
+        if terminalize_from_control(history, accepted, state, observer)? {
+            return Ok(true);
+        }
         let published_before = state.published.len();
         let event_result = handle_event(history, accepted, state, event);
         for item in &state.published[published_before..] {
@@ -206,27 +209,38 @@ fn drive_stream<H: TurnHistory>(
         if event_terminal_or_recover(history, accepted, state, event_result)? {
             return Ok(true);
         }
-        match history.interruption_requested(accepted) {
-            Ok(true) => {
-                append_terminal(
-                    history,
-                    accepted,
-                    state,
-                    TerminalOutcome::Interrupted,
-                    observer,
-                )?;
-                state.lifecycle = state.lifecycle.interrupt()?;
-                return Ok(true);
-            }
-            Ok(false) => {}
-            Err(HistoryError::Fenced) => {
-                publish_replayed_terminal(history, accepted, state, observer)?;
-                return Ok(true);
-            }
-            Err(error) => return Err(history_failure(error, true, &state.published)),
+        if terminalize_from_control(history, accepted, state, observer)? {
+            return Ok(true);
         }
     }
     Ok(false)
+}
+
+fn terminalize_from_control<H: TurnHistory>(
+    history: &mut H,
+    accepted: &AcceptedTurn,
+    state: &mut ExecutionState,
+    observer: &mut dyn FnMut(TurnStreamEvent),
+) -> Result<bool, TurnRunError> {
+    match history.interruption_requested(accepted) {
+        Ok(true) => {
+            append_terminal(
+                history,
+                accepted,
+                state,
+                TerminalOutcome::Interrupted,
+                observer,
+            )?;
+            state.lifecycle = state.lifecycle.interrupt()?;
+            Ok(true)
+        }
+        Ok(false) => Ok(false),
+        Err(HistoryError::Fenced) => {
+            publish_replayed_terminal(history, accepted, state, observer)?;
+            Ok(true)
+        }
+        Err(error) => Err(history_failure(error, true, &state.published)),
+    }
 }
 
 fn publish_replayed_terminal<H: TurnHistory>(

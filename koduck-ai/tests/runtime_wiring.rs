@@ -431,6 +431,89 @@ impl ConcurrentHistory {
             .next()
             .expect("one turn was accepted")
     }
+
+    fn item_count(&self, turn_id: TurnId) -> usize {
+        self.state
+            .lock()
+            .expect("history state lock")
+            .items
+            .get(&turn_id)
+            .map_or(0, Vec::len)
+    }
+
+    fn has_interrupted_terminal(&self, turn_id: TurnId) -> bool {
+        self.state
+            .lock()
+            .expect("history state lock")
+            .items
+            .get(&turn_id)
+            .is_some_and(|items| {
+                matches!(
+                    items.last().map(|item| &item.payload),
+                    Some(ItemPayload::Terminal(TerminalOutcome::Interrupted))
+                )
+            })
+    }
+}
+
+#[derive(Clone)]
+struct BackpressuredProvider;
+
+impl ModelProvider for BackpressuredProvider {
+    fn stream(&mut self, _input: ModelInput) -> Result<ProviderStream<'_>, ProviderError> {
+        let mut delta_count = 0;
+        Ok(Box::new(std::iter::from_fn(move || {
+            if delta_count < 64 {
+                delta_count += 1;
+                Some(ProviderEvent::Delta("A".to_owned()))
+            } else {
+                thread::sleep(Duration::from_millis(1));
+                Some(ProviderEvent::Pending)
+            }
+        })))
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unread_sse_backpressure_does_not_block_interrupt_terminalization() {
+    let history = ConcurrentHistory::default();
+    let router = build_router(TurnRunner::new(BackpressuredProvider, history.clone()));
+    let response = router
+        .clone()
+        .oneshot(chat_request("/api/v1/ai/chat/stream"))
+        .await
+        .expect("stream response");
+    let turn_id = history.accepted_turn_id();
+
+    timeout(Duration::from_millis(500), async {
+        while history.item_count(turn_id) < 65 {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("all 64 provider deltas become durable without reading the SSE body");
+
+    let interrupt = router
+        .oneshot(interrupt_request(turn_id))
+        .await
+        .expect("interrupt response");
+    assert_eq!(interrupt.status(), StatusCode::ACCEPTED);
+
+    let terminalized = timeout(Duration::from_millis(250), async {
+        while !history.has_interrupted_terminal(turn_id) {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await;
+    if terminalized.is_err() {
+        drop(response);
+        panic!("an unread SSE body blocked the accepted interrupt terminal");
+    }
+
+    let body = to_bytes(response.into_body(), 1_048_576)
+        .await
+        .expect("bounded stream body");
+    assert!(String::from_utf8_lossy(&body).contains("event: turn.interrupted"));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

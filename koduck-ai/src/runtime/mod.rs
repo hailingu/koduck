@@ -33,6 +33,8 @@ const DATABASE_URL: &str = "KODUCK_AI_DATABASE_URL";
 const PROVIDER_BASE_URL: &str = "KODUCK_AI_OPENAI_BASE_URL";
 const PROVIDER_MODEL: &str = "KODUCK_AI_OPENAI_MODEL";
 const PROVIDER_API_KEY: &str = "KODUCK_AI_OPENAI_API_KEY";
+// One turn.started chunk, up to 64 provider items, and one terminal or error chunk.
+const STREAM_BUFFER_CAPACITY: usize = 66;
 
 /// Validated process configuration required to assemble the AI runtime.
 #[derive(Clone, Eq, PartialEq)]
@@ -219,16 +221,23 @@ where
     S: TurnService + Clone + Send + Sync + 'static,
 {
     let (decision_sender, decision_receiver) = oneshot::channel();
-    let (body_sender, body_receiver) = mpsc::channel::<Result<Bytes, Infallible>>(64);
+    let (body_sender, body_receiver) =
+        mpsc::channel::<Result<Bytes, Infallible>>(STREAM_BUFFER_CAPACITY);
     tokio::task::spawn_blocking(move || {
         let mut decision_sender = Some(decision_sender);
+        let mut body_sender = Some(body_sender);
         let mut adapter = HttpAdapter::new(service);
         let response = adapter.handle_stream(request, &mut |chunk| {
             if let Some(sender) = decision_sender.take() {
                 let _ = sender.send(Ok(()));
             }
             if !chunk.is_empty() {
-                let _ = body_sender.blocking_send(Ok(Bytes::from(chunk)));
+                let delivery = body_sender
+                    .as_ref()
+                    .map(|sender| sender.try_send(Ok(Bytes::from(chunk))));
+                if delivery.is_some_and(|result| result.is_err()) {
+                    body_sender = None;
+                }
             }
         });
         if let Some(sender) = decision_sender.take() {

@@ -33,6 +33,16 @@ impl ModelProvider for FailingProvider {
     }
 }
 
+struct OversizedDeltaProvider;
+
+impl ModelProvider for OversizedDeltaProvider {
+    fn stream(&mut self, _input: ModelInput) -> Result<ProviderStream<'_>, ProviderError> {
+        Ok(Box::new(
+            [ProviderEvent::Delta("x".repeat(1_048_576))].into_iter(),
+        ))
+    }
+}
+
 #[derive(Default)]
 struct InterruptedHistory {
     items: Vec<Item>,
@@ -115,6 +125,24 @@ fn accepted_interrupt_wins_over_provider_failure() {
     let result = TurnRunner::new(FailingProvider, InterruptedHistory::default())
         .execute(TurnCommand::new(trust, None, "hello").expect("valid command"))
         .expect("accepted interrupt terminalizes normally");
+
+    assert_eq!(result.status, TurnStatus::Interrupted);
+    assert!(matches!(
+        result.replay.last().map(|item| &item.payload),
+        Some(ItemPayload::Terminal(TerminalOutcome::Interrupted))
+    ));
+}
+
+#[test]
+fn accepted_interrupt_wins_before_provider_payload_validation() {
+    let trust = TrustContext::new(
+        TenantId::new("tenant-a").expect("valid tenant"),
+        "subject-a",
+    )
+    .expect("valid trust context");
+    let result = TurnRunner::new(OversizedDeltaProvider, InterruptedHistory::default())
+        .execute(TurnCommand::new(trust, None, "hello").expect("valid command"))
+        .expect("accepted interrupt bypasses the oversized provider delta");
 
     assert_eq!(result.status, TurnStatus::Interrupted);
     assert!(matches!(
