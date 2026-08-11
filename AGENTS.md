@@ -1,3 +1,4 @@
+<!-- ADR: docs/adr/ADR-0001-provider-neutral-turn-kernel.md -->
 # Koduck Agent Guide
 
 > Language: English
@@ -768,6 +769,7 @@ operations applies the independently matched row for each one.
 | `AGENTS.md`, `AGENTS.template.md`, `CLAUDE.md` | This guide's Non-Negotiable Gates, Execution Workflow, and Version-Control Safety sections | repository root | None | Perform a structured review of the affected instructions and report the inspected contracts; no automated governance check is configured. |
 | `docs/architecture/**` or `<service-or-package>/docs/architecture/**` | `docs/README.md` and this guide's Document Requirement Levels and Architecture Design Documents sections | repository root | None | Review requirement-level labels and triggers, routing, Trello baseline capture, Figma references, solution completeness, task-detail boundary, traceability, index row, status, and cross-references; no automated governance check is configured. |
 | `docs/**` | `docs/README.md` and this guide's Document Requirement Levels, Architecture Design Documents, and Decision Records sections | repository root | None | Perform a structured review of requirement levels, affected navigation, templates, records, index rows, paths, and cross-references; no automated governance check is configured. |
+| `koduck-ai/**`, root `Cargo.toml`, or root `Cargo.lock` | `docs/README.md`, `docs/development/software-engineering-standard.md`, and `docs/development/rust-standard.md` | repository root | `cargo fmt --all --check`; `cargo clippy -p koduck-ai --all-targets --all-features -- -D warnings`; `cargo test -p koduck-ai --all-targets --all-features` | Use non-interactive commands. `cargo clippy`, `cargo test`, and any other command that compiles or produces an artifact are governed builds and require an Accepted OCR before execution. |
 | Release or Git tag operation | `docs/delivery/releases.md`, `docs/delivery/git-tags.md`, and the governing Accepted OCR | repository root | Commands approved by the OCR | Treat tag creation or mutation, release publication, and artifact publication as external operational writes. |
 
 If no Scope Routing row matches, discover and run the narrowest relevant

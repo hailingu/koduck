@@ -10,14 +10,14 @@
 ## 元数据 [Required]
 
 - **决策状态**：Accepted
-- **实施状态**：Not Started
+- **实施状态**：In Progress
 - **日期**：2026-08-11
 - **作者**：@codex
 - **决策负责人**：@linhai
 - **所需审批人**：@linhai
 - **记录范围**：Project
 - **审批人 [Conditionally Required — Decision Status 为或曾为 `Accepted`]**：@linhai
-- **审批时间 [Conditionally Required — Decision Status 为或曾为 `Accepted`]**：2026-08-11T10:40:42+08:00
+- **审批时间 [Conditionally Required — Decision Status 为或曾为 `Accepted`]**：2026-08-11T11:14:45+08:00
 - **审批证据 [Conditionally Required — Decision Status 为或曾为 `Accepted`]**：Approve
 - **拒绝执行人 [Conditionally Required — Decision Status 为 `Rejected`]**：N/A — Decision Status 为 `Accepted`
 - **拒绝时间 [Conditionally Required — Decision Status 为 `Rejected`]**：N/A — Decision Status 为 `Accepted`
@@ -337,11 +337,13 @@ Expiry、Stale Owner、Concurrent Reconciler 和无旧 Fallback 结果。
 
 | ID | 目标或交付物 | 包含范围 | 状态 | 实际实施证据 |
 | --- | --- | --- | --- | --- |
-| T-1 | 创建自有 Domain Lifecycle、Application Turn Runner、Consumer-owned Port 和一个 OpenAI-compatible Provider Adapter。 | 根 Cargo Workspace；`koduck-ai` Domain、Application、Provider Adapter、Typed Error、Unit Test 和 Dependency Direction Test。 | Not Started | Pending |
+| T-1 | 创建仓库 Scope Routing、自有 Domain Lifecycle、Application Turn Runner、Consumer-owned Port 和一个 OpenAI-compatible Provider Adapter。 | 根 `AGENTS.md` 中 `koduck-ai/**` Scope Routing 行；根 Cargo Workspace；`koduck-ai` Domain、Application、Provider Adapter、Typed Error、Unit Test 和 Dependency Direction Test。 | In Progress | 重新审批后，现有 Root Scope Routing、Cargo Manifest 与首个 Domain Lifecycle Test 可计入 T-1；在观察到受治理的红灯测试构建前，Production Source 仍保持缺失。 |
 | T-2 | 实现自有已认证 REST/SSE v1 契约并冻结 Golden Fixture。 | 纯文本无工具 `POST /api/v1/ai/chat`、`POST /api/v1/ai/chat/stream` 与 Interrupt Route；Trust Context Handoff；Request/Response/Header/Status/SSE Fixture Hash；Contract Test。 | Not Started | Pending |
 | T-3 | 实现 AI 自有 PostgreSQL History 与带 Fencing Liveness Adapter，并证明故障、恢复与无 Fallback 行为。 | 初始持久化接受、Append/Replay、Migration、Deadline/Buffer Cap、Lease Acquire/Renew/Fence、Orphan Reconciliation、Crash/Fault Test 和无旧运行依赖证据。 | Not Started | Pending |
 
-**受影响路径**：`Cargo.toml`；`koduck-ai/Cargo.toml`；
+**受影响路径**：`AGENTS.md`；`Cargo.toml`；`Cargo.lock`；
+`koduck-ai/Cargo.toml`；`koduck-ai/src/lib.rs`；
+`koduck-ai/src/adapters/mod.rs`；
 `koduck-ai/src/domain/**`；`koduck-ai/src/application/**`；
 `koduck-ai/src/adapters/http/**`；`koduck-ai/src/adapters/provider/**`；
 `koduck-ai/src/adapters/history/**`；`koduck-ai/src/main.rs`；
@@ -381,6 +383,7 @@ N/A — 所提设计不超出或豁免仓库工程规则。实施期间发现的
 | AC-11 | T-3 | 并发 Reconciler 与延迟 Store Recovery 不能重复或覆盖 Orphan Terminal。 | 32 个 Reconciler 在 Store 不可用时争抢同一过期 Thread/Turn/Generation，随后 Store 恢复。 | 运行 `cargo test -p koduck-ai --test cand_1_liveness concurrent_reconcilers_are_idempotent -- --exact`。 | Exit Code 0；恢复后恰有一个 Conditional Write 成功；Durable History 恰有一个 `cancelled` Terminal；31 个 Reconciler 收到 `ALREADY_TERMINAL` 或 `FENCED`；Late `completed` Append 被拒绝。 | Command Output、Race Summary 和 Replay Hash。 | Not Started | Pending |
 | AC-12 | T-3 | CAND-1 不得运行时依赖或 Fallback 到前身基础设施、Memory 或 Multitask。 | T-1 至 T-3 Source、Manifest、Configuration Schema 和 Migration 已存在。 | 运行 `cargo test -p koduck-ai --test architecture cand_1_has_no_legacy_or_external_history_fallback -- --exact`。 | Exit Code 0；Dependency Inspection 报告前身 Repository/Artifact/Route Identifier 为 0，CAND-1 Execution Graph 中 Memory/Multitask Client 为 0，且只配置一个权威 `TurnHistory` 实现：AI 自有 PostgreSQL Adapter。 | Command Output 和 Dependency/Configuration Report。 | Not Started | Pending |
 | AC-13 | T-2 | 无 Validated Trust Context 的 Request 不得抵达 Application Turn Runner 或 Provider/History Port。 | Request 缺失或携带无效 Identity；加载自有 v1 Error Contract。 | 运行 `cargo test -p koduck-ai --test cand_1_contract invalid_identity_stops_at_presentation_boundary -- --exact`。 | Exit Code 0；Status `401`；`WWW-Authenticate` 为 `Bearer`；Content Type 为 `application/problem+json`；Body 恰好包含 `type: about:blank`、`title: Invalid identity`、数值 `status: 401`、`code: invalid-identity` 与 UUID `correlation_id`；Provider Call、Initial History Write 和 Accepted Turn 数量均为 0。 | Command Output、Response Fixture Hash 和 Adapter Call Counter。 | Not Started | Pending |
+| AC-14 | T-1 | 根 Scope Routing 明确治理新的维护型 `koduck-ai/**` Source 与 Configuration Path。 | 根 `AGENTS.md` Scope Routing Table 与新 Workspace Manifest 存在。 | 确定性检查 Scope Routing Table 中恰好一个 `koduck-ai/**` Row。 | 恰好一个 Row 指定 `koduck-ai/**`，要求读取 `docs/README.md`、公共软件工程标准与 Rust 标准，以仓库根为 Working Directory，并列出非交互 Format、Lint、Test Command；该 Row 说明受治理 Build Command 仍需要 Accepted OCR。 | Scope Routing Row、Structured Inspection Result 和 Tested Commit。 | Not Started | Pending |
 
 允许的最终检查状态为 `Pass`、`Fail` 或 `N/A — <具体原因>`。`Fail` 会阻止完成。
 只有可证明检查触发条件或前置条件不适用时，`N/A` 才有效。
@@ -389,11 +392,11 @@ N/A — 所提设计不超出或豁免仓库工程规则。实施期间发现的
 
 | ID | 项目 | 完成条件 | 预期证据 | 状态 | 实际证据 |
 | --- | --- | --- | --- | --- | --- |
-| A-1 | ADR 已审批 | 记录合格非作者审批人、审批时间和精确 `Approval Evidence: Approve`；可选 Approval Context Revision 仅为信息性、非约束，且准确表示获批内容 | ADR Metadata | Complete | `@linhai` 自声明审批身份、明确 ADR-0001 并精确回复 `Approve`；Metadata 记录 `2026-08-11T10:40:42+08:00`。由于尚无不可变 Revision 表示获批的未提交内容，不记录 Approval Context Revision。 |
+| A-1 | ADR 已审批 | 记录合格非作者审批人、审批时间和精确 `Approval Evidence: Approve`；可选 Approval Context Revision 仅为信息性、非约束，且准确表示获批内容 | ADR Metadata | Complete | `@linhai` 明确 ADR-0001 并提供精确 `Approve`；元数据记录 `2026-08-11T11:14:45+08:00`。由于尚无不可变 Revision 表示获批内容，因此不记录 Approval Context Revision。 |
 | A-2 | 完整任务已交付 | 每个已声明子任务都有实际实施证据；每个适用验收检查均为 `Pass` 且有实际结果和证据；它们共同满足完整任务结果 | Implementation Plan 与 Acceptance Checks Row | Not Started | Pending |
 | A-3 | 适用时同步 ADD 双向链接 | Selected Candidate 记录本 ADR 精确路径，本 ADR 记录精确 ADD 路径和 Candidate ID，双方一致；只有本 ADR 为 `Complete`/`Verified` 后 Candidate 才到 `Complete` | ADD Path、Candidate ID、ADR Path 和 Git Blob/Commit | Not Started | Pending — 双向链接一致，但在记录实施证据且 CAND-1 可以如实进入 `Complete` 前，本检查项仍未完成。 |
-| A-4 | 满足要求级别 | 每个 Required Section 完整；每个 Conditional Trigger 已评估并完成或标为 `N/A — <原因>`；Optional Section 完整或删除 | Structured Document Review | Complete | Structured Review 确认 Q-1 至 Q-3 已解决、治理 ADD 为 `Current`、每个 Required Section 已填充，且每个 Conditional Trigger 已完成或记录具体 `N/A`。 |
-| A-5 | 验收检查可判定 | 每个检查指定一个 Subtask、Precondition/Input、Deterministic Method、Exact Expected Result 和 Evidence，且无无约束主观标准 | Structured Acceptance-check Review | Complete | Structured Review 确认全部 13 个检查均指定一个 Subtask、确定性 Input/Method、精确可观察结果和 Evidence，且不存在无约束主观成功标准。 |
+| A-4 | 满足要求级别 | 每个 Required Section 完整；每个 Conditional Trigger 已评估并完成或标为 `N/A — <原因>`；Optional Section 完整或删除 | Structured Document Review | Complete | 结构化评审确认新增 Scope Routing 交付物及当前阶段其他 Required/Triggered 内容均完整；实施阶段证据仍由 A-2 与验收检查行治理。 |
+| A-5 | 验收检查可判定 | 每个检查指定一个 Subtask、Precondition/Input、Deterministic Method、Exact Expected Result 和 Evidence，且无无约束主观标准 | Structured Acceptance-check Review | Complete | 结构化检查确认恰好 14 项检查；每项均包含一个 Subtask、非空 Precondition、确定性 Method、精确可观察 Expected Result 与 Evidence Field。 |
 | A-6 | 适用时治理工程例外 | 每个超出或豁免规则都有完整 Exception Row、Accountable Owner、Lifecycle 和 Verification Evidence；否则条件章节记录 `N/A — <原因>` | Engineering Exceptions 与 Affected-file Evidence | N/A — 未提出例外 | Engineering Exceptions 记录 `N/A`；实施发现例外时必须执行使审批失效的更新。 |
 
 ## 补充说明 [Optional]
@@ -437,3 +440,8 @@ N/A — 所提设计不超出或豁免仓库工程规则。实施期间发现的
 | 2026-08-11 | 按当前 Codex 任务中的仓库 Owner 指示解决 Q-1 至 Q-3：以新 REST/SSE v1 与 AI 自有 PostgreSQL History Contract 为权威，移除旧 Parity、共享 History、APISIX Route-back 与运行时 Fallback 要求，并按 Greenfield 边界重写子任务与验收检查。 | @codex |
 | 2026-08-11 | `@linhai` 于 `2026-08-11T10:37:34+08:00` 把 ADD-0001 重新批准为 `Current` 后，同步架构来源 Gate；ADR Decision Status 仍独立保持 `Proposed`。 | @codex |
 | 2026-08-11 | 人类审批人先自声明 `@linhai`、明确 ADR-0001，再精确回复 `Approve`，从而接受本 ADR；记录 Approval Time `2026-08-11T10:40:42+08:00`。Implementation Status 保持 `Not Started`；由于获批内容尚无对应不可变 Commit，不记录 Approval Context Revision。 | @linhai |
+| 2026-08-11 | `2026-08-11T10:53:55+08:00` 的使审批失效修订，在仓库首次增加维护型 `koduck-ai/**` Source/Configuration Path 前加入根 `AGENTS.md` Scope Routing 交付物和 AC-14。保留旧审批：Approver `@linhai`、Approval Time `2026-08-11T10:40:42+08:00`、Approval Evidence `Approve`、无 Approval Context Revision。Decision Status 重置为 `Proposed`，Implementation Status 保持 `Not Started`，等待重新审批。 | @codex |
+| 2026-08-11 | 人类审批人自声明 `@linhai`、明确 ADR-0001 并提供精确 `Approve`，从而重新批准 Scope Routing 修订；记录 Approval Time `2026-08-11T11:02:27+08:00`，Decision Status 恢复为 `Accepted`。Implementation Status 保持 `Not Started`；由于获批内容尚无对应不可变 Commit，不记录 Approval Context Revision。 | @linhai |
+| 2026-08-11 | 接受后启动 T-1：加入必需的 `koduck-ai/**` Scope Routing 行、Cargo Workspace Manifest 和 Test-first Domain Lifecycle Specification。Production Source 有意保持缺失，等待受治理的红灯测试构建。 | @codex |
+| 2026-08-11 | `2026-08-11T11:07:52+08:00` 的使审批失效修订，在任何受治理 Build 或 Production Source 创建前补入遗漏的 `Cargo.lock`、`koduck-ai/src/lib.rs` 与 `koduck-ai/src/adapters/mod.rs`。保留旧审批：Approver `@linhai`、Approval Time `2026-08-11T11:02:27+08:00`、Approval Evidence `Approve`、无 Approval Context Revision；Decision Status 重置为 `Proposed`，Implementation Status 重置为 `Not Started`。 | @codex |
+| 2026-08-11 | 人类审批人自声明 `@linhai`、明确 ADR-0001 并提供精确 `Approve`，从而重新批准完整维护路径范围；记录 Approval Time `2026-08-11T11:14:45+08:00`，Decision Status 恢复为 `Accepted`，Implementation Status 为 T-1 进入 `In Progress`。尚不记录 Approval Context Revision。 | @linhai |
