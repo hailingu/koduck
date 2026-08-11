@@ -39,6 +39,7 @@ impl SimulatedPostgres {
             },
         );
         let accepted = AcceptedTurn::new(
+            tenant_id.clone(),
             thread_id,
             turn_id,
             LeaseGeneration::initial(),

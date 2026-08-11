@@ -364,6 +364,7 @@ impl TurnHistory for SharedHistory {
             .push(input.clone());
         state.turn_items.insert(turn_id, vec![input.clone()]);
         Ok(AcceptedTurn::new(
+            command.trust.tenant_id.clone(),
             thread_id,
             turn_id,
             LeaseGeneration::initial(),

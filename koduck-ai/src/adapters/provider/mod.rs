@@ -3,9 +3,10 @@
 //! OpenAI-compatible protocol translation into provider-neutral application events.
 
 use thiserror::Error;
+use tokio::runtime::Handle;
 
 use crate::application::{ModelInput, ModelProvider, ProviderError, ProviderEvent, ProviderStream};
-use crate::domain::Usage;
+use crate::domain::{ItemPayload, Usage};
 
 /// A transport-level failure before OpenAI-compatible frames are available.
 #[derive(Clone, Debug, Error, Eq, PartialEq)]
@@ -27,6 +28,103 @@ pub trait OpenAiProtocolTransport {
         &mut self,
         input: &ModelInput,
     ) -> Result<Vec<String>, OpenAiTransportError>;
+}
+
+/// Reqwest transport for one explicitly configured OpenAI-compatible endpoint.
+pub struct ReqwestOpenAiTransport {
+    client: reqwest::Client,
+    runtime: Handle,
+    endpoint: String,
+    model: String,
+    api_key: String,
+}
+
+impl ReqwestOpenAiTransport {
+    /// Creates the production provider transport without issuing a request.
+    #[must_use]
+    pub fn new(
+        client: reqwest::Client,
+        runtime: Handle,
+        base_url: &str,
+        model: impl Into<String>,
+        api_key: impl Into<String>,
+    ) -> Self {
+        Self {
+            client,
+            runtime,
+            endpoint: format!("{}/chat/completions", base_url.trim_end_matches('/')),
+            model: model.into(),
+            api_key: api_key.into(),
+        }
+    }
+}
+
+impl OpenAiProtocolTransport for ReqwestOpenAiTransport {
+    fn chat_completion_frames(
+        &mut self,
+        input: &ModelInput,
+    ) -> Result<Vec<String>, OpenAiTransportError> {
+        let messages = provider_messages(input);
+        let request = self
+            .client
+            .post(&self.endpoint)
+            .bearer_auth(&self.api_key)
+            .json(&serde_json::json!({
+                "model": self.model,
+                "messages": messages,
+                "stream": true,
+                "stream_options": { "include_usage": true },
+            }));
+        let response = self
+            .runtime
+            .block_on(request.send())
+            .map_err(|_| transport_error("OPENAI_REQUEST_FAILED"))?;
+        let status = response.status();
+        if !status.is_success() {
+            return Err(transport_error(&format!("OPENAI_HTTP_{}", status.as_u16())));
+        }
+        let body = self
+            .runtime
+            .block_on(response.text())
+            .map_err(|_| transport_error("OPENAI_BODY_FAILED"))?;
+        let frames = body
+            .lines()
+            .filter(|line| line.starts_with("data: "))
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        if frames.is_empty() {
+            Err(transport_error("OPENAI_EMPTY_STREAM"))
+        } else {
+            Ok(frames)
+        }
+    }
+}
+
+fn provider_messages(input: &ModelInput) -> Vec<serde_json::Value> {
+    let mut messages = input
+        .history
+        .iter()
+        .filter_map(|item| match &item.payload {
+            ItemPayload::UserMessage { content } => {
+                Some(serde_json::json!({ "role": "user", "content": content }))
+            }
+            ItemPayload::AgentMessageDelta { content } => {
+                Some(serde_json::json!({ "role": "assistant", "content": content }))
+            }
+            ItemPayload::Usage(_) | ItemPayload::Terminal(_) => None,
+        })
+        .collect::<Vec<_>>();
+    messages.push(serde_json::json!({
+        "role": "user",
+        "content": input.input,
+    }));
+    messages
+}
+
+fn transport_error(code: &str) -> OpenAiTransportError {
+    OpenAiTransportError {
+        code: code.to_owned(),
+    }
 }
 
 /// Translates OpenAI-compatible streaming frames into owned provider events.

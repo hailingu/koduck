@@ -1,13 +1,13 @@
 -- ADR: docs/adr/ADR-0001-provider-neutral-turn-kernel.md
 
-CREATE TABLE threads (
+CREATE TABLE IF NOT EXISTS threads (
     tenant_id TEXT NOT NULL,
     thread_id UUID NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (tenant_id, thread_id)
 );
 
-CREATE TABLE turns (
+CREATE TABLE IF NOT EXISTS turns (
     tenant_id TEXT NOT NULL,
     thread_id UUID NOT NULL,
     turn_id UUID NOT NULL,
@@ -30,7 +30,7 @@ CREATE TABLE turns (
         REFERENCES threads (tenant_id, thread_id)
 );
 
-CREATE TABLE turn_items (
+CREATE TABLE IF NOT EXISTS turn_items (
     tenant_id TEXT NOT NULL,
     thread_id UUID NOT NULL,
     turn_id UUID NOT NULL,
@@ -56,14 +56,14 @@ CREATE TABLE turn_items (
         REFERENCES turns (tenant_id, thread_id, turn_id)
 );
 
-CREATE UNIQUE INDEX turn_items_one_terminal_per_turn
+CREATE UNIQUE INDEX IF NOT EXISTS turn_items_one_terminal_per_turn
     ON turn_items (tenant_id, thread_id, turn_id)
     WHERE is_terminal;
 
-CREATE INDEX turn_items_thread_replay
+CREATE INDEX IF NOT EXISTS turn_items_thread_replay
     ON turn_items (tenant_id, thread_id, created_at, turn_id, sequence);
 
-CREATE TABLE turn_leases (
+CREATE TABLE IF NOT EXISTS turn_leases (
     tenant_id TEXT NOT NULL,
     thread_id UUID NOT NULL,
     turn_id UUID NOT NULL,

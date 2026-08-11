@@ -80,7 +80,8 @@ fn cand_1_has_no_legacy_or_external_history_fallback() {
         .expect("canonical PostgreSQL migration exists");
     for relation in ["threads", "turns", "turn_items", "turn_leases"] {
         assert!(
-            migration.contains(&format!("CREATE TABLE {relation}")),
+            migration.contains(&format!("CREATE TABLE {relation}"))
+                || migration.contains(&format!("CREATE TABLE IF NOT EXISTS {relation}")),
             "migration defines {relation}"
         );
     }

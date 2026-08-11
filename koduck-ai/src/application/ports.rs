@@ -60,6 +60,8 @@ pub enum TurnCommandError {
 /// Durable identity allocated by the initial history transaction.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AcceptedTurn {
+    /// Tenant that owns the complete durable Turn key.
+    pub tenant_id: TenantId,
     /// AI-owned thread identity.
     pub thread_id: ThreadId,
     /// New immutable turn identity.
@@ -74,12 +76,14 @@ impl AcceptedTurn {
     /// Creates the result of an atomic initial history acceptance.
     #[must_use]
     pub const fn new(
+        tenant_id: TenantId,
         thread_id: ThreadId,
         turn_id: TurnId,
         generation: LeaseGeneration,
         input: Item,
     ) -> Self {
         Self {
+            tenant_id,
             thread_id,
             turn_id,
             generation,

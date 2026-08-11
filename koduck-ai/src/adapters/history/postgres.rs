@@ -5,6 +5,10 @@
 use crate::application::{AcceptedTurn, HistoryError, NewItem, TurnCommand, TurnHistory};
 use crate::domain::{Item, LeaseGeneration, TenantId, ThreadId, TrustContext, TurnId};
 
+mod sqlx_executor;
+
+pub use sqlx_executor::SqlxPostgresExecutor;
+
 /// Complete conditional key for one foreground lease generation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LeaseKey {

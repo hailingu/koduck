@@ -60,6 +60,7 @@ impl TurnHistory for RecordingHistory {
         self.items.push(input.clone());
 
         Ok(AcceptedTurn::new(
+            command.trust.tenant_id.clone(),
             thread_id,
             turn_id,
             LeaseGeneration::initial(),

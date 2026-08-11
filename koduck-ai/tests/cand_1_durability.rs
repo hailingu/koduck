@@ -77,6 +77,7 @@ impl TurnHistory for FaultHistory {
         );
         self.items.borrow_mut().push(input.clone());
         Ok(AcceptedTurn::new(
+            command.trust.tenant_id.clone(),
             command.thread_id.unwrap_or_default(),
             TurnId::new(),
             LeaseGeneration::initial(),
