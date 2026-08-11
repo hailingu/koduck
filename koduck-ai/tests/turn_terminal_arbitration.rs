@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex};
 use koduck_ai::application::{
     AcceptedTurn, HistoryError, ModelInput, ModelProvider, NewItem, ProviderError, ProviderEvent,
     ProviderStream, TurnCommand, TurnHistory, TurnLiveness, TurnRunError, TurnRunner,
+    TurnStreamEvent,
 };
 use koduck_ai::domain::{
     Item, ItemPayload, LeaseGeneration, TenantId, TerminalOutcome, ThreadId, TrustContext, TurnId,
@@ -223,6 +224,107 @@ fn accepted_interrupt_suppresses_the_next_provider_output() {
         item.payload,
         ItemPayload::AgentMessageDelta { .. } | ItemPayload::Usage(_)
     )));
+}
+
+struct PendingProvider;
+
+impl ModelProvider for PendingProvider {
+    fn stream(&mut self, _input: ModelInput) -> Result<ProviderStream<'_>, ProviderError> {
+        Ok(Box::new([ProviderEvent::Pending].into_iter()))
+    }
+}
+
+#[derive(Default)]
+struct ReconciledHistory {
+    items: Arc<Mutex<Vec<Item>>>,
+}
+
+impl TurnHistory for ReconciledHistory {
+    fn request_interrupt(
+        &mut self,
+        _trust: &TrustContext,
+        _turn_id: TurnId,
+    ) -> Result<(), HistoryError> {
+        Ok(())
+    }
+
+    fn interruption_requested(&self, _turn: &AcceptedTurn) -> Result<bool, HistoryError> {
+        let mut items = self.items.lock().expect("items lock");
+        let sequence = items.len() as u64 + 1;
+        items.push(Item::new(
+            sequence,
+            ItemPayload::Terminal(TerminalOutcome::Cancelled),
+        ));
+        Err(HistoryError::Fenced)
+    }
+
+    fn prior_thread_items(
+        &self,
+        _trust: &TrustContext,
+        _thread_id: ThreadId,
+    ) -> Result<Vec<Item>, HistoryError> {
+        Ok(Vec::new())
+    }
+
+    fn accept_initial(&mut self, command: &TurnCommand) -> Result<AcceptedTurn, HistoryError> {
+        let input = Item::new(
+            1,
+            ItemPayload::UserMessage {
+                content: command.input.clone(),
+            },
+        );
+        self.items.lock().expect("items lock").push(input.clone());
+        Ok(AcceptedTurn::new(
+            command.trust.tenant_id.clone(),
+            ThreadId::new(),
+            TurnId::new(),
+            LeaseGeneration::initial(),
+            input,
+        ))
+    }
+
+    fn append(&mut self, _turn: &AcceptedTurn, _item: NewItem) -> Result<Item, HistoryError> {
+        panic!("a fenced owner must not append after reconciliation")
+    }
+
+    fn replay(&self, _tenant_id: &TenantId, _turn_id: TurnId) -> Result<Vec<Item>, HistoryError> {
+        Ok(self.items.lock().expect("items lock").clone())
+    }
+}
+
+#[test]
+fn fencing_replays_and_publishes_the_durable_cancellation() {
+    let trust = TrustContext::new(
+        TenantId::new("tenant-a").expect("valid tenant"),
+        "subject-a",
+    )
+    .expect("valid trust context");
+    let mut observed = Vec::new();
+    let result = TurnRunner::new(PendingProvider, ReconciledHistory::default())
+        .execute_with_observer(
+            TurnCommand::new(trust, None, "hello").expect("valid command"),
+            &mut |event| observed.push(event),
+        )
+        .expect("durable reconciliation terminal closes the fenced stream normally");
+
+    assert_eq!(result.status, TurnStatus::Cancelled);
+    assert!(matches!(
+        result.published.as_slice(),
+        [Item {
+            payload: ItemPayload::Terminal(TerminalOutcome::Cancelled),
+            ..
+        }]
+    ));
+    assert!(matches!(
+        observed.last(),
+        Some(TurnStreamEvent::Item {
+            item: Item {
+                payload: ItemPayload::Terminal(TerminalOutcome::Cancelled),
+                ..
+            },
+            ..
+        })
+    ));
 }
 
 #[derive(Clone, Default)]

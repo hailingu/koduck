@@ -343,7 +343,7 @@ impl SqlxPostgresExecutor {
     ) -> Result<RecoveryOutcome, HistoryError> {
         let mut transaction = self.pool.begin().await.map_err(unavailable)?;
         let ownership = sqlx::query(
-            "SELECT t.status, t.next_sequence, l.fenced, \
+            "SELECT t.status, t.next_sequence, t.interrupt_requested, l.fenced, \
              (EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - l.renewed_at)) * 1000)::BIGINT \
              <= $5 AS within_window FROM turns t \
              JOIN turn_leases l USING (tenant_id, thread_id, turn_id) \
@@ -368,7 +368,10 @@ impl SqlxPostgresExecutor {
         if fenced || !within_window {
             return Err(HistoryError::Fenced);
         }
-        if status == "started" {
+        let interrupt_requested: bool = ownership
+            .try_get("interrupt_requested")
+            .map_err(unavailable)?;
+        if status == "started" && !interrupt_requested {
             sqlx::query(
                 "UPDATE turns SET status = 'recovery-pending' \
                  WHERE tenant_id = $1 AND thread_id = $2 AND turn_id = $3 \
@@ -383,15 +386,24 @@ impl SqlxPostgresExecutor {
             transaction.commit().await.map_err(unavailable)?;
             return Ok(RecoveryOutcome::Pending);
         }
-        if status != "recovery-pending" {
+        if status != "recovery-pending" && status != "started" {
             return Err(HistoryError::Fenced);
         }
         let sequence: i64 = ownership.try_get("next_sequence").map_err(unavailable)?;
+        let terminal;
+        let terminal_status;
+        if interrupt_requested {
+            terminal = TerminalOutcome::Interrupted;
+            terminal_status = "interrupted";
+        } else {
+            terminal = TerminalOutcome::Failed {
+                code: "DURABILITY_UNAVAILABLE".to_owned(),
+            };
+            terminal_status = "failed";
+        }
         let item = Item::new(
             u64::try_from(sequence).map_err(|_| HistoryError::Unavailable)?,
-            ItemPayload::Terminal(TerminalOutcome::Failed {
-                code: "DURABILITY_UNAVAILABLE".to_owned(),
-            }),
+            ItemPayload::Terminal(terminal),
         );
         insert_item(
             &mut transaction,
@@ -402,14 +414,16 @@ impl SqlxPostgresExecutor {
         )
         .await?;
         sqlx::query(
-            "UPDATE turns SET status = 'failed', next_sequence = next_sequence + 1 \
+            "UPDATE turns SET status = $5, next_sequence = next_sequence + 1 \
              WHERE tenant_id = $1 AND thread_id = $2 AND turn_id = $3 \
-             AND next_sequence = $4 AND status = 'recovery-pending'",
+             AND next_sequence = $4 AND status = $6",
         )
         .bind(turn.tenant_id.as_str())
         .bind(turn.thread_id.as_uuid())
         .bind(turn.turn_id.as_uuid())
         .bind(sequence_i64(item.sequence)?)
+        .bind(terminal_status)
+        .bind(status)
         .execute(&mut *transaction)
         .await
         .map_err(unavailable)?;

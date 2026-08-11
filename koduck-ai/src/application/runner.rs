@@ -206,22 +206,50 @@ fn drive_stream<H: TurnHistory>(
         if event_terminal_or_recover(history, accepted, state, event_result)? {
             return Ok(true);
         }
-        if history
-            .interruption_requested(accepted)
-            .map_err(|error| history_failure(error, true, &state.published))?
-        {
-            append_terminal(
-                history,
-                accepted,
-                state,
-                TerminalOutcome::Interrupted,
-                observer,
-            )?;
-            state.lifecycle = state.lifecycle.interrupt()?;
-            return Ok(true);
+        match history.interruption_requested(accepted) {
+            Ok(true) => {
+                append_terminal(
+                    history,
+                    accepted,
+                    state,
+                    TerminalOutcome::Interrupted,
+                    observer,
+                )?;
+                state.lifecycle = state.lifecycle.interrupt()?;
+                return Ok(true);
+            }
+            Ok(false) => {}
+            Err(HistoryError::Fenced) => {
+                publish_replayed_terminal(history, accepted, state, observer)?;
+                return Ok(true);
+            }
+            Err(error) => return Err(history_failure(error, true, &state.published)),
         }
     }
     Ok(false)
+}
+
+fn publish_replayed_terminal<H: TurnHistory>(
+    history: &H,
+    accepted: &AcceptedTurn,
+    state: &mut ExecutionState,
+    observer: &mut dyn FnMut(TurnStreamEvent),
+) -> Result<(), TurnRunError> {
+    let replay = history
+        .replay(&accepted.tenant_id, accepted.turn_id)
+        .map_err(|error| history_failure(error, true, &state.published))?;
+    let terminal = replay
+        .last()
+        .filter(|item| matches!(item.payload, crate::domain::ItemPayload::Terminal(_)))
+        .ok_or(HistoryError::Fenced)?
+        .clone();
+    let crate::domain::ItemPayload::Terminal(outcome) = &terminal.payload else {
+        return Err(HistoryError::Fenced.into());
+    };
+    apply_terminal_outcome(state, outcome)?;
+    observe_item(observer, accepted, &terminal);
+    state.published.push(terminal);
+    Ok(())
 }
 
 fn event_terminal_or_recover<H: TurnHistory>(

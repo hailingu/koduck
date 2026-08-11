@@ -25,3 +25,23 @@ fn postgres_history_keeps_each_turn_contiguous_in_provider_context() {
         "prior history must group every Turn before ordering Items within that Turn"
     );
 }
+
+#[test]
+fn durability_recovery_arbitrates_an_accepted_interrupt() {
+    let executor = include_str!("../src/adapters/history/postgres/sqlx_executor.rs");
+    let recovery = executor
+        .split("async fn recover_failed_async")
+        .nth(1)
+        .and_then(|tail| tail.split("async fn renew_lease_async").next())
+        .expect("recovery implementation remains inspectable");
+
+    assert!(
+        recovery.contains("t.status, t.next_sequence, t.interrupt_requested, l.fenced"),
+        "recovery must read the accepted interrupt under its turn-row lock"
+    );
+    assert!(
+        recovery.contains("TerminalOutcome::Interrupted")
+            && recovery.contains("terminal_status = \"interrupted\""),
+        "recovery must commit interrupted instead of failed when the request was accepted"
+    );
+}
