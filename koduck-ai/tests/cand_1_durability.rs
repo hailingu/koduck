@@ -174,10 +174,12 @@ fn initial_and_mid_turn_outages_fail_closed() {
 #[test]
 fn append_deadline_and_buffer_caps() {
     let policy = AppendPolicy::cand_1();
+    let mut deadline_buffer = UnpublishedBuffer::new(policy);
     assert_eq!(
-        policy.check_deadline(Duration::from_millis(2_001)),
+        deadline_buffer.observe_append_elapsed(Duration::from_millis(2_001)),
         Err(BufferLimitError::AppendDeadline)
     );
+    assert!(deadline_buffer.is_stopped());
 
     let mut item_buffer = UnpublishedBuffer::new(policy);
     for _ in 0..64 {
@@ -193,6 +195,7 @@ fn append_deadline_and_buffer_caps() {
         }),
         Err(BufferLimitError::ItemCount)
     );
+    assert!(item_buffer.is_stopped());
 
     let mut payload_buffer = UnpublishedBuffer::new(policy);
     assert_eq!(
@@ -201,6 +204,15 @@ fn append_deadline_and_buffer_caps() {
         }),
         Err(BufferLimitError::PayloadBytes)
     );
+    assert!(payload_buffer.is_stopped());
+    for error in [
+        BufferLimitError::AppendDeadline,
+        BufferLimitError::ItemCount,
+        BufferLimitError::PayloadBytes,
+    ] {
+        assert_eq!(error.problem_code(), "durability-unavailable");
+    }
+    assert!(deadline_buffer.take_durable_prefix().is_empty());
     assert!(item_buffer.take_durable_prefix().is_empty());
     assert!(payload_buffer.take_durable_prefix().is_empty());
 }

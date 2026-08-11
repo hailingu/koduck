@@ -56,12 +56,21 @@ pub enum BufferLimitError {
     PayloadBytes,
 }
 
+impl BufferLimitError {
+    /// Returns the stable presentation problem code for every fail-closed limit.
+    #[must_use]
+    pub const fn problem_code(self) -> &'static str {
+        "durability-unavailable"
+    }
+}
+
 /// Bounded unpublished items waiting for durable append confirmation.
 pub struct UnpublishedBuffer {
     policy: AppendPolicy,
     pending: Vec<NewItem>,
     pending_payload_bytes: usize,
     durable_prefix: Vec<Item>,
+    stopped: bool,
 }
 
 impl UnpublishedBuffer {
@@ -73,7 +82,29 @@ impl UnpublishedBuffer {
             pending: Vec::new(),
             pending_payload_bytes: 0,
             durable_prefix: Vec::new(),
+            stopped: false,
         }
+    }
+
+    /// Records one append duration and stops further provider consumption on timeout.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BufferLimitError::AppendDeadline`] and enters the stopped state
+    /// when elapsed time exceeds 2 seconds.
+    pub fn observe_append_elapsed(&mut self, elapsed: Duration) -> Result<(), BufferLimitError> {
+        if let Err(error) = self.policy.check_deadline(elapsed) {
+            self.stopped = true;
+            Err(error)
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Reports whether provider consumption must stop without more publication.
+    #[must_use]
+    pub const fn is_stopped(&self) -> bool {
+        self.stopped
     }
 
     /// Adds one unpublished item without exceeding the exact count or byte cap.
@@ -84,11 +115,13 @@ impl UnpublishedBuffer {
     /// would be exceeded.
     pub fn push(&mut self, item: NewItem) -> Result<(), BufferLimitError> {
         if self.pending.len() == self.policy.max_items {
+            self.stopped = true;
             return Err(BufferLimitError::ItemCount);
         }
         let payload_bytes = payload_bytes(&item);
         if self.pending_payload_bytes.saturating_add(payload_bytes) > self.policy.max_payload_bytes
         {
+            self.stopped = true;
             return Err(BufferLimitError::PayloadBytes);
         }
         self.pending_payload_bytes += payload_bytes;
