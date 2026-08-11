@@ -14,6 +14,8 @@ use tokio::sync::mpsc::error::TryRecvError;
 use crate::application::{ModelInput, ModelProvider, ProviderError, ProviderEvent, ProviderStream};
 use crate::domain::{ItemPayload, Usage};
 
+const MAX_OPENAI_FRAME_BYTES: usize = 1_048_576;
+
 /// A transport-level failure before OpenAI-compatible frames are available.
 #[derive(Clone, Debug, Error, Eq, PartialEq)]
 #[error("OpenAI-compatible transport failed: {code}")]
@@ -95,16 +97,8 @@ impl OpenAiProtocolTransport for ReqwestOpenAiTransport {
                 "stream": true,
                 "stream_options": { "include_usage": true },
             }));
-        let response = self
-            .runtime
-            .block_on(request.send())
-            .map_err(|_| transport_error("OPENAI_REQUEST_FAILED"))?;
-        let status = response.status();
-        if !status.is_success() {
-            return Err(transport_error(&format!("OPENAI_HTTP_{}", status.as_u16())));
-        }
         let (sender, mut receiver) = mpsc::channel(64);
-        self.runtime.spawn(pump_response(response, sender));
+        self.runtime.spawn(pump_request(request, sender));
         Ok(Box::new(std::iter::from_fn(move || {
             match receiver.try_recv() {
                 Ok(frame) => Some(frame),
@@ -116,6 +110,33 @@ impl OpenAiProtocolTransport for ReqwestOpenAiTransport {
             }
         })))
     }
+}
+
+async fn pump_request(
+    request: reqwest::RequestBuilder,
+    sender: mpsc::Sender<Result<OpenAiFrame, OpenAiTransportError>>,
+) {
+    let response = tokio::select! {
+        () = sender.closed() => return,
+        response = request.send() => response,
+    };
+    let Ok(response) = response else {
+        let _ = sender
+            .send(Err(transport_error("OPENAI_REQUEST_FAILED")))
+            .await;
+        return;
+    };
+    let status = response.status();
+    if !status.is_success() {
+        let _ = sender
+            .send(Err(transport_error(&format!(
+                "OPENAI_HTTP_{}",
+                status.as_u16()
+            ))))
+            .await;
+        return;
+    }
+    pump_response(response, sender).await;
 }
 
 async fn pump_response(
@@ -131,21 +152,11 @@ async fn pump_response(
         };
         match chunk {
             Ok(Some(chunk)) => {
-                pending.extend_from_slice(&chunk);
-                while let Some(newline) = pending.iter().position(|byte| *byte == b'\n') {
-                    let mut line = pending.drain(..=newline).collect::<Vec<_>>();
-                    while line
-                        .last()
-                        .is_some_and(|byte| matches!(*byte, b'\n' | b'\r'))
-                    {
-                        line.pop();
-                    }
-                    if send_frame(&sender, line, &mut saw_frame).await.is_err() {
-                        let _ = sender
-                            .send(Err(transport_error("OPENAI_BODY_FAILED")))
-                            .await;
-                        return;
-                    }
+                if let Err(error) =
+                    consume_chunk(&sender, &mut pending, &chunk, &mut saw_frame).await
+                {
+                    let _ = sender.send(Err(error)).await;
+                    return;
                 }
             }
             Ok(None) => break,
@@ -168,6 +179,42 @@ async fn pump_response(
             .send(Err(transport_error("OPENAI_EMPTY_STREAM")))
             .await;
     }
+}
+
+async fn consume_chunk(
+    sender: &mpsc::Sender<Result<OpenAiFrame, OpenAiTransportError>>,
+    pending: &mut Vec<u8>,
+    chunk: &[u8],
+    saw_frame: &mut bool,
+) -> Result<(), OpenAiTransportError> {
+    let mut remaining = chunk;
+    while let Some(newline) = remaining.iter().position(|byte| *byte == b'\n') {
+        append_frame_bytes(pending, &remaining[..=newline])?;
+        let mut line = std::mem::take(pending);
+        while line
+            .last()
+            .is_some_and(|byte| matches!(*byte, b'\n' | b'\r'))
+        {
+            line.pop();
+        }
+        send_frame(sender, line, saw_frame)
+            .await
+            .map_err(|()| transport_error("OPENAI_BODY_FAILED"))?;
+        remaining = &remaining[newline + 1..];
+    }
+    append_frame_bytes(pending, remaining)
+}
+
+fn append_frame_bytes(pending: &mut Vec<u8>, bytes: &[u8]) -> Result<(), OpenAiTransportError> {
+    if pending
+        .len()
+        .checked_add(bytes.len())
+        .is_none_or(|length| length > MAX_OPENAI_FRAME_BYTES)
+    {
+        return Err(transport_error("OPENAI_FRAME_TOO_LARGE"));
+    }
+    pending.extend_from_slice(bytes);
+    Ok(())
 }
 
 async fn send_frame(

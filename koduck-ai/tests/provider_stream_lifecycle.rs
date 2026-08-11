@@ -2,7 +2,7 @@
 
 use std::io::{Read, Write};
 use std::net::TcpListener;
-use std::sync::mpsc::{self, Receiver};
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::Duration;
 
@@ -12,8 +12,99 @@ use koduck_ai::domain::{TenantId, ThreadId, TurnId};
 
 struct DisconnectAwareUpstream {
     base_url: String,
+    connected: Receiver<()>,
     disconnected: Receiver<bool>,
     thread: Option<thread::JoinHandle<()>>,
+}
+
+struct HeaderStallingUpstream {
+    base_url: String,
+    release: Option<Sender<()>>,
+    thread: Option<thread::JoinHandle<()>>,
+}
+
+impl HeaderStallingUpstream {
+    fn start() -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test upstream");
+        let base_url = format!(
+            "http://{}",
+            listener.local_addr().expect("upstream address")
+        );
+        let (release, released) = mpsc::channel();
+        let thread = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept provider request");
+            let mut request = [0_u8; 4096];
+            let _ = stream.read(&mut request).expect("read provider request");
+            released.recv().expect("release stalled response headers");
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                .expect("write provider headers");
+        });
+        Self {
+            base_url,
+            release: Some(release),
+            thread: Some(thread),
+        }
+    }
+
+    fn release(&mut self) {
+        if let Some(release) = self.release.take() {
+            release.send(()).expect("release provider response headers");
+        }
+    }
+}
+
+impl Drop for HeaderStallingUpstream {
+    fn drop(&mut self) {
+        self.release();
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+struct OversizedFrameUpstream {
+    base_url: String,
+    thread: Option<thread::JoinHandle<()>>,
+}
+
+impl OversizedFrameUpstream {
+    fn start() -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test upstream");
+        let base_url = format!(
+            "http://{}",
+            listener.local_addr().expect("upstream address")
+        );
+        let thread = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept provider request");
+            let mut request = [0_u8; 4096];
+            let _ = stream.read(&mut request).expect("read provider request");
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n",
+                )
+                .expect("write provider headers");
+            let mut frame = b"data: ".to_vec();
+            frame.resize(1_048_577, b'x');
+            write!(stream, "{:X}\r\n", frame.len()).expect("write provider chunk size");
+            stream.write_all(&frame).expect("write oversized frame");
+            stream
+                .write_all(b"\r\n0\r\n\r\n")
+                .expect("finish provider body");
+        });
+        Self {
+            base_url,
+            thread: Some(thread),
+        }
+    }
+}
+
+impl Drop for OversizedFrameUpstream {
+    fn drop(&mut self) {
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
 }
 
 impl DisconnectAwareUpstream {
@@ -23,7 +114,8 @@ impl DisconnectAwareUpstream {
             "http://{}",
             listener.local_addr().expect("upstream address")
         );
-        let (sender, disconnected) = mpsc::channel();
+        let (connected_sender, connected) = mpsc::channel();
+        let (disconnected_sender, disconnected) = mpsc::channel();
         let thread = thread::spawn(move || {
             let (mut stream, _) = listener.accept().expect("accept provider request");
             let mut request = [0_u8; 4096];
@@ -34,6 +126,9 @@ impl DisconnectAwareUpstream {
                 )
                 .expect("write provider headers");
             stream.flush().expect("flush provider headers");
+            connected_sender
+                .send(())
+                .expect("report established provider response");
             stream
                 .set_read_timeout(Some(Duration::from_millis(750)))
                 .expect("set disconnect observation timeout");
@@ -49,15 +144,22 @@ impl DisconnectAwareUpstream {
                 }
                 Ok(_) | Err(_) => false,
             };
-            sender
+            disconnected_sender
                 .send(disconnected)
                 .expect("report provider connection state");
         });
         Self {
             base_url,
+            connected,
             disconnected,
             thread: Some(thread),
         }
+    }
+
+    fn wait_until_connected(&self) {
+        self.connected
+            .recv_timeout(Duration::from_secs(1))
+            .expect("provider response becomes established");
     }
 
     fn wait_for_disconnect(&self) -> bool {
@@ -105,10 +207,79 @@ async fn dropping_provider_stream_closes_an_idle_upstream() {
     .await
     .expect("transport setup task joins");
 
+    upstream.wait_until_connected();
     drop(frames);
 
     assert!(
         upstream.wait_for_disconnect(),
         "dropping the consumer stream must cancel the idle provider response pump"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn provider_stream_is_pollable_before_response_headers_arrive() {
+    let mut upstream = HeaderStallingUpstream::start();
+    let runtime = tokio::runtime::Handle::current();
+    let base_url = upstream.base_url.clone();
+    let mut setup = tokio::task::spawn_blocking(move || {
+        let mut transport = ReqwestOpenAiTransport::new(
+            reqwest::Client::new(),
+            runtime,
+            &base_url,
+            "test-model",
+            "test-key",
+        );
+        transport.chat_completion_frames(&model_input())
+    });
+
+    let Ok(result) = tokio::time::timeout(Duration::from_millis(250), &mut setup).await else {
+        upstream.release();
+        let _ = setup.await;
+        panic!("provider stream setup blocked while waiting for response headers");
+    };
+    let mut frames = result
+        .expect("transport setup task joins")
+        .expect("provider stream is created before response headers");
+
+    assert_eq!(
+        frames.next(),
+        Some(Ok(koduck_ai::adapters::provider::OpenAiFrame::Pending))
+    );
+    drop(frames);
+    upstream.release();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn oversized_unterminated_provider_frame_is_rejected() {
+    let upstream = OversizedFrameUpstream::start();
+    let runtime = tokio::runtime::Handle::current();
+    let base_url = upstream.base_url.clone();
+    let mut frames = tokio::task::spawn_blocking(move || {
+        let mut transport = ReqwestOpenAiTransport::new(
+            reqwest::Client::new(),
+            runtime,
+            &base_url,
+            "test-model",
+            "test-key",
+        );
+        transport
+            .chat_completion_frames(&model_input())
+            .expect("provider stream setup succeeds")
+    })
+    .await
+    .expect("transport setup task joins");
+
+    let error = tokio::time::timeout(
+        Duration::from_secs(3),
+        tokio::task::spawn_blocking(move || {
+            frames
+                .find_map(Result::err)
+                .expect("oversized provider frame is rejected")
+        }),
+    )
+    .await
+    .expect("provider frame rejection is bounded")
+    .expect("provider frame consumer joins");
+
+    assert_eq!(error.code, "OPENAI_FRAME_TOO_LARGE");
 }
