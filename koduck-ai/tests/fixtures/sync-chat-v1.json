@@ -1,0 +1,1 @@
+{"thread_id":"{{thread_id}}","turn_id":"{{turn_id}}","status":"completed","items":[{"item_id":"{{item_id}}","sequence":2,"type":"agent_message_delta","content":"A"}],"usage":{"input_tokens":{{input_tokens}},"output_tokens":{{output_tokens}},"total_tokens":{{total_tokens}}}}

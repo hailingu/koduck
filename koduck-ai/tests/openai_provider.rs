@@ -25,6 +25,7 @@ fn model_input() -> ModelInput {
         thread_id: ThreadId::new(),
         turn_id: TurnId::new(),
         input: "hello".to_owned(),
+        history: Vec::new(),
     }
 }
 

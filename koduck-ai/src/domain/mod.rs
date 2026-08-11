@@ -78,7 +78,7 @@ impl TrustContext {
 macro_rules! uuid_id {
     ($name:ident, $description:literal) => {
         #[doc = $description]
-        #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+        #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
         pub struct $name(Uuid);
 
         impl $name {

@@ -28,6 +28,26 @@ struct RecordingHistory {
 }
 
 impl TurnHistory for RecordingHistory {
+    fn request_interrupt(
+        &mut self,
+        _trust: &TrustContext,
+        _turn_id: TurnId,
+    ) -> Result<(), HistoryError> {
+        Err(HistoryError::NotFound)
+    }
+
+    fn interruption_requested(&self, _turn: &AcceptedTurn) -> Result<bool, HistoryError> {
+        Ok(false)
+    }
+
+    fn prior_thread_items(
+        &self,
+        _tenant_id: &TenantId,
+        _thread_id: koduck_ai::domain::ThreadId,
+    ) -> Result<Vec<Item>, HistoryError> {
+        Ok(Vec::new())
+    }
+
     fn accept_initial(&mut self, command: &TurnCommand) -> Result<AcceptedTurn, HistoryError> {
         let thread_id = command.thread_id.unwrap_or_default();
         let turn_id = TurnId::new();

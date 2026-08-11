@@ -1,0 +1,11 @@
+event: turn.started
+data: {"thread_id":"{{thread_id}}","turn_id":"{{turn_id}}","sequence":1,"status":"started"}
+
+event: item.created
+data: {"thread_id":"{{thread_id}}","turn_id":"{{turn_id}}","sequence":2,"item_id":"{{item_id_1}}","type":"agent_message_delta","content":"A"}
+
+event: item.created
+data: {"thread_id":"{{thread_id}}","turn_id":"{{turn_id}}","sequence":3,"item_id":"{{item_id_2}}","type":"agent_message_delta","content":"B"}
+
+event: turn.completed
+data: {"thread_id":"{{thread_id}}","turn_id":"{{turn_id}}","sequence":5,"status":"completed","usage":{"input_tokens":{{input_tokens}},"output_tokens":{{output_tokens}},"total_tokens":{{total_tokens}}}}
