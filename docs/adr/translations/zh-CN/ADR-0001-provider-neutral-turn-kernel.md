@@ -349,9 +349,9 @@ N/A — 所提设计不超出或豁免仓库工程规则。实施期间发现的
 | --- | --- | --- | --- | --- | --- |
 | A-1 | ADR 已审批 | 记录合格非作者审批人、审批时间和精确 `Approval Evidence: Approve`；可选 Approval Context Revision 仅为信息性、非约束，且准确表示获批内容 | ADR Metadata | Not Started | Pending |
 | A-2 | 完整任务已交付 | 每个已声明子任务都有实际实施证据；每个适用验收检查均为 `Pass` 且有实际结果和证据；它们共同满足完整任务结果 | Implementation Plan 与 Acceptance Checks Row | Not Started | Pending |
-| A-3 | 适用时同步 ADD 双向链接 | Selected Candidate 记录本 ADR 精确路径，本 ADR 记录精确 ADD 路径和 Candidate ID，双方一致；只有本 ADR 为 `Complete`/`Verified` 后 Candidate 才到 `Complete` | ADD Path、Candidate ID、ADR Path 和 Git Blob/Commit | In Progress | 两个 Draft Reference 均使用 `docs/architecture/ADD-0001-ai-service-codex-alignment.md` CAND-1 与 `docs/adr/ADR-0001-provider-neutral-turn-kernel.md`；Candidate Complete 等待实施完成。 |
-| A-4 | 满足要求级别 | 每个 Required Section 完整；每个 Conditional Trigger 已评估并完成或标为 `N/A — <原因>`；Optional Section 完整或删除 | Structured Document Review | In Progress | 2026-08-11 Draft Review 未发现空字段或未评估 Trigger，但 Q-1 至 Q-3 刻意保持 `Pending`，阻止 Approval-stage Completion。 |
-| A-5 | 验收检查可判定 | 每个检查指定一个 Subtask、Precondition/Input、Deterministic Method、Exact Expected Result 和 Evidence，且无无约束主观标准 | Structured Acceptance-check Review | In Progress | AC-1 至 AC-13 均有一个 Subtask 和 Binary Result Structure；AC-4、AC-5、AC-12、AC-13 需在审批前补齐 Q-1 至 Q-3 Fixture/Procedure Evidence。 |
+| A-3 | 适用时同步 ADD 双向链接 | Selected Candidate 记录本 ADR 精确路径，本 ADR 记录精确 ADD 路径和 Candidate ID，双方一致；只有本 ADR 为 `Complete`/`Verified` 后 Candidate 才到 `Complete` | ADD Path、Candidate ID、ADR Path 和 Git Blob/Commit | Not Started | Pending — 双向 Draft Reference 已存在，但在记录实施证据且 CAND-1 可以如实进入 `Complete` 前，本检查项仍未完成。 |
+| A-4 | 满足要求级别 | 每个 Required Section 完整；每个 Conditional Trigger 已评估并完成或标为 `N/A — <原因>`；Optional Section 完整或删除 | Structured Document Review | Not Started | Pending — Q-1 至 Q-3 仍未解决，因此阻止 Approval-stage Requirement-level Completion。 |
+| A-5 | 验收检查可判定 | 每个检查指定一个 Subtask、Precondition/Input、Deterministic Method、Exact Expected Result 和 Evidence，且无无约束主观标准 | Structured Acceptance-check Review | Not Started | Pending — AC-4、AC-5、AC-12、AC-13 仍需 Q-1 至 Q-3 的 Fixture 与 Procedure Evidence，完整检查集才能在审批时可判定。 |
 | A-6 | 适用时治理工程例外 | 每个超出或豁免规则都有完整 Exception Row、Accountable Owner、Lifecycle 和 Verification Evidence；否则条件章节记录 `N/A — <原因>` | Engineering Exceptions 与 Affected-file Evidence | N/A — 未提出例外 | Engineering Exceptions 记录 `N/A`；实施发现例外时必须执行使审批失效的更新。 |
 
 ## 补充说明 [Optional]
@@ -391,3 +391,4 @@ N/A — 所提设计不超出或豁免仓库工程规则。实施期间发现的
 | --- | --- | --- |
 | 2026-08-11 | 通过选择 CAND-1 创建 Proposed 项目级 Full ADR，包含详细边界、精确时序与 Buffer 决策、三个子任务、确定性验收检查和未解决的审批前置条件。 | @codex |
 | 2026-08-11 | 创建非权威中文翻译，并从英文权威 ADR 建立链接；未创建第二个决策身份或索引行。 | @codex |
+| 2026-08-11 | 将完成检查表 A-3 至 A-5 从 `In Progress` 恢复为 `Not Started`，并使实际证据与尚未解决的审批前置条件一致。 | @codex |
