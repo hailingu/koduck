@@ -190,7 +190,10 @@ fn sse_v1_contract_and_append_before_publish() {
         .replace("\"input_tokens\":3", "\"input_tokens\":{{input_tokens}}")
         .replace("\"output_tokens\":2", "\"output_tokens\":{{output_tokens}}")
         .replace("\"total_tokens\":5", "\"total_tokens\":{{total_tokens}}");
-    assert_eq!(normalized.trim_end(), include_str!("fixtures/sse-v1.txt").trim_end());
+    assert_eq!(
+        normalized.trim_end(),
+        include_str!("fixtures/sse-v1.txt").trim_end()
+    );
 }
 
 #[test]

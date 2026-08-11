@@ -1,0 +1,206 @@
+// ADR: docs/adr/ADR-0001-provider-neutral-turn-kernel.md
+
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
+use std::time::Duration;
+
+use koduck_ai::application::{
+    AcceptedTurn, AppendPolicy, BufferLimitError, DurabilityFailure, HistoryError, ModelInput,
+    ModelProvider, NewItem, ProviderError, ProviderEvent, ProviderStream, TurnCommand, TurnHistory,
+    TurnRunError, TurnRunner, UnpublishedBuffer,
+};
+use koduck_ai::domain::{
+    Item, ItemPayload, LeaseGeneration, TenantId, ThreadId, TrustContext, TurnId, Usage,
+};
+
+struct CountingProvider {
+    calls: Rc<Cell<usize>>,
+    consumed: Rc<Cell<usize>>,
+}
+
+impl ModelProvider for CountingProvider {
+    fn stream(&mut self, _input: ModelInput) -> Result<ProviderStream<'_>, ProviderError> {
+        self.calls.set(self.calls.get() + 1);
+        let consumed = Rc::clone(&self.consumed);
+        Ok(Box::new(
+            vec![
+                ProviderEvent::Delta("A".to_owned()),
+                ProviderEvent::Delta("B".to_owned()),
+                ProviderEvent::Usage(Usage::new(1, 2).expect("valid usage")),
+                ProviderEvent::Completed,
+            ]
+            .into_iter()
+            .inspect(move |_| consumed.set(consumed.get() + 1)),
+        ))
+    }
+}
+
+struct FaultHistory {
+    fail_initial: bool,
+    fail_append_at: Option<usize>,
+    accepted: Rc<Cell<usize>>,
+    append_calls: usize,
+    items: Rc<RefCell<Vec<Item>>>,
+}
+
+impl TurnHistory for FaultHistory {
+    fn request_interrupt(
+        &mut self,
+        _trust: &TrustContext,
+        _turn_id: TurnId,
+    ) -> Result<(), HistoryError> {
+        Err(HistoryError::NotFound)
+    }
+
+    fn interruption_requested(&self, _turn: &AcceptedTurn) -> Result<bool, HistoryError> {
+        Ok(false)
+    }
+
+    fn prior_thread_items(
+        &self,
+        _tenant_id: &TenantId,
+        _thread_id: ThreadId,
+    ) -> Result<Vec<Item>, HistoryError> {
+        Ok(Vec::new())
+    }
+
+    fn accept_initial(&mut self, command: &TurnCommand) -> Result<AcceptedTurn, HistoryError> {
+        if self.fail_initial {
+            return Err(HistoryError::Unavailable);
+        }
+        self.accepted.set(self.accepted.get() + 1);
+        let input = Item::new(
+            1,
+            ItemPayload::UserMessage {
+                content: command.input.clone(),
+            },
+        );
+        self.items.borrow_mut().push(input.clone());
+        Ok(AcceptedTurn::new(
+            command.thread_id.unwrap_or_default(),
+            TurnId::new(),
+            LeaseGeneration::initial(),
+            input,
+        ))
+    }
+
+    fn append(&mut self, _turn: &AcceptedTurn, item: NewItem) -> Result<Item, HistoryError> {
+        self.append_calls += 1;
+        if self.fail_append_at == Some(self.append_calls) {
+            return Err(HistoryError::Unavailable);
+        }
+        let durable = Item::new(self.items.borrow().len() as u64 + 1, item.into_payload());
+        self.items.borrow_mut().push(durable.clone());
+        Ok(durable)
+    }
+
+    fn replay(&self, _tenant_id: &TenantId, _turn_id: TurnId) -> Result<Vec<Item>, HistoryError> {
+        Ok(self.items.borrow().clone())
+    }
+}
+
+fn trust() -> TrustContext {
+    TrustContext::new(
+        TenantId::new("tenant-a").expect("valid tenant"),
+        "subject-a",
+    )
+    .expect("valid trust context")
+}
+
+fn run(
+    history: FaultHistory,
+    calls: Rc<Cell<usize>>,
+    consumed: Rc<Cell<usize>>,
+) -> Result<koduck_ai::application::TurnResult, TurnRunError> {
+    TurnRunner::new(CountingProvider { calls, consumed }, history)
+        .execute(TurnCommand::new(trust(), None, "hello").expect("valid command"))
+}
+
+#[test]
+fn initial_and_mid_turn_outages_fail_closed() {
+    let initial_calls = Rc::new(Cell::new(0));
+    let initial_accepted = Rc::new(Cell::new(0));
+    let initial_items = Rc::new(RefCell::new(Vec::new()));
+    let initial = run(
+        FaultHistory {
+            fail_initial: true,
+            fail_append_at: None,
+            accepted: Rc::clone(&initial_accepted),
+            append_calls: 0,
+            items: Rc::clone(&initial_items),
+        },
+        Rc::clone(&initial_calls),
+        Rc::new(Cell::new(0)),
+    );
+    assert!(matches!(
+        initial,
+        Err(TurnRunError::Durability(DurabilityFailure {
+            accepted: false,
+            ..
+        }))
+    ));
+    assert_eq!(initial_calls.get(), 0);
+    assert_eq!(initial_accepted.get(), 0);
+    assert!(initial_items.borrow().is_empty());
+
+    let mid_calls = Rc::new(Cell::new(0));
+    let mid_consumed = Rc::new(Cell::new(0));
+    let mid_items = Rc::new(RefCell::new(Vec::new()));
+    let mid = run(
+        FaultHistory {
+            fail_initial: false,
+            fail_append_at: Some(2),
+            accepted: Rc::new(Cell::new(0)),
+            append_calls: 0,
+            items: Rc::clone(&mid_items),
+        },
+        Rc::clone(&mid_calls),
+        Rc::clone(&mid_consumed),
+    );
+    let Err(TurnRunError::Durability(failure)) = mid else {
+        panic!("mid-turn outage must be typed durability failure");
+    };
+    assert!(failure.accepted);
+    assert_eq!(failure.published.len(), 1);
+    assert!(matches!(
+        &failure.published[0].payload,
+        ItemPayload::AgentMessageDelta { content } if content == "A"
+    ));
+    assert_eq!(mid_calls.get(), 1);
+    assert_eq!(mid_consumed.get(), 2);
+    assert_eq!(mid_items.borrow().len(), 2);
+}
+
+#[test]
+fn append_deadline_and_buffer_caps() {
+    let policy = AppendPolicy::cand_1();
+    assert_eq!(
+        policy.check_deadline(Duration::from_millis(2_001)),
+        Err(BufferLimitError::AppendDeadline)
+    );
+
+    let mut item_buffer = UnpublishedBuffer::new(policy);
+    for _ in 0..64 {
+        item_buffer
+            .push(NewItem::AgentMessageDelta {
+                content: "A".to_owned(),
+            })
+            .expect("first 64 items fit");
+    }
+    assert_eq!(
+        item_buffer.push(NewItem::AgentMessageDelta {
+            content: "B".to_owned(),
+        }),
+        Err(BufferLimitError::ItemCount)
+    );
+
+    let mut payload_buffer = UnpublishedBuffer::new(policy);
+    assert_eq!(
+        payload_buffer.push(NewItem::AgentMessageDelta {
+            content: "x".repeat(1_048_577),
+        }),
+        Err(BufferLimitError::PayloadBytes)
+    );
+    assert!(item_buffer.take_durable_prefix().is_empty());
+    assert!(payload_buffer.take_durable_prefix().is_empty());
+}

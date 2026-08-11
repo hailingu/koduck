@@ -252,10 +252,25 @@ pub enum TurnRunError {
     /// Initial provider setup failed.
     #[error(transparent)]
     Provider(#[from] ProviderError),
+    /// Canonical durability failed, with only the committed visible prefix retained.
+    #[error(transparent)]
+    Durability(DurabilityFailure),
     /// Canonical history rejected an operation.
     #[error(transparent)]
     History(#[from] HistoryError),
     /// Internal lifecycle code attempted an invalid state transition.
     #[error(transparent)]
     Transition(#[from] TurnTransitionError),
+}
+
+/// Context retained when canonical history becomes unavailable.
+#[derive(Clone, Debug, Error, Eq, PartialEq)]
+#[error("durability unavailable")]
+pub struct DurabilityFailure {
+    /// Whether the initial Turn/input/lease transaction had already committed.
+    pub accepted: bool,
+    /// Items published only after successful append before the outage.
+    pub published: Vec<Item>,
+    /// Typed underlying history result.
+    pub source: HistoryError,
 }

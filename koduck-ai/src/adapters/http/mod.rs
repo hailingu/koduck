@@ -187,7 +187,9 @@ fn map_service_error(error: &ServiceError) -> HttpResponse {
 
 fn map_turn_run_error(error: &TurnRunError) -> ServiceError {
     match error {
-        TurnRunError::History(HistoryError::Unavailable) => ServiceError::DurabilityUnavailable,
+        TurnRunError::Durability(_) | TurnRunError::History(HistoryError::Unavailable) => {
+            ServiceError::DurabilityUnavailable
+        }
         TurnRunError::History(HistoryError::NotFound | HistoryError::Fenced) => {
             ServiceError::NotFound
         }

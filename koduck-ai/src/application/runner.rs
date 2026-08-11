@@ -5,8 +5,8 @@
 use crate::domain::{Item, TenantId, TerminalOutcome, TrustContext, Turn, TurnId, Usage};
 
 use super::ports::{
-    AcceptedTurn, ModelInput, ModelProvider, NewItem, ProviderEvent, TurnCommand, TurnHistory,
-    TurnResult, TurnRunError,
+    AcceptedTurn, DurabilityFailure, HistoryError, ModelInput, ModelProvider, NewItem,
+    ProviderEvent, TurnCommand, TurnHistory, TurnResult, TurnRunError,
 };
 
 /// Owns provider-neutral lifecycle transitions and durable-before-visible ordering.
@@ -70,9 +70,13 @@ where
                 self.history
                     .prior_thread_items(&command.trust.tenant_id, thread_id)
             })
-            .transpose()?
+            .transpose()
+            .map_err(|error| history_failure(error, false, &[]))?
             .unwrap_or_default();
-        let accepted = self.history.accept_initial(&command)?;
+        let accepted = self
+            .history
+            .accept_initial(&command)
+            .map_err(|error| history_failure(error, false, &[]))?;
         let input = ModelInput {
             tenant_id: command.trust.tenant_id.clone(),
             thread_id: accepted.thread_id,
@@ -85,15 +89,21 @@ where
         let mut reached_terminal = false;
 
         for event in &mut *stream {
-            if handle_event(&mut self.history, &accepted, &mut state, event)? {
+            let event_result = handle_event(&mut self.history, &accepted, &mut state, event);
+            if event_result.map_err(|error| post_accept_failure(error, &state.published))? {
                 reached_terminal = true;
                 break;
             }
-            if self.history.interruption_requested(&accepted)? {
+            if self
+                .history
+                .interruption_requested(&accepted)
+                .map_err(|error| history_failure(error, true, &state.published))?
+            {
                 state.lifecycle = state.lifecycle.interrupt()?;
                 let terminal = self
                     .history
-                    .append(&accepted, NewItem::Terminal(TerminalOutcome::Interrupted))?;
+                    .append(&accepted, NewItem::Terminal(TerminalOutcome::Interrupted))
+                    .map_err(|error| history_failure(error, true, &state.published))?;
                 state.published.push(terminal);
                 reached_terminal = true;
                 break;
@@ -103,12 +113,15 @@ where
 
         if !reached_terminal {
             state.lifecycle = state.lifecycle.fail()?;
-            let terminal = self.history.append(
-                &accepted,
-                NewItem::Terminal(TerminalOutcome::Failed {
-                    code: "PROVIDER_STREAM_ENDED".to_owned(),
-                }),
-            )?;
+            let terminal = self
+                .history
+                .append(
+                    &accepted,
+                    NewItem::Terminal(TerminalOutcome::Failed {
+                        code: "PROVIDER_STREAM_ENDED".to_owned(),
+                    }),
+                )
+                .map_err(|error| history_failure(error, true, &state.published))?;
             state.published.push(terminal);
         }
         self.finish(
@@ -126,12 +139,16 @@ where
         lifecycle: Turn,
         published: Vec<Item>,
     ) -> Result<TurnResult, TurnRunError> {
+        let replay = self
+            .history
+            .replay(tenant_id, accepted.turn_id)
+            .map_err(|error| history_failure(error, true, &published))?;
         Ok(TurnResult {
             thread_id: accepted.thread_id,
             turn_id: accepted.turn_id,
             status: lifecycle.status(),
             published,
-            replay: self.history.replay(tenant_id, accepted.turn_id)?,
+            replay,
         })
     }
 }
@@ -171,5 +188,24 @@ fn handle_event<H: TurnHistory>(
             state.published.push(terminal);
             Ok(true)
         }
+    }
+}
+
+fn history_failure(error: HistoryError, accepted: bool, published: &[Item]) -> TurnRunError {
+    if error == HistoryError::Unavailable {
+        TurnRunError::Durability(DurabilityFailure {
+            accepted,
+            published: published.to_vec(),
+            source: error,
+        })
+    } else {
+        TurnRunError::History(error)
+    }
+}
+
+fn post_accept_failure(error: TurnRunError, published: &[Item]) -> TurnRunError {
+    match error {
+        TurnRunError::History(history_error) => history_failure(history_error, true, published),
+        other => other,
     }
 }

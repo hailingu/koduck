@@ -1,0 +1,281 @@
+// ADR: docs/adr/ADR-0001-provider-neutral-turn-kernel.md
+
+use std::sync::{Arc, Mutex};
+use std::thread;
+
+use koduck_ai::adapters::history::postgres::{
+    LeaseKey, LeaseTiming, PostgresExecutor, PostgresTurnHistory, ReconcileOutcome,
+};
+use koduck_ai::application::{AcceptedTurn, HistoryError, NewItem, TurnCommand, TurnHistory};
+use koduck_ai::domain::{
+    Item, ItemPayload, LeaseGeneration, TenantId, TerminalOutcome, ThreadId, TrustContext, TurnId,
+    Usage,
+};
+
+#[derive(Clone)]
+struct SimulatedPostgres {
+    state: Arc<Mutex<SimulatedState>>,
+}
+
+struct SimulatedState {
+    available: bool,
+    tenant_id: TenantId,
+    accepted: AcceptedTurn,
+    items: Vec<Item>,
+    last_renewal_ms: u64,
+    fenced: bool,
+    terminal: bool,
+}
+
+impl SimulatedPostgres {
+    fn seeded() -> (Self, LeaseKey, AcceptedTurn) {
+        let tenant_id = TenantId::new("tenant-a").expect("valid tenant");
+        let thread_id = ThreadId::new();
+        let turn_id = TurnId::new();
+        let input = Item::new(
+            1,
+            ItemPayload::UserMessage {
+                content: "hello".to_owned(),
+            },
+        );
+        let accepted = AcceptedTurn::new(
+            thread_id,
+            turn_id,
+            LeaseGeneration::initial(),
+            input.clone(),
+        );
+        let delta = Item::new(
+            2,
+            ItemPayload::AgentMessageDelta {
+                content: "A".to_owned(),
+            },
+        );
+        let key = LeaseKey::new(
+            tenant_id.clone(),
+            thread_id,
+            turn_id,
+            LeaseGeneration::initial(),
+        );
+        (
+            Self {
+                state: Arc::new(Mutex::new(SimulatedState {
+                    available: true,
+                    tenant_id,
+                    accepted: accepted.clone(),
+                    items: vec![input, delta],
+                    last_renewal_ms: 0,
+                    fenced: false,
+                    terminal: false,
+                })),
+            },
+            key,
+            accepted,
+        )
+    }
+
+    fn set_available(&self, available: bool) {
+        self.state.lock().expect("state lock").available = available;
+    }
+}
+
+impl PostgresExecutor for SimulatedPostgres {
+    fn request_interrupt(
+        &self,
+        _trust: &TrustContext,
+        _turn_id: TurnId,
+    ) -> Result<(), HistoryError> {
+        Err(HistoryError::NotFound)
+    }
+
+    fn interruption_requested(&self, _turn: &AcceptedTurn) -> Result<bool, HistoryError> {
+        Ok(false)
+    }
+
+    fn prior_thread_items(
+        &self,
+        tenant_id: &TenantId,
+        thread_id: ThreadId,
+    ) -> Result<Vec<Item>, HistoryError> {
+        let state = self.state.lock().expect("state lock");
+        if &state.tenant_id == tenant_id && state.accepted.thread_id == thread_id {
+            Ok(state.items.clone())
+        } else {
+            Err(HistoryError::NotFound)
+        }
+    }
+
+    fn accept_initial(&self, _command: &TurnCommand) -> Result<AcceptedTurn, HistoryError> {
+        Err(HistoryError::Unavailable)
+    }
+
+    fn append(&self, turn: &AcceptedTurn, item: NewItem) -> Result<Item, HistoryError> {
+        let mut state = self.state.lock().expect("state lock");
+        if !state.available {
+            return Err(HistoryError::Unavailable);
+        }
+        if state.fenced || turn.generation != state.accepted.generation {
+            return Err(HistoryError::Fenced);
+        }
+        if state.terminal {
+            return Err(HistoryError::AlreadyTerminal);
+        }
+        let terminal = matches!(item, NewItem::Terminal(_));
+        let durable = Item::new(state.items.len() as u64 + 1, item.into_payload());
+        state.items.push(durable.clone());
+        state.terminal = terminal;
+        Ok(durable)
+    }
+
+    fn replay(&self, tenant_id: &TenantId, turn_id: TurnId) -> Result<Vec<Item>, HistoryError> {
+        let state = self.state.lock().expect("state lock");
+        if &state.tenant_id == tenant_id && state.accepted.turn_id == turn_id {
+            Ok(state.items.clone())
+        } else {
+            Err(HistoryError::NotFound)
+        }
+    }
+
+    fn renew_lease(&self, key: &LeaseKey, now_ms: u64) -> Result<(), HistoryError> {
+        let mut state = self.state.lock().expect("state lock");
+        if !state.available {
+            return Err(HistoryError::Unavailable);
+        }
+        if state.fenced || !key.matches(&state.tenant_id, &state.accepted) {
+            return Err(HistoryError::Fenced);
+        }
+        state.last_renewal_ms = now_ms;
+        Ok(())
+    }
+
+    fn reconcile_expired(
+        &self,
+        key: &LeaseKey,
+        now_ms: u64,
+        timing: LeaseTiming,
+    ) -> Result<ReconcileOutcome, HistoryError> {
+        let mut state = self.state.lock().expect("state lock");
+        if !state.available {
+            return Err(HistoryError::Unavailable);
+        }
+        if state.terminal {
+            return Err(HistoryError::AlreadyTerminal);
+        }
+        if state.fenced || !key.matches(&state.tenant_id, &state.accepted) {
+            return Err(HistoryError::Fenced);
+        }
+        if now_ms < state.last_renewal_ms + timing.reconcile_after_ms() {
+            return Ok(ReconcileOutcome::TooEarly);
+        }
+        state.fenced = true;
+        state.terminal = true;
+        let terminal = Item::new(
+            state.items.len() as u64 + 1,
+            ItemPayload::Terminal(TerminalOutcome::Cancelled),
+        );
+        state.items.push(terminal);
+        Ok(ReconcileOutcome::Cancelled)
+    }
+}
+
+#[test]
+fn process_crash_fences_and_cancels_once() {
+    let (executor, key, accepted) = SimulatedPostgres::seeded();
+    let mut history = PostgresTurnHistory::new(executor.clone());
+
+    assert_eq!(
+        history
+            .reconcile_expired(&key, 21_999)
+            .expect("early reconciliation is a typed result"),
+        ReconcileOutcome::TooEarly
+    );
+    assert_eq!(
+        history
+            .reconcile_expired(&key, 22_000)
+            .expect("reconciliation at exact boundary succeeds"),
+        ReconcileOutcome::Cancelled
+    );
+    let replay = history
+        .replay(&key.tenant_id, key.turn_id)
+        .expect("replay remains readable");
+    assert_eq!(
+        replay
+            .iter()
+            .filter(|item| matches!(
+                item.payload,
+                ItemPayload::Terminal(TerminalOutcome::Cancelled)
+            ))
+            .count(),
+        1
+    );
+    assert_eq!(
+        history.append(
+            &accepted,
+            NewItem::AgentMessageDelta {
+                content: "late".to_owned(),
+            },
+        ),
+        Err(HistoryError::Fenced)
+    );
+}
+
+#[test]
+fn concurrent_reconcilers_are_idempotent() {
+    let (executor, key, accepted) = SimulatedPostgres::seeded();
+    executor.set_available(false);
+    let unavailable = race_reconcilers(&executor, &key);
+    assert_eq!(
+        unavailable
+            .iter()
+            .filter(|result| **result == Err(HistoryError::Unavailable))
+            .count(),
+        32
+    );
+
+    executor.set_available(true);
+    let recovered = race_reconcilers(&executor, &key);
+    assert_eq!(
+        recovered
+            .iter()
+            .filter(|result| **result == Ok(ReconcileOutcome::Cancelled))
+            .count(),
+        1
+    );
+    assert_eq!(
+        recovered
+            .iter()
+            .filter(|result| matches!(
+                result,
+                Err(HistoryError::AlreadyTerminal | HistoryError::Fenced)
+            ))
+            .count(),
+        31
+    );
+    let mut history = PostgresTurnHistory::new(executor);
+    assert!(matches!(
+        history.append(
+            &accepted,
+            NewItem::Terminal(TerminalOutcome::Completed {
+                usage: Usage::zero(),
+            }),
+        ),
+        Err(HistoryError::AlreadyTerminal | HistoryError::Fenced)
+    ));
+}
+
+fn race_reconcilers(
+    executor: &SimulatedPostgres,
+    key: &LeaseKey,
+) -> Vec<Result<ReconcileOutcome, HistoryError>> {
+    let mut handles = Vec::new();
+    for _ in 0..32 {
+        let executor = executor.clone();
+        let key = key.clone();
+        handles.push(thread::spawn(move || {
+            PostgresTurnHistory::new(executor).reconcile_expired(&key, 22_000)
+        }));
+    }
+    handles
+        .into_iter()
+        .map(|handle| handle.join().expect("reconciler thread"))
+        .collect()
+}
