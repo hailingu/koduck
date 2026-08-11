@@ -21,6 +21,7 @@ struct ExecutionState {
     published: Vec<Item>,
     usage: Usage,
     lifecycle: Turn,
+    provider_item_count: usize,
 }
 
 impl ExecutionState {
@@ -29,6 +30,7 @@ impl ExecutionState {
             published: Vec::new(),
             usage: Usage::zero(),
             lifecycle: Turn::start(),
+            provider_item_count: 0,
         }
     }
 }
@@ -260,7 +262,7 @@ fn handle_event<H: TurnHistory>(
     match event {
         ProviderEvent::Delta(content) => {
             let item = NewItem::AgentMessageDelta { content };
-            validate_item(&item)?;
+            validate_provider_item(state, &item)?;
             let durable = history.append(accepted, item)?;
             state.published.push(durable);
             Ok(false)
@@ -268,21 +270,26 @@ fn handle_event<H: TurnHistory>(
         ProviderEvent::Usage(observed) => {
             state.usage = observed;
             let item = NewItem::Usage(observed);
-            validate_item(&item)?;
+            validate_provider_item(state, &item)?;
             history.append(accepted, item)?;
             Ok(false)
         }
         ProviderEvent::Completed => {
             let item = NewItem::Terminal(TerminalOutcome::Completed { usage: state.usage });
-            validate_item(&item)?;
-            let terminal = history.append(accepted, item)?;
-            state.lifecycle = state.lifecycle.complete()?;
+            validate_provider_item(state, &item)?;
+            let terminal = history.append_completion(accepted, state.usage)?;
+            state.lifecycle = match terminal.payload {
+                crate::domain::ItemPayload::Terminal(TerminalOutcome::Interrupted) => {
+                    state.lifecycle.interrupt()?
+                }
+                _ => state.lifecycle.complete()?,
+            };
             state.published.push(terminal);
             Ok(true)
         }
         ProviderEvent::Error { code } => {
             let item = NewItem::Terminal(TerminalOutcome::Failed { code });
-            validate_item(&item)?;
+            validate_provider_item(state, &item)?;
             let terminal = history.append(accepted, item)?;
             state.lifecycle = state.lifecycle.fail()?;
             state.published.push(terminal);
@@ -292,10 +299,15 @@ fn handle_event<H: TurnHistory>(
     }
 }
 
-fn validate_item(item: &NewItem) -> Result<(), HistoryError> {
-    AppendPolicy::cand_1()
-        .check_item(item)
-        .map_err(|_| HistoryError::Unavailable)
+fn validate_provider_item(state: &mut ExecutionState, item: &NewItem) -> Result<(), HistoryError> {
+    let policy = AppendPolicy::cand_1();
+    let next_count = state.provider_item_count.saturating_add(1);
+    policy
+        .check_item_count(next_count)
+        .and_then(|()| policy.check_item(item))
+        .map_err(|_| HistoryError::Unavailable)?;
+    state.provider_item_count = next_count;
+    Ok(())
 }
 
 fn history_failure(error: HistoryError, accepted: bool, published: &[Item]) -> TurnRunError {

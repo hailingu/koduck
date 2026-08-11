@@ -34,6 +34,19 @@ impl AppendPolicy {
         self.deadline
     }
 
+    /// Validates the next provider item against the approved per-turn count cap.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BufferLimitError::ItemCount`] when `item_count` exceeds 64.
+    pub fn check_item_count(self, item_count: usize) -> Result<(), BufferLimitError> {
+        if item_count > self.max_items {
+            Err(BufferLimitError::ItemCount)
+        } else {
+            Ok(())
+        }
+    }
+
     /// Validates one unpublished item against the approved payload cap.
     ///
     /// # Errors

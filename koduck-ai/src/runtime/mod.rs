@@ -56,10 +56,16 @@ impl RuntimeConfig {
         let bind_addr = required(environment, BIND_ADDR)?
             .parse()
             .map_err(RuntimeConfigError::InvalidBindAddress)?;
+        let provider_base_url = required(environment, PROVIDER_BASE_URL)?;
+        let provider_url = reqwest::Url::parse(provider_base_url)
+            .map_err(|_| RuntimeConfigError::InvalidProviderBaseUrl)?;
+        if provider_url.scheme() != "https" {
+            return Err(RuntimeConfigError::InvalidProviderBaseUrl);
+        }
         Ok(Self {
             bind_addr,
             database_url: required(environment, DATABASE_URL)?.to_owned(),
-            provider_base_url: required(environment, PROVIDER_BASE_URL)?.to_owned(),
+            provider_base_url: provider_base_url.to_owned(),
             provider_model: required(environment, PROVIDER_MODEL)?.to_owned(),
             provider_api_key: required(environment, PROVIDER_API_KEY)?.to_owned(),
         })
@@ -256,9 +262,15 @@ fn into_axum_response(response: crate::adapters::http::HttpResponse) -> Response
 }
 
 fn internal_failure() -> Response {
-    let mut response = Response::new(Body::from(
-        "{\"type\":\"about:blank\",\"title\":\"Runtime unavailable\",\"status\":503,\"code\":\"runtime-unavailable\"}",
-    ));
+    let body = serde_json::json!({
+        "type": "about:blank",
+        "title": "Runtime unavailable",
+        "status": 503,
+        "code": "runtime-unavailable",
+        "correlation_id": uuid::Uuid::new_v4().to_string(),
+    })
+    .to_string();
+    let mut response = Response::new(Body::from(body));
     *response.status_mut() = StatusCode::SERVICE_UNAVAILABLE;
     response.headers_mut().insert(
         axum::http::header::CONTENT_TYPE,
@@ -309,6 +321,9 @@ pub enum RuntimeConfigError {
     /// The configured bind address could not be parsed.
     #[error("invalid KODUCK_AI_BIND_ADDR")]
     InvalidBindAddress(#[source] AddrParseError),
+    /// The provider base URL was invalid or did not use HTTPS.
+    #[error("invalid KODUCK_AI_OPENAI_BASE_URL")]
+    InvalidProviderBaseUrl,
 }
 
 fn required<'a>(

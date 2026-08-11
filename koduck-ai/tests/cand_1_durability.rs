@@ -272,6 +272,64 @@ fn execution_rejects_an_oversized_provider_delta_before_append() {
     ));
 }
 
+struct ExcessItemProvider {
+    consumed: Rc<Cell<usize>>,
+}
+
+impl ModelProvider for ExcessItemProvider {
+    fn stream(&mut self, _input: ModelInput) -> Result<ProviderStream<'_>, ProviderError> {
+        let consumed = Rc::clone(&self.consumed);
+        let mut events = (0..65)
+            .map(|_| ProviderEvent::Delta("A".to_owned()))
+            .collect::<Vec<_>>();
+        events.push(ProviderEvent::Completed);
+        Ok(Box::new(
+            events
+                .into_iter()
+                .inspect(move |_| consumed.set(consumed.get() + 1)),
+        ))
+    }
+}
+
+#[test]
+fn execution_rejects_item_65_before_append() {
+    let items = Rc::new(RefCell::new(Vec::new()));
+    let consumed = Rc::new(Cell::new(0));
+    let result = TurnRunner::new(
+        ExcessItemProvider {
+            consumed: Rc::clone(&consumed),
+        },
+        FaultHistory {
+            fail_initial: false,
+            fail_append_at: None,
+            accepted: Rc::new(Cell::new(0)),
+            append_calls: 0,
+            items: Rc::clone(&items),
+        },
+    )
+    .execute(TurnCommand::new(trust(), None, "hello").expect("valid command"));
+
+    let Err(TurnRunError::Durability(failure)) = result else {
+        panic!("item 65 must fail as a durability boundary violation");
+    };
+    assert!(failure.accepted);
+    assert_eq!(failure.published.len(), 64);
+    assert_eq!(consumed.get(), 65);
+    assert_eq!(
+        items
+            .borrow()
+            .iter()
+            .filter(|item| matches!(item.payload, ItemPayload::AgentMessageDelta { .. }))
+            .count(),
+        64
+    );
+    assert!(matches!(
+        items.borrow().last().map(|item| &item.payload),
+        Some(ItemPayload::Terminal(TerminalOutcome::Failed { code }))
+            if code == "DURABILITY_UNAVAILABLE"
+    ));
+}
+
 struct RecoverableHistory {
     attempts: Rc<Cell<usize>>,
     items: Rc<RefCell<Vec<Item>>>,

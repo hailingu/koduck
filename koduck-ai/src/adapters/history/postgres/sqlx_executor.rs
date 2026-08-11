@@ -226,7 +226,7 @@ impl SqlxPostgresExecutor {
     ) -> Result<Item, HistoryError> {
         let mut transaction = self.pool.begin().await.map_err(unavailable)?;
         let ownership = sqlx::query(
-            "SELECT t.status, t.next_sequence, l.fenced FROM turns t \
+            "SELECT t.status, t.next_sequence, t.interrupt_requested, l.fenced FROM turns t \
              JOIN turn_leases l USING (tenant_id, thread_id, turn_id) \
              WHERE t.tenant_id = $1 AND t.thread_id = $2 AND t.turn_id = $3 \
              AND l.generation = $4 FOR UPDATE",
@@ -247,6 +247,15 @@ impl SqlxPostgresExecutor {
         if fenced || status != "started" {
             return Err(HistoryError::Fenced);
         }
+        let interrupt_requested: bool = ownership
+            .try_get("interrupt_requested")
+            .map_err(unavailable)?;
+        let new_item = match new_item {
+            NewItem::Terminal(TerminalOutcome::Completed { .. }) if interrupt_requested => {
+                NewItem::Terminal(TerminalOutcome::Interrupted)
+            }
+            other => other,
+        };
         let sequence: i64 = ownership.try_get("next_sequence").map_err(unavailable)?;
         let sequence = u64::try_from(sequence).map_err(|_| HistoryError::Unavailable)?;
         let item = Item::new(sequence, new_item.into_payload());

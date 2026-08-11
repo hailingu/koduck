@@ -223,6 +223,28 @@ pub trait TurnHistory {
     /// Returns [`HistoryError`] when history is unavailable or ownership is invalid.
     fn interruption_requested(&self, turn: &AcceptedTurn) -> Result<bool, HistoryError>;
 
+    /// Atomically chooses `interrupted` over `completed` when an interrupt was accepted.
+    ///
+    /// Deterministic adapters may implement this as a flag read followed by an
+    /// append. Concurrent durable adapters must arbitrate under the same lock or
+    /// transaction that commits the terminal Item.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`HistoryError`] when history is unavailable or ownership is invalid.
+    fn append_completion(
+        &mut self,
+        turn: &AcceptedTurn,
+        usage: Usage,
+    ) -> Result<Item, HistoryError> {
+        let outcome = if self.interruption_requested(turn)? {
+            TerminalOutcome::Interrupted
+        } else {
+            TerminalOutcome::Completed { usage }
+        };
+        self.append(turn, NewItem::Terminal(outcome))
+    }
+
     /// Reads prior durable items for a subject-owned Thread in canonical order.
     ///
     /// # Errors
