@@ -2,4 +2,6 @@
 
 //! Provider-neutral turn orchestration owned by the Koduck AI service.
 
+pub mod adapters;
+pub mod application;
 pub mod domain;
