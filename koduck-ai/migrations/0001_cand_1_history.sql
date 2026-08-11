@@ -2,6 +2,7 @@
 
 CREATE TABLE IF NOT EXISTS threads (
     tenant_id TEXT NOT NULL,
+    subject_id TEXT NOT NULL,
     thread_id UUID NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (tenant_id, thread_id)

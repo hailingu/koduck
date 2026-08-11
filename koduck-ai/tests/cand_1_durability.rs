@@ -10,7 +10,8 @@ use koduck_ai::application::{
     TurnRunError, TurnRunner, UnpublishedBuffer,
 };
 use koduck_ai::domain::{
-    Item, ItemPayload, LeaseGeneration, TenantId, ThreadId, TrustContext, TurnId, Usage,
+    Item, ItemPayload, LeaseGeneration, TenantId, TerminalOutcome, ThreadId, TrustContext, TurnId,
+    Usage,
 };
 
 struct CountingProvider {
@@ -58,7 +59,7 @@ impl TurnHistory for FaultHistory {
 
     fn prior_thread_items(
         &self,
-        _tenant_id: &TenantId,
+        _trust: &TrustContext,
         _thread_id: ThreadId,
     ) -> Result<Vec<Item>, HistoryError> {
         Ok(Vec::new())
@@ -87,7 +88,10 @@ impl TurnHistory for FaultHistory {
 
     fn append(&mut self, _turn: &AcceptedTurn, item: NewItem) -> Result<Item, HistoryError> {
         self.append_calls += 1;
-        if self.fail_append_at == Some(self.append_calls) {
+        if self
+            .fail_append_at
+            .is_some_and(|first_failure| self.append_calls >= first_failure)
+        {
             return Err(HistoryError::Unavailable);
         }
         let durable = Item::new(self.items.borrow().len() as u64 + 1, item.into_payload());
@@ -260,5 +264,94 @@ fn execution_rejects_an_oversized_provider_delta_before_append() {
     assert!(failure.accepted);
     assert!(failure.published.is_empty());
     assert_eq!(consumed.get(), 1);
-    assert_eq!(items.borrow().len(), 1);
+    assert_eq!(items.borrow().len(), 2);
+    assert!(matches!(
+        items.borrow().last().map(|item| &item.payload),
+        Some(ItemPayload::Terminal(TerminalOutcome::Failed { code }))
+            if code == "DURABILITY_UNAVAILABLE"
+    ));
+}
+
+struct RecoverableHistory {
+    attempts: Rc<Cell<usize>>,
+    items: Rc<RefCell<Vec<Item>>>,
+}
+
+impl TurnHistory for RecoverableHistory {
+    fn request_interrupt(
+        &mut self,
+        _trust: &TrustContext,
+        _turn_id: TurnId,
+    ) -> Result<(), HistoryError> {
+        Err(HistoryError::NotFound)
+    }
+
+    fn interruption_requested(&self, _turn: &AcceptedTurn) -> Result<bool, HistoryError> {
+        Ok(false)
+    }
+
+    fn prior_thread_items(
+        &self,
+        _trust: &TrustContext,
+        _thread_id: ThreadId,
+    ) -> Result<Vec<Item>, HistoryError> {
+        Ok(Vec::new())
+    }
+
+    fn accept_initial(&mut self, command: &TurnCommand) -> Result<AcceptedTurn, HistoryError> {
+        let input = Item::new(
+            1,
+            ItemPayload::UserMessage {
+                content: command.input.clone(),
+            },
+        );
+        self.items.borrow_mut().push(input.clone());
+        Ok(AcceptedTurn::new(
+            command.trust.tenant_id.clone(),
+            ThreadId::new(),
+            TurnId::new(),
+            LeaseGeneration::initial(),
+            input,
+        ))
+    }
+
+    fn append(&mut self, _turn: &AcceptedTurn, item: NewItem) -> Result<Item, HistoryError> {
+        let attempt = self.attempts.get() + 1;
+        self.attempts.set(attempt);
+        if attempt == 1 {
+            return Err(HistoryError::Unavailable);
+        }
+        let durable = Item::new(self.items.borrow().len() as u64 + 1, item.into_payload());
+        self.items.borrow_mut().push(durable.clone());
+        Ok(durable)
+    }
+
+    fn replay(&self, _tenant_id: &TenantId, _turn_id: TurnId) -> Result<Vec<Item>, HistoryError> {
+        Ok(self.items.borrow().clone())
+    }
+}
+
+#[test]
+fn accepted_append_outage_schedules_a_failed_terminal_recovery() {
+    let attempts = Rc::new(Cell::new(0));
+    let items = Rc::new(RefCell::new(Vec::new()));
+    let result = TurnRunner::new(
+        CountingProvider {
+            calls: Rc::new(Cell::new(0)),
+            consumed: Rc::new(Cell::new(0)),
+        },
+        RecoverableHistory {
+            attempts: Rc::clone(&attempts),
+            items: Rc::clone(&items),
+        },
+    )
+    .execute(TurnCommand::new(trust(), None, "hello").expect("valid command"));
+
+    assert!(matches!(result, Err(TurnRunError::Durability(_))));
+    assert_eq!(attempts.get(), 2);
+    assert!(matches!(
+        items.borrow().last().map(|item| &item.payload),
+        Some(ItemPayload::Terminal(TerminalOutcome::Failed { code }))
+            if code == "DURABILITY_UNAVAILABLE"
+    ));
 }

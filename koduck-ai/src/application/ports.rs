@@ -223,16 +223,35 @@ pub trait TurnHistory {
     /// Returns [`HistoryError`] when history is unavailable or ownership is invalid.
     fn interruption_requested(&self, turn: &AcceptedTurn) -> Result<bool, HistoryError>;
 
-    /// Reads prior durable items for a tenant-scoped Thread in canonical order.
+    /// Reads prior durable items for a subject-owned Thread in canonical order.
     ///
     /// # Errors
     ///
     /// Returns [`HistoryError`] when history is unavailable or ownership is invalid.
     fn prior_thread_items(
         &self,
-        tenant_id: &TenantId,
+        trust: &TrustContext,
         thread_id: ThreadId,
     ) -> Result<Vec<Item>, HistoryError>;
+
+    /// Starts conditional failed-terminal recovery after an accepted append outage.
+    ///
+    /// The production adapter retains ownership asynchronously until it either
+    /// appends `failed` or the lease generation is fenced. Deterministic adapters
+    /// may close the turn synchronously.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`HistoryError`] when recovery ownership cannot be established.
+    fn schedule_failed_recovery(&mut self, turn: &AcceptedTurn) -> Result<(), HistoryError> {
+        self.append(
+            turn,
+            NewItem::Terminal(TerminalOutcome::Failed {
+                code: "DURABILITY_UNAVAILABLE".to_owned(),
+            }),
+        )?;
+        Ok(())
+    }
 
     /// Atomically persists initial Thread, Turn, input Item, and lease state.
     ///

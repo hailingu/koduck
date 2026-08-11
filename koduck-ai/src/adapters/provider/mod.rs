@@ -183,24 +183,34 @@ async fn send_frame(
 }
 
 fn provider_messages(input: &ModelInput) -> Vec<serde_json::Value> {
-    let mut messages = input
-        .history
-        .iter()
-        .filter_map(|item| match &item.payload {
+    let mut messages = Vec::new();
+    let mut assistant = String::new();
+    for item in &input.history {
+        match &item.payload {
             ItemPayload::UserMessage { content } => {
-                Some(serde_json::json!({ "role": "user", "content": content }))
+                flush_assistant(&mut messages, &mut assistant);
+                messages.push(serde_json::json!({ "role": "user", "content": content }));
             }
-            ItemPayload::AgentMessageDelta { content } => {
-                Some(serde_json::json!({ "role": "assistant", "content": content }))
-            }
-            ItemPayload::Usage(_) | ItemPayload::Terminal(_) => None,
-        })
-        .collect::<Vec<_>>();
+            ItemPayload::AgentMessageDelta { content } => assistant.push_str(content),
+            ItemPayload::Terminal(_) => flush_assistant(&mut messages, &mut assistant),
+            ItemPayload::Usage(_) => {}
+        }
+    }
+    flush_assistant(&mut messages, &mut assistant);
     messages.push(serde_json::json!({
         "role": "user",
         "content": input.input,
     }));
     messages
+}
+
+fn flush_assistant(messages: &mut Vec<serde_json::Value>, assistant: &mut String) {
+    if !assistant.is_empty() {
+        messages.push(serde_json::json!({
+            "role": "assistant",
+            "content": std::mem::take(assistant),
+        }));
+    }
 }
 
 fn transport_error(code: &str) -> OpenAiTransportError {
@@ -312,5 +322,52 @@ fn parse_frame(frame: &str) -> Result<Option<ProviderEvent>, ProviderError> {
 fn protocol_error(code: &str) -> ProviderError {
     ProviderError {
         code: code.to_owned(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::application::ModelInput;
+    use crate::domain::{Item, ItemPayload, TenantId, ThreadId, TurnId};
+
+    use super::provider_messages;
+
+    #[test]
+    fn provider_history_coalesces_deltas_within_each_prior_turn() {
+        let input = ModelInput {
+            tenant_id: TenantId::new("tenant-a").expect("valid tenant"),
+            thread_id: ThreadId::new(),
+            turn_id: TurnId::new(),
+            input: "second".to_owned(),
+            history: vec![
+                Item::new(
+                    1,
+                    ItemPayload::UserMessage {
+                        content: "first".to_owned(),
+                    },
+                ),
+                Item::new(
+                    2,
+                    ItemPayload::AgentMessageDelta {
+                        content: "A".to_owned(),
+                    },
+                ),
+                Item::new(
+                    3,
+                    ItemPayload::AgentMessageDelta {
+                        content: "B".to_owned(),
+                    },
+                ),
+            ],
+        };
+
+        assert_eq!(
+            provider_messages(&input),
+            vec![
+                serde_json::json!({ "role": "user", "content": "first" }),
+                serde_json::json!({ "role": "assistant", "content": "AB" }),
+                serde_json::json!({ "role": "user", "content": "second" }),
+            ]
+        );
     }
 }

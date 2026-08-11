@@ -5,7 +5,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use koduck_ai::adapters::history::postgres::{
-    LeaseKey, LeaseTiming, PostgresExecutor, PostgresTurnHistory, ReconcileOutcome,
+    LeaseKey, LeaseTiming, PostgresExecutor, PostgresTurnHistory, ReconcileOutcome, RecoveryOutcome,
 };
 use koduck_ai::application::{AcceptedTurn, HistoryError, NewItem, TurnCommand, TurnHistory};
 use koduck_ai::domain::{
@@ -110,11 +110,11 @@ impl PostgresExecutor for SimulatedPostgres {
 
     fn prior_thread_items(
         &self,
-        tenant_id: &TenantId,
+        trust: &TrustContext,
         thread_id: ThreadId,
     ) -> Result<Vec<Item>, HistoryError> {
         let state = self.state.lock().expect("state lock");
-        if &state.tenant_id == tenant_id && state.accepted.thread_id == thread_id {
+        if state.tenant_id == trust.tenant_id && state.accepted.thread_id == thread_id {
             Ok(state.items.clone())
         } else {
             Err(HistoryError::NotFound)
@@ -219,6 +219,20 @@ impl PostgresExecutor for SimulatedPostgres {
             state.accepted.turn_id,
             state.accepted.generation,
         )])
+    }
+
+    fn recover_failed(
+        &self,
+        turn: &AcceptedTurn,
+        _timing: LeaseTiming,
+    ) -> Result<RecoveryOutcome, HistoryError> {
+        self.append(
+            turn,
+            NewItem::Terminal(TerminalOutcome::Failed {
+                code: "DURABILITY_UNAVAILABLE".to_owned(),
+            }),
+        )?;
+        Ok(RecoveryOutcome::Failed)
     }
 }
 

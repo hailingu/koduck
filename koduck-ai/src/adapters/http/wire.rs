@@ -1,27 +1,26 @@
 // ADR: docs/adr/ADR-0001-provider-neutral-turn-kernel.md
 
-use std::collections::BTreeMap;
-
+use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::application::{TurnCommand, TurnResult, TurnStreamEvent};
 use crate::domain::{ItemPayload, TerminalOutcome, TrustContext, TurnId, TurnStatus, Usage};
 
 pub(super) fn parse_turn_request(body: &str, trust: TrustContext) -> Result<TurnCommand, ()> {
-    let fields = parse_string_object(body)?;
-    if fields
-        .keys()
-        .any(|field| field != "input" && field != "thread_id")
-    {
-        return Err(());
-    }
-    let input = fields.get("input").ok_or(())?.clone();
-    let thread_id = fields
-        .get("thread_id")
-        .map(|value| Uuid::parse_str(value).map(crate::domain::ThreadId::from_uuid))
+    let document: TurnRequestDocument = serde_json::from_str(body).map_err(|_| ())?;
+    let thread_id = document
+        .thread_id
+        .map(|value| Uuid::parse_str(&value).map(crate::domain::ThreadId::from_uuid))
         .transpose()
         .map_err(|_| ())?;
-    TurnCommand::new(trust, thread_id, input).map_err(|_| ())
+    TurnCommand::new(trust, thread_id, document.input).map_err(|_| ())
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TurnRequestDocument {
+    input: String,
+    thread_id: Option<String>,
 }
 
 pub(super) fn sync_body(result: &TurnResult) -> String {
@@ -30,10 +29,10 @@ pub(super) fn sync_body(result: &TurnResult) -> String {
         .iter()
         .filter_map(|item| match &item.payload {
             ItemPayload::AgentMessageDelta { content } => Some(format!(
-                "{{\"item_id\":\"{}\",\"sequence\":{},\"type\":\"agent_message_delta\",\"content\":\"{}\"}}",
+                "{{\"item_id\":\"{}\",\"sequence\":{},\"type\":\"agent_message_delta\",\"content\":{}}}",
                 item.item_id.as_uuid(),
                 item.sequence,
-                escape_json(content)
+                json_string(content)
             )),
             _ => None,
         })
@@ -64,12 +63,12 @@ pub(super) fn sse_body(result: &TurnResult) -> String {
             ItemPayload::AgentMessageDelta { content } => events.push(sse_event(
                 "item.created",
                 &format!(
-                    "{{\"thread_id\":\"{}\",\"turn_id\":\"{}\",\"sequence\":{},\"item_id\":\"{}\",\"type\":\"agent_message_delta\",\"content\":\"{}\"}}",
+                    "{{\"thread_id\":\"{}\",\"turn_id\":\"{}\",\"sequence\":{},\"item_id\":\"{}\",\"type\":\"agent_message_delta\",\"content\":{}}}",
                     result.thread_id.as_uuid(),
                     result.turn_id.as_uuid(),
                     item.sequence,
                     item.item_id.as_uuid(),
-                    escape_json(content)
+                    json_string(content)
                 ),
             )),
             ItemPayload::Terminal(outcome) => events.push(terminal_event(result, item.sequence, outcome)),
@@ -97,12 +96,12 @@ pub(super) fn stream_event_body(event: TurnStreamEvent) -> String {
             ItemPayload::AgentMessageDelta { content } => sse_event(
                 "item.created",
                 &format!(
-                    "{{\"thread_id\":\"{}\",\"turn_id\":\"{}\",\"sequence\":{},\"item_id\":\"{}\",\"type\":\"agent_message_delta\",\"content\":\"{}\"}}",
+                    "{{\"thread_id\":\"{}\",\"turn_id\":\"{}\",\"sequence\":{},\"item_id\":\"{}\",\"type\":\"agent_message_delta\",\"content\":{}}}",
                     thread_id.as_uuid(),
                     turn_id.as_uuid(),
                     item.sequence,
                     item.item_id.as_uuid(),
-                    escape_json(&content)
+                    json_string(&content)
                 ),
             ),
             ItemPayload::Terminal(outcome) => {
@@ -217,95 +216,6 @@ fn status_name(status: TurnStatus) -> &'static str {
     }
 }
 
-fn escape_json(value: &str) -> String {
-    value
-        .chars()
-        .flat_map(|character| match character {
-            '"' => "\\\"".chars().collect::<Vec<_>>(),
-            '\\' => "\\\\".chars().collect(),
-            '\n' => "\\n".chars().collect(),
-            '\r' => "\\r".chars().collect(),
-            '\t' => "\\t".chars().collect(),
-            other => vec![other],
-        })
-        .collect()
-}
-
-fn parse_string_object(document: &str) -> Result<BTreeMap<String, String>, ()> {
-    let bytes = document.as_bytes();
-    let mut index = 0;
-    skip_whitespace(bytes, &mut index);
-    expect_byte(bytes, &mut index, b'{')?;
-    let mut fields = BTreeMap::new();
-    loop {
-        skip_whitespace(bytes, &mut index);
-        if take_byte(bytes, &mut index, b'}') {
-            break;
-        }
-        let key = parse_json_string(bytes, &mut index)?;
-        skip_whitespace(bytes, &mut index);
-        expect_byte(bytes, &mut index, b':')?;
-        skip_whitespace(bytes, &mut index);
-        let value = parse_json_string(bytes, &mut index)?;
-        if fields.insert(key, value).is_some() {
-            return Err(());
-        }
-        skip_whitespace(bytes, &mut index);
-        if take_byte(bytes, &mut index, b'}') {
-            break;
-        }
-        expect_byte(bytes, &mut index, b',')?;
-    }
-    skip_whitespace(bytes, &mut index);
-    (index == bytes.len()).then_some(fields).ok_or(())
-}
-
-fn parse_json_string(bytes: &[u8], index: &mut usize) -> Result<String, ()> {
-    expect_byte(bytes, index, b'"')?;
-    let mut value = String::new();
-    while let Some(&byte) = bytes.get(*index) {
-        *index += 1;
-        match byte {
-            b'"' => return Ok(value),
-            b'\\' => {
-                let escaped = *bytes.get(*index).ok_or(())?;
-                *index += 1;
-                value.push(match escaped {
-                    b'"' => '"',
-                    b'\\' => '\\',
-                    b'n' => '\n',
-                    b'r' => '\r',
-                    b't' => '\t',
-                    _ => return Err(()),
-                });
-            }
-            0..=31 => return Err(()),
-            _ => {
-                let suffix = std::str::from_utf8(&bytes[*index - 1..]).map_err(|_| ())?;
-                let character = suffix.chars().next().ok_or(())?;
-                value.push(character);
-                *index += character.len_utf8() - 1;
-            }
-        }
-    }
-    Err(())
-}
-
-fn skip_whitespace(bytes: &[u8], index: &mut usize) {
-    while bytes.get(*index).is_some_and(u8::is_ascii_whitespace) {
-        *index += 1;
-    }
-}
-
-fn expect_byte(bytes: &[u8], index: &mut usize, expected: u8) -> Result<(), ()> {
-    take_byte(bytes, index, expected).then_some(()).ok_or(())
-}
-
-fn take_byte(bytes: &[u8], index: &mut usize, expected: u8) -> bool {
-    if bytes.get(*index) == Some(&expected) {
-        *index += 1;
-        true
-    } else {
-        false
-    }
+fn json_string(value: &str) -> String {
+    serde_json::Value::String(value.to_owned()).to_string()
 }

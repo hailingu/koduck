@@ -52,7 +52,7 @@ impl TurnHistory for RecordingHistory {
 
     fn prior_thread_items(
         &self,
-        _tenant_id: &TenantId,
+        _trust: &TrustContext,
         _thread_id: koduck_ai::domain::ThreadId,
     ) -> Result<Vec<Item>, HistoryError> {
         Ok(Vec::new())

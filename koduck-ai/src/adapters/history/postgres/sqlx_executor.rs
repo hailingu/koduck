@@ -16,7 +16,7 @@ use crate::domain::{
     Usage,
 };
 
-use super::{LeaseKey, LeaseTiming, PostgresExecutor, ReconcileOutcome};
+use super::{LeaseKey, LeaseTiming, PostgresExecutor, ReconcileOutcome, RecoveryOutcome};
 
 /// Production `PostgreSQL` executor using one `SQLx` pool and its owning Tokio runtime.
 #[derive(Clone)]
@@ -46,9 +46,12 @@ impl SqlxPostgresExecutor {
     ) -> Result<(), HistoryError> {
         let result = sqlx::query(
             "UPDATE turns SET interrupt_requested = TRUE \
-             WHERE tenant_id = $1 AND turn_id = $2 AND status = 'started'",
+             WHERE tenant_id = $1 AND turn_id = $3 AND status = 'started' \
+             AND EXISTS (SELECT 1 FROM threads WHERE threads.tenant_id = turns.tenant_id \
+             AND threads.thread_id = turns.thread_id AND threads.subject_id = $2)",
         )
         .bind(trust.tenant_id.as_str())
+        .bind(trust.subject_id.as_str())
         .bind(turn_id.as_uuid())
         .execute(&self.pool)
         .await
@@ -57,9 +60,12 @@ impl SqlxPostgresExecutor {
             return Ok(());
         }
         let status = sqlx::query_scalar::<_, String>(
-            "SELECT status FROM turns WHERE tenant_id = $1 AND turn_id = $2",
+            "SELECT turns.status FROM turns JOIN threads \
+             ON threads.tenant_id = turns.tenant_id AND threads.thread_id = turns.thread_id \
+             WHERE turns.tenant_id = $1 AND threads.subject_id = $2 AND turns.turn_id = $3",
         )
         .bind(trust.tenant_id.as_str())
+        .bind(trust.subject_id.as_str())
         .bind(turn_id.as_uuid())
         .fetch_optional(&self.pool)
         .await
@@ -95,25 +101,32 @@ impl SqlxPostgresExecutor {
 
     async fn prior_thread_items_async(
         &self,
-        tenant_id: &TenantId,
+        trust: &TrustContext,
         thread_id: ThreadId,
     ) -> Result<Vec<Item>, HistoryError> {
         let rows = sqlx::query(
-            "SELECT item_id, sequence, item_type, payload FROM turn_items \
-             WHERE tenant_id = $1 AND thread_id = $2 \
-             ORDER BY created_at, turn_id, sequence",
+            "SELECT turn_items.item_id, turn_items.sequence, turn_items.item_type, \
+             turn_items.payload FROM turn_items JOIN threads \
+             ON threads.tenant_id = turn_items.tenant_id \
+             AND threads.thread_id = turn_items.thread_id \
+             WHERE turn_items.tenant_id = $1 AND turn_items.thread_id = $2 \
+             AND threads.subject_id = $3 ORDER BY turn_items.created_at, \
+             turn_items.turn_id, turn_items.sequence",
         )
-        .bind(tenant_id.as_str())
+        .bind(trust.tenant_id.as_str())
         .bind(thread_id.as_uuid())
+        .bind(trust.subject_id.as_str())
         .fetch_all(&self.pool)
         .await
         .map_err(unavailable)?;
         if rows.is_empty() {
             let exists = sqlx::query_scalar::<_, bool>(
-                "SELECT EXISTS(SELECT 1 FROM threads WHERE tenant_id = $1 AND thread_id = $2)",
+                "SELECT EXISTS(SELECT 1 FROM threads WHERE tenant_id = $1 \
+                 AND thread_id = $2 AND threads.subject_id = $3)",
             )
-            .bind(tenant_id.as_str())
+            .bind(trust.tenant_id.as_str())
             .bind(thread_id.as_uuid())
+            .bind(trust.subject_id.as_str())
             .fetch_one(&self.pool)
             .await
             .map_err(unavailable)?;
@@ -141,14 +154,28 @@ impl SqlxPostgresExecutor {
         let (_, payload, _, _) = encode_payload(&input.payload);
         let mut transaction = self.pool.begin().await.map_err(unavailable)?;
         sqlx::query(
-            "INSERT INTO threads (tenant_id, thread_id) VALUES ($1, $2) \
+            "INSERT INTO threads (tenant_id, subject_id, thread_id) VALUES ($1, $2, $3) \
              ON CONFLICT (tenant_id, thread_id) DO NOTHING",
         )
         .bind(tenant_id.as_str())
+        .bind(command.trust.subject_id.as_str())
         .bind(thread_id.as_uuid())
         .execute(&mut *transaction)
         .await
         .map_err(unavailable)?;
+        let owns_thread = sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS(SELECT 1 FROM threads WHERE tenant_id = $1 \
+             AND subject_id = $2 AND thread_id = $3)",
+        )
+        .bind(tenant_id.as_str())
+        .bind(command.trust.subject_id.as_str())
+        .bind(thread_id.as_uuid())
+        .fetch_one(&mut *transaction)
+        .await
+        .map_err(unavailable)?;
+        if !owns_thread {
+            return Err(HistoryError::NotFound);
+        }
         sqlx::query(
             "INSERT INTO turns \
              (tenant_id, thread_id, turn_id, status, next_sequence) \
@@ -284,6 +311,87 @@ impl SqlxPostgresExecutor {
         rows.iter().map(row_to_item).collect()
     }
 
+    async fn recover_failed_async(
+        &self,
+        turn: &AcceptedTurn,
+        timing: LeaseTiming,
+    ) -> Result<RecoveryOutcome, HistoryError> {
+        let mut transaction = self.pool.begin().await.map_err(unavailable)?;
+        let ownership = sqlx::query(
+            "SELECT t.status, t.next_sequence, l.fenced, \
+             (EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - l.renewed_at)) * 1000)::BIGINT \
+             <= $5 AS within_window FROM turns t \
+             JOIN turn_leases l USING (tenant_id, thread_id, turn_id) \
+             WHERE t.tenant_id = $1 AND t.thread_id = $2 AND t.turn_id = $3 \
+             AND l.generation = $4 FOR UPDATE",
+        )
+        .bind(turn.tenant_id.as_str())
+        .bind(turn.thread_id.as_uuid())
+        .bind(turn.turn_id.as_uuid())
+        .bind(generation_i64(turn.generation)?)
+        .bind(milliseconds_i64(timing.reconcile_after_ms())?)
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(unavailable)?
+        .ok_or(HistoryError::Fenced)?;
+        let status: String = ownership.try_get("status").map_err(unavailable)?;
+        if is_terminal_status(&status) {
+            return Err(HistoryError::AlreadyTerminal);
+        }
+        let fenced: bool = ownership.try_get("fenced").map_err(unavailable)?;
+        let within_window: bool = ownership.try_get("within_window").map_err(unavailable)?;
+        if fenced || !within_window {
+            return Err(HistoryError::Fenced);
+        }
+        if status == "started" {
+            sqlx::query(
+                "UPDATE turns SET status = 'recovery-pending' \
+                 WHERE tenant_id = $1 AND thread_id = $2 AND turn_id = $3 \
+                 AND status = 'started'",
+            )
+            .bind(turn.tenant_id.as_str())
+            .bind(turn.thread_id.as_uuid())
+            .bind(turn.turn_id.as_uuid())
+            .execute(&mut *transaction)
+            .await
+            .map_err(unavailable)?;
+            transaction.commit().await.map_err(unavailable)?;
+            return Ok(RecoveryOutcome::Pending);
+        }
+        if status != "recovery-pending" {
+            return Err(HistoryError::Fenced);
+        }
+        let sequence: i64 = ownership.try_get("next_sequence").map_err(unavailable)?;
+        let item = Item::new(
+            u64::try_from(sequence).map_err(|_| HistoryError::Unavailable)?,
+            ItemPayload::Terminal(TerminalOutcome::Failed {
+                code: "DURABILITY_UNAVAILABLE".to_owned(),
+            }),
+        );
+        insert_item(
+            &mut transaction,
+            &turn.tenant_id,
+            turn.thread_id,
+            turn.turn_id,
+            &item,
+        )
+        .await?;
+        sqlx::query(
+            "UPDATE turns SET status = 'failed', next_sequence = next_sequence + 1 \
+             WHERE tenant_id = $1 AND thread_id = $2 AND turn_id = $3 \
+             AND next_sequence = $4 AND status = 'recovery-pending'",
+        )
+        .bind(turn.tenant_id.as_str())
+        .bind(turn.thread_id.as_uuid())
+        .bind(turn.turn_id.as_uuid())
+        .bind(sequence_i64(item.sequence)?)
+        .execute(&mut *transaction)
+        .await
+        .map_err(unavailable)?;
+        transaction.commit().await.map_err(unavailable)?;
+        Ok(RecoveryOutcome::Failed)
+    }
+
     async fn renew_lease_async(&self, key: &LeaseKey, now_ms: u64) -> Result<(), HistoryError> {
         let result = sqlx::query(
             "UPDATE turn_leases l SET \
@@ -391,7 +499,7 @@ impl SqlxPostgresExecutor {
         let rows = sqlx::query(
             "SELECT l.tenant_id, l.thread_id, l.turn_id, l.generation \
              FROM turn_leases l JOIN turns t USING (tenant_id, thread_id, turn_id) \
-             WHERE t.status = 'started' AND NOT l.fenced \
+             WHERE t.status IN ('started', 'recovery-pending') AND NOT l.fenced \
              AND (EXTRACT(EPOCH FROM l.renewed_at) * 1000)::BIGINT <= $1 - $2",
         )
         .bind(milliseconds_i64(now_ms)?)
@@ -431,10 +539,10 @@ impl PostgresExecutor for SqlxPostgresExecutor {
 
     fn prior_thread_items(
         &self,
-        tenant_id: &TenantId,
+        trust: &TrustContext,
         thread_id: ThreadId,
     ) -> Result<Vec<Item>, HistoryError> {
-        self.wait(self.prior_thread_items_async(tenant_id, thread_id))
+        self.wait(self.prior_thread_items_async(trust, thread_id))
     }
 
     fn accept_initial(&self, command: &TurnCommand) -> Result<AcceptedTurn, HistoryError> {
@@ -475,6 +583,14 @@ impl PostgresExecutor for SqlxPostgresExecutor {
         timing: LeaseTiming,
     ) -> Result<Vec<LeaseKey>, HistoryError> {
         self.wait(self.expired_lease_keys_async(now_ms, timing))
+    }
+
+    fn recover_failed(
+        &self,
+        turn: &AcceptedTurn,
+        timing: LeaseTiming,
+    ) -> Result<RecoveryOutcome, HistoryError> {
+        self.wait(self.recover_failed_async(turn, timing))
     }
 }
 

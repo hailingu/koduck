@@ -425,7 +425,7 @@ impl TurnHistory for SharedHistory {
 
     fn prior_thread_items(
         &self,
-        _tenant_id: &TenantId,
+        _trust: &TrustContext,
         thread_id: ThreadId,
     ) -> Result<Vec<Item>, HistoryError> {
         Ok(self

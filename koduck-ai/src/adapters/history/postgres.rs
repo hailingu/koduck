@@ -12,6 +12,7 @@ use crate::application::{
 };
 use crate::domain::{Item, LeaseGeneration, TenantId, ThreadId, TrustContext, TurnId};
 
+mod recovery;
 mod sqlx_executor;
 
 pub use sqlx_executor::SqlxPostgresExecutor;
@@ -97,6 +98,15 @@ pub enum ReconcileOutcome {
     Cancelled,
 }
 
+/// Progress made by one conditional durability-recovery attempt.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RecoveryOutcome {
+    /// The owned turn is durably `recovery-pending` and needs a terminal append.
+    Pending,
+    /// The owned turn is durably closed as `failed`.
+    Failed,
+}
+
 /// Adapter-owned operations required from a `PostgreSQL` transaction executor.
 ///
 /// Implementations must bind every statement by tenant, Thread, Turn, and
@@ -123,7 +133,7 @@ pub trait PostgresExecutor: Clone {
     /// Returns [`HistoryError`] when the Thread is not owned or storage fails.
     fn prior_thread_items(
         &self,
-        tenant_id: &TenantId,
+        trust: &TrustContext,
         thread_id: ThreadId,
     ) -> Result<Vec<Item>, HistoryError>;
 
@@ -179,6 +189,18 @@ pub trait PostgresExecutor: Clone {
     ) -> Result<Vec<LeaseKey>, HistoryError> {
         Ok(Vec::new())
     }
+
+    /// Advances an accepted append outage through `recovery-pending` to `failed`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`HistoryError`] while storage is unavailable or when ownership
+    /// has been fenced or terminalized.
+    fn recover_failed(
+        &self,
+        turn: &AcceptedTurn,
+        timing: LeaseTiming,
+    ) -> Result<RecoveryOutcome, HistoryError>;
 }
 
 /// A background orphan-reconciliation worker stopped when dropped.
@@ -344,10 +366,10 @@ impl<E: PostgresExecutor + Send + 'static> TurnHistory for PostgresTurnHistory<E
 
     fn prior_thread_items(
         &self,
-        tenant_id: &TenantId,
+        trust: &TrustContext,
         thread_id: ThreadId,
     ) -> Result<Vec<Item>, HistoryError> {
-        self.executor.prior_thread_items(tenant_id, thread_id)
+        self.executor.prior_thread_items(trust, thread_id)
     }
 
     fn accept_initial(&mut self, command: &TurnCommand) -> Result<AcceptedTurn, HistoryError> {
@@ -360,6 +382,10 @@ impl<E: PostgresExecutor + Send + 'static> TurnHistory for PostgresTurnHistory<E
 
     fn replay(&self, tenant_id: &TenantId, turn_id: TurnId) -> Result<Vec<Item>, HistoryError> {
         self.executor.replay(tenant_id, turn_id)
+    }
+
+    fn schedule_failed_recovery(&mut self, turn: &AcceptedTurn) -> Result<(), HistoryError> {
+        recovery::schedule(self.executor.clone(), turn.clone(), self.timing)
     }
 }
 
