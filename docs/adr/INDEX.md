@@ -10,3 +10,4 @@ metadata changes. Never delete a row during archival; update its status and
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | Full ADR | ADR-0001 | Provider-Neutral Tool-Free Turn Kernel | Accepted | In Progress | Project | `docs/architecture/ADD-0001-ai-service-codex-alignment.md` — CAND-1 | `docs/adr/ADR-0001-provider-neutral-turn-kernel.md` | None |
 | OCR | OCR-0001 | Red Domain Lifecycle Test | Accepted | Verified | Project | `docs/adr/ADR-0001-provider-neutral-turn-kernel.md` | `docs/adr/ocr/archive/OCR-0001-red-domain-lifecycle-test.md` | None |
+| OCR | OCR-0002 | Green Domain Lifecycle Test | Accepted | Blocked | Project | `docs/adr/ADR-0001-provider-neutral-turn-kernel.md` | `docs/adr/ocr/archive/OCR-0002-green-domain-lifecycle-test.md` | None |
