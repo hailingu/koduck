@@ -181,8 +181,27 @@ pub enum HistoryError {
     NotFound,
 }
 
+/// An active-turn resource whose drop stops its liveness maintenance.
+pub trait TurnLiveness: Send {}
+
+struct NoopTurnLiveness;
+
+impl TurnLiveness for NoopTurnLiveness {}
+
 /// Consumer-owned canonical Thread/Turn/Item history boundary.
 pub trait TurnHistory {
+    /// Starts any adapter-owned liveness maintenance required after acceptance.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`HistoryError`] when required liveness maintenance cannot start.
+    fn start_turn_liveness(
+        &self,
+        _turn: &AcceptedTurn,
+    ) -> Result<Box<dyn TurnLiveness>, HistoryError> {
+        Ok(Box::new(NoopTurnLiveness))
+    }
+
     /// Records an authenticated interrupt request for an active tenant-owned turn.
     ///
     /// # Errors
@@ -233,6 +252,27 @@ pub trait TurnHistory {
     ///
     /// Returns [`HistoryError`] when the turn is missing or history is unavailable.
     fn replay(&self, tenant_id: &TenantId, turn_id: TurnId) -> Result<Vec<Item>, HistoryError>;
+}
+
+/// One durable-before-visible event emitted while a turn executes.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum TurnStreamEvent {
+    /// Initial input and ownership were durably accepted.
+    Started {
+        /// Durable Thread identity allocated or resumed at acceptance.
+        thread_id: ThreadId,
+        /// Durable Turn identity allocated at acceptance.
+        turn_id: TurnId,
+    },
+    /// One provider-visible item was durably appended.
+    Item {
+        /// Durable Thread identity for presentation routing.
+        thread_id: ThreadId,
+        /// Durable Turn identity for presentation routing.
+        turn_id: TurnId,
+        /// The durably appended item.
+        item: Item,
+    },
 }
 
 /// The observable result of one application turn execution.

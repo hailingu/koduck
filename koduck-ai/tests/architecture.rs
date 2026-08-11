@@ -87,6 +87,43 @@ fn cand_1_has_no_legacy_or_external_history_fallback() {
     }
 }
 
+#[test]
+fn production_runtime_wires_reviewed_failure_and_streaming_guards() {
+    let crate_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let sqlx =
+        fs::read_to_string(crate_root.join("src/adapters/history/postgres/sqlx_executor.rs"))
+            .expect("SQLx executor source is readable");
+    assert!(
+        sqlx.contains("tokio::time::timeout") && sqlx.contains("AppendPolicy::cand_1().deadline()"),
+        "production append must enforce the approved two-second deadline"
+    );
+
+    let provider = fs::read_to_string(crate_root.join("src/adapters/provider/mod.rs"))
+        .expect("provider adapter source is readable");
+    assert!(
+        !provider.contains("block_on(response.text())") && provider.contains("response.chunk()"),
+        "provider transport must consume upstream frames incrementally"
+    );
+
+    let runtime = fs::read_to_string(crate_root.join("src/runtime/mod.rs"))
+        .expect("runtime source is readable");
+    let http = fs::read_to_string(crate_root.join("src/adapters/http/mod.rs"))
+        .expect("HTTP adapter source is readable");
+    let history = fs::read_to_string(crate_root.join("src/adapters/history/postgres.rs"))
+        .expect("PostgreSQL history source is readable");
+    assert!(
+        !runtime.contains("Arc<Mutex<HttpAdapter") && !runtime.contains("adapter.lock()"),
+        "request execution must not hold a turn-wide router mutex"
+    );
+    assert!(
+        runtime.contains("start_reconciliation_worker")
+            && runtime.contains("handle_stream")
+            && http.contains("execute_stream")
+            && history.contains("start_turn_liveness"),
+        "runtime must start liveness reconciliation and incremental SSE execution"
+    );
+}
+
 fn collect_text(path: &Path, output: &mut String) {
     for entry in fs::read_dir(path).expect("production source directory exists") {
         let entry = entry.expect("source directory entry is readable");

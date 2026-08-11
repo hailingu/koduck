@@ -6,10 +6,11 @@ use crate::domain::{Item, TenantId, TerminalOutcome, TrustContext, Turn, TurnId,
 
 use super::ports::{
     AcceptedTurn, DurabilityFailure, HistoryError, ModelInput, ModelProvider, NewItem,
-    ProviderEvent, TurnCommand, TurnHistory, TurnResult, TurnRunError,
+    ProviderEvent, TurnCommand, TurnHistory, TurnResult, TurnRunError, TurnStreamEvent,
 };
 
 /// Owns provider-neutral lifecycle transitions and durable-before-visible ordering.
+#[derive(Clone)]
 pub struct TurnRunner<P, H> {
     provider: P,
     history: H,
@@ -64,6 +65,19 @@ where
     /// Returns [`TurnRunError`] when initial acceptance, provider setup, append,
     /// replay, or an internal lifecycle transition fails.
     pub fn execute(&mut self, command: TurnCommand) -> Result<TurnResult, TurnRunError> {
+        self.execute_with_observer(command, &mut |_| {})
+    }
+
+    /// Executes one turn while observing only durably committed stream events.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TurnRunError`] under the same conditions as [`Self::execute`].
+    pub fn execute_with_observer(
+        &mut self,
+        command: TurnCommand,
+        observer: &mut dyn FnMut(TurnStreamEvent),
+    ) -> Result<TurnResult, TurnRunError> {
         let prior_history = command
             .thread_id
             .map(|thread_id| {
@@ -77,6 +91,14 @@ where
             .history
             .accept_initial(&command)
             .map_err(|error| history_failure(error, false, &[]))?;
+        let _liveness = self
+            .history
+            .start_turn_liveness(&accepted)
+            .map_err(|error| history_failure(error, true, &[]))?;
+        observer(TurnStreamEvent::Started {
+            thread_id: accepted.thread_id,
+            turn_id: accepted.turn_id,
+        });
         let input = ModelInput {
             tenant_id: command.trust.tenant_id.clone(),
             thread_id: accepted.thread_id,
@@ -84,12 +106,37 @@ where
             input: command.input,
             history: prior_history,
         };
-        let mut stream = self.provider.stream(input)?;
         let mut state = ExecutionState::started();
+        let mut stream = match self.provider.stream(input) {
+            Ok(stream) => stream,
+            Err(error) => {
+                state.lifecycle = state.lifecycle.fail()?;
+                let terminal = self
+                    .history
+                    .append(
+                        &accepted,
+                        NewItem::Terminal(TerminalOutcome::Failed { code: error.code }),
+                    )
+                    .map_err(|error| history_failure(error, true, &state.published))?;
+                observe_item(observer, &accepted, &terminal);
+                state.published.push(terminal);
+                return Self::finish(
+                    &self.history,
+                    &command.trust.tenant_id,
+                    &accepted,
+                    state.lifecycle,
+                    state.published,
+                );
+            }
+        };
         let mut reached_terminal = false;
 
         for event in &mut *stream {
+            let published_before = state.published.len();
             let event_result = handle_event(&mut self.history, &accepted, &mut state, event);
+            for item in &state.published[published_before..] {
+                observe_item(observer, &accepted, item);
+            }
             if event_result.map_err(|error| post_accept_failure(error, &state.published))? {
                 reached_terminal = true;
                 break;
@@ -104,6 +151,7 @@ where
                     .history
                     .append(&accepted, NewItem::Terminal(TerminalOutcome::Interrupted))
                     .map_err(|error| history_failure(error, true, &state.published))?;
+                observe_item(observer, &accepted, &terminal);
                 state.published.push(terminal);
                 reached_terminal = true;
                 break;
@@ -122,9 +170,11 @@ where
                     }),
                 )
                 .map_err(|error| history_failure(error, true, &state.published))?;
+            observe_item(observer, &accepted, &terminal);
             state.published.push(terminal);
         }
-        self.finish(
+        Self::finish(
+            &self.history,
             &command.trust.tenant_id,
             &accepted,
             state.lifecycle,
@@ -133,14 +183,13 @@ where
     }
 
     fn finish(
-        &self,
+        history: &H,
         tenant_id: &TenantId,
         accepted: &AcceptedTurn,
         lifecycle: Turn,
         published: Vec<Item>,
     ) -> Result<TurnResult, TurnRunError> {
-        let replay = self
-            .history
+        let replay = history
             .replay(tenant_id, accepted.turn_id)
             .map_err(|error| history_failure(error, true, &published))?;
         Ok(TurnResult {
@@ -151,6 +200,14 @@ where
             replay,
         })
     }
+}
+
+fn observe_item(observer: &mut dyn FnMut(TurnStreamEvent), accepted: &AcceptedTurn, item: &Item) {
+    observer(TurnStreamEvent::Item {
+        thread_id: accepted.thread_id,
+        turn_id: accepted.turn_id,
+        item: item.clone(),
+    });
 }
 
 fn handle_event<H: TurnHistory>(

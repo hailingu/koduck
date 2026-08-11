@@ -4,6 +4,7 @@
 
 use thiserror::Error;
 use tokio::runtime::Handle;
+use tokio::sync::mpsc;
 
 use crate::application::{ModelInput, ModelProvider, ProviderError, ProviderEvent, ProviderStream};
 use crate::domain::{ItemPayload, Usage};
@@ -27,10 +28,14 @@ pub trait OpenAiProtocolTransport {
     fn chat_completion_frames(
         &mut self,
         input: &ModelInput,
-    ) -> Result<Vec<String>, OpenAiTransportError>;
+    ) -> Result<OpenAiFrameStream, OpenAiTransportError>;
 }
 
+/// A lazy sequence of OpenAI-compatible SSE data frames.
+pub type OpenAiFrameStream = Box<dyn Iterator<Item = Result<String, OpenAiTransportError>> + Send>;
+
 /// Reqwest transport for one explicitly configured OpenAI-compatible endpoint.
+#[derive(Clone)]
 pub struct ReqwestOpenAiTransport {
     client: reqwest::Client,
     runtime: Handle,
@@ -63,7 +68,7 @@ impl OpenAiProtocolTransport for ReqwestOpenAiTransport {
     fn chat_completion_frames(
         &mut self,
         input: &ModelInput,
-    ) -> Result<Vec<String>, OpenAiTransportError> {
+    ) -> Result<OpenAiFrameStream, OpenAiTransportError> {
         let messages = provider_messages(input);
         let request = self
             .client
@@ -83,21 +88,73 @@ impl OpenAiProtocolTransport for ReqwestOpenAiTransport {
         if !status.is_success() {
             return Err(transport_error(&format!("OPENAI_HTTP_{}", status.as_u16())));
         }
-        let body = self
-            .runtime
-            .block_on(response.text())
-            .map_err(|_| transport_error("OPENAI_BODY_FAILED"))?;
-        let frames = body
-            .lines()
-            .filter(|line| line.starts_with("data: "))
-            .map(str::to_owned)
-            .collect::<Vec<_>>();
-        if frames.is_empty() {
-            Err(transport_error("OPENAI_EMPTY_STREAM"))
-        } else {
-            Ok(frames)
+        let (sender, mut receiver) = mpsc::channel(64);
+        self.runtime.spawn(pump_response(response, sender));
+        Ok(Box::new(std::iter::from_fn(move || {
+            receiver.blocking_recv()
+        })))
+    }
+}
+
+async fn pump_response(
+    mut response: reqwest::Response,
+    sender: mpsc::Sender<Result<String, OpenAiTransportError>>,
+) {
+    let mut pending = Vec::new();
+    let mut saw_frame = false;
+    loop {
+        match response.chunk().await {
+            Ok(Some(chunk)) => {
+                pending.extend_from_slice(&chunk);
+                while let Some(newline) = pending.iter().position(|byte| *byte == b'\n') {
+                    let mut line = pending.drain(..=newline).collect::<Vec<_>>();
+                    while line
+                        .last()
+                        .is_some_and(|byte| matches!(*byte, b'\n' | b'\r'))
+                    {
+                        line.pop();
+                    }
+                    if send_frame(&sender, line, &mut saw_frame).await.is_err() {
+                        let _ = sender
+                            .send(Err(transport_error("OPENAI_BODY_FAILED")))
+                            .await;
+                        return;
+                    }
+                }
+            }
+            Ok(None) => break,
+            Err(_) => {
+                let _ = sender
+                    .send(Err(transport_error("OPENAI_BODY_FAILED")))
+                    .await;
+                return;
+            }
         }
     }
+    if !pending.is_empty() && send_frame(&sender, pending, &mut saw_frame).await.is_err() {
+        let _ = sender
+            .send(Err(transport_error("OPENAI_BODY_FAILED")))
+            .await;
+        return;
+    }
+    if !saw_frame {
+        let _ = sender
+            .send(Err(transport_error("OPENAI_EMPTY_STREAM")))
+            .await;
+    }
+}
+
+async fn send_frame(
+    sender: &mpsc::Sender<Result<String, OpenAiTransportError>>,
+    line: Vec<u8>,
+    saw_frame: &mut bool,
+) -> Result<(), ()> {
+    let line = String::from_utf8(line).map_err(|_| ())?;
+    if !line.starts_with("data: ") {
+        return Ok(());
+    }
+    *saw_frame = true;
+    sender.send(Ok(line)).await.map_err(|_| ())
 }
 
 fn provider_messages(input: &ModelInput) -> Vec<serde_json::Value> {
@@ -128,6 +185,7 @@ fn transport_error(code: &str) -> OpenAiTransportError {
 }
 
 /// Translates OpenAI-compatible streaming frames into owned provider events.
+#[derive(Clone)]
 pub struct OpenAiCompatibleProvider<T> {
     transport: T,
 }
@@ -145,15 +203,32 @@ where
     T: OpenAiProtocolTransport,
 {
     fn stream(&mut self, input: ModelInput) -> Result<ProviderStream<'_>, ProviderError> {
-        let frames = self
+        let mut frames = self
             .transport
             .chat_completion_frames(&input)
             .map_err(|error| ProviderError { code: error.code })?;
-        let events = frames
-            .iter()
-            .map(|frame| parse_frame(frame))
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(Box::new(events.into_iter().flatten()))
+        let mut terminated = false;
+        let events = std::iter::from_fn(move || {
+            if terminated {
+                return None;
+            }
+            let frame = frames.next()?;
+            match frame {
+                Ok(frame) => match parse_frame(&frame) {
+                    Ok(Some(event)) => Some(event),
+                    Ok(None) => None,
+                    Err(error) => {
+                        terminated = true;
+                        Some(ProviderEvent::Error { code: error.code })
+                    }
+                },
+                Err(error) => {
+                    terminated = true;
+                    Some(ProviderEvent::Error { code: error.code })
+                }
+            }
+        });
+        Ok(Box::new(events))
     }
 }
 

@@ -10,7 +10,7 @@ use sqlx::{PgPool, Row};
 use tokio::runtime::Handle;
 use uuid::Uuid;
 
-use crate::application::{AcceptedTurn, HistoryError, NewItem, TurnCommand};
+use crate::application::{AcceptedTurn, AppendPolicy, HistoryError, NewItem, TurnCommand};
 use crate::domain::{
     Item, ItemPayload, LeaseGeneration, TenantId, TerminalOutcome, ThreadId, TrustContext, TurnId,
     Usage,
@@ -382,6 +382,42 @@ impl SqlxPostgresExecutor {
         transaction.commit().await.map_err(unavailable)?;
         Ok(ReconcileOutcome::Cancelled)
     }
+
+    async fn expired_lease_keys_async(
+        &self,
+        now_ms: u64,
+        timing: LeaseTiming,
+    ) -> Result<Vec<LeaseKey>, HistoryError> {
+        let rows = sqlx::query(
+            "SELECT l.tenant_id, l.thread_id, l.turn_id, l.generation \
+             FROM turn_leases l JOIN turns t USING (tenant_id, thread_id, turn_id) \
+             WHERE t.status = 'started' AND NOT l.fenced \
+             AND (EXTRACT(EPOCH FROM l.renewed_at) * 1000)::BIGINT <= $1 - $2",
+        )
+        .bind(milliseconds_i64(now_ms)?)
+        .bind(milliseconds_i64(timing.reconcile_after_ms())?)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(unavailable)?;
+        rows.iter()
+            .map(|row| {
+                let tenant_id: String = row.try_get("tenant_id").map_err(unavailable)?;
+                let thread_id: Uuid = row.try_get("thread_id").map_err(unavailable)?;
+                let turn_id: Uuid = row.try_get("turn_id").map_err(unavailable)?;
+                let generation: i64 = row.try_get("generation").map_err(unavailable)?;
+                let generation = u64::try_from(generation)
+                    .ok()
+                    .and_then(LeaseGeneration::from_persisted)
+                    .ok_or(HistoryError::Unavailable)?;
+                Ok(LeaseKey::new(
+                    TenantId::new(tenant_id).map_err(|_| HistoryError::Unavailable)?,
+                    ThreadId::from_uuid(thread_id),
+                    TurnId::from_uuid(turn_id),
+                    generation,
+                ))
+            })
+            .collect()
+    }
 }
 
 impl PostgresExecutor for SqlxPostgresExecutor {
@@ -406,7 +442,14 @@ impl PostgresExecutor for SqlxPostgresExecutor {
     }
 
     fn append(&self, turn: &AcceptedTurn, item: NewItem) -> Result<Item, HistoryError> {
-        self.wait(self.append_async(turn, item))
+        self.runtime.block_on(async {
+            tokio::time::timeout(
+                AppendPolicy::cand_1().deadline(),
+                self.append_async(turn, item),
+            )
+            .await
+            .map_err(|_| HistoryError::Unavailable)?
+        })
     }
 
     fn replay(&self, tenant_id: &TenantId, turn_id: TurnId) -> Result<Vec<Item>, HistoryError> {
@@ -424,6 +467,14 @@ impl PostgresExecutor for SqlxPostgresExecutor {
         timing: LeaseTiming,
     ) -> Result<ReconcileOutcome, HistoryError> {
         self.wait(self.reconcile_expired_async(key, now_ms, timing))
+    }
+
+    fn expired_lease_keys(
+        &self,
+        now_ms: u64,
+        timing: LeaseTiming,
+    ) -> Result<Vec<LeaseKey>, HistoryError> {
+        self.wait(self.expired_lease_keys_async(now_ms, timing))
     }
 }
 

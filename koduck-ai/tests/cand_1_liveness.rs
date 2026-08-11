@@ -2,6 +2,7 @@
 
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::{Duration, Instant};
 
 use koduck_ai::adapters::history::postgres::{
     LeaseKey, LeaseTiming, PostgresExecutor, PostgresTurnHistory, ReconcileOutcome,
@@ -176,6 +177,57 @@ impl PostgresExecutor for SimulatedPostgres {
         state.items.push(terminal);
         Ok(ReconcileOutcome::Cancelled)
     }
+
+    fn expired_lease_keys(
+        &self,
+        now_ms: u64,
+        timing: LeaseTiming,
+    ) -> Result<Vec<LeaseKey>, HistoryError> {
+        let state = self.state.lock().expect("state lock");
+        if !state.available {
+            return Err(HistoryError::Unavailable);
+        }
+        if state.terminal
+            || state.fenced
+            || now_ms < state.last_renewal_ms + timing.reconcile_after_ms()
+        {
+            return Ok(Vec::new());
+        }
+        Ok(vec![LeaseKey::new(
+            state.tenant_id.clone(),
+            state.accepted.thread_id,
+            state.accepted.turn_id,
+            state.accepted.generation,
+        )])
+    }
+}
+
+#[test]
+fn production_reconciliation_worker_scans_expired_turns() {
+    let (executor, key, _) = SimulatedPostgres::seeded();
+    let history = PostgresTurnHistory::new(executor);
+    let worker = history.start_reconciliation_worker();
+    let deadline = Instant::now() + Duration::from_millis(500);
+
+    loop {
+        let replay = history
+            .replay(&key.tenant_id, key.turn_id)
+            .expect("replay remains readable");
+        if replay.iter().any(|item| {
+            matches!(
+                item.payload,
+                ItemPayload::Terminal(TerminalOutcome::Cancelled)
+            )
+        }) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "reconciliation worker did not scan the expired generation"
+        );
+        thread::sleep(Duration::from_millis(5));
+    }
+    drop(worker);
 }
 
 #[test]

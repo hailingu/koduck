@@ -28,6 +28,12 @@ impl AppendPolicy {
         }
     }
 
+    /// Returns the maximum time allowed for one production history append.
+    #[must_use]
+    pub const fn deadline(self) -> Duration {
+        self.deadline
+    }
+
     /// Checks whether one append completed inside the exact deadline.
     ///
     /// # Errors

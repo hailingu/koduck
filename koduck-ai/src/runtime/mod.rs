@@ -3,9 +3,10 @@
 //! Production runtime configuration and executable assembly.
 
 use std::collections::BTreeMap;
+use std::convert::Infallible;
 use std::fmt;
 use std::net::{AddrParseError, SocketAddr};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use axum::Router;
 use axum::body::{Body, Bytes};
@@ -15,6 +16,8 @@ use axum::response::Response;
 use axum::routing::post;
 use sqlx::postgres::PgPoolOptions;
 use thiserror::Error;
+use tokio::sync::{mpsc, oneshot};
+use tokio_stream::wrappers::ReceiverStream;
 
 use crate::adapters::history::postgres::{PostgresTurnHistory, SqlxPostgresExecutor};
 use crate::adapters::http::{HttpAdapter, HttpMethod, HttpRequest, TurnService};
@@ -104,9 +107,9 @@ impl RuntimeConfig {
 /// Builds the three owned v1 Axum routes around the framework-neutral adapter.
 pub fn build_router<S>(service: S) -> Router
 where
-    S: TurnService + Send + 'static,
+    S: TurnService + Clone + Send + Sync + 'static,
 {
-    let state = Arc::new(Mutex::new(HttpAdapter::new(service)));
+    let state = Arc::new(service);
     Router::new()
         .route("/api/v1/ai/chat", post(handle_request::<S>))
         .route("/api/v1/ai/chat/stream", post(handle_request::<S>))
@@ -134,6 +137,7 @@ pub async fn run(config: RuntimeConfig) -> Result<(), RuntimeError> {
         .map_err(RuntimeError::Database)?;
     let runtime = tokio::runtime::Handle::current();
     let history = PostgresTurnHistory::new(SqlxPostgresExecutor::new(pool, runtime.clone()));
+    let _reconciliation_worker = history.start_reconciliation_worker();
     let client = reqwest::Client::builder()
         .build()
         .map_err(RuntimeError::ProviderClient)?;
@@ -155,13 +159,13 @@ pub async fn run(config: RuntimeConfig) -> Result<(), RuntimeError> {
 }
 
 async fn handle_request<S>(
-    State(adapter): State<Arc<Mutex<HttpAdapter<S>>>>,
+    State(service): State<Arc<S>>,
     uri: Uri,
     headers: HeaderMap,
     body: Bytes,
 ) -> Response
 where
-    S: TurnService + Send + 'static,
+    S: TurnService + Clone + Send + Sync + 'static,
 {
     let request = HttpRequest {
         method: HttpMethod::Post,
@@ -170,17 +174,52 @@ where
         body: String::from_utf8_lossy(&body).into_owned(),
         trust: trust_context(&headers),
     };
-    match tokio::task::spawn_blocking(move || {
-        adapter
-            .lock()
-            .map_err(|_| ())
-            .map(|mut adapter| adapter.handle(request))
-    })
-    .await
-    {
-        Ok(Ok(response)) => into_axum_response(response),
-        Ok(Err(())) | Err(_) => internal_failure(),
+    if request.path == "/api/v1/ai/chat/stream" {
+        return handle_stream_request((*service).clone(), request).await;
     }
+    match tokio::task::spawn_blocking(move || HttpAdapter::new((*service).clone()).handle(request))
+        .await
+    {
+        Ok(response) => into_axum_response(response),
+        Err(_) => internal_failure(),
+    }
+}
+
+async fn handle_stream_request<S>(service: S, request: HttpRequest) -> Response
+where
+    S: TurnService + Clone + Send + Sync + 'static,
+{
+    let (decision_sender, decision_receiver) = oneshot::channel();
+    let (body_sender, body_receiver) = mpsc::channel::<Result<Bytes, Infallible>>(64);
+    tokio::task::spawn_blocking(move || {
+        let mut decision_sender = Some(decision_sender);
+        let mut adapter = HttpAdapter::new(service);
+        let response = adapter.handle_stream(request, &mut |chunk| {
+            if let Some(sender) = decision_sender.take() {
+                let _ = sender.send(Ok(()));
+            }
+            if !chunk.is_empty() {
+                let _ = body_sender.blocking_send(Ok(Bytes::from(chunk)));
+            }
+        });
+        if let Some(sender) = decision_sender.take() {
+            let _ = sender.send(Err(response));
+        }
+    });
+    match decision_receiver.await {
+        Ok(Ok(())) => streaming_response(body_receiver),
+        Ok(Err(response)) => into_axum_response(response),
+        Err(_) => internal_failure(),
+    }
+}
+
+fn streaming_response(receiver: mpsc::Receiver<Result<Bytes, Infallible>>) -> Response {
+    let mut response = Response::new(Body::from_stream(ReceiverStream::new(receiver)));
+    response.headers_mut().insert(
+        axum::http::header::CONTENT_TYPE,
+        HeaderValue::from_static("text/event-stream"),
+    );
+    response
 }
 
 fn trust_context(headers: &HeaderMap) -> Option<TrustContext> {

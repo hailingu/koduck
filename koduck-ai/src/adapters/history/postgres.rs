@@ -2,7 +2,14 @@
 
 //! `PostgreSQL` history translation and exact foreground-lease policy.
 
-use crate::application::{AcceptedTurn, HistoryError, NewItem, TurnCommand, TurnHistory};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread::{self, JoinHandle};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use crate::application::{
+    AcceptedTurn, HistoryError, NewItem, TurnCommand, TurnHistory, TurnLiveness,
+};
 use crate::domain::{Item, LeaseGeneration, TenantId, ThreadId, TrustContext, TurnId};
 
 mod sqlx_executor;
@@ -159,6 +166,52 @@ pub trait PostgresExecutor: Clone {
         now_ms: u64,
         timing: LeaseTiming,
     ) -> Result<ReconcileOutcome, HistoryError>;
+
+    /// Lists active lease generations whose expiry and skew windows elapsed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`HistoryError`] when canonical storage is unavailable.
+    fn expired_lease_keys(
+        &self,
+        _now_ms: u64,
+        _timing: LeaseTiming,
+    ) -> Result<Vec<LeaseKey>, HistoryError> {
+        Ok(Vec::new())
+    }
+}
+
+/// A background orphan-reconciliation worker stopped when dropped.
+pub struct ReconciliationWorker {
+    stop: Arc<AtomicBool>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl Drop for ReconciliationWorker {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        if let Some(thread) = self.thread.take() {
+            thread.thread().unpark();
+            let _ = thread.join();
+        }
+    }
+}
+
+struct LeaseRenewalGuard {
+    stop: Arc<AtomicBool>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl TurnLiveness for LeaseRenewalGuard {}
+
+impl Drop for LeaseRenewalGuard {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        if let Some(thread) = self.thread.take() {
+            thread.thread().unpark();
+            let _ = thread.join();
+        }
+    }
 }
 
 /// The sole production canonical-history implementation for CAND-1.
@@ -200,9 +253,77 @@ impl<E: PostgresExecutor> PostgresTurnHistory<E> {
     ) -> Result<ReconcileOutcome, HistoryError> {
         self.executor.reconcile_expired(key, now_ms, self.timing)
     }
+
+    /// Starts the production loop that fences orphaned expired generations.
+    #[must_use]
+    pub fn start_reconciliation_worker(&self) -> ReconciliationWorker
+    where
+        E: Send + 'static,
+    {
+        let executor = self.executor.clone();
+        let timing = self.timing;
+        let stop = Arc::new(AtomicBool::new(false));
+        let worker_stop = Arc::clone(&stop);
+        let thread = thread::spawn(move || {
+            while !worker_stop.load(Ordering::Acquire) {
+                let now_ms = unix_time_ms();
+                match executor.expired_lease_keys(now_ms, timing) {
+                    Ok(keys) => {
+                        for key in keys {
+                            match executor.reconcile_expired(&key, now_ms, timing) {
+                                Ok(_)
+                                | Err(HistoryError::Fenced | HistoryError::AlreadyTerminal) => {}
+                                Err(error) => {
+                                    eprintln!("event=lease_reconcile_failed error={error}");
+                                }
+                            }
+                        }
+                    }
+                    Err(error) => eprintln!("event=lease_scan_failed error={error}"),
+                }
+                thread::park_timeout(Duration::from_millis(timing.heartbeat_ms()));
+            }
+        });
+        ReconciliationWorker {
+            stop,
+            thread: Some(thread),
+        }
+    }
 }
 
-impl<E: PostgresExecutor> TurnHistory for PostgresTurnHistory<E> {
+impl<E: PostgresExecutor + Send + 'static> TurnHistory for PostgresTurnHistory<E> {
+    fn start_turn_liveness(
+        &self,
+        turn: &AcceptedTurn,
+    ) -> Result<Box<dyn TurnLiveness>, HistoryError> {
+        let executor = self.executor.clone();
+        let key = LeaseKey::new(
+            turn.tenant_id.clone(),
+            turn.thread_id,
+            turn.turn_id,
+            turn.generation,
+        );
+        let heartbeat = self.timing.heartbeat_ms();
+        let stop = Arc::new(AtomicBool::new(false));
+        let renewal_stop = Arc::clone(&stop);
+        let thread = thread::spawn(move || {
+            while !renewal_stop.load(Ordering::Acquire) {
+                thread::park_timeout(Duration::from_millis(heartbeat));
+                if renewal_stop.load(Ordering::Acquire) {
+                    break;
+                }
+                if let Err(error) = executor.renew_lease(&key, unix_time_ms()) {
+                    eprintln!("event=lease_renewal_stopped error={error}");
+                    break;
+                }
+            }
+        });
+        Ok(Box::new(LeaseRenewalGuard {
+            stop,
+            thread: Some(thread),
+        }))
+    }
+
     fn request_interrupt(
         &mut self,
         trust: &TrustContext,
@@ -234,4 +355,13 @@ impl<E: PostgresExecutor> TurnHistory for PostgresTurnHistory<E> {
     fn replay(&self, tenant_id: &TenantId, turn_id: TurnId) -> Result<Vec<Item>, HistoryError> {
         self.executor.replay(tenant_id, turn_id)
     }
+}
+
+fn unix_time_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .try_into()
+        .unwrap_or(u64::MAX)
 }

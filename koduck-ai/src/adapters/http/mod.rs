@@ -11,10 +11,13 @@ use uuid::Uuid;
 
 use crate::application::{
     HistoryError, ModelProvider, TurnCommand, TurnHistory, TurnResult, TurnRunError, TurnRunner,
+    TurnStreamEvent,
 };
 use crate::domain::{TrustContext, TurnId};
 
-use self::wire::{interrupt_body, parse_turn_request, problem_body, sse_body, sync_body};
+use self::wire::{
+    interrupt_body, parse_turn_request, problem_body, sse_body, stream_event_body, sync_body,
+};
 
 /// Supported HTTP methods for the owned v1 routes.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -83,6 +86,31 @@ pub trait TurnService {
     /// Returns [`ServiceError`] when the kernel cannot expose a normal result.
     fn execute(&mut self, command: TurnCommand) -> Result<TurnResult, ServiceError>;
 
+    /// Executes one command while reporting durable stream events incrementally.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServiceError`] when no normal owned result can be exposed.
+    fn execute_stream(
+        &mut self,
+        command: TurnCommand,
+        observer: &mut dyn FnMut(TurnStreamEvent),
+    ) -> Result<TurnResult, ServiceError> {
+        let result = self.execute(command)?;
+        observer(TurnStreamEvent::Started {
+            thread_id: result.thread_id,
+            turn_id: result.turn_id,
+        });
+        for item in &result.published {
+            observer(TurnStreamEvent::Item {
+                thread_id: result.thread_id,
+                turn_id: result.turn_id,
+                item: item.clone(),
+            });
+        }
+        Ok(result)
+    }
+
     /// Requests interruption of one tenant-owned active turn.
     ///
     /// # Errors
@@ -99,6 +127,15 @@ where
 {
     fn execute(&mut self, command: TurnCommand) -> Result<TurnResult, ServiceError> {
         TurnRunner::execute(self, command).map_err(|error| map_turn_run_error(&error))
+    }
+
+    fn execute_stream(
+        &mut self,
+        command: TurnCommand,
+        observer: &mut dyn FnMut(TurnStreamEvent),
+    ) -> Result<TurnResult, ServiceError> {
+        self.execute_with_observer(command, observer)
+            .map_err(|error| map_turn_run_error(&error))
     }
 
     fn interrupt(&mut self, trust: &TrustContext, turn_id: TurnId) -> Result<(), ServiceError> {
@@ -142,6 +179,36 @@ impl<S: TurnService> HttpAdapter<S> {
             "/api/v1/ai/chat" => self.execute(command, false),
             "/api/v1/ai/chat/stream" => self.execute(command, true),
             _ => problem(404, "not-found", false),
+        }
+    }
+
+    /// Handles the SSE route and emits each durable event as it becomes available.
+    #[must_use]
+    pub fn handle_stream(
+        &mut self,
+        request: HttpRequest,
+        emit: &mut dyn FnMut(String),
+    ) -> HttpResponse {
+        let Some(trust) = request.trust else {
+            return problem(401, "invalid-identity", true);
+        };
+        if request.method != HttpMethod::Post {
+            return problem(405, "method-not-allowed", false);
+        }
+        if request.path != "/api/v1/ai/chat/stream"
+            || request.content_type.as_deref() != Some("application/json")
+        {
+            return problem(400, "invalid-request", false);
+        }
+        let Ok(command) = parse_turn_request(&request.body, trust) else {
+            return problem(400, "invalid-request", false);
+        };
+        match self
+            .service
+            .execute_stream(command, &mut |event| emit(stream_event_body(event)))
+        {
+            Ok(_) => response(200, "text/event-stream", String::new()),
+            Err(error) => map_service_error(&error),
         }
     }
 

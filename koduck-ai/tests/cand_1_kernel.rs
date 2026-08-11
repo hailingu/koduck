@@ -1,8 +1,8 @@
 // ADR: docs/adr/ADR-0001-provider-neutral-turn-kernel.md
 
 use koduck_ai::application::{
-    AcceptedTurn, HistoryError, ModelInput, ModelProvider, NewItem, ProviderEvent, ProviderStream,
-    TurnCommand, TurnHistory, TurnRunner,
+    AcceptedTurn, HistoryError, ModelInput, ModelProvider, NewItem, ProviderError, ProviderEvent,
+    ProviderStream, TurnCommand, TurnHistory, TurnRunner,
 };
 use koduck_ai::domain::{
     Item, ItemPayload, LeaseGeneration, TenantId, TerminalOutcome, TrustContext, TurnId,
@@ -11,6 +11,16 @@ use koduck_ai::domain::{
 
 struct DeterministicProvider {
     events: Vec<ProviderEvent>,
+}
+
+struct SetupFailureProvider;
+
+impl ModelProvider for SetupFailureProvider {
+    fn stream(&mut self, _input: ModelInput) -> Result<ProviderStream<'_>, ProviderError> {
+        Err(ProviderError {
+            code: "OPENAI_REQUEST_FAILED".to_owned(),
+        })
+    }
 }
 
 impl ModelProvider for DeterministicProvider {
@@ -177,4 +187,22 @@ fn provider_error_is_failed_terminal() {
         item.payload,
         ItemPayload::Terminal(TerminalOutcome::Completed { .. })
     )));
+}
+
+#[test]
+fn provider_setup_failure_is_failed_terminal() {
+    let history = RecordingHistory::default();
+    let mut runner = TurnRunner::new(SetupFailureProvider, history);
+
+    let result = runner
+        .execute(command())
+        .expect("post-accept provider setup failure is an owned terminal result");
+
+    assert_eq!(result.status, TurnStatus::Failed);
+    assert_eq!(result.replay.len(), 2);
+    assert!(matches!(
+        &result.replay[1].payload,
+        ItemPayload::Terminal(TerminalOutcome::Failed { code })
+            if code == "OPENAI_REQUEST_FAILED"
+    ));
 }

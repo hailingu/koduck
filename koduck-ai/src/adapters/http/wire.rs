@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use uuid::Uuid;
 
-use crate::application::{TurnCommand, TurnResult};
+use crate::application::{TurnCommand, TurnResult, TurnStreamEvent};
 use crate::domain::{ItemPayload, TerminalOutcome, TrustContext, TurnId, TurnStatus, Usage};
 
 pub(super) fn parse_turn_request(body: &str, trust: TrustContext) -> Result<TurnCommand, ()> {
@@ -79,6 +79,40 @@ pub(super) fn sse_body(result: &TurnResult) -> String {
     events.concat()
 }
 
+pub(super) fn stream_event_body(event: TurnStreamEvent) -> String {
+    match event {
+        TurnStreamEvent::Started { thread_id, turn_id } => sse_event(
+            "turn.started",
+            &format!(
+                "{{\"thread_id\":\"{}\",\"turn_id\":\"{}\",\"sequence\":1,\"status\":\"started\"}}",
+                thread_id.as_uuid(),
+                turn_id.as_uuid()
+            ),
+        ),
+        TurnStreamEvent::Item {
+            thread_id,
+            turn_id,
+            item,
+        } => match item.payload {
+            ItemPayload::AgentMessageDelta { content } => sse_event(
+                "item.created",
+                &format!(
+                    "{{\"thread_id\":\"{}\",\"turn_id\":\"{}\",\"sequence\":{},\"item_id\":\"{}\",\"type\":\"agent_message_delta\",\"content\":\"{}\"}}",
+                    thread_id.as_uuid(),
+                    turn_id.as_uuid(),
+                    item.sequence,
+                    item.item_id.as_uuid(),
+                    escape_json(&content)
+                ),
+            ),
+            ItemPayload::Terminal(outcome) => {
+                stream_terminal_event(thread_id, turn_id, item.sequence, &outcome)
+            }
+            ItemPayload::UserMessage { .. } | ItemPayload::Usage(_) => String::new(),
+        },
+    }
+}
+
 pub(super) fn interrupt_body(turn_id: TurnId) -> String {
     format!(
         "{{\"turn_id\":\"{}\",\"status\":\"interrupt-requested\"}}",
@@ -116,6 +150,33 @@ fn terminal_event(result: &TurnResult, sequence: u64, outcome: &TerminalOutcome)
             "{{\"thread_id\":\"{}\",\"turn_id\":\"{}\",\"sequence\":{},\"status\":\"{}\"{}}}",
             result.thread_id.as_uuid(),
             result.turn_id.as_uuid(),
+            sequence,
+            status,
+            usage
+        ),
+    )
+}
+
+fn stream_terminal_event(
+    thread_id: crate::domain::ThreadId,
+    turn_id: TurnId,
+    sequence: u64,
+    outcome: &TerminalOutcome,
+) -> String {
+    let (status, usage) = match outcome {
+        TerminalOutcome::Completed { usage } => {
+            ("completed", format!(",\"usage\":{}", usage_json(*usage)))
+        }
+        TerminalOutcome::Failed { .. } => ("failed", String::new()),
+        TerminalOutcome::Interrupted => ("interrupted", String::new()),
+        TerminalOutcome::Cancelled => ("cancelled", String::new()),
+    };
+    sse_event(
+        &format!("turn.{status}"),
+        &format!(
+            "{{\"thread_id\":\"{}\",\"turn_id\":\"{}\",\"sequence\":{},\"status\":\"{}\"{}}}",
+            thread_id.as_uuid(),
+            turn_id.as_uuid(),
             sequence,
             status,
             usage

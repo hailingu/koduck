@@ -1,7 +1,7 @@
 // ADR: docs/adr/ADR-0001-provider-neutral-turn-kernel.md
 
 use koduck_ai::adapters::provider::{
-    OpenAiCompatibleProvider, OpenAiProtocolTransport, OpenAiTransportError,
+    OpenAiCompatibleProvider, OpenAiFrameStream, OpenAiProtocolTransport, OpenAiTransportError,
 };
 use koduck_ai::application::{ModelInput, ModelProvider, ProviderEvent};
 use koduck_ai::domain::{TenantId, ThreadId, TurnId, Usage};
@@ -14,8 +14,8 @@ impl OpenAiProtocolTransport for DeterministicProtocolServer {
     fn chat_completion_frames(
         &mut self,
         _input: &ModelInput,
-    ) -> Result<Vec<String>, OpenAiTransportError> {
-        Ok(self.frames.clone())
+    ) -> Result<OpenAiFrameStream, OpenAiTransportError> {
+        Ok(Box::new(self.frames.clone().into_iter().map(Ok)))
     }
 }
 

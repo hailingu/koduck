@@ -124,6 +124,12 @@ impl LeaseGeneration {
         Self(1)
     }
 
+    /// Reconstructs a non-zero generation read from canonical storage.
+    #[must_use]
+    pub const fn from_persisted(value: u64) -> Option<Self> {
+        if value == 0 { None } else { Some(Self(value)) }
+    }
+
     /// Returns the persisted numeric generation.
     #[must_use]
     pub const fn get(self) -> u64 {
