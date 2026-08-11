@@ -106,11 +106,14 @@ impl SqlxPostgresExecutor {
     ) -> Result<Vec<Item>, HistoryError> {
         let rows = sqlx::query(
             "SELECT turn_items.item_id, turn_items.sequence, turn_items.item_type, \
-             turn_items.payload FROM turn_items JOIN threads \
+             turn_items.payload FROM turn_items JOIN turns \
+             ON turns.tenant_id = turn_items.tenant_id \
+             AND turns.thread_id = turn_items.thread_id \
+             AND turns.turn_id = turn_items.turn_id JOIN threads \
              ON threads.tenant_id = turn_items.tenant_id \
              AND threads.thread_id = turn_items.thread_id \
              WHERE turn_items.tenant_id = $1 AND turn_items.thread_id = $2 \
-             AND threads.subject_id = $3 ORDER BY turn_items.created_at, \
+             AND threads.subject_id = $3 ORDER BY turns.created_at, \
              turn_items.turn_id, turn_items.sequence",
         )
         .bind(trust.tenant_id.as_str())

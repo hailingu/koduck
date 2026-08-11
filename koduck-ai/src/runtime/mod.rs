@@ -11,9 +11,10 @@ use std::sync::Arc;
 use axum::Router;
 use axum::body::{Body, Bytes};
 use axum::extract::State;
-use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode, Uri};
+use axum::extract::rejection::BytesRejection;
+use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri};
 use axum::response::Response;
-use axum::routing::post;
+use axum::routing::any;
 use sqlx::postgres::PgPoolOptions;
 use thiserror::Error;
 use tokio::sync::{mpsc, oneshot};
@@ -119,11 +120,11 @@ where
 {
     let state = Arc::new(service);
     Router::new()
-        .route("/api/v1/ai/chat", post(handle_request::<S>))
-        .route("/api/v1/ai/chat/stream", post(handle_request::<S>))
+        .route("/api/v1/ai/chat", any(handle_request::<S>))
+        .route("/api/v1/ai/chat/stream", any(handle_request::<S>))
         .route(
             "/api/v1/ai/turns/{turn_id}/interrupt",
-            post(handle_request::<S>),
+            any(handle_request::<S>),
         )
         .with_state(state)
 }
@@ -168,21 +169,35 @@ pub async fn run(config: RuntimeConfig) -> Result<(), RuntimeError> {
 
 async fn handle_request<S>(
     State(service): State<Arc<S>>,
+    method: Method,
     uri: Uri,
     headers: HeaderMap,
-    body: Bytes,
+    body: Result<Bytes, BytesRejection>,
 ) -> Response
 where
     S: TurnService + Clone + Send + Sync + 'static,
 {
     let trust = trust_context(&headers);
-    let body = match String::from_utf8(body.to_vec()) {
-        Ok(body) => body,
-        Err(_) if trust.is_none() => String::new(),
-        Err(_) => return into_axum_response(invalid_request_response()),
+    let method = if method == Method::POST {
+        HttpMethod::Post
+    } else {
+        HttpMethod::Other
+    };
+    let body = if method == HttpMethod::Other {
+        String::new()
+    } else {
+        match body {
+            Ok(body) => match String::from_utf8(body.to_vec()) {
+                Ok(body) => body,
+                Err(_) if trust.is_none() => String::new(),
+                Err(_) => return into_axum_response(invalid_request_response()),
+            },
+            Err(_) if trust.is_none() => String::new(),
+            Err(_) => return into_axum_response(invalid_request_response()),
+        }
     };
     let request = HttpRequest {
-        method: HttpMethod::Post,
+        method,
         path: uri.path().to_owned(),
         content_type: header(&headers, "content-type").map(str::to_owned),
         body,

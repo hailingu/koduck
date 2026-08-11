@@ -25,6 +25,8 @@ use self::wire::{
 pub enum HttpMethod {
     /// HTTP POST.
     Post,
+    /// Any method not supported by the owned v1 routes.
+    Other,
 }
 
 /// Framework-neutral request data supplied by the configured presentation server.
