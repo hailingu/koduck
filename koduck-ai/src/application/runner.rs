@@ -91,10 +91,21 @@ where
             .history
             .accept_initial(&command)
             .map_err(|error| history_failure(error, false, &[]))?;
-        let _liveness = self
-            .history
-            .start_turn_liveness(&accepted)
-            .map_err(|error| history_failure(error, true, &[]))?;
+        let _liveness = match self.history.start_turn_liveness(&accepted) {
+            Ok(liveness) => liveness,
+            Err(error) => {
+                let close = self.history.append_provider_terminal(
+                    &accepted,
+                    TerminalOutcome::Failed {
+                        code: "DURABILITY_UNAVAILABLE".to_owned(),
+                    },
+                );
+                if close == Err(HistoryError::Unavailable) {
+                    let _ = self.history.schedule_failed_recovery(&accepted);
+                }
+                return Err(history_failure(error, true, &[]));
+            }
+        };
         observer(TurnStreamEvent::Started {
             thread_id: accepted.thread_id,
             turn_id: accepted.turn_id,
@@ -268,12 +279,7 @@ fn append_provider_terminal<H: TurnHistory>(
     let crate::domain::ItemPayload::Terminal(actual) = &terminal.payload else {
         return Err(HistoryError::Unavailable.into());
     };
-    state.lifecycle = match actual {
-        TerminalOutcome::Completed { .. } => state.lifecycle.complete()?,
-        TerminalOutcome::Failed { .. } => state.lifecycle.fail()?,
-        TerminalOutcome::Interrupted => state.lifecycle.interrupt()?,
-        TerminalOutcome::Cancelled => state.lifecycle.cancel()?,
-    };
+    apply_terminal_outcome(state, actual)?;
     state.published.push(terminal);
     Ok(())
 }
@@ -297,15 +303,14 @@ fn handle_event<H: TurnHistory>(
             let item = NewItem::AgentMessageDelta { content };
             validate_provider_item(state, &item)?;
             let durable = history.append(accepted, item)?;
-            state.published.push(durable);
-            Ok(false)
+            accept_appended_provider_item(state, durable, true)
         }
         ProviderEvent::Usage(observed) => {
             state.usage = observed;
             let item = NewItem::Usage(observed);
             validate_provider_item(state, &item)?;
-            history.append(accepted, item)?;
-            Ok(false)
+            let durable = history.append(accepted, item)?;
+            accept_appended_provider_item(state, durable, false)
         }
         ProviderEvent::Completed => {
             let item = NewItem::Terminal(TerminalOutcome::Completed { usage: state.usage });
@@ -337,6 +342,35 @@ fn validate_provider_item(state: &mut ExecutionState, item: &NewItem) -> Result<
         .and_then(|()| policy.check_item(item))
         .map_err(|_| HistoryError::Unavailable)?;
     state.provider_item_count = next_count;
+    Ok(())
+}
+
+fn accept_appended_provider_item(
+    state: &mut ExecutionState,
+    item: Item,
+    publish_nonterminal: bool,
+) -> Result<bool, TurnRunError> {
+    if let crate::domain::ItemPayload::Terminal(actual) = &item.payload {
+        apply_terminal_outcome(state, actual)?;
+        state.published.push(item);
+        return Ok(true);
+    }
+    if publish_nonterminal {
+        state.published.push(item);
+    }
+    Ok(false)
+}
+
+fn apply_terminal_outcome(
+    state: &mut ExecutionState,
+    outcome: &TerminalOutcome,
+) -> Result<(), TurnRunError> {
+    state.lifecycle = match outcome {
+        TerminalOutcome::Completed { .. } => state.lifecycle.complete()?,
+        TerminalOutcome::Failed { .. } => state.lifecycle.fail()?,
+        TerminalOutcome::Interrupted => state.lifecycle.interrupt()?,
+        TerminalOutcome::Cancelled => state.lifecycle.cancel()?,
+    };
     Ok(())
 }
 

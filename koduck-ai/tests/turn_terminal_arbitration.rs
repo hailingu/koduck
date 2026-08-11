@@ -1,12 +1,14 @@
 // ADR: docs/adr/ADR-0001-provider-neutral-turn-kernel.md
 
+use std::sync::{Arc, Mutex};
+
 use koduck_ai::application::{
     AcceptedTurn, HistoryError, ModelInput, ModelProvider, NewItem, ProviderError, ProviderEvent,
-    ProviderStream, TurnCommand, TurnHistory, TurnRunner,
+    ProviderStream, TurnCommand, TurnHistory, TurnLiveness, TurnRunError, TurnRunner,
 };
 use koduck_ai::domain::{
     Item, ItemPayload, LeaseGeneration, TenantId, TerminalOutcome, ThreadId, TrustContext, TurnId,
-    TurnStatus,
+    TurnStatus, Usage,
 };
 
 struct CompletingProvider;
@@ -117,5 +119,194 @@ fn accepted_interrupt_wins_over_provider_failure() {
     assert!(matches!(
         result.replay.last().map(|item| &item.payload),
         Some(ItemPayload::Terminal(TerminalOutcome::Interrupted))
+    ));
+}
+
+struct OutputAfterInterruptProvider;
+
+impl ModelProvider for OutputAfterInterruptProvider {
+    fn stream(&mut self, _input: ModelInput) -> Result<ProviderStream<'_>, ProviderError> {
+        Ok(Box::new(
+            [
+                ProviderEvent::Delta("late".to_owned()),
+                ProviderEvent::Usage(Usage::new(1, 1).expect("valid usage")),
+                ProviderEvent::Completed,
+            ]
+            .into_iter(),
+        ))
+    }
+}
+
+#[derive(Default)]
+struct InterruptArbitratingHistory {
+    items: Vec<Item>,
+    terminal: bool,
+}
+
+impl TurnHistory for InterruptArbitratingHistory {
+    fn request_interrupt(
+        &mut self,
+        _trust: &TrustContext,
+        _turn_id: TurnId,
+    ) -> Result<(), HistoryError> {
+        Ok(())
+    }
+
+    fn interruption_requested(&self, _turn: &AcceptedTurn) -> Result<bool, HistoryError> {
+        Ok(true)
+    }
+
+    fn prior_thread_items(
+        &self,
+        _trust: &TrustContext,
+        _thread_id: ThreadId,
+    ) -> Result<Vec<Item>, HistoryError> {
+        Ok(Vec::new())
+    }
+
+    fn accept_initial(&mut self, command: &TurnCommand) -> Result<AcceptedTurn, HistoryError> {
+        let input = Item::new(
+            1,
+            ItemPayload::UserMessage {
+                content: command.input.clone(),
+            },
+        );
+        self.items.push(input.clone());
+        Ok(AcceptedTurn::new(
+            command.trust.tenant_id.clone(),
+            ThreadId::new(),
+            TurnId::new(),
+            LeaseGeneration::initial(),
+            input,
+        ))
+    }
+
+    fn append(&mut self, _turn: &AcceptedTurn, _item: NewItem) -> Result<Item, HistoryError> {
+        if self.terminal {
+            return Err(HistoryError::AlreadyTerminal);
+        }
+        let durable = Item::new(
+            self.items.len() as u64 + 1,
+            ItemPayload::Terminal(TerminalOutcome::Interrupted),
+        );
+        self.items.push(durable.clone());
+        self.terminal = true;
+        Ok(durable)
+    }
+
+    fn replay(&self, _tenant_id: &TenantId, _turn_id: TurnId) -> Result<Vec<Item>, HistoryError> {
+        Ok(self.items.clone())
+    }
+}
+
+#[test]
+fn accepted_interrupt_suppresses_the_next_provider_output() {
+    let trust = TrustContext::new(
+        TenantId::new("tenant-a").expect("valid tenant"),
+        "subject-a",
+    )
+    .expect("valid trust context");
+    let result = TurnRunner::new(
+        OutputAfterInterruptProvider,
+        InterruptArbitratingHistory::default(),
+    )
+    .execute(TurnCommand::new(trust, None, "hello").expect("valid command"))
+    .expect("the atomic interrupt terminal stops provider output");
+
+    assert_eq!(result.status, TurnStatus::Interrupted);
+    assert_eq!(result.replay.len(), 2);
+    assert!(matches!(
+        result.replay.last().map(|item| &item.payload),
+        Some(ItemPayload::Terminal(TerminalOutcome::Interrupted))
+    ));
+    assert!(!result.replay.iter().any(|item| matches!(
+        item.payload,
+        ItemPayload::AgentMessageDelta { .. } | ItemPayload::Usage(_)
+    )));
+}
+
+#[derive(Clone, Default)]
+struct LivenessStartFailingHistory {
+    items: Arc<Mutex<Vec<Item>>>,
+}
+
+impl TurnHistory for LivenessStartFailingHistory {
+    fn start_turn_liveness(
+        &self,
+        _turn: &AcceptedTurn,
+    ) -> Result<Box<dyn TurnLiveness>, HistoryError> {
+        Err(HistoryError::Unavailable)
+    }
+
+    fn request_interrupt(
+        &mut self,
+        _trust: &TrustContext,
+        _turn_id: TurnId,
+    ) -> Result<(), HistoryError> {
+        Ok(())
+    }
+
+    fn interruption_requested(&self, _turn: &AcceptedTurn) -> Result<bool, HistoryError> {
+        Ok(false)
+    }
+
+    fn prior_thread_items(
+        &self,
+        _trust: &TrustContext,
+        _thread_id: ThreadId,
+    ) -> Result<Vec<Item>, HistoryError> {
+        Ok(Vec::new())
+    }
+
+    fn accept_initial(&mut self, command: &TurnCommand) -> Result<AcceptedTurn, HistoryError> {
+        let input = Item::new(
+            1,
+            ItemPayload::UserMessage {
+                content: command.input.clone(),
+            },
+        );
+        self.items.lock().expect("items lock").push(input.clone());
+        Ok(AcceptedTurn::new(
+            command.trust.tenant_id.clone(),
+            ThreadId::new(),
+            TurnId::new(),
+            LeaseGeneration::initial(),
+            input,
+        ))
+    }
+
+    fn append(&mut self, _turn: &AcceptedTurn, item: NewItem) -> Result<Item, HistoryError> {
+        let mut items = self.items.lock().expect("items lock");
+        let durable = Item::new(items.len() as u64 + 1, item.into_payload());
+        items.push(durable.clone());
+        Ok(durable)
+    }
+
+    fn replay(&self, _tenant_id: &TenantId, _turn_id: TurnId) -> Result<Vec<Item>, HistoryError> {
+        Ok(self.items.lock().expect("items lock").clone())
+    }
+}
+
+#[test]
+fn liveness_start_failure_closes_the_accepted_turn() {
+    let trust = TrustContext::new(
+        TenantId::new("tenant-a").expect("valid tenant"),
+        "subject-a",
+    )
+    .expect("valid trust context");
+    let history = LivenessStartFailingHistory::default();
+    let items = Arc::clone(&history.items);
+    let result = TurnRunner::new(CompletingProvider, history)
+        .execute(TurnCommand::new(trust, None, "hello").expect("valid command"));
+
+    assert!(matches!(
+        result,
+        Err(TurnRunError::Durability(ref failure)) if failure.accepted
+    ));
+    let items = items.lock().expect("items lock");
+    assert!(matches!(
+        items.last().map(|item| &item.payload),
+        Some(ItemPayload::Terminal(TerminalOutcome::Failed { code }))
+            if code == "DURABILITY_UNAVAILABLE"
     ));
 }

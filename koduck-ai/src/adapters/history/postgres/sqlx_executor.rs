@@ -3,6 +3,7 @@
 //! `SQLx`-backed implementation of the canonical `PostgreSQL` transaction boundary.
 
 use std::future::Future;
+use std::time::Duration;
 
 use serde_json::{Value, json};
 use sqlx::postgres::PgRow;
@@ -37,6 +38,19 @@ impl SqlxPostgresExecutor {
         operation: impl Future<Output = Result<T, HistoryError>>,
     ) -> Result<T, HistoryError> {
         self.runtime.block_on(operation)
+    }
+
+    /// Drives one database attempt until its caller-owned deadline expires.
+    pub(super) fn wait_with_deadline<T>(
+        &self,
+        deadline: Duration,
+        operation: impl Future<Output = Result<T, HistoryError>>,
+    ) -> Result<T, HistoryError> {
+        self.runtime.block_on(async {
+            tokio::time::timeout(deadline, operation)
+                .await
+                .map_err(|_| HistoryError::Unavailable)?
+        })
     }
 
     async fn request_interrupt_async(
@@ -253,11 +267,10 @@ impl SqlxPostgresExecutor {
         let interrupt_requested: bool = ownership
             .try_get("interrupt_requested")
             .map_err(unavailable)?;
-        let new_item = match new_item {
-            NewItem::Terminal(_) if interrupt_requested => {
-                NewItem::Terminal(TerminalOutcome::Interrupted)
-            }
-            other => other,
+        let new_item = if interrupt_requested {
+            NewItem::Terminal(TerminalOutcome::Interrupted)
+        } else {
+            new_item
         };
         let sequence: i64 = ownership.try_get("next_sequence").map_err(unavailable)?;
         let sequence = u64::try_from(sequence).map_err(|_| HistoryError::Unavailable)?;
@@ -602,7 +615,10 @@ impl PostgresExecutor for SqlxPostgresExecutor {
         turn: &AcceptedTurn,
         timing: LeaseTiming,
     ) -> Result<RecoveryOutcome, HistoryError> {
-        self.wait(self.recover_failed_async(turn, timing))
+        self.wait_with_deadline(
+            AppendPolicy::cand_1().deadline(),
+            self.recover_failed_async(turn, timing),
+        )
     }
 }
 

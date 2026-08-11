@@ -334,24 +334,27 @@ impl<E: PostgresExecutor + Send + 'static> TurnHistory for PostgresTurnHistory<E
         let heartbeat = self.timing.heartbeat_ms();
         let stop = Arc::new(AtomicBool::new(false));
         let renewal_stop = Arc::clone(&stop);
-        let thread = thread::spawn(move || {
-            while !renewal_stop.load(Ordering::Acquire) {
-                thread::park_timeout(Duration::from_millis(heartbeat));
-                if renewal_stop.load(Ordering::Acquire) {
-                    break;
-                }
-                match executor.renew_lease(&key, unix_time_ms()) {
-                    Ok(()) => {}
-                    Err(HistoryError::Unavailable) => {
-                        eprintln!("event=lease_renewal_retry error=durability-unavailable");
-                    }
-                    Err(error) => {
-                        eprintln!("event=lease_renewal_stopped error={error}");
+        let thread = thread::Builder::new()
+            .name("koduck-ai-lease-renewal".to_owned())
+            .spawn(move || {
+                while !renewal_stop.load(Ordering::Acquire) {
+                    thread::park_timeout(Duration::from_millis(heartbeat));
+                    if renewal_stop.load(Ordering::Acquire) {
                         break;
                     }
+                    match executor.renew_lease(&key, unix_time_ms()) {
+                        Ok(()) => {}
+                        Err(HistoryError::Unavailable) => {
+                            eprintln!("event=lease_renewal_retry error=durability-unavailable");
+                        }
+                        Err(error) => {
+                            eprintln!("event=lease_renewal_stopped error={error}");
+                            break;
+                        }
+                    }
                 }
-            }
-        });
+            })
+            .map_err(|_| HistoryError::Unavailable)?;
         Ok(Box::new(LeaseRenewalGuard {
             stop,
             thread: Some(thread),

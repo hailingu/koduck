@@ -5,7 +5,11 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use super::LeaseRenewalGuard;
+use sqlx::postgres::PgPoolOptions;
+
+use crate::application::HistoryError;
+
+use super::{LeaseRenewalGuard, SqlxPostgresExecutor};
 
 #[test]
 fn renewal_guard_drop_does_not_join_a_blocked_renewal() {
@@ -39,4 +43,27 @@ fn renewal_guard_drop_does_not_join_a_blocked_renewal() {
         elapsed < Duration::from_millis(100),
         "guard shutdown must not synchronously join an unbounded renewal: {elapsed:?}"
     );
+}
+
+#[test]
+fn database_attempt_deadline_stops_a_slow_recovery_operation() {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_time()
+        .build()
+        .expect("test runtime");
+    let pool = {
+        let _runtime_context = runtime.enter();
+        PgPoolOptions::new()
+            .connect_lazy("postgresql://localhost/koduck")
+            .expect("lazy test pool")
+    };
+    let executor = SqlxPostgresExecutor::new(pool, runtime.handle().clone());
+
+    let result = executor.wait_with_deadline(Duration::from_millis(10), async {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        Ok(())
+    });
+
+    assert_eq!(result, Err(HistoryError::Unavailable));
 }
