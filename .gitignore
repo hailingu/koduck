@@ -14,18 +14,18 @@ Thumbs.db
 tmp/
 .cache/
 
-# Rust (docs/development/rust.md)
+# Rust (docs/development/rust-standard.md)
 /target/
 **/target/
 
-# Swift (docs/development/swift.md)
+# Swift (docs/development/swift-standard.md)
 .build/
 .swiftpm/
 DerivedData/
 *.xcuserstate
 xcuserdata/
 
-# Python (docs/development/python.md)
+# Python (docs/development/python-standard.md)
 __pycache__/
 *.py[cod]
 .venv/
@@ -35,17 +35,17 @@ venv/
 .ruff_cache/
 .pytest_cache/
 
-# TypeScript / Node (docs/development/typescript.md)
+# TypeScript / Node (docs/development/typescript-standard.md)
 node_modules/
 dist/
 build/
 .next/
 coverage/
 
-# Java (docs/development/java.md)
+# Java (docs/development/java-standard.md)
 *.class
 .gradle/
 
-# Kubernetes (docs/development/kubernetes.md) — never commit rendered secrets
+# Kubernetes (docs/development/kubernetes-standard.md) — never commit rendered secrets
 *.local.yaml
 *.local.yml

@@ -1,0 +1,16 @@
+# ADR: docs/adr/ADR-0001-provider-neutral-turn-kernel.md
+[workspace]
+members = ["koduck-ai"]
+resolver = "2"
+
+[workspace.package]
+edition = "2024"
+license = "MIT"
+rust-version = "1.95"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = "warn"
+pedantic = "warn"

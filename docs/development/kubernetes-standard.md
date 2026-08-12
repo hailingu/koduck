@@ -1,7 +1,8 @@
 # Kubernetes Development Standard
 
-**Applies to**: any Kubernetes manifest, overlay, or operational change in this
-repository.
+**Applies to**: any Kubernetes manifest or overlay in this repository.
+Applying changes to a cluster is an operation governed by the Decision Records
+policy and the `docs/delivery/` standards, not by this file.
 
 **Last reviewed**: 2026-08-07
 
