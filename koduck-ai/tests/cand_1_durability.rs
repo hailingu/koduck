@@ -478,12 +478,18 @@ fn accepted_append_outage_schedules_a_failed_terminal_recovery() {
 struct DropObservedLiveness {
     dropped: std::sync::Arc<std::sync::atomic::AtomicBool>,
     admission_released: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    recovery_scheduled: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl TurnLiveness for DropObservedLiveness {
-    fn stop_for_recovery(self: Box<Self>) {
+    fn handoff_to_recovery(
+        self: Box<Self>,
+    ) -> Result<koduck_ai::application::RecoveryHandoff, HistoryError> {
         self.admission_released
             .store(true, std::sync::atomic::Ordering::Release);
+        self.recovery_scheduled
+            .store(true, std::sync::atomic::Ordering::Release);
+        Ok(koduck_ai::application::RecoveryHandoff::Scheduled)
     }
 }
 
@@ -497,6 +503,8 @@ impl Drop for DropObservedLiveness {
 struct HandoffHistory {
     liveness_dropped: std::sync::Arc<std::sync::atomic::AtomicBool>,
     admission_released: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    recovery_scheduled: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    control_unavailable: bool,
     items: Rc<RefCell<Vec<Item>>>,
 }
 
@@ -508,6 +516,7 @@ impl TurnHistory for HandoffHistory {
         Ok(Box::new(DropObservedLiveness {
             dropped: std::sync::Arc::clone(&self.liveness_dropped),
             admission_released: std::sync::Arc::clone(&self.admission_released),
+            recovery_scheduled: std::sync::Arc::clone(&self.recovery_scheduled),
         }))
     }
 
@@ -520,7 +529,11 @@ impl TurnHistory for HandoffHistory {
     }
 
     fn interruption_requested(&self, _turn: &AcceptedTurn) -> Result<bool, HistoryError> {
-        Ok(false)
+        if self.control_unavailable {
+            Err(HistoryError::Unavailable)
+        } else {
+            Ok(false)
+        }
     }
 
     fn prior_thread_items(
@@ -553,12 +566,7 @@ impl TurnHistory for HandoffHistory {
     }
 
     fn schedule_failed_recovery(&mut self, _turn: &AcceptedTurn) -> Result<(), HistoryError> {
-        assert!(
-            self.admission_released
-                .load(std::sync::atomic::Ordering::Acquire),
-            "renewal admission must be synchronously handed off before recovery is scheduled"
-        );
-        Ok(())
+        panic!("atomic liveness handoff must not reacquire history admission")
     }
 
     fn replay(&self, _tenant_id: &TenantId, _turn_id: TurnId) -> Result<Vec<Item>, HistoryError> {
@@ -570,6 +578,7 @@ impl TurnHistory for HandoffHistory {
 fn append_outage_confirms_admission_handoff_before_recovery() {
     let liveness_dropped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let admission_released = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let recovery_scheduled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let result = TurnRunner::new(
         CountingProvider {
             calls: Rc::new(Cell::new(0)),
@@ -578,6 +587,8 @@ fn append_outage_confirms_admission_handoff_before_recovery() {
         HandoffHistory {
             liveness_dropped: std::sync::Arc::clone(&liveness_dropped),
             admission_released: std::sync::Arc::clone(&admission_released),
+            recovery_scheduled: std::sync::Arc::clone(&recovery_scheduled),
+            control_unavailable: false,
             items: Rc::new(RefCell::new(Vec::new())),
         },
     )
@@ -585,6 +596,35 @@ fn append_outage_confirms_admission_handoff_before_recovery() {
 
     assert!(matches!(result, Err(TurnRunError::Durability(_))));
     assert!(liveness_dropped.load(std::sync::atomic::Ordering::Acquire));
+    assert!(
+        recovery_scheduled.load(std::sync::atomic::Ordering::Acquire),
+        "recovery must retain the renewal reservation through scheduling"
+    );
+}
+
+#[test]
+fn control_read_outage_enters_failed_recovery_handoff() {
+    let recovery_scheduled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let result = TurnRunner::new(
+        CountingProvider {
+            calls: Rc::new(Cell::new(0)),
+            consumed: Rc::new(Cell::new(0)),
+        },
+        HandoffHistory {
+            liveness_dropped: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            admission_released: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            recovery_scheduled: std::sync::Arc::clone(&recovery_scheduled),
+            control_unavailable: true,
+            items: Rc::new(RefCell::new(Vec::new())),
+        },
+    )
+    .execute(TurnCommand::new(trust(), None, "hello").expect("valid command"));
+
+    assert!(matches!(result, Err(TurnRunError::Durability(_))));
+    assert!(
+        recovery_scheduled.load(std::sync::atomic::Ordering::Acquire),
+        "an accepted control-read outage must retain recovery ownership"
+    );
 }
 
 #[test]

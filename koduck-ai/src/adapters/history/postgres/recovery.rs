@@ -8,7 +8,9 @@ use std::time::{Duration, Instant};
 
 use crate::application::{AcceptedTurn, HistoryError};
 
-use super::{BackgroundAdmission, LeaseTiming, PostgresExecutor, RecoveryOutcome};
+use super::{
+    BackgroundAdmission, BackgroundPermit, LeaseTiming, PostgresExecutor, RecoveryOutcome,
+};
 
 /// Retains conditional recovery ownership until failure closes or fencing wins.
 pub(super) fn schedule<E: PostgresExecutor + Send + 'static>(
@@ -18,6 +20,16 @@ pub(super) fn schedule<E: PostgresExecutor + Send + 'static>(
     admission: &Arc<BackgroundAdmission>,
 ) -> Result<(), HistoryError> {
     let permit = admission.try_acquire()?;
+    schedule_with_permit(executor, accepted, timing, permit)
+}
+
+/// Starts recovery while retaining an already-owned background reservation.
+pub(super) fn schedule_with_permit<E: PostgresExecutor + Send + 'static>(
+    executor: E,
+    accepted: AcceptedTurn,
+    timing: LeaseTiming,
+    permit: BackgroundPermit,
+) -> Result<(), HistoryError> {
     thread::Builder::new()
         .name("koduck-ai-turn-recovery".to_owned())
         .spawn(move || {

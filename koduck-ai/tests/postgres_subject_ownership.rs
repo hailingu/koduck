@@ -2,7 +2,9 @@
 
 use std::thread;
 
-use koduck_ai::adapters::history::postgres::{PostgresExecutor, SqlxPostgresExecutor};
+use koduck_ai::adapters::history::postgres::{
+    LeaseTiming, PostgresExecutor, RecoveryOutcome, SqlxPostgresExecutor,
+};
 use koduck_ai::application::{AcceptedTurn, HistoryError, NewItem, TurnCommand};
 use koduck_ai::domain::{ItemPayload, TenantId, TerminalOutcome, TrustContext, Usage};
 use sqlx::postgres::{PgPool, PgPoolOptions};
@@ -38,9 +40,51 @@ fn production_postgres_contract() {
     let intruder = TrustContext::new(tenant.clone(), "intruder").expect("intruder trust context");
     let accepted = verify_payload_and_subject_ownership(&executor, &tenant, &owner, &intruder);
     verify_interrupt_terminal_arbitration(&executor, &tenant, &owner, &accepted);
+    verify_recovery_pending_interrupt(&runtime, &pool, &executor, &tenant, &owner);
     verify_stale_generation_fencing(&runtime, &pool, &executor, &tenant, owner);
 
     runtime.block_on(pool.close());
+}
+
+fn verify_recovery_pending_interrupt(
+    runtime: &Runtime,
+    pool: &PgPool,
+    executor: &SqlxPostgresExecutor,
+    tenant: &TenantId,
+    owner: &TrustContext,
+) {
+    let command = TurnCommand::new(owner.clone(), None, "recovery interrupt")
+        .expect("valid recovery command");
+    let accepted = executor
+        .accept_initial(&command)
+        .expect("accept recovery fixture");
+    runtime
+        .block_on(
+            sqlx::query(
+                "UPDATE turns SET status = 'recovery-pending' \
+                 WHERE tenant_id = $1 AND thread_id = $2 AND turn_id = $3",
+            )
+            .bind(tenant.as_str())
+            .bind(accepted.thread_id.as_uuid())
+            .bind(accepted.turn_id.as_uuid())
+            .execute(pool),
+        )
+        .expect("enter durable recovery-pending state");
+
+    executor
+        .request_interrupt(owner, accepted.turn_id)
+        .expect("active recovery-pending turn accepts interruption");
+    assert_eq!(
+        executor.recover_failed(&accepted, LeaseTiming::cand_1()),
+        Ok(RecoveryOutcome::Failed)
+    );
+    let replay = executor
+        .replay(tenant, accepted.turn_id)
+        .expect("recovery interrupt replay");
+    assert!(matches!(
+        replay.last().map(|item| &item.payload),
+        Some(ItemPayload::Terminal(TerminalOutcome::Interrupted))
+    ));
 }
 
 fn verify_payload_and_subject_ownership(

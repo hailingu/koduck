@@ -320,6 +320,21 @@ fn ci_pins_the_selected_rust_toolchain() {
     );
 }
 
+#[test]
+fn cargo_metadata_matches_the_repository_license() {
+    let crate_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let repository_root = crate_root
+        .parent()
+        .expect("koduck-ai belongs to the repository workspace");
+    let license = fs::read_to_string(repository_root.join("LICENSE")).expect("root license");
+
+    assert!(license.starts_with("MIT License"));
+    assert!(
+        env!("CARGO_PKG_LICENSE") == "MIT",
+        "Cargo package metadata must identify the repository's MIT license"
+    );
+}
+
 // ADR: docs/adr/ADR-0002-required-ai-ci-postgres-verification.md
 #[test]
 fn postgres_claims_use_the_production_executor_instead_of_source_inspection() {

@@ -458,9 +458,18 @@ fn fencing_replays_and_publishes_the_durable_cancellation() {
     ));
 }
 
-#[derive(Default)]
 struct AppendFencedHistory {
     items: Vec<Item>,
+    terminal_error: HistoryError,
+}
+
+impl Default for AppendFencedHistory {
+    fn default() -> Self {
+        Self {
+            items: Vec::new(),
+            terminal_error: HistoryError::Fenced,
+        }
+    }
 }
 
 impl TurnHistory for AppendFencedHistory {
@@ -507,12 +516,37 @@ impl TurnHistory for AppendFencedHistory {
             ItemPayload::Terminal(TerminalOutcome::Cancelled),
         );
         self.items.push(terminal);
-        Err(HistoryError::Fenced)
+        Err(self.terminal_error.clone())
     }
 
     fn replay(&self, _tenant_id: &TenantId, _turn_id: TurnId) -> Result<Vec<Item>, HistoryError> {
         Ok(self.items.clone())
     }
+}
+
+#[test]
+fn append_already_terminal_replays_and_publishes_the_durable_terminal() {
+    let trust = TrustContext::new(
+        TenantId::new("tenant-a").expect("valid tenant"),
+        "subject-a",
+    )
+    .expect("valid trust context");
+    let history = AppendFencedHistory {
+        terminal_error: HistoryError::AlreadyTerminal,
+        ..AppendFencedHistory::default()
+    };
+    let result = TurnRunner::new(OutputAfterInterruptProvider, history)
+        .execute(TurnCommand::new(trust, None, "hello").expect("valid command"))
+        .expect("an existing durable terminal wins the append race");
+
+    assert_eq!(result.status, TurnStatus::Cancelled);
+    assert!(matches!(
+        result.published.as_slice(),
+        [Item {
+            payload: ItemPayload::Terminal(TerminalOutcome::Cancelled),
+            ..
+        }]
+    ));
 }
 
 #[test]

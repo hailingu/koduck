@@ -183,14 +183,29 @@ pub enum HistoryError {
     NotFound,
 }
 
+/// Result of transferring active-turn liveness ownership into recovery.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RecoveryHandoff {
+    /// Liveness released its resources; the history port must schedule recovery.
+    Released,
+    /// Liveness transferred its existing reservation directly into recovery.
+    Scheduled,
+}
+
 /// An active-turn resource whose drop stops its liveness maintenance.
 pub trait TurnLiveness: Send {
-    /// Stops liveness and confirms adapter-owned recovery capacity is released.
+    /// Stops liveness and transfers or releases adapter-owned recovery capacity.
     ///
-    /// The default implementation consumes and drops the resource. Adapters
-    /// whose worker owns admission must override this operation and wait for
-    /// that worker to release admission before returning.
-    fn stop_for_recovery(self: Box<Self>) {}
+    /// The default implementation consumes and drops the resource, leaving the
+    /// history port to schedule recovery. Adapters whose worker owns admission
+    /// may override this operation and move the reservation into recovery.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`HistoryError`] when an owned reservation cannot be transferred.
+    fn handoff_to_recovery(self: Box<Self>) -> Result<RecoveryHandoff, HistoryError> {
+        Ok(RecoveryHandoff::Released)
+    }
 }
 
 struct NoopTurnLiveness;

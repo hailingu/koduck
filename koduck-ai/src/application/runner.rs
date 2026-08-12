@@ -146,8 +146,10 @@ where
             Ok(()) => {}
             Err(TurnRunError::Durability(failure)) => {
                 if state.lifecycle.status() == crate::domain::TurnStatus::RecoveryPending {
-                    liveness.stop_for_recovery();
-                    if let Err(schedule_error) = self.history.schedule_failed_recovery(&accepted)
+                    let handoff = liveness.handoff_to_recovery()?;
+                    if handoff == super::RecoveryHandoff::Released
+                        && let Err(schedule_error) =
+                            self.history.schedule_failed_recovery(&accepted)
                         && schedule_error != HistoryError::Unavailable
                     {
                         return Err(TurnRunError::History(schedule_error));
@@ -233,7 +235,7 @@ fn append_terminal_or_replay_fenced<H: TurnHistory>(
     observer: &mut dyn FnMut(TurnStreamEvent),
 ) -> Result<(), TurnRunError> {
     match append_provider_terminal_observed(history, accepted, state, outcome, observer) {
-        Err(TurnRunError::History(HistoryError::Fenced)) => {
+        Err(TurnRunError::History(HistoryError::Fenced | HistoryError::AlreadyTerminal)) => {
             publish_replayed_terminal(history, accepted, state, observer)
         }
         result => result,
@@ -283,7 +285,10 @@ fn terminalize_from_control<H: TurnHistory>(
                 TerminalOutcome::Interrupted,
                 observer,
             ) {
-                if matches!(error, TurnRunError::History(HistoryError::Fenced)) {
+                if matches!(
+                    error,
+                    TurnRunError::History(HistoryError::Fenced | HistoryError::AlreadyTerminal)
+                ) {
                     publish_replayed_terminal(history, accepted, state, observer)?;
                     return Ok(true);
                 }
@@ -303,11 +308,11 @@ fn terminalize_from_control<H: TurnHistory>(
             Ok(true)
         }
         Ok(false) => Ok(false),
-        Err(HistoryError::Fenced) => {
+        Err(HistoryError::Fenced | HistoryError::AlreadyTerminal) => {
             publish_replayed_terminal(history, accepted, state, observer)?;
             Ok(true)
         }
-        Err(error) => Err(history_failure(error, true, &state.published)),
+        Err(error) => Err(recover_append_failure(state, error)),
     }
 }
 
@@ -343,7 +348,7 @@ fn event_terminal_or_recover<H: TurnHistory>(
 ) -> Result<bool, TurnRunError> {
     match event_result {
         Ok(terminal) => Ok(terminal),
-        Err(TurnRunError::History(HistoryError::Fenced)) => {
+        Err(TurnRunError::History(HistoryError::Fenced | HistoryError::AlreadyTerminal)) => {
             publish_replayed_terminal(history, accepted, state, observer)?;
             Ok(true)
         }

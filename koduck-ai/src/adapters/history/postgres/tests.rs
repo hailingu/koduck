@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use sqlx::postgres::PgPoolOptions;
 
-use crate::application::{HistoryError, TurnLiveness};
+use crate::application::{HistoryError, RecoveryHandoff, TurnLiveness};
 
 use super::{BackgroundAdmission, LeaseRenewalGuard, ReconciliationWorker, SqlxPostgresExecutor};
 
@@ -46,6 +46,8 @@ fn renewal_guard_drop_does_not_join_a_blocked_renewal() {
     let guard = LeaseRenewalGuard {
         stop: Arc::new(AtomicBool::new(false)),
         thread: Some(renewal),
+        permit_receiver: None,
+        recovery: None,
     };
 
     let started = Instant::now();
@@ -60,23 +62,41 @@ fn renewal_guard_drop_does_not_join_a_blocked_renewal() {
 }
 
 #[test]
-fn renewal_recovery_shutdown_confirms_permit_release() {
+fn renewal_recovery_handoff_retains_permit_reservation() {
     let admission = Arc::new(BackgroundAdmission::new(1));
     let permit = admission.try_acquire().expect("renewal is admitted");
+    let (permit_sender, permit_receiver) = std::sync::mpsc::sync_channel(1);
     let renewal = thread::spawn(move || {
-        let _permit = permit;
         thread::park();
+        permit_sender.send(permit).expect("handoff receiver exists");
     });
+    let recovery_started = Arc::new(AtomicBool::new(false));
+    let observed_recovery = Arc::clone(&recovery_started);
+    let observed_admission = Arc::clone(&admission);
     let guard = Box::new(LeaseRenewalGuard {
         stop: Arc::new(AtomicBool::new(false)),
         thread: Some(renewal),
+        permit_receiver: Some(permit_receiver),
+        recovery: Some(Box::new(move |permit| {
+            assert!(
+                observed_admission.try_acquire().is_err(),
+                "transferred permit must remain reserved while recovery starts"
+            );
+            observed_recovery.store(true, std::sync::atomic::Ordering::Release);
+            drop(permit);
+            Ok(())
+        })),
     });
 
-    guard.stop_for_recovery();
+    let handoff = guard
+        .handoff_to_recovery()
+        .expect("reservation transfers to recovery");
 
+    assert_eq!(handoff, RecoveryHandoff::Scheduled);
+    assert!(recovery_started.load(std::sync::atomic::Ordering::Acquire));
     assert!(
         admission.try_acquire().is_ok(),
-        "recovery shutdown must return only after its permit is available"
+        "capacity returns after recovery releases the transferred permit"
     );
 }
 

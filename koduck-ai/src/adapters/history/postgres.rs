@@ -2,13 +2,13 @@
 
 //! `PostgreSQL` history translation and exact foreground-lease policy.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::application::{
-    AcceptedTurn, HistoryError, NewItem, TurnCommand, TurnHistory, TurnLiveness,
+    AcceptedTurn, HistoryError, NewItem, RecoveryHandoff, TurnCommand, TurnHistory, TurnLiveness,
 };
 use crate::domain::{
     Item, LeaseGeneration, TenantId, TerminalOutcome, ThreadId, TrustContext, TurnId,
@@ -266,17 +266,31 @@ impl Drop for ReconciliationWorker {
 struct LeaseRenewalGuard {
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
+    permit_receiver: Option<mpsc::Receiver<BackgroundPermit>>,
+    recovery: Option<RecoveryStarter>,
 }
 
+type RecoveryStarter =
+    Box<dyn FnOnce(BackgroundPermit) -> Result<(), HistoryError> + Send + 'static>;
+
 impl TurnLiveness for LeaseRenewalGuard {
-    fn stop_for_recovery(mut self: Box<Self>) {
+    fn handoff_to_recovery(mut self: Box<Self>) -> Result<RecoveryHandoff, HistoryError> {
         self.stop.store(true, Ordering::Release);
         if let Some(thread) = self.thread.take() {
             thread.thread().unpark();
             if thread.join().is_err() {
                 eprintln!("event=lease_renewal_join_failed error=worker-panicked");
+                return Err(HistoryError::Unavailable);
             }
         }
+        let permit = self
+            .permit_receiver
+            .take()
+            .ok_or(HistoryError::Unavailable)?
+            .recv()
+            .map_err(|_| HistoryError::Unavailable)?;
+        self.recovery.take().ok_or(HistoryError::Unavailable)?(permit)?;
+        Ok(RecoveryHandoff::Scheduled)
     }
 }
 
@@ -391,12 +405,12 @@ impl<E: PostgresExecutor + Send + 'static> TurnHistory for PostgresTurnHistory<E
         );
         let heartbeat = self.timing.heartbeat_ms();
         let permit = self.background.try_acquire()?;
+        let (permit_sender, permit_receiver) = mpsc::sync_channel(1);
         let stop = Arc::new(AtomicBool::new(false));
         let renewal_stop = Arc::clone(&stop);
         let thread = thread::Builder::new()
             .name("koduck-ai-lease-renewal".to_owned())
             .spawn(move || {
-                let _permit = permit;
                 while !renewal_stop.load(Ordering::Acquire) {
                     thread::park_timeout(Duration::from_millis(heartbeat));
                     if renewal_stop.load(Ordering::Acquire) {
@@ -413,11 +427,24 @@ impl<E: PostgresExecutor + Send + 'static> TurnHistory for PostgresTurnHistory<E
                         }
                     }
                 }
+                let _ = permit_sender.send(permit);
             })
             .map_err(|_| HistoryError::Unavailable)?;
+        let recovery_executor = self.executor.clone();
+        let recovery_turn = turn.clone();
+        let recovery_timing = self.timing;
         Ok(Box::new(LeaseRenewalGuard {
             stop,
             thread: Some(thread),
+            permit_receiver: Some(permit_receiver),
+            recovery: Some(Box::new(move |permit| {
+                recovery::schedule_with_permit(
+                    recovery_executor,
+                    recovery_turn,
+                    recovery_timing,
+                    permit,
+                )
+            })),
         }))
     }
 

@@ -53,9 +53,10 @@ fallback is configured.
   deadline and maps expiration to `durability-unavailable`.
 - Lease-renewal and failed-append recovery tasks share admission for at most
   256 background workers per production `PostgresTurnHistory` instance.
-  On an append outage, the Turn stops its renewal worker and waits for that
-  worker to release its permit before scheduling recovery, so recovery can
-  inherit confirmed capacity even when all 256 slots were occupied. The wait
-  remains bounded by the renewal database attempt's 2-second deadline. Other
-  saturation rejects new work with `durability-unavailable` instead of
-  creating another operating-system thread.
+  On an append outage, the Turn stops its renewal worker and atomically moves
+  that worker's permit into the recovery worker without decrementing shared
+  admission between owners. Recovery therefore retains reserved capacity even
+  when all 256 slots were occupied. The handoff wait remains bounded by the
+  renewal database attempt's 2-second deadline. Other saturation rejects new
+  work with `durability-unavailable` instead of creating another operating-
+  system thread.

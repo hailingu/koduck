@@ -120,9 +120,10 @@ Fencing 的前台活性机制。它定义 AI 自有的持久化 Thread/Turn/Item
 - 所有生产 PostgreSQL Operation 均使用同一个 2 秒 Attempt Deadline。Lease-renewal
   与 Failed-append Recovery 在每个生产 History Instance 中共享最多 256 个
   Background Worker；Connection 与 Migration Startup Attempt 使用同一 Deadline。
-  Append Outage 会停止 Renewal Worker，并等待该 Worker 释放 Permit 后才调度
-  Recovery，使满载时 Recovery 接管的是已确认释放的容量。该等待受 Renewal
-  Database Attempt 的 2 秒 Deadline 约束；其他饱和情况以
+  Append Outage 会停止 Renewal Worker，并把该 Worker 的 Permit 原子移动到
+  Recovery Worker；两个 Owner 之间不会降低 Shared Admission 计数，因此即使满载，
+  Recovery 也持续持有已保留容量。该 Handoff 等待受 Renewal Database Attempt 的
+  2 秒 Deadline 约束；其他饱和情况以
   `durability-unavailable` Fail Closed。
 - Provider Connection Deadline 为 5 秒，Response Header 与 Stream Idle Deadline
   均为 30 秒，Total Response Processing Deadline 为 120 秒。超时产生 Provider
@@ -387,11 +388,11 @@ N/A — 所提设计不超出或豁免仓库工程规则。实施期间发现的
 | CT-4 | REST/SSE 接受大小写不敏感、带标准参数的 `application/json`，并拒绝其他 Media Type。 | AC-4、AC-5、AC-15 |
 | CT-5 | 同步 Interrupted/Cancelled 分别映射为 `409 turn-interrupted` 与 `409 turn-cancelled`。 | AC-15 |
 | CT-6 | Resume 在同一 Thread 创建新 Turn，不修改此前 Terminal History。 | AC-6 |
-| CT-7 | 已认证 Interrupt 赢得 Terminal Arbitration；Unknown/Non-owned 不可区分，Cancellation 保持独立。 | AC-7 |
-| CT-8 | 初始或中途 Durability Outage 不发布未提交状态，并返回 `durability-unavailable`。 | AC-8 |
+| CT-7 | 已认证 Interrupt 赢得 Terminal Arbitration，包括 Failed-append Recovery Pending 期间；Unknown/Non-owned 不可区分，Cancellation 保持独立。 | AC-7；`postgres_subject_ownership::production_postgres_contract` |
+| CT-8 | 初始或中途 Durability Outage（包括 Accepted Control-state Read Outage）不发布未提交状态，并返回 `durability-unavailable`。 | AC-8；`control_read_outage_enters_failed_recovery_handoff` |
 | CT-9 | Unpublished Data 上限为 64 Items/1 MiB，所有 PostgreSQL Attempt 上限为 2 秒。 | AC-9、AC-16 |
 | CT-10 | Lease Renewal/Expiry/Skew/Fencing/Reconciliation 最多生成一个 Durable Orphan Terminal。 | AC-10、AC-11 |
-| CT-11 | Renewal 与 Recovery 共享 256-Worker Admission Bound；失败 Turn 在调度 Recovery 前确认 Renewal Worker 已释放 Admission，使满载交接无竞态。 | AC-16；`append_outage_confirms_admission_handoff_before_recovery`；`renewal_recovery_shutdown_confirms_permit_release` |
+| CT-11 | Renewal 与 Recovery 共享 256-Worker Admission Bound；失败 Turn 把 Renewal Permit 直接移动到 Recovery，不释放 Reservation，使满载交接保持原子性。 | AC-16；`append_outage_confirms_admission_handoff_before_recovery`；`renewal_recovery_handoff_retains_permit_reservation` |
 | CT-12 | Provider Connect/Header/Idle/Total Deadline 分别为 5/30/30/120 秒。 | AC-17 |
 | CT-13 | 无 Validated Trust Context 的 Request 在 Application/Provider/History 前终止。 | AC-13 |
 | CT-14 | CAND-1 仅有一个 PostgreSQL History，且无前身、Memory 或 Multitask Fallback。 | AC-12 |
@@ -403,8 +404,8 @@ N/A — 所提设计不超出或豁免仓库工程规则。实施期间发现的
 | --- | --- | --- | --- | --- | --- | --- |
 | Concurrency and ordering | 适用 — 并发 Terminal Writer/Reconciler 争抢同一 Generation。 | Application Arbitration 与 PostgreSQL History | AC-5、AC-7、AC-10、AC-11 | Visible Item 先 Durable；唯一 Terminal 胜出；旧 Writer 被 Fence。 | AC-5、AC-7、AC-10、AC-11 | Pass — Contract、Terminal Arbitration、Liveness Test。 |
 | Timeout and deadline | 适用 — Database 或 Provider Establishment/Streaming 卡死。 | SQLx 与 Provider Adapter | AC-9、AC-16、AC-17 | DB 2 秒停止；Provider 5/30/30/120 秒停止并生成 Typed Terminal Failure。 | AC-9、AC-16、AC-17 | Pass — Deadline Behavior 与 Architecture Regression。 |
-| Cancellation and interruption | 适用 — Interrupt 与 Provider Terminal 或 Downstream Disconnect 竞争。 | Runner 与 HTTP/SSE Adapter | AC-7、AC-15 | Interrupt 是唯一 `interrupted`；Dependency/Disconnect 为 `cancelled`；同步 409 Code 可区分。 | AC-7、AC-15 | Pass — Interrupt、Arbitration、Sync Mapping Regression。 |
-| Resource bounds and backpressure | 适用 — Provider Flood 或 Active Turn 耗尽后台容量。 | Provider、Durability Policy、PostgreSQL History | AC-9、AC-16 | Item/Payload Cap Fail Closed；Channel 有界；第 257 个 Worker 被拒绝；Append Outage 在调度 Recovery 前确认 Renewal Permit 已释放。 | AC-9、AC-16 | Pass — Cap、Bounded Channel、同步 Permit-release 与 Handoff Regression。 |
+| Cancellation and interruption | 适用 — Interrupt 与 Provider Terminal、Failed-append Recovery 或 Downstream Disconnect 竞争。 | Runner、PostgreSQL History 与 HTTP/SSE Adapter | AC-7、AC-15 | 已接受的 Interrupt（包括 `recovery-pending` 期间记录的请求）是唯一 `interrupted`；Dependency/Disconnect 为 `cancelled`；同步 409 Code 可区分。 | AC-7、AC-15 | Pass — Interrupt、Arbitration、生产 PostgreSQL Recovery-pending Interrupt 与 Sync Mapping Regression。 |
+| Resource bounds and backpressure | 适用 — Provider Flood 或 Active Turn 耗尽后台容量。 | Provider、Durability Policy、PostgreSQL History | AC-9、AC-16 | Item/Payload Cap Fail Closed；Channel 有界；第 257 个 Worker 被拒绝；Append Outage 直接把已保留 Permit 从 Renewal 移入 Recovery，不暴露重新获取窗口。 | AC-9、AC-16 | Pass — Cap、Bounded Channel、原子 Reservation-transfer 与 Handoff Regression。 |
 | Framework or trust-boundary rejection | 适用 — Invalid Identity/UTF-8/JSON/Media Type/Body/Method。 | HTTP/Axum Boundary | AC-13、AC-15 | Invalid Identity 在 Service 前返回 401；Malformed Input 返回自有 4xx；合法 JSON Parameter 被接受。 | AC-13、AC-15 | Pass — Identity、Runtime Transport、Media-type Test。 |
 
 ## 验收检查 [Required]
@@ -417,8 +418,8 @@ N/A — 所提设计不超出或豁免仓库工程规则。实施期间发现的
 | AC-4 | T-2 | 同步 Route 符合自有 REST v1 契约。 | 有效 Trust Context；Input `hello` 的新 Thread Request；确定性 Provider Response `A`；按本 ADR 契约生成 Golden Fixture。 | 运行 `cargo test -p koduck-ai --test cand_1_contract sync_chat_v1_contract -- --exact`。 | Exit Code 0；Status `200`；`Content-Type` 为 `application/json`；Canonicalized Body 恰好包含 `thread_id`、`turn_id`、`status`、`items`、`usage`；`status` 为 `completed`；ID 均为 UUID；Item Sequence 为严格递增正整数；仅把 UUID 与 Usage Counter 替换为 Fixture Token 后，Body/Required Header 等于自有 v1 Golden Fixture。 | Command Output、Fixture Hash 和 Comparison Report。 | Pass | `46f2a39` 上 Exit 0；Normalized Response 与记录的 Fixture Hash 一致。Commit `d444cf3` 进一步证明超过 Axum Extractor Limit 的 Body 返回自有 `400 invalid-request` Problem，非 POST Request 返回自有 `405 method-not-allowed` Problem，二者均包含精确 Field 与 UUID Correlation ID。 |
 | AC-5 | T-2 | SSE Route 符合自有 Event Contract，且 Durable Append 前不发布 Event。 | 有效 Trust Context；Provider 发出两个 Delta 和 Completion；记录自有 v1 Fixture Hash。 | 运行 `cargo test -p koduck-ai --test cand_1_contract sse_v1_contract_and_append_before_publish -- --exact`。 | Exit Code 0；Status `200`；Content Type 为 `text/event-stream`；Event 为一个 `turn.started`、两个有序 `item.created` 与恰好一个 `turn.completed`；全部 ID 一致且 Sequence 严格递增；每个 Publish Observation 都有同一 Item/Terminal Identity 且序号更低的成功 Append Observation。 | Command Output、Fixture Hash 和 Append/Publish Trace。 | Pass | `46f2a39` 上 Exit 0；SSE Fixture 与 Append-before-publish Trace 通过。Commit `a7258bc` 进一步证明 SSE Terminal 发出后发生 Replay Failure 时，不会追加相互矛盾的 `event: error`。 |
 | AC-6 | T-2 | Resume 在同一 Thread 创建新 Turn，且不修改此前 Terminal Turn。 | 已存在一个 Completed Turn 及其不可变 Replay Hash。 | 运行 `cargo test -p koduck-ai --test cand_1_contract resume_creates_new_turn -- --exact`。 | Exit Code 0；Resumed Turn ID 不同、Thread ID 相同、Prior Replay Hash 不变，且新 Provider Input 恰好包含一次有序 Durable History。 | Command Output 和前后 Replay Hash。 | Pass | `46f2a39` 上 Exit 0；直接比较 Prior Replay 与第二次 Provider Input。Commit `d444cf3` 进一步验证生产 History 先按 Turn 创建顺序与 Identity，再按各 Turn 的 Item Sequence 排序，防止并发同 Thread Item 在 Provider Context 中交错。 |
-| AC-7 | T-2 | Interrupt Contract 精确，且已认证 Client Stop 与 Platform/Dependency Cancellation 可区分。 | 一个 Owner Active SSE Turn、一个未知 UUID、一个非 Owner Turn、一个已终态 Turn，以及第二个注入 Dependency Stop 的 Turn。 | 运行 `cargo test -p koduck-ai --test cand_1_contract interrupt_and_cancel_are_distinct -- --exact`。 | Exit Code 0；Owner Active Case 返回 `202`，Body 仅含自身 `turn_id` 与 `status: interrupt-requested`，随后恰好一个 Durable `interrupted`；未知与非 Owner Case 在归一化 Correlation ID 后返回不可区分的 `404` Problem Body；已终态 Case 返回 `409` 与 `turn-already-terminal`；Dependency-stopped Turn 恰有一个 `cancelled`；所有测试 Turn 均无其他 Terminal。 | Command Output、Normalized Response Hash 和 Replay Fixture。 | Pass | `46f2a39` 上 Exit 0；所有响应和终态区分断言通过。Commit `fe3beb9` 与 `a7258bc` 进一步证明已接受的 Interrupt 在同时到达的 Provider Completion 或 Failure 前胜出，且 PostgreSQL 会原子仲裁每一种 Provider Terminal。Commit `31ef43f` 证明生产 Provider Stream 在 Response Header 到达前返回有界 `Pending` Poll，因此同一 Interrupt Arbitration 在 Request Establishment 期间仍可被观察。 |
-| AC-8 | T-3 | 初始 History Failure 不暴露 Accepted Turn；后续 Append Outage 只暴露 Durable Prefix 和 `durability-unavailable`。 | Fault Adapter 在 Case A 让初始 Transaction 失败；在 Case B 的一个 Durable Delta 后让下一次 Append 失败。 | 运行 `cargo test -p koduck-ai --test cand_1_durability initial_and_mid_turn_outages_fail_closed -- --exact`。 | Exit Code 0；Case A 的 Accepted Turn Record 和 Provider Call 均为 0；Case B 只发布 Durable Delta，不发布失败 Append Payload，停止 Provider Consumption，并发出 `durability-unavailable`。 | Command Output、Adapter Trace 和 Replay Fixture。 | Pass | `46f2a39` 上 Exit 0；初始零副作用，中途只保留 Input/A。 |
+| AC-7 | T-2 | Interrupt Contract 精确，且已认证 Client Stop 与 Platform/Dependency Cancellation 可区分。 | 一个 Owner Active SSE Turn、一个 Recovery-pending Turn、一个未知 UUID、一个非 Owner Turn、一个已终态 Turn，以及第二个注入 Dependency Stop 的 Turn。 | 运行 `cargo test -p koduck-ai --test cand_1_contract interrupt_and_cancel_are_distinct -- --exact` 与生产 PostgreSQL Contract Test。 | Exit Code 0；Owner Active 与 Recovery-pending Case 均接受 Interrupt，并分别只达到一个 Durable `interrupted`；未知与非 Owner Case 在归一化 Correlation ID 后返回不可区分的 `404`；已终态 Case 返回 `409 turn-already-terminal`；Dependency-stopped Turn 恰有一个 `cancelled`；所有测试 Turn 均无其他 Terminal。 | Command Output、Normalized Response Hash、PostgreSQL Replay 和 Replay Fixture。 | Pass | Local Contract 与 Terminal-arbitration Test 通过；生产 PostgreSQL Test 确定性地把 Owner Turn 推入 `recovery-pending`，经公共 Executor 记录 Interrupt，并验证一个 Durable `interrupted`。Commit `fe3beb9` 与 `a7258bc` 证明 Interrupt 赢过并发 Provider Terminal；Commit `31ef43f` 证明 Request Establishment 期间仍可观察 Interrupt。 |
+| AC-8 | T-3 | 初始 History Failure 不暴露 Accepted Turn；后续 Durability Outage 只暴露 Durable Prefix 与 `durability-unavailable`，并保留 Failed-recovery Ownership。 | Fault Adapter 在 Case A 让初始 Acceptance 失败；在 Case B 的一个 Durable Delta 后让下一次 Append 失败；在 Case C 让 Accepted Control-state Read 失败。 | 运行 `cargo test -p koduck-ai --test cand_1_durability`。 | Exit Code 0；Case A 的 Accepted Turn Record 和 Provider Call 均为 0；Case B/C 不发布未提交 Payload、停止 Provider Consumption、发出 `durability-unavailable`、进入 Recovery-pending，并通过 Liveness Handoff 调度 Failed Recovery。 | Command Output、Adapter Trace 和 Replay Fixture。 | Pass | Local Durability Regression 证明初始失败零副作用、Append Failure 只暴露 Durable Prefix、Accepted Control-read Failure Fail Closed，且两种 Accepted Outage 均保留 Liveness Recovery Reservation。 |
 | AC-9 | T-3 | Append Deadline 与 Unpublished Buffer Limit 精确且 Fail Closed。 | Virtual Clock；分别测试 2.001 秒 Append、65 Items、Payload Size 1,048,577 Bytes。 | 运行 `cargo test -p koduck-ai --test cand_1_durability append_deadline_and_buffer_caps -- --exact`。 | Exit Code 0；每个 Case 都停止 Provider Consumption、发布 0 个超限 Item、发出 `durability-unavailable`，且 Replay 等于 Case 前的 Durable Prefix。 | Command Output 和每个 Case 的 Trace。 | Pass | `80fc2ff` 上 Exit 0；三个精确边界都停止消费、映射到 `durability-unavailable`，且不发布 Durable Prefix。Commit `fe3beb9` 进一步覆盖 Live Runner：Item 65 被消费但不 Append/Publish，保留 64-Item Durable Prefix，并由 Failure Recovery 记录 `DURABILITY_UNAVAILABLE`。Commit `a7b6faa` 证明 JSON Escape 与 Payload Object Overhead 均计入 Serialized 1-MiB Boundary。 |
 | AC-10 | T-3 | Process Crash 对账 Fence 过期 Generation，并 Append 一个孤儿 `cancelled` Terminal。 | Virtual Clock；最后续租 t=0；Heartbeat 5 秒、Lease 20 秒、Clock-skew Margin 2 秒；Owner Process 在一个 Durable Delta 后立即终止。 | 运行 `cargo test -p koduck-ai --test cand_1_liveness process_crash_fences_and_cancels_once -- --exact`。 | Exit Code 0；t=22 秒前对账被拒绝；t=22 秒时 Fence Generation；Delta 后恰有一个 Durable `cancelled` Terminal；Fencing 后每个 Old-generation Append 返回 `FENCED`。 | Command Output 和 Lease/Append Trace。 | Pass | `46f2a39` 上 Exit 0；21.999 秒过早，22.000 秒 Cancelled 一次并 Fence。Commit `a7b6faa` 进一步证明 Request Shutdown 不会同步等待卡死的 Renewal Worker。 |
 | AC-11 | T-3 | 并发 Reconciler 与延迟 Store Recovery 不能重复或覆盖 Orphan Terminal。 | 32 个 Reconciler 在 Store 不可用时争抢同一过期 Thread/Turn/Generation，随后 Store 恢复。 | 运行 `cargo test -p koduck-ai --test cand_1_liveness concurrent_reconcilers_are_idempotent -- --exact`。 | Exit Code 0；恢复后恰有一个 Conditional Write 成功；Durable History 恰有一个 `cancelled` Terminal；31 个 Reconciler 收到 `ALREADY_TERMINAL` 或 `FENCED`；Late `completed` Append 被拒绝。 | Command Output、Race Summary 和 Replay Hash。 | Pass | `46f2a39` 上 Exit 0；恢复后 1 个成功、31 个 Terminal/Fenced，Late Completion 被拒绝。 |
@@ -426,7 +427,7 @@ N/A — 所提设计不超出或豁免仓库工程规则。实施期间发现的
 | AC-13 | T-2 | 无 Validated Trust Context 的 Request 不得抵达 Application Turn Runner 或 Provider/History Port。 | Request 缺失或携带无效 Identity；加载自有 v1 Error Contract。 | 运行 `cargo test -p koduck-ai --test cand_1_contract invalid_identity_stops_at_presentation_boundary -- --exact`。 | Exit Code 0；Status `401`；`WWW-Authenticate` 为 `Bearer`；Content Type 为 `application/problem+json`；Body 恰好包含 `type: about:blank`、`title: Invalid identity`、数值 `status: 401`、`code: invalid-identity` 与 UUID `correlation_id`；Provider Call、Initial History Write 和 Accepted Turn 数量均为 0。 | Command Output、Response Fixture Hash 和 Adapter Call Counter。 | Pass | `46f2a39` 上 Exit 0；Fixture Hash 一致且 Service Call 为 0。 |
 | AC-14 | T-1 | 根 Scope Routing 明确治理新的维护型 `koduck-ai/**` Source 与 Configuration Path。 | 根 `AGENTS.md` Scope Routing Table 与新 Workspace Manifest 存在。 | 确定性检查 Scope Routing Table 中恰好一个 `koduck-ai/**` Row。 | 恰好一个 Row 指定 `koduck-ai/**`，要求读取 `docs/README.md`、公共软件工程标准与 Rust 标准，以仓库根为 Working Directory，并列出非交互 Format、Lint、Test Command；该 Row 说明受治理 Build Command 仍需要 Accepted OCR。 | Scope Routing Row、Structured Inspection Result 和 Tested Commit。 | Pass | `46f2a39` 上 Structured Inspection 找到恰好一个完整 Scope Routing Row。 |
 | AC-15 | T-2 | HTTP Media Type 与同步 Terminal Mapping 精确。 | 带 `Application/JSON; charset=utf-8` 的有效 JSON，以及 Completed/Interrupted/Cancelled/Failed Result。 | 运行 `cargo test -p koduck-ai --test cand_1_contract`。 | Exit 0；两条 Chat Route 接受 Parameterized JSON；Completed 返回 200，Interrupted/Cancelled 返回各自 409 Code，Failed 返回 `503 provider-unavailable`。 | Command Output 与 Response Assertion。 | Pass | 当前 Review Correction 的 9 项 Contract Test 全部通过。 |
-| AC-16 | T-3 | Database Call 与后台 Liveness/Recovery Work 有界且 Fail Closed。 | Slow Database Future、Limit=1 的 Background Admission，以及 Liveness 持有容量时发生 Append Outage。 | 运行 PostgreSQL Adapter Test、Database Startup Timeout Test、`append_outage_confirms_admission_handoff_before_recovery` 与对应 Architecture Test。 | Exit 0；慢调用返回 Typed Timeout/Unavailable；第一 Permit 持有时第二 Worker 被拒绝；普通 Guard Drop 非阻塞；Recovery Shutdown 仅等待有 2 秒 Deadline 的 Renewal Attempt，并在 Permit 已释放后返回；生产 Renewal/Recovery 共用 256 上限。 | Command Output 与 Source Inspection。 | Pass | Deadline、Shared Admission、同步 Permit-release、Handoff 与 Architecture Regression 通过。 |
+| AC-16 | T-3 | Database Call 与后台 Liveness/Recovery Work 有界且 Fail Closed。 | Slow Database Future、Limit=1 的 Background Admission，以及 Liveness 持有容量时发生 Append Outage。 | 运行 PostgreSQL Adapter Test、Database Startup Timeout Test、`append_outage_confirms_admission_handoff_before_recovery` 与对应 Architecture Test。 | Exit 0；慢调用返回 Typed Timeout/Unavailable；第一 Permit 持有时第二 Worker 被拒绝；普通 Guard Drop 非阻塞；Recovery Handoff 仅等待有 2 秒 Deadline 的 Renewal Attempt，并把同一个 Reserved Permit 移入 Recovery；生产 Renewal/Recovery 共用 256 上限。 | Command Output 与 Source Inspection。 | Pass | Deadline、Shared Admission、原子 Reservation-transfer、Handoff 与 Architecture Regression 通过。 |
 | AC-17 | T-1 | Provider Operation 不得超过自有 Deadline 持续 Pending。 | Production Reqwest Assembly 与 Provider Response Pump 已存在。 | 运行 Provider Unit Test 与 `architecture::production_io_and_background_work_are_bounded`。 | Exit 0；Connect Timeout 5 秒，Header/Idle/Total Timeout 为 30/30/120 秒，且返回 Stable Error Code。 | Command Output 与 Source Inspection。 | Pass | Local TCP Behavior Test 和 Production Deadline Regression 通过。 |
 
 允许的最终检查状态为 `Pass`、`Fail` 或 `N/A — <具体原因>`。`Fail` 会阻止完成。
@@ -452,19 +453,21 @@ N/A — 所提设计不超出或豁免仓库工程规则。实施期间发现的
 - 2 秒 Append Deadline、64-Item/1-MiB Unpublished Cap、5 秒 Heartbeat、
   20 秒 Lease 和 2 秒 Clock-skew Margin 都是对审批敏感的决策值。Accepted
   后改变任一值，都必须执行使审批失效的流程。
-- `d444cf3` 分解评审：`sqlx_executor.rs` 为 745 个物理行，`provider/mod.rs`
-  为 424 个物理行，`postgres.rs` 为 413 个物理行，三者均高于 400 行评审
-  阈值、低于 800 行例外上限。
-  Executor 保持内聚，因为 Acceptance、Append、Replay、Lease Fencing、Recovery
-  与 Payload Translation 共享 Transaction/Row Invariant；`postgres.rs` 保持为该
-  Executor 上内聚的 History/Liveness Adapter，抽取其中单一 Provider-terminal
-  Delegation 只会形成透传式拆分。`provider/mod.rs` 保持为一个内聚的
-  OpenAI-compatible Request、SSE Frame 与 Provider Event Translation 边界；
-  此规模下把 Request Pump 与 Frame Parser 拆开会割裂同一 Protocol Invariant，
-  而不会降低耦合。Recovery Thread Ownership 仍已拆至
-  `postgres/recovery.rs`。Cyclomatic Complexity 为 `N/A — 未配置复杂度工具`；
-  本次变更的函数均少于 60 行且嵌套深度不超过 4。本项不需要且未声明
-  Engineering Exception。
+- 当前 Worktree 的提交前分解评审：超过 400 行评审阈值的生产文件为
+  `sqlx_executor.rs`（718）、`provider/mod.rs`（582）、`runner.rs`（576）、
+  `postgres.rs`（508）和 `runtime/mod.rs`（423）；超过 600 行评审阈值的测试
+  文件为 `turn_terminal_arbitration.rs`（870）、`runtime_wiring.rs`（762）和
+  `cand_1_durability.rs`（651）。它们均低于 800/1,200 行例外上限。生产文件
+  分别保持单一边界：事务型 PostgreSQL State、OpenAI-compatible Streaming
+  Protocol、Turn Orchestration、PostgreSQL Liveness/History Adaptation 和 Runtime
+  Assembly；测试文件各自保持单一 Contract Family。超过 60 行的可执行单元为
+  Turn Execution Coordinator、四个事务型 Acceptance/Append/Recovery/
+  Reconciliation Method，以及两个端到端 Arbitration Scenario；每个都保持一个
+  对顺序敏感的 Operation 或 Fixture 在同一视野内，且均未超过 120 行例外上限。
+  进一步抽取透传单元会割裂 Transaction、Lifecycle 或 Scenario Invariant，不能
+  降低耦合。Cyclomatic Complexity 为 `N/A — 未配置复杂度工具`；Source
+  Inspection 未发现达到例外上限的嵌套。本项不需要且未声明 Engineering
+  Exception。
 
 ## 归档 [Conditionally Required — Decision Status 为 `Rejected`，或 Decision Status 为 `Deprecated`/`Superseded` 且 Implementation Status 为终态]
 
@@ -515,3 +518,5 @@ N/A — 所提设计不超出或豁免仓库工程规则。实施期间发现的
 | 2026-08-12 | 仓库 Owner `@linhai` 在当前 Codex 任务中明确回复 `确认Approve`，授权把当前 7 项 Review Correction 作为 ADR-0001 已批准范围内的缺陷修复，不重开已完成的 CAND-1，也不因 ADR-0002 序列化而新建 ADR。补齐必需的 Contract Traceability 与五行 Risk Matrix，修正 HTTP Terminal/Media-type 行为，为所有 Database/Provider Wait 和后台 Renewal/Recovery Admission 加入边界，并更新过时仓库说明。依据该 Owner Determination，Decision Status 保持 `Accepted`，Implementation Status 保持 `Complete`。 | @linhai |
 | 2026-08-12 | Review `4912786010` 后续纠错：Append Outage 在调度 Recovery 前释放该 Turn 的 Renewal Permit，使 256 个续租任务满载时仍能把容量移交给 Recovery；PostgreSQL Connection 与 Migration Startup 分别使用 2 秒 Deadline。补充确定性 Handoff/Startup-timeout Regression；本次不改变已接受 Scope 或状态。 | @codex |
 | 2026-08-12 | Review `4912891981` 后续纠错：用显式 Recovery Handoff 替代异步 Renewal-stop Signal；该 Handoff Join 受 Deadline 约束的 Renewal Worker，并确认 Permit 已释放后才调度 Recovery。普通 Request-shutdown Drop 保持非阻塞。补充 Permit 可用性与普通 Drop 的回归测试；本次不改变已接受 Scope 或状态。 | @codex |
+| 2026-08-12 | Review `4912970984` 后续纠错：通过单 Owner Channel 把 Renewal Worker 的现有 Permit 直接移动到 Recovery，消除最后的 Release/Reacquire Window。Reservation 在交接全程保持占用，因此并发 Turn 无法在满载时抢走 Slot。补充原子 Reservation Regression，并保留普通非阻塞 Drop Regression；本次不改变已接受 Scope 或状态。 | @codex |
+| 2026-08-12 | 提交前整体 PR Review 修正三个相邻 Lifecycle Gap：Accepted Control-state Read Outage 进入 Failed Recovery，`recovery-pending` 接受已认证 Interrupt，`AlreadyTerminal` Append Race 与 Fencing 一样回放 Durable Winner。另将 Cargo Package Metadata 与仓库 MIT License 对齐，以行为测试替换 Implementation-text Assertion，并刷新分解证据；本次不改变已接受 Scope 或状态。 | @codex |
