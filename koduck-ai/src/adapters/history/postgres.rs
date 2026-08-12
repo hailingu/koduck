@@ -37,9 +37,10 @@ where
 {
     match tokio::time::timeout(deadline, operation).await {
         Ok(Ok(value)) => Ok(value),
-        Ok(Err(HistoryError::Unavailable)) | Err(_) => {
-            reconcile.await?.ok_or(HistoryError::Unavailable)
-        }
+        Ok(Err(HistoryError::Unavailable)) | Err(_) => tokio::time::timeout(deadline, reconcile)
+            .await
+            .map_err(|_| HistoryError::Unavailable)??
+            .ok_or(HistoryError::Unavailable),
         Ok(Err(error)) => Err(error),
     }
 }

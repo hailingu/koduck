@@ -199,3 +199,26 @@ async fn failed_commit_acknowledgement_returns_the_reconciled_durable_outcome() 
 
     assert_eq!(result, Ok(9));
 }
+
+#[tokio::test]
+async fn commit_reconciliation_attempt_is_bounded_by_the_database_deadline() {
+    let started = Instant::now();
+    let result = settle_commit_attempt(
+        Duration::from_millis(5),
+        async {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            Ok(7_u8)
+        },
+        async {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            Ok(Some(7_u8))
+        },
+    )
+    .await;
+
+    assert_eq!(result, Err(HistoryError::Unavailable));
+    assert!(
+        started.elapsed() < Duration::from_millis(100),
+        "operation and reconciliation must each stop at their database attempt deadline"
+    );
+}
