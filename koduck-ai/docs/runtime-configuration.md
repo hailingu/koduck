@@ -34,7 +34,8 @@ are called.
 
 ## Startup
 
-The executable connects to PostgreSQL, applies the idempotent CAND-1 schema,
+The executable connects to PostgreSQL and applies the idempotent CAND-1 schema,
+with each startup operation limited by the 2-second database-attempt deadline,
 constructs exactly one `PostgresTurnHistory<SqlxPostgresExecutor>`, constructs
 the configured OpenAI-compatible transport, binds the listener, and exposes
 only the three owned v1 routes. Startup fails explicitly if configuration,
@@ -52,5 +53,7 @@ fallback is configured.
   deadline and maps expiration to `durability-unavailable`.
 - Lease-renewal and failed-append recovery tasks share admission for at most
   256 background workers per production `PostgresTurnHistory` instance.
-  Saturation rejects new work with `durability-unavailable` instead of creating
-  another operating-system thread.
+  On an append outage, the Turn releases its renewal permit before scheduling
+  recovery, so recovery can inherit that capacity even when all 256 slots were
+  occupied. Other saturation rejects new work with `durability-unavailable`
+  instead of creating another operating-system thread.

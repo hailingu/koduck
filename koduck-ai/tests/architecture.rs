@@ -162,6 +162,12 @@ fn production_io_and_background_work_are_bounded() {
         provider.contains("tokio::time::timeout") && runtime.contains(".connect_timeout("),
         "provider requests must have connect, header, idle, and total deadlines"
     );
+    assert!(runtime.contains("async fn database_setup_attempt"));
+    assert_eq!(
+        runtime.matches("database_deadline,").count(),
+        2,
+        "both PostgreSQL startup operations must use the shared bounded helper"
+    );
 }
 
 #[test]

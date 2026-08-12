@@ -5,9 +5,11 @@
 use std::collections::BTreeMap;
 use std::convert::Infallible;
 use std::fmt;
+use std::future::Future;
 use std::net::{AddrParseError, SocketAddr};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 use axum::Router;
 use axum::body::{Body, Bytes};
@@ -26,7 +28,7 @@ use crate::adapters::http::{
     HttpAdapter, HttpMethod, HttpRequest, TurnService, invalid_request_response,
 };
 use crate::adapters::provider::{OpenAiCompatibleProvider, ReqwestOpenAiTransport};
-use crate::application::TurnRunner;
+use crate::application::{AppendPolicy, TurnRunner};
 use crate::domain::{TenantId, TrustContext};
 
 const BIND_ADDR: &str = "KODUCK_AI_BIND_ADDR";
@@ -34,7 +36,7 @@ const DATABASE_URL: &str = "KODUCK_AI_DATABASE_URL";
 const PROVIDER_BASE_URL: &str = "KODUCK_AI_OPENAI_BASE_URL";
 const PROVIDER_MODEL: &str = "KODUCK_AI_OPENAI_MODEL";
 const PROVIDER_API_KEY: &str = "KODUCK_AI_OPENAI_API_KEY";
-const PROVIDER_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+const PROVIDER_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 // One turn.started chunk, up to 64 provider items, and one terminal or error chunk.
 const STREAM_BUFFER_CAPACITY: usize = 66;
 
@@ -146,14 +148,17 @@ where
 /// Returns [`RuntimeError`] when `PostgreSQL`, provider-client construction,
 /// listener binding, or HTTP serving fails.
 pub async fn run(config: RuntimeConfig) -> Result<(), RuntimeError> {
-    let pool = PgPoolOptions::new()
-        .connect(config.database_url())
-        .await
-        .map_err(RuntimeError::Database)?;
-    sqlx::raw_sql(include_str!("../../migrations/0001_cand_1_history.sql"))
-        .execute(&pool)
-        .await
-        .map_err(RuntimeError::Database)?;
+    let database_deadline = AppendPolicy::cand_1().deadline();
+    let pool = database_setup_attempt(
+        database_deadline,
+        PgPoolOptions::new().connect(config.database_url()),
+    )
+    .await?;
+    database_setup_attempt(
+        database_deadline,
+        sqlx::raw_sql(include_str!("../../migrations/0001_cand_1_history.sql")).execute(&pool),
+    )
+    .await?;
     let runtime = tokio::runtime::Handle::current();
     let history = PostgresTurnHistory::new(SqlxPostgresExecutor::new(pool, runtime.clone()));
     let _reconciliation_worker = history
@@ -178,6 +183,16 @@ pub async fn run(config: RuntimeConfig) -> Result<(), RuntimeError> {
     axum::serve(listener, build_router(runner))
         .await
         .map_err(RuntimeError::Serve)
+}
+
+async fn database_setup_attempt<T>(
+    deadline: Duration,
+    operation: impl Future<Output = Result<T, sqlx::Error>>,
+) -> Result<T, RuntimeError> {
+    tokio::time::timeout(deadline, operation)
+        .await
+        .map_err(|_| RuntimeError::DatabaseTimeout)?
+        .map_err(RuntimeError::Database)
 }
 
 async fn handle_request<S>(
@@ -334,6 +349,9 @@ pub enum RuntimeError {
     /// `PostgreSQL` connection, migration, or query setup failed.
     #[error("PostgreSQL runtime setup failed")]
     Database(#[source] sqlx::Error),
+    /// `PostgreSQL` connection or migration exceeded the approved attempt deadline.
+    #[error("PostgreSQL runtime setup timed out")]
+    DatabaseTimeout,
     /// The configured provider client could not be constructed.
     #[error("provider client setup failed")]
     ProviderClient(#[source] reqwest::Error),
@@ -384,4 +402,22 @@ fn required<'a>(
         .map(String::as_str)
         .filter(|value| !value.trim().is_empty())
         .ok_or(RuntimeConfigError::Missing(name))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::{RuntimeError, database_setup_attempt};
+
+    #[tokio::test]
+    async fn database_setup_attempt_maps_deadline_expiration() {
+        let result = database_setup_attempt(Duration::from_millis(1), async {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            Ok::<_, sqlx::Error>(())
+        })
+        .await;
+
+        assert!(matches!(result, Err(RuntimeError::DatabaseTimeout)));
+    }
 }

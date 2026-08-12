@@ -7,7 +7,7 @@ use std::time::Duration;
 use koduck_ai::application::{
     AcceptedTurn, AppendPolicy, BufferLimitError, DurabilityFailure, HistoryError, ModelInput,
     ModelProvider, NewItem, ProviderError, ProviderEvent, ProviderStream, TurnCommand, TurnHistory,
-    TurnRunError, TurnRunner,
+    TurnLiveness, TurnRunError, TurnRunner,
 };
 use koduck_ai::domain::{
     Item, ItemPayload, LeaseGeneration, TenantId, TerminalOutcome, ThreadId, TrustContext, TurnId,
@@ -473,6 +473,108 @@ fn accepted_append_outage_schedules_a_failed_terminal_recovery() {
         Some(ItemPayload::Terminal(TerminalOutcome::Failed { code }))
             if code == "DURABILITY_UNAVAILABLE"
     ));
+}
+
+struct DropObservedLiveness {
+    dropped: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl TurnLiveness for DropObservedLiveness {}
+
+impl Drop for DropObservedLiveness {
+    fn drop(&mut self) {
+        self.dropped
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+}
+
+struct HandoffHistory {
+    liveness_dropped: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    items: Rc<RefCell<Vec<Item>>>,
+}
+
+impl TurnHistory for HandoffHistory {
+    fn start_turn_liveness(
+        &self,
+        _turn: &AcceptedTurn,
+    ) -> Result<Box<dyn TurnLiveness>, HistoryError> {
+        Ok(Box::new(DropObservedLiveness {
+            dropped: std::sync::Arc::clone(&self.liveness_dropped),
+        }))
+    }
+
+    fn request_interrupt(
+        &mut self,
+        _trust: &TrustContext,
+        _turn_id: TurnId,
+    ) -> Result<(), HistoryError> {
+        Err(HistoryError::NotFound)
+    }
+
+    fn interruption_requested(&self, _turn: &AcceptedTurn) -> Result<bool, HistoryError> {
+        Ok(false)
+    }
+
+    fn prior_thread_items(
+        &self,
+        _trust: &TrustContext,
+        _thread_id: ThreadId,
+    ) -> Result<Vec<Item>, HistoryError> {
+        Ok(Vec::new())
+    }
+
+    fn accept_initial(&mut self, command: &TurnCommand) -> Result<AcceptedTurn, HistoryError> {
+        let input = Item::new(
+            1,
+            ItemPayload::UserMessage {
+                content: command.input.clone(),
+            },
+        );
+        self.items.borrow_mut().push(input.clone());
+        Ok(AcceptedTurn::new(
+            command.trust.tenant_id.clone(),
+            ThreadId::new(),
+            TurnId::new(),
+            LeaseGeneration::initial(),
+            input,
+        ))
+    }
+
+    fn append(&mut self, _turn: &AcceptedTurn, _item: NewItem) -> Result<Item, HistoryError> {
+        Err(HistoryError::Unavailable)
+    }
+
+    fn schedule_failed_recovery(&mut self, _turn: &AcceptedTurn) -> Result<(), HistoryError> {
+        assert!(
+            self.liveness_dropped
+                .load(std::sync::atomic::Ordering::Acquire),
+            "renewal admission must be released before fallback recovery is scheduled"
+        );
+        Ok(())
+    }
+
+    fn replay(&self, _tenant_id: &TenantId, _turn_id: TurnId) -> Result<Vec<Item>, HistoryError> {
+        Ok(self.items.borrow().clone())
+    }
+}
+
+#[test]
+fn append_outage_releases_liveness_before_fallback_recovery() {
+    let liveness_dropped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let result = TurnRunner::new(
+        CountingProvider {
+            calls: Rc::new(Cell::new(0)),
+            consumed: Rc::new(Cell::new(0)),
+        },
+        HandoffHistory {
+            liveness_dropped: std::sync::Arc::clone(&liveness_dropped),
+            items: Rc::new(RefCell::new(Vec::new())),
+        },
+    )
+    .execute(TurnCommand::new(trust(), None, "hello").expect("valid command"));
+
+    assert!(matches!(result, Err(TurnRunError::Durability(_))));
+    assert!(liveness_dropped.load(std::sync::atomic::Ordering::Acquire));
 }
 
 #[test]

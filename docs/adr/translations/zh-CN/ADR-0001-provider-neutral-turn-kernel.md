@@ -119,7 +119,9 @@ Fencing 的前台活性机制。它定义 AI 自有的持久化 Thread/Turn/Item
   `durability-unavailable`。
 - 所有生产 PostgreSQL Operation 均使用同一个 2 秒 Attempt Deadline。Lease-renewal
   与 Failed-append Recovery 在每个生产 History Instance 中共享最多 256 个
-  Background Worker；达到上限时以 `durability-unavailable` Fail Closed。
+  Background Worker；Connection 与 Migration Startup Attempt 使用同一 Deadline。
+  Append Outage 在调度 Recovery 前释放 Renewal Permit，使满载时 Recovery 仍可接管
+  该容量；其他饱和情况以 `durability-unavailable` Fail Closed。
 - Provider Connection Deadline 为 5 秒，Response Header 与 Stream Idle Deadline
   均为 30 秒，Total Response Processing Deadline 为 120 秒。超时产生 Provider
   Error，并通过正常 Terminal Arbitration 关闭已接受 Turn。
@@ -509,3 +511,4 @@ N/A — 所提设计不超出或豁免仓库工程规则。实施期间发现的
 | 2026-08-11 | 记录第七个 Review Correction Commit `31ef43f`：在 Response Header Pending 时返回有界 Provider Poll，在 Consumer 关闭时取消 Request Establishment，并在 Pending Buffer 超过限制前拒绝大于 1 MiB 的未终止 Provider Frame。Format、严格 All-target Clippy 与全部 49 个测试通过；本次仅更新证据，不改变已接受的 Decision 或 Scope。 | @codex |
 | 2026-08-11 | 记录第八个 Review Correction Commit `d444cf3`：使并发同 Thread History 按 Turn 保持连续，把已认证超大 Body 映射为自有 `400 invalid-request` Problem，并把不支持的 Method 路由到自有 `405 method-not-allowed` Problem。Format、严格 All-target Clippy 与全部 52 个测试通过；本次仅更新证据，不改变已接受的 Decision 或 Scope。 | @codex |
 | 2026-08-12 | 仓库 Owner `@linhai` 在当前 Codex 任务中明确回复 `确认Approve`，授权把当前 7 项 Review Correction 作为 ADR-0001 已批准范围内的缺陷修复，不重开已完成的 CAND-1，也不因 ADR-0002 序列化而新建 ADR。补齐必需的 Contract Traceability 与五行 Risk Matrix，修正 HTTP Terminal/Media-type 行为，为所有 Database/Provider Wait 和后台 Renewal/Recovery Admission 加入边界，并更新过时仓库说明。依据该 Owner Determination，Decision Status 保持 `Accepted`，Implementation Status 保持 `Complete`。 | @linhai |
+| 2026-08-12 | Review `4912786010` 后续纠错：Append Outage 在调度 Recovery 前释放该 Turn 的 Renewal Permit，使 256 个续租任务满载时仍能把容量移交给 Recovery；PostgreSQL Connection 与 Migration Startup 分别使用 2 秒 Deadline。补充确定性 Handoff/Startup-timeout Regression；本次不改变已接受 Scope 或状态。 | @codex |

@@ -107,7 +107,7 @@ where
             .history
             .accept_initial(&command)
             .map_err(|error| history_failure(error, false, &[]))?;
-        let _liveness = match self.history.start_turn_liveness(&accepted) {
+        let liveness = match self.history.start_turn_liveness(&accepted) {
             Ok(liveness) => liveness,
             Err(error) => {
                 let close = self.history.append_provider_terminal(
@@ -133,14 +133,29 @@ where
             input: command.input,
             history: prior_history,
         };
-        let state = run_accepted(
+        let mut state = ExecutionState::started();
+        match run_accepted(
             &mut self.provider,
             &mut self.history,
             &accepted,
+            &mut state,
             input,
             observer,
             cancelled,
-        )?;
+        ) {
+            Ok(()) => {}
+            Err(TurnRunError::Durability(failure)) => {
+                drop(liveness);
+                if state.lifecycle.status() == crate::domain::TurnStatus::RecoveryPending
+                    && let Err(schedule_error) = self.history.schedule_failed_recovery(&accepted)
+                    && schedule_error != HistoryError::Unavailable
+                {
+                    return Err(TurnRunError::History(schedule_error));
+                }
+                return Err(TurnRunError::Durability(failure));
+            }
+            Err(error) => return Err(error),
+        }
         Self::finish(
             &self.history,
             &command.trust.tenant_id,
@@ -174,45 +189,39 @@ fn run_accepted<P: ModelProvider, H: TurnHistory>(
     provider: &mut P,
     history: &mut H,
     accepted: &AcceptedTurn,
+    state: &mut ExecutionState,
     input: ModelInput,
     observer: &mut dyn FnMut(TurnStreamEvent),
     cancelled: &dyn Fn() -> bool,
-) -> Result<ExecutionState, TurnRunError> {
-    let mut state = ExecutionState::started();
+) -> Result<(), TurnRunError> {
     let mut stream = match provider.stream(input) {
         Ok(stream) => stream,
         Err(error) => {
             append_terminal_or_replay_fenced(
                 history,
                 accepted,
-                &mut state,
+                state,
                 TerminalOutcome::Failed { code: error.code },
                 observer,
             )?;
-            return Ok(state);
+            return Ok(());
         }
     };
-    let reached_terminal = drive_stream(
-        history,
-        accepted,
-        &mut state,
-        &mut *stream,
-        observer,
-        cancelled,
-    )?;
+    let reached_terminal =
+        drive_stream(history, accepted, state, &mut *stream, observer, cancelled)?;
     drop(stream);
     if !reached_terminal {
         append_terminal_or_replay_fenced(
             history,
             accepted,
-            &mut state,
+            state,
             TerminalOutcome::Failed {
                 code: "PROVIDER_STREAM_ENDED".to_owned(),
             },
             observer,
         )?;
     }
-    Ok(state)
+    Ok(())
 }
 
 fn append_terminal_or_replay_fenced<H: TurnHistory>(
@@ -337,9 +346,7 @@ fn event_terminal_or_recover<H: TurnHistory>(
             publish_replayed_terminal(history, accepted, state, observer)?;
             Ok(true)
         }
-        Err(TurnRunError::History(error)) => {
-            Err(recover_append_failure(history, accepted, state, error))
-        }
+        Err(TurnRunError::History(error)) => Err(recover_append_failure(state, error)),
         Err(error) => Err(post_accept_failure(error, &state.published)),
     }
 }
@@ -353,7 +360,7 @@ fn append_terminal<H: TurnHistory>(
 ) -> Result<(), TurnRunError> {
     let terminal = history
         .append(accepted, NewItem::Terminal(outcome))
-        .map_err(|error| recover_append_failure(history, accepted, state, error))?;
+        .map_err(|error| recover_append_failure(state, error))?;
     observe_item(observer, accepted, &terminal);
     state.published.push(terminal);
     Ok(())
@@ -380,7 +387,7 @@ fn append_provider_terminal<H: TurnHistory>(
 ) -> Result<(), TurnRunError> {
     let terminal = history
         .append_provider_terminal(accepted, outcome)
-        .map_err(|error| recover_append_failure(history, accepted, state, error))?;
+        .map_err(|error| recover_append_failure(state, error))?;
     let crate::domain::ItemPayload::Terminal(actual) = &terminal.payload else {
         return Err(HistoryError::Unavailable.into());
     };
@@ -471,7 +478,7 @@ fn terminalize_from_limit<H: TurnHistory>(
                 code: "DURABILITY_UNAVAILABLE".to_owned(),
             },
         )
-        .map_err(|error| recover_append_failure(history, accepted, state, error))?;
+        .map_err(|error| recover_append_failure(state, error))?;
     match &terminal.payload {
         crate::domain::ItemPayload::Terminal(TerminalOutcome::Interrupted) => {
             apply_terminal_outcome(state, &TerminalOutcome::Interrupted)?;
@@ -553,21 +560,11 @@ fn post_accept_failure(error: TurnRunError, published: &[Item]) -> TurnRunError 
     }
 }
 
-fn recover_append_failure<H: TurnHistory>(
-    history: &mut H,
-    accepted: &AcceptedTurn,
-    state: &mut ExecutionState,
-    error: HistoryError,
-) -> TurnRunError {
+fn recover_append_failure(state: &mut ExecutionState, error: HistoryError) -> TurnRunError {
     if error == HistoryError::Unavailable
         && let Ok(recovery_pending) = state.lifecycle.recovery_pending()
     {
         state.lifecycle = recovery_pending;
-        if let Err(schedule_error) = history.schedule_failed_recovery(accepted)
-            && schedule_error != HistoryError::Unavailable
-        {
-            return TurnRunError::History(schedule_error);
-        }
     }
     history_failure(error, true, &state.published)
 }
