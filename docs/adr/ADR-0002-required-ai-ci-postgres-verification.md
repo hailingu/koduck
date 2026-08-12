@@ -9,9 +9,9 @@
 - **Decision Owner**: @linhai
 - **Required Approver**: @linhai
 - **Record Scope**: Project
-- **Approver [Conditionally Required — Decision Status is or has been `Accepted`]**: Pending — reapproval required
-- **Approval Time [Conditionally Required — Decision Status is or has been `Accepted`]**: Pending — reapproval required
-- **Approval Evidence [Conditionally Required — Decision Status is or has been `Accepted`]**: Pending — reapproval required
+- **Approver [Conditionally Required — Decision Status is or has been `Accepted`]**: Pending — re-approval required
+- **Approval Time [Conditionally Required — Decision Status is or has been `Accepted`]**: Pending — re-approval required
+- **Approval Evidence [Conditionally Required — Decision Status is or has been `Accepted`]**: Pending — re-approval required
 - **Rejector [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is `Proposed`
 - **Rejection Time [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is `Proposed`
 - **Rejection Evidence [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is `Proposed`
@@ -71,6 +71,9 @@ In scope:
 - Workspace package metadata and all three jobs use the repository owner's
   selected Rust 1.95 toolchain, which exceeds the Rust 1.94 minimum required
   by the committed `sqlx 0.9.0` dependency.
+- One focused recovery-error regression test and the minimum
+  semantics-preserving `runner.rs` conditional rewrite required for the Rust
+  1.95 strict-Clippy contract; no runtime branch or error outcome may change.
 - An ephemeral PostgreSQL service used by the test check and a production-boundary
   SQLx integration test covering migration, subject ownership, escaped U+0000,
   terminal arbitration, and stale-generation fencing.
@@ -95,6 +98,7 @@ Out of scope:
 | TN-1 | A real datastore test provides transaction evidence but introduces service startup and readiness latency. | Source inspection remains fast but cannot prove SQL, lock, or type behavior; an unbounded service wait can stall CI. | Run only the routed test job with an ephemeral PostgreSQL service, use a bounded health check, and keep unit tests independent of external state. |
 | TN-2 | Repository workflow files can emit named checks, while making them required mutates GitHub repository settings. | Treating an emitted check as required would leave the review-ready gate unenforced. | Add the workflow under this ADR and apply the exact required-check setting through a separate Accepted OCR with rollback. |
 | TN-3 | The committed workspace declared Rust 1.85 while `sqlx 0.9.0` requires at least Rust 1.94. | Both Clippy and test jobs fail before compilation, so the emitted checks cannot verify the routed commands. | Declare workspace `rust-version = "1.95"` and pin every CI job to the repository owner's selected Rust 1.95 toolchain; do not change or downgrade the accepted dependency lock. |
+| TN-4 | Raising workspace `rust-version` to 1.95 activates Rust 1.95's `collapsible_if` guidance in strict Clippy for two nested conditionals in recovery scheduling. | The exact routed Clippy command fails even though dependency compilation is now supported. | Apply only Clippy's semantics-preserving let-chain rewrite in `runner.rs`; retain existing recovery tests and require the full routed suite to pass. |
 
 ### Constraints [Required]
 
@@ -104,6 +108,8 @@ Out of scope:
 - Root workspace package metadata and each workflow job must use Rust 1.95;
   any compiler-version change is approval-invalidating because it changes the
   supported build contract.
+- The Rust 1.95 compatibility edit in `runner.rs` must preserve the existing
+  `Unavailable` recovery scheduling and non-`Unavailable` error propagation.
 - The required check names are exactly `koduck-ai-format`,
   `koduck-ai-clippy`, and `koduck-ai-test-postgres`; a rename is an
   approval-invalidating contract change because branch protection binds these
@@ -239,11 +245,12 @@ or `N/A — <specific reason>`.
 
 | ID | Objective or deliverable | Included scope | Status | Actual implementation evidence |
 | --- | --- | --- | --- | --- |
-| T-1 | Add the three revision-bound routed verification checks. | Root workspace Rust 1.95 metadata; one `.github/workflows/` workflow pinned to Rust 1.95; exact format, strict-Clippy, and all-target/all-feature test commands; bounded job timeouts; no retained artifact. | Not Started | Historical evidence only: the initial workflow emitted the exact names and commands, but runs `31553057678` and `31554660991` proved its Rust 1.85 pin incompatible with the committed dependency graph. Re-execute after reapproval. |
+| T-1 | Add the three revision-bound routed verification checks. | Root workspace Rust 1.95 metadata; one `.github/workflows/` workflow pinned to Rust 1.95; one focused recovery-error regression test; the minimum semantics-preserving `runner.rs` Clippy compatibility rewrite; exact format, strict-Clippy, and all-target/all-feature test commands; bounded job timeouts; no retained artifact. | Not Started | Historical evidence only: the Rust 1.95 compiler-contract test failed before the pin and passed after it; strict Clippy then failed at `runner.rs:562-569` on two Rust 1.95 `collapsible_if` diagnostics. Re-execute and implement only after reapproval. |
 | T-2 | Replace source-inspection-only PostgreSQL claims with production-boundary evidence. | Disposable PostgreSQL service; migration; `SqlxPostgresExecutor`; subject, U+0000, concurrent terminal, and stale-generation scenarios; deterministic cleanup. | Not Started | Historical evidence only: `production_postgres_contract` passed locally against no-volume PostgreSQL 18, but revised acceptance requires a fresh run after reapproval and a passing CI revision. |
 | T-3 | Make the three emitted check names required on `dev`. | A separately Accepted OCR for the exact GitHub repository-setting mutation, preflight snapshot, required check names, verification, and rollback. | Not Started | Historical blocker: GitHub branch-protection and ruleset reads returned HTTP 403 with the private-repository Pro/public requirement. Recheck after T-1 and T-2 pass. |
 
 **Affected paths**: `Cargo.toml`; `.github/workflows/**`;
+`koduck-ai/src/application/runner.rs`;
 `koduck-ai/tests/postgres_subject_ownership.rs`;
 `koduck-ai/src/adapters/history/postgres/**` only if the production-boundary
 test requires a minimal public test seam; `docs/adr/INDEX.md`;
@@ -273,6 +280,7 @@ must remain within the standard guardrails or receive a decomposition review.
 | CI-3 | `docs/development/software-engineering-standard.md` — Testing And Change Design | External datastore risks are exercised through the production boundary or a behaviorally equivalent integration harness. | AC-4, AC-5 | The CI test job starts PostgreSQL and the named integration test runs migration and SQLx executor calls against it. |
 | CI-4 | `AGENTS.md` — Core Rules | Verification produces structured diagnostics without exposing secrets or sensitive data. | AC-1, AC-5 | Workflow inspection finds no production secret input, and failing test output uses fixed disposable identifiers and owned errors. |
 | CI-5 | `Cargo.toml` — workspace package metadata and committed `Cargo.lock` | The declared Rust version can compile the exact committed dependency graph. | AC-1, AC-2, AC-3 | Inspect `rust-version = "1.95"`, all three job pins, and successful locked-dependency command execution. |
+| CI-6 | `koduck-ai/src/application/runner.rs` — `recover_append_failure` | Rust 1.95 compatibility must preserve recovery scheduling for `Unavailable` append failures, ignore an `Unavailable` scheduling failure, and propagate any other scheduling error. | AC-2, AC-3 | Add a focused recovery-error regression test, inspect that the let-chain retains all predicates, and run the durability and all-target/all-feature tests. |
 
 ## Risk Coverage Matrix [Conditionally Required — source or configuration implementation]
 
@@ -289,7 +297,7 @@ must remain within the standard guardrails or receive a decomposition review.
 | Check ID | Subtask | Binary acceptance point | Preconditions or input | Verification method | Exact expected result | Expected evidence | Status | Actual result and evidence |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | AC-1 | T-1 | The workflow maps the latest `dev` pull-request revision to exactly three bounded Koduck AI verification jobs. | Workflow exists and a pull-request revision is pushed. | Inspect workflow triggers, concurrency, job names, service declarations, and timeouts; query the revision's check runs. | Trigger includes pull requests targeting `dev`; the latest SHA has exactly `koduck-ai-format`, `koduck-ai-clippy`, and `koduck-ai-test-postgres`; each job has a finite timeout; no job uploads an artifact. | Workflow diff and check-run JSON for the exact SHA. | Not Started | Pending |
-| AC-2 | T-1 | The workspace and all three CI jobs use a compiler compatible with the committed dependency graph, and format/strict-Clippy succeed. | Committed lock and Rust sources are checked out in CI. | Inspect root `rust-version` and every workflow toolchain pin, then inspect logs for `cargo fmt --all --check` and `cargo clippy -p koduck-ai --all-targets --all-features -- -D warnings`. | Root metadata and all three jobs specify Rust 1.95; both commands exit 0 and their named checks conclude `success`. | Metadata/workflow diff, check-run conclusions, and command logs. | Not Started | Pending |
+| AC-2 | T-1 | The workspace and all three CI jobs use a compiler compatible with the committed dependency graph, and format/strict-Clippy succeed without changing recovery outcomes. | Committed lock and Rust sources are checked out in CI. | Run the focused recovery-error test before and after the rewrite; inspect root `rust-version`, every workflow toolchain pin, and the `recover_append_failure` predicates; then inspect logs for `cargo fmt --all --check` and `cargo clippy -p koduck-ai --all-targets --all-features -- -D warnings`. | Root metadata and all three jobs specify Rust 1.95; the focused test proves non-`Unavailable` scheduling errors remain `TurnRunError::History`; the let-chain retains the `Unavailable`, valid `recovery_pending`, failed scheduling, and non-`Unavailable` propagation conditions; both commands exit 0 and their named checks conclude `success`. | Focused test RED/GREEN output, metadata/workflow/source diff, check-run conclusions, and command logs. | Not Started | Pending |
 | AC-3 | T-1 | The test check executes the complete routed test command successfully. | PostgreSQL service is healthy and the test database URL is supplied from disposable workflow values. | Run `cargo test -p koduck-ai --all-targets --all-features` in the test job. | Command exits 0; the test check concludes `success`; no test reports skipped PostgreSQL verification when the CI database variable is present. | Test log, test count, and check conclusion. | Not Started | Pending |
 | AC-4 | T-2 | Production PostgreSQL behavior satisfies the selected datastore invariants. | Fresh CI PostgreSQL database; migration not previously applied. | Run the exact named PostgreSQL integration test through `SqlxPostgresExecutor`. | Migration succeeds; U+0000 round-trips; a different subject receives `NotFound`; concurrent terminal arbitration leaves one terminal with approved interrupt priority; stale generation receives `Fenced`; no rejected attempt adds an Item. | Named test output and SQL assertions from the CI run. | Not Started | Pending |
 | AC-5 | T-2 | The PostgreSQL test environment is disposable and bounded. | CI test job starts with no persisted service volume. | Inspect the PostgreSQL service health retries, job timeout, environment source, volume declarations, and artifact steps; execute the passing workflow. | The service has finite health retries, the job has a finite timeout, its database values are fixed disposable literals, no persistent volume or artifact upload exists, and the check concludes `success`. | Workflow definition and passing check result. | Not Started | Pending |
@@ -303,13 +311,13 @@ precondition demonstrably does not apply.
 
 | ID | Item | Completion Criterion | Expected Evidence | Status | Actual Evidence |
 | --- | --- | --- | --- | --- | --- |
-| A-1 | ADR approved | An eligible non-author approver, approval time, and exact `Approval Evidence: Approve` are recorded. | ADR metadata | Not Started | Pending — the Rust 1.95 scope revision requires reapproval. |
+| A-1 | ADR approved | An eligible non-author approver, approval time, and exact `Approval Evidence: Approve` are recorded. | ADR metadata | Not Started | Pending — the Rust 1.95 source-compatibility scope revision requires reapproval. |
 | A-2 | Complete task delivered | T-1 through T-3 are complete and AC-1 through AC-6 are Pass. | Implementation Plan, CI check runs, PostgreSQL test output, and Accepted OCR | Not Started | Pending |
 | A-3 | Reciprocal ADD link synchronized, when applicable | Product-demand handoff does not apply. | Architecture Source metadata | N/A — this governance/CI task is not derived from product demand | Architecture Source records the specific N/A reason. |
 | A-4 | Requirement levels satisfied | Every required and triggered field is complete or has a valid specific N/A reason for the current stage. | Structured document review | Complete | Structured review found no unresolved placeholders or missing Proposed-stage fields; implementation evidence is explicitly pending reapproval. |
 | A-5 | Acceptance checks are decidable | Each check has one subtask, exact input, deterministic method, observable result, and evidence. | Structured acceptance-check review | Complete | AC-1 through AC-6 each name one subtask, an exact precondition, deterministic method, binary expected result, and evidence, including the Rust 1.95 compiler contract. |
 | A-6 | Engineering exceptions governed, when applicable | No rule is exceeded, or a complete approved exception is present before implementation. | Engineering Exceptions and affected-file metrics | N/A — no exception applies | New workflow, integration test, and test additions remain below exception limits; the retained files above review thresholds keep their existing decomposition evidence. |
-| A-7 | Contract and baseline risks covered, when applicable | CI-1 through CI-5 map to explicit checks and all five risk rows reach Pass before completion. | Traceability, Risk Coverage Matrix, and stable evidence | Not Started | CI-1 through CI-5 map to AC-1 through AC-6; every row requires fresh post-reapproval evidence. |
+| A-7 | Contract and baseline risks covered, when applicable | CI-1 through CI-6 map to explicit checks and all five risk rows reach Pass before completion. | Traceability, Risk Coverage Matrix, and stable evidence | Not Started | CI-1 through CI-6 map to AC-1 through AC-6; every row requires fresh post-reapproval evidence. |
 
 ## Archival [Conditionally Required — Decision Status is `Rejected`, or Decision Status is `Deprecated` or `Superseded` and Implementation Status is final]
 
@@ -333,6 +341,8 @@ implementation completion. When triggered:
 
 | Date | Change | Author |
 | --- | --- | --- |
+| 2026-08-12 | Approval-invalidating revision at `2026-08-12T10:00:47+08:00` added the minimum `runner.rs` compatibility rewrite after Rust 1.95 strict Clippy reported two `collapsible_if` failures. Preserved prior approval historically: Approver `@linhai`, Approval Time `2026-08-12T09:57:23+08:00`, Approval Evidence `Approve`, no Approval Context Revision. Reset Decision Status to `Proposed`, Implementation Status to `Not Started`, and T-1/A-1 to post-reapproval execution. | @codex |
+| 2026-08-12 | Recorded `@linhai`'s exact `Approve` for the Rust 1.95 proposal at `2026-08-12T09:57:23+08:00`, set the ADR to `Accepted / In Progress`, and began T-1 with a RED compiler-contract test. | @codex |
 | 2026-08-12 | Updated the Proposed compiler pin from Rust 1.94 to Rust 1.95 after `@linhai` explicitly selected Rust 1.95 for workspace metadata and every CI job; the committed dependency minimum remains Rust 1.94. | @codex |
 | 2026-08-12 | Proposed one CI verification boundary with three routed required checks, disposable PostgreSQL production-boundary evidence, and a separately governed branch-protection operation after @linhai confirmed the approach in the active task. | @codex |
 | 2026-08-12 | Recorded @linhai's exact `Approve`, set the ADR to `Accepted / In Progress`, and began T-2 with the required RED production-boundary test. | @codex |
