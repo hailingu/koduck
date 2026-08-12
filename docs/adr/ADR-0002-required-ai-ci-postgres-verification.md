@@ -2,27 +2,27 @@
 
 ## Metadata [Required]
 
-- **Decision Status**: Accepted
-- **Implementation Status**: Blocked
+- **Decision Status**: Proposed
+- **Implementation Status**: Not Started
 - **Date**: 2026-08-12
 - **Author**: @codex
 - **Decision Owner**: @linhai
 - **Required Approver**: @linhai
 - **Record Scope**: Project
-- **Approver [Conditionally Required — Decision Status is or has been `Accepted`]**: @linhai
-- **Approval Time [Conditionally Required — Decision Status is or has been `Accepted`]**: 2026-08-12T01:24:45+08:00
-- **Approval Evidence [Conditionally Required — Decision Status is or has been `Accepted`]**: Approve
-- **Rejector [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is `Accepted`
-- **Rejection Time [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is `Accepted`
-- **Rejection Evidence [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is `Accepted`
-- **Retired By [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — Decision Status is `Accepted`
-- **Retirement Time [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — Decision Status is `Accepted`
-- **Retirement Evidence [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — Decision Status is `Accepted`
-- **Retirement Reason [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — Decision Status is `Accepted`
-- **Blocked From [Conditionally Required — Implementation Status is `Blocked`]**: In Progress
-- **Blocker And Evidence [Conditionally Required — Implementation Status is `Blocked`]**: GitHub returned HTTP 403 for both `repos/hailingu/koduck/branches/dev/protection` and `repos/hailingu/koduck/rulesets`, stating that the private repository must upgrade to GitHub Pro or become public before branch protection or rulesets can be enabled; T-3 and AC-6 therefore cannot execute in the accepted scope.
-- **Blocker Owner [Conditionally Required — Implementation Status is `Blocked`]**: @linhai
-- **Blocker Exit Or Recheck Criterion [Conditionally Required — Implementation Status is `Blocked`]**: GitHub branch protection or rulesets become available for `hailingu/koduck`, and a read-only API request for `dev` returns the current settings instead of HTTP 403; then return this ADR to `In Progress`, draft OCR-0002 from the captured state, obtain `Approve`, and execute T-3.
+- **Approver [Conditionally Required — Decision Status is or has been `Accepted`]**: Pending — reapproval required
+- **Approval Time [Conditionally Required — Decision Status is or has been `Accepted`]**: Pending — reapproval required
+- **Approval Evidence [Conditionally Required — Decision Status is or has been `Accepted`]**: Pending — reapproval required
+- **Rejector [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is `Proposed`
+- **Rejection Time [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is `Proposed`
+- **Rejection Evidence [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is `Proposed`
+- **Retired By [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — Decision Status is `Proposed`
+- **Retirement Time [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — Decision Status is `Proposed`
+- **Retirement Evidence [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — Decision Status is `Proposed`
+- **Retirement Reason [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — Decision Status is `Proposed`
+- **Blocked From [Conditionally Required — Implementation Status is `Blocked`]**: N/A — Implementation Status is `Not Started`
+- **Blocker And Evidence [Conditionally Required — Implementation Status is `Blocked`]**: N/A — Implementation Status is `Not Started`
+- **Blocker Owner [Conditionally Required — Implementation Status is `Blocked`]**: N/A — Implementation Status is `Not Started`
+- **Blocker Exit Or Recheck Criterion [Conditionally Required — Implementation Status is `Blocked`]**: N/A — Implementation Status is `Not Started`
 - **Related [Optional]**: [Pull request 1](https://github.com/hailingu/koduck/pull/1)
 - **Architecture Source [Conditionally Required — product demand]**: N/A — this is repository verification governance, not product demand
 - **Supersedes [Conditionally Required — this ADR replaces another]**: None
@@ -65,9 +65,11 @@ required on `dev` through a separately accepted operational change.
 
 In scope:
 
-- One GitHub Actions workflow for pull requests targeting `dev` and pushes to
-  the task branch, with checks named exactly `koduck-ai-format`,
+- One GitHub Actions workflow for pull requests targeting `dev`, with checks
+  named exactly `koduck-ai-format`,
   `koduck-ai-clippy`, and `koduck-ai-test-postgres`.
+- Workspace package metadata and all three jobs use Rust 1.94, the minimum
+  compiler version required by the committed `sqlx 0.9.0` dependency.
 - An ephemeral PostgreSQL service used by the test check and a production-boundary
   SQLx integration test covering migration, subject ownership, escaped U+0000,
   terminal arbitration, and stale-generation fencing.
@@ -91,12 +93,16 @@ Out of scope:
 | --- | --- | --- | --- |
 | TN-1 | A real datastore test provides transaction evidence but introduces service startup and readiness latency. | Source inspection remains fast but cannot prove SQL, lock, or type behavior; an unbounded service wait can stall CI. | Run only the routed test job with an ephemeral PostgreSQL service, use a bounded health check, and keep unit tests independent of external state. |
 | TN-2 | Repository workflow files can emit named checks, while making them required mutates GitHub repository settings. | Treating an emitted check as required would leave the review-ready gate unenforced. | Add the workflow under this ADR and apply the exact required-check setting through a separate Accepted OCR with rollback. |
+| TN-3 | The committed workspace declared Rust 1.85 while `sqlx 0.9.0` requires Rust 1.94. | Both Clippy and test jobs fail before compilation, so the emitted checks cannot verify the routed commands. | Declare workspace `rust-version = "1.94"` and pin every CI job to Rust 1.94; do not change or downgrade the accepted dependency lock. |
 
 ### Constraints [Required]
 
 - The exact routed commands remain `cargo fmt --all --check`,
   `cargo clippy -p koduck-ai --all-targets --all-features -- -D warnings`, and
   `cargo test -p koduck-ai --all-targets --all-features`.
+- Root workspace package metadata and each workflow job must use Rust 1.94;
+  any compiler-version change is approval-invalidating because it changes the
+  supported build contract.
 - The required check names are exactly `koduck-ai-format`,
   `koduck-ai-clippy`, and `koduck-ai-test-postgres`; a rename is an
   approval-invalidating contract change because branch protection binds these
@@ -117,6 +123,7 @@ Out of scope:
 | ID | Question | Owner | Due | Status | Resolution and Evidence |
 | --- | --- | --- | --- | --- | --- |
 | Q-1 | Which CI and datastore approach should fix the review gate? | @linhai | 2026-08-12 | Resolved | In the active task, @linhai confirmed the recommended three-check GitHub Actions workflow and real PostgreSQL integration approach. |
+| Q-2 | Which compiler version can execute the committed dependency graph? | @linhai | 2026-08-12 | Resolved | GitHub Actions runs `31553057678` and `31554660991` show Rust 1.85.1 rejecting the committed `sqlx 0.9.0`, which requires Rust 1.94.0. The local workspace uses Rust 1.95 successfully; the narrow compatible contract is Rust 1.94. |
 
 ## Decision Drivers [Required]
 
@@ -128,6 +135,8 @@ Out of scope:
    checks must prevent review-ready status.
 4. **Disposable isolation**: Verification must not mutate a shared or external
    datastore or retain a promotable artifact.
+5. **Truthful compiler contract**: Workspace metadata and CI must agree with
+   the minimum Rust version required by the committed dependency graph.
 
 ## Options Considered [Required]
 
@@ -200,11 +209,15 @@ Negative:
 - The test job depends on PostgreSQL container availability and will run longer.
 - Required-check activation and rollback need a separately approved GitHub
   repository-settings operation.
+- Raising the declared MSRV from 1.85 to 1.94 drops unsupported older Rust
+  toolchains; this matches the already-committed dependency requirement.
 
 Mitigations:
 
 - Use a bounded health check and workflow timeout, isolate one disposable
   database per job, and retain no database volume or build artifact.
+- Pin Rust 1.94 in workspace metadata and every job so dependency requirements,
+  local expectations, and revision-bound CI agree.
 - Apply and verify branch protection through an OCR that records the prior
   state and restores it exactly on failure.
 
@@ -224,11 +237,11 @@ or `N/A — <specific reason>`.
 
 | ID | Objective or deliverable | Included scope | Status | Actual implementation evidence |
 | --- | --- | --- | --- | --- |
-| T-1 | Add the three revision-bound routed verification checks. | One `.github/workflows/` workflow, Cargo cache/setup, exact format, strict-Clippy, and all-target/all-feature test commands, bounded job timeouts, and no retained artifact. | Complete | `.github/workflows/koduck-ai.yml` defines the exact three names and routed commands, `dev` PR and task-branch triggers, cancellation by workflow/ref, finite job timeouts, read-only repository permission, and no artifact upload. The architecture RED failed because this file was absent, then passed after the workflow was added. |
-| T-2 | Replace source-inspection-only PostgreSQL claims with production-boundary evidence. | Disposable PostgreSQL service; migration; `SqlxPostgresExecutor`; subject, U+0000, concurrent terminal, and stale-generation scenarios; deterministic cleanup. | Complete | The architecture RED rejected source-string assertions; `production_postgres_contract` now uses the production migration and `SqlxPostgresExecutor`. It passed against a no-volume `postgres:18-alpine` container and proved U+0000 replay, subject rejection, interrupt-priority terminal uniqueness, and stale-generation fencing; the container was deleted afterward. |
-| T-3 | Make the three emitted check names required on `dev`. | A separately Accepted OCR for the exact GitHub repository-setting mutation, preflight snapshot, required check names, verification, and rollback. | Blocked | GitHub branch-protection and ruleset reads both return HTTP 403 with the private-repository Pro/public requirement, so no executable OCR can yet capture or mutate the target state. |
+| T-1 | Add the three revision-bound routed verification checks. | Root workspace Rust 1.94 metadata; one `.github/workflows/` workflow pinned to Rust 1.94; exact format, strict-Clippy, and all-target/all-feature test commands; bounded job timeouts; no retained artifact. | Not Started | Historical evidence only: the initial workflow emitted the exact names and commands, but runs `31553057678` and `31554660991` proved its Rust 1.85 pin incompatible with the committed dependency graph. Re-execute after reapproval. |
+| T-2 | Replace source-inspection-only PostgreSQL claims with production-boundary evidence. | Disposable PostgreSQL service; migration; `SqlxPostgresExecutor`; subject, U+0000, concurrent terminal, and stale-generation scenarios; deterministic cleanup. | Not Started | Historical evidence only: `production_postgres_contract` passed locally against no-volume PostgreSQL 18, but revised acceptance requires a fresh run after reapproval and a passing CI revision. |
+| T-3 | Make the three emitted check names required on `dev`. | A separately Accepted OCR for the exact GitHub repository-setting mutation, preflight snapshot, required check names, verification, and rollback. | Not Started | Historical blocker: GitHub branch-protection and ruleset reads returned HTTP 403 with the private-repository Pro/public requirement. Recheck after T-1 and T-2 pass. |
 
-**Affected paths**: `.github/workflows/**`;
+**Affected paths**: `Cargo.toml`; `.github/workflows/**`;
 `koduck-ai/tests/postgres_subject_ownership.rs`;
 `koduck-ai/src/adapters/history/postgres/**` only if the production-boundary
 test requires a minimal public test seam; `docs/adr/INDEX.md`;
@@ -257,23 +270,24 @@ must remain within the standard guardrails or receive a decomposition review.
 | CI-2 | `AGENTS.md` — Scope Routing | Koduck AI changes run format, strict all-target/all-feature Clippy, and all-target/all-feature tests non-interactively. | AC-1, AC-2, AC-3 | Each named workflow job executes one exact routed command and reports exit code 0. |
 | CI-3 | `docs/development/software-engineering-standard.md` — Testing And Change Design | External datastore risks are exercised through the production boundary or a behaviorally equivalent integration harness. | AC-4, AC-5 | The CI test job starts PostgreSQL and the named integration test runs migration and SQLx executor calls against it. |
 | CI-4 | `AGENTS.md` — Core Rules | Verification produces structured diagnostics without exposing secrets or sensitive data. | AC-1, AC-5 | Workflow inspection finds no production secret input, and failing test output uses fixed disposable identifiers and owned errors. |
+| CI-5 | `Cargo.toml` — workspace package metadata and committed `Cargo.lock` | The declared Rust version can compile the exact committed dependency graph. | AC-1, AC-2, AC-3 | Inspect `rust-version = "1.94"`, all three job pins, and successful locked-dependency command execution. |
 
 ## Risk Coverage Matrix [Conditionally Required — source or configuration implementation]
 
 | Risk dimension | Applicability and scenario, or specific N/A reason | Owning boundary | Deterministic verification method | Exact expected result | Acceptance check IDs | Status | Actual evidence |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| Concurrency and ordering | Two production SQLx terminal attempts race with an accepted interrupt and stale generation. | PostgreSQL integration harness and executor | Run the named concurrent integration scenario against the CI PostgreSQL service. | Exactly one terminal row commits; interrupt has the approved priority; the stale generation receives `Fenced`. | AC-4 | Pass | Local production-boundary run committed exactly one `Interrupted` terminal, returned `AlreadyTerminal` to the losing contender, and returned `Fenced` without another Item after generation advancement. CI revision evidence remains required by AC-4. |
-| Timeout and deadline | PostgreSQL service readiness or a verification job stalls. | GitHub Actions workflow | Inspect finite service health retries and per-job `timeout-minutes`; run the workflow. | Readiness failure or elapsed job timeout produces a non-success check rather than an indefinitely pending or successful check. | AC-1, AC-5 | Pass | Workflow inspection records 15 finite two-second health retries and 10/20-minute job timeouts. Pushed check evidence remains required by AC-1 and AC-5. |
+| Concurrency and ordering | Two production SQLx terminal attempts race with an accepted interrupt and stale generation. | PostgreSQL integration harness and executor | Run the named concurrent integration scenario against the CI PostgreSQL service. | Exactly one terminal row commits; interrupt has the approved priority; the stale generation receives `Fenced`. | AC-4 | Not Started | Historical local evidence retained; fresh post-reapproval CI evidence is required. |
+| Timeout and deadline | PostgreSQL service readiness or a verification job stalls. | GitHub Actions workflow | Inspect finite service health retries and per-job `timeout-minutes`; run the workflow. | Readiness failure or elapsed job timeout produces a non-success check rather than an indefinitely pending or successful check. | AC-1, AC-5 | Not Started | Historical workflow inspection retained; fresh post-reapproval CI evidence is required. |
 | Cancellation and interruption | A superseded workflow run is cancelled while a newer revision is pending. | GitHub Actions concurrency policy and branch protection | Push a later revision or deterministically inspect the concurrency key and required-check settings. | A cancelled old run does not satisfy the newer revision; all three checks for the latest SHA must conclude success. | AC-1, AC-6 | Not Started | Workflow config has revision-group cancellation; latest-SHA and branch-protection evidence require the pushed revision and T-3 OCR. |
-| Resource bounds and back-pressure | CI jobs or PostgreSQL state accumulate without bound. | GitHub Actions runner and disposable PostgreSQL service | Inspect one service per test job, bounded timeouts, no artifact upload, and no persistent volume; run the workflow. | Each job terminates within its timeout and retains no database volume or build artifact. | AC-1, AC-5 | Pass | Workflow has one job-scoped PostgreSQL service, finite job timeout, no volume declaration, and no artifact upload; the local no-volume container was removed after the passing test. CI revision evidence remains required. |
-| Framework or trust-boundary rejection | Non-owned subject access or invalid persisted ownership is accepted by SQL or hidden by a unit double. | Production SQLx/PostgreSQL boundary | Run subject-ownership and stale-generation cases against PostgreSQL. | Non-owned access returns `NotFound`, stale generation returns `Fenced`, and neither changes durable items. | AC-4 | Pass | Production-boundary run returned `NotFound` for the intruder and `Fenced` for the stale generation; replay equality proved neither rejected operation added an Item. CI revision evidence remains required. |
+| Resource bounds and back-pressure | CI jobs or PostgreSQL state accumulate without bound. | GitHub Actions runner and disposable PostgreSQL service | Inspect one service per test job, bounded timeouts, no artifact upload, and no persistent volume; run the workflow. | Each job terminates within its timeout and retains no database volume or build artifact. | AC-1, AC-5 | Not Started | Historical workflow and cleanup evidence retained; fresh post-reapproval CI evidence is required. |
+| Framework or trust-boundary rejection | Non-owned subject access or invalid persisted ownership is accepted by SQL or hidden by a unit double. | Production SQLx/PostgreSQL boundary | Run subject-ownership and stale-generation cases against PostgreSQL. | Non-owned access returns `NotFound`, stale generation returns `Fenced`, and neither changes durable items. | AC-4 | Not Started | Historical local evidence retained; fresh post-reapproval CI evidence is required. |
 
 ## Acceptance Checks [Required]
 
 | Check ID | Subtask | Binary acceptance point | Preconditions or input | Verification method | Exact expected result | Expected evidence | Status | Actual result and evidence |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | AC-1 | T-1 | The workflow maps the latest `dev` pull-request revision to exactly three bounded Koduck AI verification jobs. | Workflow exists and a pull-request revision is pushed. | Inspect workflow triggers, concurrency, job names, service declarations, and timeouts; query the revision's check runs. | Trigger includes pull requests targeting `dev`; the latest SHA has exactly `koduck-ai-format`, `koduck-ai-clippy`, and `koduck-ai-test-postgres`; each job has a finite timeout; no job uploads an artifact. | Workflow diff and check-run JSON for the exact SHA. | Not Started | Pending |
-| AC-2 | T-1 | The format and strict-Clippy checks execute the routed commands successfully. | Committed lock and Rust sources are checked out in CI. | Run the workflow and inspect logs for `cargo fmt --all --check` and `cargo clippy -p koduck-ai --all-targets --all-features -- -D warnings`. | Both commands exit 0 and their two named checks conclude `success`. | Check-run conclusions and command logs. | Not Started | Pending |
+| AC-2 | T-1 | The workspace and all three CI jobs use a compiler compatible with the committed dependency graph, and format/strict-Clippy succeed. | Committed lock and Rust sources are checked out in CI. | Inspect root `rust-version` and every workflow toolchain pin, then inspect logs for `cargo fmt --all --check` and `cargo clippy -p koduck-ai --all-targets --all-features -- -D warnings`. | Root metadata and all three jobs specify Rust 1.94; both commands exit 0 and their named checks conclude `success`. | Metadata/workflow diff, check-run conclusions, and command logs. | Not Started | Pending |
 | AC-3 | T-1 | The test check executes the complete routed test command successfully. | PostgreSQL service is healthy and the test database URL is supplied from disposable workflow values. | Run `cargo test -p koduck-ai --all-targets --all-features` in the test job. | Command exits 0; the test check concludes `success`; no test reports skipped PostgreSQL verification when the CI database variable is present. | Test log, test count, and check conclusion. | Not Started | Pending |
 | AC-4 | T-2 | Production PostgreSQL behavior satisfies the selected datastore invariants. | Fresh CI PostgreSQL database; migration not previously applied. | Run the exact named PostgreSQL integration test through `SqlxPostgresExecutor`. | Migration succeeds; U+0000 round-trips; a different subject receives `NotFound`; concurrent terminal arbitration leaves one terminal with approved interrupt priority; stale generation receives `Fenced`; no rejected attempt adds an Item. | Named test output and SQL assertions from the CI run. | Not Started | Pending |
 | AC-5 | T-2 | The PostgreSQL test environment is disposable and bounded. | CI test job starts with no persisted service volume. | Inspect the PostgreSQL service health retries, job timeout, environment source, volume declarations, and artifact steps; execute the passing workflow. | The service has finite health retries, the job has a finite timeout, its database values are fixed disposable literals, no persistent volume or artifact upload exists, and the check concludes `success`. | Workflow definition and passing check result. | Not Started | Pending |
@@ -287,13 +301,13 @@ precondition demonstrably does not apply.
 
 | ID | Item | Completion Criterion | Expected Evidence | Status | Actual Evidence |
 | --- | --- | --- | --- | --- | --- |
-| A-1 | ADR approved | An eligible non-author approver, approval time, and exact `Approval Evidence: Approve` are recorded. | ADR metadata | Complete | @linhai self-declared in the active task and then supplied exact `Approve`; approval time is `2026-08-12T01:24:45+08:00`. |
+| A-1 | ADR approved | An eligible non-author approver, approval time, and exact `Approval Evidence: Approve` are recorded. | ADR metadata | Not Started | Pending — the Rust 1.94 scope revision requires reapproval. |
 | A-2 | Complete task delivered | T-1 through T-3 are complete and AC-1 through AC-6 are Pass. | Implementation Plan, CI check runs, PostgreSQL test output, and Accepted OCR | Not Started | Pending |
 | A-3 | Reciprocal ADD link synchronized, when applicable | Product-demand handoff does not apply. | Architecture Source metadata | N/A — this governance/CI task is not derived from product demand | Architecture Source records the specific N/A reason. |
-| A-4 | Requirement levels satisfied | Every required and triggered field is complete or has a valid specific N/A reason for the current stage. | Structured document review | Complete | Structured review found no unresolved placeholders or missing current-stage fields; T-3 and pushed-revision result fields remain explicitly pending while implementation is In Progress. |
-| A-5 | Acceptance checks are decidable | Each check has one subtask, exact input, deterministic method, observable result, and evidence. | Structured acceptance-check review | Complete | AC-1 through AC-6 each name one subtask, an exact precondition, deterministic method, binary expected result, and evidence. |
+| A-4 | Requirement levels satisfied | Every required and triggered field is complete or has a valid specific N/A reason for the current stage. | Structured document review | Complete | Structured review found no unresolved placeholders or missing Proposed-stage fields; implementation evidence is explicitly pending reapproval. |
+| A-5 | Acceptance checks are decidable | Each check has one subtask, exact input, deterministic method, observable result, and evidence. | Structured acceptance-check review | Complete | AC-1 through AC-6 each name one subtask, an exact precondition, deterministic method, binary expected result, and evidence, including the Rust 1.94 compiler contract. |
 | A-6 | Engineering exceptions governed, when applicable | No rule is exceeded, or a complete approved exception is present before implementation. | Engineering Exceptions and affected-file metrics | N/A — no exception applies | New workflow, integration test, and test additions remain below exception limits; the retained files above review thresholds keep their existing decomposition evidence. |
-| A-7 | Contract and baseline risks covered, when applicable | CI-1 through CI-4 map to explicit checks and all five risk rows reach Pass before completion. | Traceability, Risk Coverage Matrix, and stable evidence | In Progress | CI-1 through CI-4 map to AC-1 through AC-6; four rows have local Pass evidence and cancellation remains pending until pushed latest-SHA checks and T-3 branch protection complete. |
+| A-7 | Contract and baseline risks covered, when applicable | CI-1 through CI-5 map to explicit checks and all five risk rows reach Pass before completion. | Traceability, Risk Coverage Matrix, and stable evidence | Not Started | CI-1 through CI-5 map to AC-1 through AC-6; every row requires fresh post-reapproval evidence. |
 
 ## Archival [Conditionally Required — Decision Status is `Rejected`, or Decision Status is `Deprecated` or `Superseded` and Implementation Status is final]
 
@@ -321,3 +335,4 @@ implementation completion. When triggered:
 | 2026-08-12 | Recorded @linhai's exact `Approve`, set the ADR to `Accepted / In Progress`, and began T-2 with the required RED production-boundary test. | @codex |
 | 2026-08-12 | Completed T-1 and T-2 locally: both architecture tests followed RED-to-Green, all three routed commands passed with 69 tests, and `production_postgres_contract` additionally passed against disposable PostgreSQL 18 before its no-volume container was deleted. T-3 and pushed-revision CI evidence remain pending. | @codex |
 | 2026-08-12 | Set Implementation Status from `In Progress` to `Blocked` after GitHub returned HTTP 403 for both `dev` branch protection and repository rulesets, with the explicit requirement to upgrade the private repository to GitHub Pro or make it public. T-1 and T-2 remain complete; T-3 cannot proceed until the recorded exit criterion is met. | @codex |
+| 2026-08-12 | Approval-invalidating revision at `2026-08-12T09:47:27+08:00` added the root workspace compiler contract and aligned every CI job to Rust 1.94 after runs `31553057678` and `31554660991` proved Rust 1.85 incompatible with committed `sqlx 0.9.0`. Preserved prior approval historically: Approver `@linhai`, Approval Time `2026-08-12T01:24:45+08:00`, Approval Evidence `Approve`, no Approval Context Revision. Reset Decision Status to `Proposed`, Implementation Status to `Not Started`, and all implementation/risk evidence to post-reapproval execution. | @codex |
