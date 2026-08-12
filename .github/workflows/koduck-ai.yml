@@ -9,6 +9,8 @@ on:
       - .github/workflows/koduck-ai.yml
       - Cargo.lock
       - Cargo.toml
+      - docs/adr/ADR-0002-required-ai-ci-postgres-verification.md
+      - docs/adr/INDEX.md
       - koduck-ai/**
 concurrency:
   group: koduck-ai-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}

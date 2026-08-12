@@ -190,6 +190,8 @@ fn required_ci_maps_every_routed_command_and_postgres_boundary() {
     assert!(
         workflow.contains("pull_request:")
             && workflow.contains("- dev")
+            && workflow.contains("- docs/adr/ADR-0002-required-ai-ci-postgres-verification.md")
+            && workflow.contains("- docs/adr/INDEX.md")
             && workflow.contains("postgres:")
             && workflow.contains("KODUCK_AI_TEST_DATABASE_URL")
             && workflow.contains("timeout-minutes:")
