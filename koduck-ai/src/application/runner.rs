@@ -559,14 +559,14 @@ fn recover_append_failure<H: TurnHistory>(
     state: &mut ExecutionState,
     error: HistoryError,
 ) -> TurnRunError {
-    if error == HistoryError::Unavailable {
-        if let Ok(recovery_pending) = state.lifecycle.recovery_pending() {
-            state.lifecycle = recovery_pending;
-            if let Err(schedule_error) = history.schedule_failed_recovery(accepted) {
-                if schedule_error != HistoryError::Unavailable {
-                    return TurnRunError::History(schedule_error);
-                }
-            }
+    if error == HistoryError::Unavailable
+        && let Ok(recovery_pending) = state.lifecycle.recovery_pending()
+    {
+        state.lifecycle = recovery_pending;
+        if let Err(schedule_error) = history.schedule_failed_recovery(accepted)
+            && schedule_error != HistoryError::Unavailable
+        {
+            return TurnRunError::History(schedule_error);
         }
     }
     history_failure(error, true, &state.published)

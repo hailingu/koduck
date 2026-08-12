@@ -204,6 +204,29 @@ fn required_ci_maps_every_routed_command_and_postgres_boundary() {
 
 // ADR: docs/adr/ADR-0002-required-ai-ci-postgres-verification.md
 #[test]
+fn ci_pins_the_selected_rust_toolchain() {
+    let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("koduck-ai belongs to the repository workspace")
+        .to_path_buf();
+    let workspace_manifest = fs::read_to_string(repository_root.join("Cargo.toml"))
+        .expect("workspace manifest is readable");
+    let workflow = fs::read_to_string(repository_root.join(".github/workflows/koduck-ai.yml"))
+        .expect("Koduck AI workflow is readable");
+
+    assert!(
+        workspace_manifest.contains("rust-version = \"1.95\""),
+        "workspace metadata must select Rust 1.95"
+    );
+    assert_eq!(
+        workflow.matches("toolchain: \"1.95\"").count(),
+        3,
+        "every Koduck AI CI job must pin Rust 1.95"
+    );
+}
+
+// ADR: docs/adr/ADR-0002-required-ai-ci-postgres-verification.md
+#[test]
 fn postgres_claims_use_the_production_executor_instead_of_source_inspection() {
     let crate_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let integration = fs::read_to_string(crate_root.join("tests/postgres_subject_ownership.rs"))

@@ -2,27 +2,27 @@
 
 ## Metadata [Required]
 
-- **Decision Status**: Proposed
-- **Implementation Status**: Not Started
+- **Decision Status**: Accepted
+- **Implementation Status**: In Progress
 - **Date**: 2026-08-12
 - **Author**: @codex
 - **Decision Owner**: @linhai
 - **Required Approver**: @linhai
 - **Record Scope**: Project
-- **Approver [Conditionally Required — Decision Status is or has been `Accepted`]**: Pending — re-approval required
-- **Approval Time [Conditionally Required — Decision Status is or has been `Accepted`]**: Pending — re-approval required
-- **Approval Evidence [Conditionally Required — Decision Status is or has been `Accepted`]**: Pending — re-approval required
-- **Rejector [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is `Proposed`
-- **Rejection Time [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is `Proposed`
-- **Rejection Evidence [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is `Proposed`
-- **Retired By [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — Decision Status is `Proposed`
-- **Retirement Time [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — Decision Status is `Proposed`
-- **Retirement Evidence [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — Decision Status is `Proposed`
-- **Retirement Reason [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — Decision Status is `Proposed`
-- **Blocked From [Conditionally Required — Implementation Status is `Blocked`]**: N/A — Implementation Status is `Not Started`
-- **Blocker And Evidence [Conditionally Required — Implementation Status is `Blocked`]**: N/A — Implementation Status is `Not Started`
-- **Blocker Owner [Conditionally Required — Implementation Status is `Blocked`]**: N/A — Implementation Status is `Not Started`
-- **Blocker Exit Or Recheck Criterion [Conditionally Required — Implementation Status is `Blocked`]**: N/A — Implementation Status is `Not Started`
+- **Approver [Conditionally Required — Decision Status is or has been `Accepted`]**: @linhai
+- **Approval Time [Conditionally Required — Decision Status is or has been `Accepted`]**: 2026-08-12T10:04:09+08:00
+- **Approval Evidence [Conditionally Required — Decision Status is or has been `Accepted`]**: Approve
+- **Rejector [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is `Accepted`
+- **Rejection Time [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is `Accepted`
+- **Rejection Evidence [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is `Accepted`
+- **Retired By [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — Decision Status is `Accepted`
+- **Retirement Time [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — Decision Status is `Accepted`
+- **Retirement Evidence [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — Decision Status is `Accepted`
+- **Retirement Reason [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — Decision Status is `Accepted`
+- **Blocked From [Conditionally Required — Implementation Status is `Blocked`]**: N/A — Implementation Status is `In Progress`
+- **Blocker And Evidence [Conditionally Required — Implementation Status is `Blocked`]**: N/A — Implementation Status is `In Progress`
+- **Blocker Owner [Conditionally Required — Implementation Status is `Blocked`]**: N/A — Implementation Status is `In Progress`
+- **Blocker Exit Or Recheck Criterion [Conditionally Required — Implementation Status is `Blocked`]**: N/A — Implementation Status is `In Progress`
 - **Related [Optional]**: [Pull request 1](https://github.com/hailingu/koduck/pull/1)
 - **Architecture Source [Conditionally Required — product demand]**: N/A — this is repository verification governance, not product demand
 - **Supersedes [Conditionally Required — this ADR replaces another]**: None
@@ -245,8 +245,8 @@ or `N/A — <specific reason>`.
 
 | ID | Objective or deliverable | Included scope | Status | Actual implementation evidence |
 | --- | --- | --- | --- | --- |
-| T-1 | Add the three revision-bound routed verification checks. | Root workspace Rust 1.95 metadata; one `.github/workflows/` workflow pinned to Rust 1.95; one focused recovery-error regression test; the minimum semantics-preserving `runner.rs` Clippy compatibility rewrite; exact format, strict-Clippy, and all-target/all-feature test commands; bounded job timeouts; no retained artifact. | Not Started | Historical evidence only: the Rust 1.95 compiler-contract test failed before the pin and passed after it; strict Clippy then failed at `runner.rs:562-569` on two Rust 1.95 `collapsible_if` diagnostics. Re-execute and implement only after reapproval. |
-| T-2 | Replace source-inspection-only PostgreSQL claims with production-boundary evidence. | Disposable PostgreSQL service; migration; `SqlxPostgresExecutor`; subject, U+0000, concurrent terminal, and stale-generation scenarios; deterministic cleanup. | Not Started | Historical evidence only: `production_postgres_contract` passed locally against no-volume PostgreSQL 18, but revised acceptance requires a fresh run after reapproval and a passing CI revision. |
+| T-1 | Add the three revision-bound routed verification checks. | Root workspace Rust 1.95 metadata; one `.github/workflows/` workflow pinned to Rust 1.95; one focused recovery-error regression test; the minimum semantics-preserving `runner.rs` Clippy compatibility rewrite; exact format, strict-Clippy, and all-target/all-feature test commands; bounded job timeouts; no retained artifact. | In Progress | Rust 1.95 compiler-contract test observed RED at the 1.85 metadata and GREEN after root plus three-job pins; recovery-error test killed the error-discarding mutation and passed the let-chain rewrite; local format, strict Clippy, and all-target/all-feature tests passed under `rustc 1.95.0`. Pushed-revision checks remain required. |
+| T-2 | Replace source-inspection-only PostgreSQL claims with production-boundary evidence. | Disposable PostgreSQL service; migration; `SqlxPostgresExecutor`; subject, U+0000, concurrent terminal, and stale-generation scenarios; deterministic cleanup. | Complete | `production_postgres_contract` passed against local no-volume PostgreSQL 18 container `koduck-ai-pg-195-20260812`; the container was deleted immediately after the test. The full routed suite also passed with 77 tests under Rust 1.95. |
 | T-3 | Make the three emitted check names required on `dev`. | A separately Accepted OCR for the exact GitHub repository-setting mutation, preflight snapshot, required check names, verification, and rollback. | Not Started | Historical blocker: GitHub branch-protection and ruleset reads returned HTTP 403 with the private-repository Pro/public requirement. Recheck after T-1 and T-2 pass. |
 
 **Affected paths**: `Cargo.toml`; `.github/workflows/**`;
@@ -311,10 +311,10 @@ precondition demonstrably does not apply.
 
 | ID | Item | Completion Criterion | Expected Evidence | Status | Actual Evidence |
 | --- | --- | --- | --- | --- | --- |
-| A-1 | ADR approved | An eligible non-author approver, approval time, and exact `Approval Evidence: Approve` are recorded. | ADR metadata | Not Started | Pending — the Rust 1.95 source-compatibility scope revision requires reapproval. |
+| A-1 | ADR approved | An eligible non-author approver, approval time, and exact `Approval Evidence: Approve` are recorded. | ADR metadata | Complete | `@linhai` approved at `2026-08-12T10:04:09+08:00` with exact evidence `Approve`. |
 | A-2 | Complete task delivered | T-1 through T-3 are complete and AC-1 through AC-6 are Pass. | Implementation Plan, CI check runs, PostgreSQL test output, and Accepted OCR | Not Started | Pending |
 | A-3 | Reciprocal ADD link synchronized, when applicable | Product-demand handoff does not apply. | Architecture Source metadata | N/A — this governance/CI task is not derived from product demand | Architecture Source records the specific N/A reason. |
-| A-4 | Requirement levels satisfied | Every required and triggered field is complete or has a valid specific N/A reason for the current stage. | Structured document review | Complete | Structured review found no unresolved placeholders or missing Proposed-stage fields; implementation evidence is explicitly pending reapproval. |
+| A-4 | Requirement levels satisfied | Every required and triggered field is complete or has a valid specific N/A reason for the current stage. | Structured document review | Complete | Structured review found no unresolved placeholders or missing Accepted-stage fields; pushed-revision and T-3 evidence remain explicitly pending. |
 | A-5 | Acceptance checks are decidable | Each check has one subtask, exact input, deterministic method, observable result, and evidence. | Structured acceptance-check review | Complete | AC-1 through AC-6 each name one subtask, an exact precondition, deterministic method, binary expected result, and evidence, including the Rust 1.95 compiler contract. |
 | A-6 | Engineering exceptions governed, when applicable | No rule is exceeded, or a complete approved exception is present before implementation. | Engineering Exceptions and affected-file metrics | N/A — no exception applies | New workflow, integration test, and test additions remain below exception limits; the retained files above review thresholds keep their existing decomposition evidence. |
 | A-7 | Contract and baseline risks covered, when applicable | CI-1 through CI-6 map to explicit checks and all five risk rows reach Pass before completion. | Traceability, Risk Coverage Matrix, and stable evidence | Not Started | CI-1 through CI-6 map to AC-1 through AC-6; every row requires fresh post-reapproval evidence. |
@@ -341,6 +341,8 @@ implementation completion. When triggered:
 
 | Date | Change | Author |
 | --- | --- | --- |
+| 2026-08-12 | Completed local Rust 1.95 implementation verification: compiler-pin test RED-to-Green, recovery-error mutation RED then GREEN with the semantics-preserving let-chain, format and strict Clippy pass, 77 all-target/all-feature tests pass, and `production_postgres_contract` pass against disposable no-volume PostgreSQL 18 followed by container deletion. T-1 awaits pushed-revision checks; T-3 remains pending. | @codex |
+| 2026-08-12 | Recorded `@linhai`'s exact `Approve` for the Rust 1.95 source-compatibility proposal at `2026-08-12T10:04:09+08:00`, set the ADR to `Accepted / In Progress`, and began T-1 verification. | @codex |
 | 2026-08-12 | Approval-invalidating revision at `2026-08-12T10:00:47+08:00` added the minimum `runner.rs` compatibility rewrite after Rust 1.95 strict Clippy reported two `collapsible_if` failures. Preserved prior approval historically: Approver `@linhai`, Approval Time `2026-08-12T09:57:23+08:00`, Approval Evidence `Approve`, no Approval Context Revision. Reset Decision Status to `Proposed`, Implementation Status to `Not Started`, and T-1/A-1 to post-reapproval execution. | @codex |
 | 2026-08-12 | Recorded `@linhai`'s exact `Approve` for the Rust 1.95 proposal at `2026-08-12T09:57:23+08:00`, set the ADR to `Accepted / In Progress`, and began T-1 with a RED compiler-contract test. | @codex |
 | 2026-08-12 | Updated the Proposed compiler pin from Rust 1.94 to Rust 1.95 after `@linhai` explicitly selected Rust 1.95 for workspace metadata and every CI job; the committed dependency minimum remains Rust 1.94. | @codex |

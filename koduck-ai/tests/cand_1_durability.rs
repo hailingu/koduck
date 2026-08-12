@@ -379,6 +379,7 @@ fn execution_rejects_item_65_before_append() {
 struct RecoverableHistory {
     attempts: Rc<Cell<usize>>,
     items: Rc<RefCell<Vec<Item>>>,
+    recovery_error: Option<HistoryError>,
 }
 
 impl TurnHistory for RecoverableHistory {
@@ -433,6 +434,19 @@ impl TurnHistory for RecoverableHistory {
     fn replay(&self, _tenant_id: &TenantId, _turn_id: TurnId) -> Result<Vec<Item>, HistoryError> {
         Ok(self.items.borrow().clone())
     }
+
+    fn schedule_failed_recovery(&mut self, turn: &AcceptedTurn) -> Result<(), HistoryError> {
+        if let Some(error) = self.recovery_error.clone() {
+            return Err(error);
+        }
+        self.append(
+            turn,
+            NewItem::Terminal(TerminalOutcome::Failed {
+                code: "DURABILITY_UNAVAILABLE".to_owned(),
+            }),
+        )?;
+        Ok(())
+    }
 }
 
 #[test]
@@ -447,6 +461,7 @@ fn accepted_append_outage_schedules_a_failed_terminal_recovery() {
         RecoverableHistory {
             attempts: Rc::clone(&attempts),
             items: Rc::clone(&items),
+            recovery_error: None,
         },
     )
     .execute(TurnCommand::new(trust(), None, "hello").expect("valid command"));
@@ -458,4 +473,27 @@ fn accepted_append_outage_schedules_a_failed_terminal_recovery() {
         Some(ItemPayload::Terminal(TerminalOutcome::Failed { code }))
             if code == "DURABILITY_UNAVAILABLE"
     ));
+}
+
+#[test]
+fn accepted_append_outage_propagates_non_unavailable_recovery_error() {
+    let attempts = Rc::new(Cell::new(0));
+    let result = TurnRunner::new(
+        CountingProvider {
+            calls: Rc::new(Cell::new(0)),
+            consumed: Rc::new(Cell::new(0)),
+        },
+        RecoverableHistory {
+            attempts: Rc::clone(&attempts),
+            items: Rc::new(RefCell::new(Vec::new())),
+            recovery_error: Some(HistoryError::NotFound),
+        },
+    )
+    .execute(TurnCommand::new(trust(), None, "hello").expect("valid command"));
+
+    assert!(matches!(
+        result,
+        Err(TurnRunError::History(HistoryError::NotFound))
+    ));
+    assert_eq!(attempts.get(), 1);
 }

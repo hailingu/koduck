@@ -9,5 +9,5 @@ metadata changes. Never delete a row during archival; update its status and
 | Type | ID | Title | Decision Status | Implementation Status | Scope | Architecture Source | Path | Superseded By |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | Full ADR | ADR-0001 | Provider-Neutral Tool-Free Turn Kernel | Accepted | Complete | Project | `docs/architecture/ADD-0001-ai-service-codex-alignment.md` — CAND-1 | `docs/adr/ADR-0001-provider-neutral-turn-kernel.md` | None |
-| Full ADR | ADR-0002 | Required Koduck AI CI And PostgreSQL Verification | Proposed | Not Started | Project | N/A — repository verification governance, not product demand | `docs/adr/ADR-0002-required-ai-ci-postgres-verification.md` | None |
+| Full ADR | ADR-0002 | Required Koduck AI CI And PostgreSQL Verification | Accepted | In Progress | Project | N/A — repository verification governance, not product demand | `docs/adr/ADR-0002-required-ai-ci-postgres-verification.md` | None |
 | OCR | OCR-0001 | Runtime Dependency Lock Generation | Accepted | Complete | Project | `docs/adr/ADR-0001-provider-neutral-turn-kernel.md` — T-3 | `docs/adr/ocr/archive/OCR-0001-runtime-dependency-lock-generation.md` | None |
