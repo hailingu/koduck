@@ -195,7 +195,7 @@ impl<S: TurnService> HttpAdapter<S> {
         if let Some(turn_id) = interrupt_turn_id(&request.path) {
             return self.handle_interrupt(&trust, turn_id, &request.body);
         }
-        if request.content_type.as_deref() != Some("application/json") {
+        if !is_json_content_type(request.content_type.as_deref()) {
             return problem(400, "invalid-request", false);
         }
 
@@ -234,7 +234,7 @@ impl<S: TurnService> HttpAdapter<S> {
             return problem(405, "method-not-allowed", false);
         }
         if request.path != "/api/v1/ai/chat/stream"
-            || request.content_type.as_deref() != Some("application/json")
+            || !is_json_content_type(request.content_type.as_deref())
         {
             return problem(400, "invalid-request", false);
         }
@@ -274,10 +274,18 @@ impl<S: TurnService> HttpAdapter<S> {
     fn execute(&mut self, command: TurnCommand, stream: bool) -> HttpResponse {
         match self.service.execute(command) {
             Ok(result) if stream => response(200, "text/event-stream", sse_body(&result)),
-            Ok(result) if result.status != crate::domain::TurnStatus::Completed => {
-                map_service_error(&ServiceError::ProviderUnavailable)
-            }
-            Ok(result) => response(200, "application/json", sync_body(&result)),
+            Ok(result) => match result.status {
+                crate::domain::TurnStatus::Completed => {
+                    response(200, "application/json", sync_body(&result))
+                }
+                crate::domain::TurnStatus::Interrupted => problem(409, "turn-interrupted", false),
+                crate::domain::TurnStatus::Cancelled => problem(409, "turn-cancelled", false),
+                crate::domain::TurnStatus::Failed
+                | crate::domain::TurnStatus::Started
+                | crate::domain::TurnStatus::RecoveryPending => {
+                    map_service_error(&ServiceError::ProviderUnavailable)
+                }
+            },
             Err(error) => map_service_error(&error),
         }
     }
@@ -296,6 +304,12 @@ impl<S: TurnService> HttpAdapter<S> {
             Err(error) => map_service_error(&error),
         }
     }
+}
+
+fn is_json_content_type(content_type: Option<&str>) -> bool {
+    content_type
+        .and_then(|value| value.split(';').next())
+        .is_some_and(|media_type| media_type.trim().eq_ignore_ascii_case("application/json"))
 }
 
 /// Returns the owned invalid-request problem response for transport validation.

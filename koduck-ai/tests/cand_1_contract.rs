@@ -165,9 +165,17 @@ fn synchronous_failed_turn_returns_provider_unavailable() {
 
 #[test]
 fn synchronous_non_completed_turn_is_not_a_success_response() {
-    for (status, outcome) in [
-        (TurnStatus::Interrupted, TerminalOutcome::Interrupted),
-        (TurnStatus::Cancelled, TerminalOutcome::Cancelled),
+    for (status, outcome, expected_code) in [
+        (
+            TurnStatus::Interrupted,
+            TerminalOutcome::Interrupted,
+            "turn-interrupted",
+        ),
+        (
+            TurnStatus::Cancelled,
+            TerminalOutcome::Cancelled,
+            "turn-cancelled",
+        ),
     ] {
         let terminal = Item::new(2, ItemPayload::Terminal(outcome));
         let mut adapter = adapter(TurnResult {
@@ -184,8 +192,24 @@ fn synchronous_non_completed_turn_is_not_a_success_response() {
             Some(trust()),
         ));
 
-        assert_eq!(response.status, 503);
-        assert!(response.body.contains("\"code\":\"provider-unavailable\""));
+        assert_eq!(response.status, 409);
+        assert!(
+            response
+                .body
+                .contains(&format!("\"code\":\"{expected_code}\""))
+        );
+    }
+}
+
+#[test]
+fn json_media_type_parameters_are_accepted() {
+    for path in ["/api/v1/ai/chat", "/api/v1/ai/chat/stream"] {
+        let mut request = post(path, r#"{"input":"hello"}"#, Some(trust()));
+        request.content_type = Some("Application/JSON; charset=utf-8".to_owned());
+
+        let response = adapter(completed_result(&["A"])).handle(request);
+
+        assert_eq!(response.status, 200, "{path} accepts JSON parameters");
     }
 }
 

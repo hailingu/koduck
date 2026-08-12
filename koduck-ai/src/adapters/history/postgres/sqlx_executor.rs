@@ -35,7 +35,7 @@ impl SqlxPostgresExecutor {
         &self,
         operation: impl Future<Output = Result<T, HistoryError>>,
     ) -> Result<T, HistoryError> {
-        self.runtime.block_on(operation)
+        self.wait_with_deadline(AppendPolicy::cand_1().deadline(), operation)
     }
 
     /// Drives one database attempt until its caller-owned deadline expires.

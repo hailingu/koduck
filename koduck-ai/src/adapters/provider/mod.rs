@@ -20,6 +20,26 @@ const MAX_SERIALIZED_ITEM_PAYLOAD_BYTES: usize = 1_048_576;
 const MAX_OPENAI_FRAME_OVERHEAD_BYTES: usize = 65_536;
 const MAX_OPENAI_FRAME_BYTES: usize =
     MAX_SERIALIZED_ITEM_PAYLOAD_BYTES + MAX_OPENAI_FRAME_OVERHEAD_BYTES;
+const PROVIDER_RESPONSE_HEADER_TIMEOUT: Duration = Duration::from_secs(30);
+const PROVIDER_STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+const PROVIDER_TOTAL_TIMEOUT: Duration = Duration::from_mins(2);
+
+#[derive(Clone, Copy)]
+struct ProviderTiming {
+    response_header: Duration,
+    stream_idle: Duration,
+    total: Duration,
+}
+
+impl ProviderTiming {
+    const fn cand_1() -> Self {
+        Self {
+            response_header: PROVIDER_RESPONSE_HEADER_TIMEOUT,
+            stream_idle: PROVIDER_STREAM_IDLE_TIMEOUT,
+            total: PROVIDER_TOTAL_TIMEOUT,
+        }
+    }
+}
 
 /// A transport-level failure before OpenAI-compatible frames are available.
 #[derive(Clone, Debug, Error, Eq, PartialEq)]
@@ -64,6 +84,7 @@ pub struct ReqwestOpenAiTransport {
     endpoint: String,
     model: String,
     api_key: String,
+    timing: ProviderTiming,
 }
 
 impl ReqwestOpenAiTransport {
@@ -82,6 +103,7 @@ impl ReqwestOpenAiTransport {
             endpoint: format!("{}/chat/completions", base_url.trim_end_matches('/')),
             model: model.into(),
             api_key: api_key.into(),
+            timing: ProviderTiming::cand_1(),
         }
     }
 }
@@ -103,7 +125,18 @@ impl OpenAiProtocolTransport for ReqwestOpenAiTransport {
                 "stream_options": { "include_usage": true },
             }));
         let (sender, mut receiver) = mpsc::channel(64);
-        self.runtime.spawn(pump_request(request, sender));
+        let timing = self.timing;
+        self.runtime.spawn(async move {
+            let timeout_sender = sender.clone();
+            if tokio::time::timeout(timing.total, pump_request(request, sender, timing))
+                .await
+                .is_err()
+            {
+                let _ = timeout_sender
+                    .send(Err(transport_error("OPENAI_TOTAL_TIMEOUT")))
+                    .await;
+            }
+        });
         Ok(Box::new(std::iter::from_fn(move || {
             match receiver.try_recv() {
                 Ok(frame) => Some(frame),
@@ -120,10 +153,20 @@ impl OpenAiProtocolTransport for ReqwestOpenAiTransport {
 async fn pump_request(
     request: reqwest::RequestBuilder,
     sender: mpsc::Sender<Result<OpenAiFrame, OpenAiTransportError>>,
+    timing: ProviderTiming,
 ) {
     let response = tokio::select! {
         () = sender.closed() => return,
-        response = request.send() => response,
+        response = tokio::time::timeout(timing.response_header, request.send()) => {
+            if let Ok(response) = response {
+                response
+            } else {
+                let _ = sender
+                    .send(Err(transport_error("OPENAI_RESPONSE_HEADER_TIMEOUT")))
+                    .await;
+                return;
+            }
+        },
     };
     let Ok(response) = response else {
         let _ = sender
@@ -141,19 +184,29 @@ async fn pump_request(
             .await;
         return;
     }
-    pump_response(response, sender).await;
+    pump_response(response, sender, timing).await;
 }
 
 async fn pump_response(
     mut response: reqwest::Response,
     sender: mpsc::Sender<Result<OpenAiFrame, OpenAiTransportError>>,
+    timing: ProviderTiming,
 ) {
     let mut pending = Vec::new();
     let mut saw_frame = false;
     loop {
         let chunk = tokio::select! {
             () = sender.closed() => return,
-            chunk = response.chunk() => chunk,
+            chunk = tokio::time::timeout(timing.stream_idle, response.chunk()) => {
+                if let Ok(chunk) = chunk {
+                    chunk
+                } else {
+                    let _ = sender
+                        .send(Err(transport_error("OPENAI_STREAM_IDLE_TIMEOUT")))
+                        .await;
+                    return;
+                }
+            },
         };
         match chunk {
             Ok(Some(chunk)) => {
@@ -383,10 +436,110 @@ fn protocol_error(code: &str) -> ProviderError {
 
 #[cfg(test)]
 mod tests {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::thread;
+    use std::time::Duration;
+
     use crate::application::ModelInput;
     use crate::domain::{Item, ItemPayload, TenantId, ThreadId, TurnId};
 
-    use super::provider_messages;
+    use super::{
+        OpenAiFrame, OpenAiProtocolTransport, ProviderTiming, ReqwestOpenAiTransport,
+        provider_messages, pump_request,
+    };
+
+    fn local_client() -> reqwest::Client {
+        reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .expect("local test client")
+    }
+
+    fn test_input() -> ModelInput {
+        ModelInput {
+            tenant_id: TenantId::new("tenant-a").expect("valid tenant"),
+            thread_id: ThreadId::new(),
+            turn_id: TurnId::new(),
+            input: "hello".to_owned(),
+            history: Vec::new(),
+        }
+    }
+
+    fn stalled_server(response_headers: Option<&'static [u8]>) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("local listener");
+        let address = listener.local_addr().expect("local address");
+        thread::spawn(move || {
+            let (mut socket, _) = listener.accept().expect("local connection");
+            let _ = socket.set_read_timeout(Some(Duration::from_millis(100)));
+            let mut request = [0_u8; 4096];
+            let _ = socket.read(&mut request);
+            if let Some(headers) = response_headers {
+                socket.write_all(headers).expect("response headers");
+                socket.flush().expect("response flush");
+            }
+            thread::sleep(Duration::from_millis(100));
+        });
+        format!("http://{address}")
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn provider_response_header_and_stream_idle_timeouts_are_typed() {
+        let timing = ProviderTiming {
+            response_header: Duration::from_millis(10),
+            stream_idle: Duration::from_millis(10),
+            total: Duration::from_secs(1),
+        };
+
+        let header_url = stalled_server(None);
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
+        pump_request(local_client().post(header_url), sender, timing).await;
+        assert_eq!(
+            receiver.recv().await.expect("header timeout result"),
+            Err(super::transport_error("OPENAI_RESPONSE_HEADER_TIMEOUT"))
+        );
+
+        let idle_url = stalled_server(Some(
+            b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n",
+        ));
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
+        pump_request(local_client().post(idle_url), sender, timing).await;
+        assert_eq!(
+            receiver.recv().await.expect("idle timeout result"),
+            Err(super::transport_error("OPENAI_STREAM_IDLE_TIMEOUT"))
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn provider_total_timeout_terminates_pending_establishment() {
+        let url = stalled_server(None);
+        let mut transport = ReqwestOpenAiTransport::new(
+            local_client(),
+            tokio::runtime::Handle::current(),
+            &url,
+            "model",
+            "secret",
+        );
+        transport.timing = ProviderTiming {
+            response_header: Duration::from_secs(1),
+            stream_idle: Duration::from_secs(1),
+            total: Duration::from_millis(10),
+        };
+
+        let mut frames = transport
+            .chat_completion_frames(&test_input())
+            .expect("stream is created");
+        let terminal = (0..4).find_map(|_| match frames.next() {
+            Some(Err(error)) => Some(error),
+            Some(Ok(OpenAiFrame::Pending)) => None,
+            other => panic!("unexpected provider frame: {other:?}"),
+        });
+
+        assert_eq!(
+            terminal,
+            Some(super::transport_error("OPENAI_TOTAL_TIMEOUT"))
+        );
+    }
 
     #[test]
     fn provider_history_coalesces_deltas_within_each_prior_turn() {

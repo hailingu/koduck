@@ -41,3 +41,16 @@ only the three owned v1 routes. Startup fails explicitly if configuration,
 PostgreSQL, provider-client construction, listener binding, or HTTP serving
 fails. No process-local, Memory, Multitask, predecessor, or alternate history
 fallback is configured.
+
+## Operational Bounds
+
+- Provider connection establishment is limited to 5 seconds, response headers
+  to 30 seconds, inactivity between response body chunks to 30 seconds, and
+  total response processing to 120 seconds. A deadline produces a provider
+  failure and closes the accepted Turn through the normal terminal path.
+- Every synchronous PostgreSQL operation uses the approved 2-second attempt
+  deadline and maps expiration to `durability-unavailable`.
+- Lease-renewal and failed-append recovery tasks share admission for at most
+  256 background workers per production `PostgresTurnHistory` instance.
+  Saturation rejects new work with `durability-unavailable` instead of creating
+  another operating-system thread.

@@ -34,6 +34,7 @@ const DATABASE_URL: &str = "KODUCK_AI_DATABASE_URL";
 const PROVIDER_BASE_URL: &str = "KODUCK_AI_OPENAI_BASE_URL";
 const PROVIDER_MODEL: &str = "KODUCK_AI_OPENAI_MODEL";
 const PROVIDER_API_KEY: &str = "KODUCK_AI_OPENAI_API_KEY";
+const PROVIDER_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 // One turn.started chunk, up to 64 provider items, and one terminal or error chunk.
 const STREAM_BUFFER_CAPACITY: usize = 66;
 
@@ -159,6 +160,7 @@ pub async fn run(config: RuntimeConfig) -> Result<(), RuntimeError> {
         .start_reconciliation_worker()
         .map_err(RuntimeError::ReconciliationWorker)?;
     let client = reqwest::Client::builder()
+        .connect_timeout(PROVIDER_CONNECT_TIMEOUT)
         .build()
         .map_err(RuntimeError::ProviderClient)?;
     let transport = ReqwestOpenAiTransport::new(

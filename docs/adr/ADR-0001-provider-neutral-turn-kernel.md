@@ -130,6 +130,14 @@ Out of scope:
   2-second deadline. Reaching a limit or deadline stops provider consumption,
   publishes no uncommitted Item, and returns `durability-unavailable` over the
   live REST/SSE response.
+- Every production PostgreSQL operation has the same 2-second attempt deadline.
+  Lease-renewal and failed-append recovery share admission for at most 256
+  background workers per production history instance; saturation fails closed
+  as `durability-unavailable`.
+- The provider client has a 5-second connection deadline. Provider response
+  headers and stream inactivity each have a 30-second deadline, and total
+  response processing has a 120-second deadline. Expiration produces a provider
+  error and closes the accepted Turn through normal terminal arbitration.
 - Foreground owners renew a lease every 5 seconds. A lease expires 20 seconds
   after its last persisted renewal; reconciliation is eligible only after an
   additional 2-second clock-skew margin. Only the current generation may
@@ -333,7 +341,8 @@ The authoritative v1 wire contract is:
 
 - `POST /api/v1/ai/chat` accepts JSON with an optional UUID `thread_id` and a
   non-empty UTF-8 string `input` of at most 65,536 bytes, using
-  `Content-Type: application/json`; unknown fields are rejected.
+  case-insensitive `Content-Type: application/json` with standard parameters;
+  unknown fields are rejected.
   Success is `200` with JSON containing exactly `thread_id`, `turn_id`,
   `status`, `items`, and `usage`; `status` is `completed`, and every item has
   exactly `item_id`, a positive integer `sequence`,
@@ -392,13 +401,14 @@ or `N/A — <specific reason>`.
 | T-2 | Implement the owned authenticated REST/SSE v1 contract and freeze its golden fixtures. | Plain-text no-tool `POST /api/v1/ai/chat`, `POST /api/v1/ai/chat/stream`, and interrupt route; trust-context handoff; request/response/header/status/SSE fixture hashes; contract tests. | Complete | Commit `4a7bf5d` adds the framework-neutral REST/SSE/interrupt adapter, resume/interruption behavior, contract copy, and three hashed fixtures; review-correction commits `56073a0`, `df49b69`, `11b5ea2`, `fe3beb9`, `a7258bc`, `31ef43f`, and `d444cf3` remove request-wide serialization, stream durable events incrementally, report pre-terminal post-start failures in-band, close normally after an emitted terminal even if replay later fails, preserve concurrent interrupts while the provider is idle or still awaiting response headers, map synchronous failed turns to `503`, enforce strict UTF-8 and complete JSON escaping, route oversized bodies and unsupported methods through owned problem responses, reject non-HTTPS provider endpoints, and include UUID correlation IDs in runtime-failure problem bodies. AC-4 through AC-7 and AC-13 pass. |
 | T-3 | Implement the AI-owned PostgreSQL history and fenced-liveness adapter and prove failure/recovery/no-fallback behavior. | Initial durable acceptance, append/replay, migrations, deadlines and buffer caps, lease acquire/renew/fence, orphan reconciliation, crash/fault tests, and proof of no legacy runtime dependency. | Complete | Commits `46f2a39` and `80fc2ff` add fail-closed policy, schema/adapter boundaries, exact lease timing, and crash/race evidence. Commit `08cc1b3` adds the concrete tenant-keyed SQLx executor, idempotent PostgreSQL migration, Reqwest provider transport, Axum routes, validated runtime configuration schema, and executable entry point. Review-correction commits `56073a0`, `df49b69`, `11b5ea2`, `fe3beb9`, `a7258bc`, `a7b6faa`, and `d444cf3` enforce append deadlines plus serialized-payload and 64-item execution caps, run renewal/reconciliation workers, retry transient heartbeats, persist subject ownership, retain bounded recovery ownership, keep each concurrent Thread history Turn contiguous for provider context, avoid synchronously joining a stalled renewal during request shutdown, and arbitrate every provider terminal against interruption under the PostgreSQL turn-row lock within one bounded append operation. AC-8 through AC-12 pass. |
 
-**Affected paths**: `AGENTS.md`; `Cargo.toml`; `Cargo.lock`;
+**Affected paths**: `README.md`; `AGENTS.md`; `Cargo.toml`; `Cargo.lock`;
 `koduck-ai/Cargo.toml`; `koduck-ai/src/lib.rs`;
 `koduck-ai/src/adapters/mod.rs`;
 `koduck-ai/src/domain/**`; `koduck-ai/src/application/**`;
 `koduck-ai/src/adapters/http/**`; `koduck-ai/src/adapters/provider/**`;
 `koduck-ai/src/adapters/history/**`; `koduck-ai/src/main.rs`;
 `koduck-ai/migrations/**`; `koduck-ai/tests/**`;
+`koduck-ai/docs/runtime-configuration.md`;
 `koduck-ai/docs/contracts/cand-1-rest-sse-v1.md`;
 `docs/adr/ADR-0001-provider-neutral-turn-kernel.md`;
 `docs/adr/translations/zh-CN/ADR-0001-provider-neutral-turn-kernel.md`;
@@ -422,6 +432,36 @@ N/A — the proposed design does not exceed or waive a repository engineering
 rule. Any exception discovered during implementation is approval-invalidating
 and must be added here before the affected source change proceeds.
 
+## Contract-To-Check Traceability [Required]
+
+| Clause ID | Normative contract clause | Acceptance check or deterministic test |
+| --- | --- | --- |
+| CT-1 | Domain and application dependencies point inward; provider and persistence types do not cross the application boundary. | AC-1; `architecture::domain_and_application_dependencies_are_inward` |
+| CT-2 | A normal provider stream creates one ordered completed Turn and publishes only durable Items. | AC-2, AC-5 |
+| CT-3 | Provider failure creates `failed`, never `completed`; synchronous failed results map to `503 provider-unavailable`. | AC-3, AC-15 |
+| CT-4 | REST/SSE requests accept case-insensitive `application/json` with standard parameters and reject other media types. | AC-4, AC-5, AC-15 |
+| CT-5 | Synchronous interrupted and cancelled results map respectively to `409 turn-interrupted` and `409 turn-cancelled`. | AC-15 |
+| CT-6 | Resume creates a new Turn on the same Thread without mutating prior terminal history. | AC-6 |
+| CT-7 | Authenticated interruption wins terminal arbitration; unknown/non-owned Turns are indistinguishable and cancellation remains distinct. | AC-7 |
+| CT-8 | Initial or mid-Turn durability outage publishes no uncommitted state and returns `durability-unavailable`. | AC-8 |
+| CT-9 | Serialized unpublished data is capped at 64 Items and 1 MiB and every PostgreSQL attempt is capped at 2 seconds. | AC-9, AC-16 |
+| CT-10 | Lease renewal, expiry, skew, fencing, and reconciliation produce at most one durable orphan terminal. | AC-10, AC-11 |
+| CT-11 | Lease-renewal and failed-append recovery share a 256-worker admission bound and reject saturation. | AC-16; `postgres::tests::background_admission_rejects_saturation_and_releases_capacity` |
+| CT-12 | Provider connection, response-header, stream-idle, and total deadlines are 5, 30, 30, and 120 seconds. | AC-17; `architecture::production_io_and_background_work_are_bounded` |
+| CT-13 | Requests without validated trust context stop before application, provider, or history execution. | AC-13 |
+| CT-14 | The CAND-1 graph has one PostgreSQL history and no predecessor, Memory, or Multitask fallback. | AC-12 |
+| CT-15 | Root scope routing governs all maintained `koduck-ai/**` source and configuration. | AC-14 |
+
+## Risk Coverage Matrix [Required]
+
+| Risk dimension | Applicability and scenario | Owning boundary | Deterministic verification | Exact expected result | Checks | Status and stable evidence |
+| --- | --- | --- | --- | --- | --- | --- |
+| Concurrency and ordering | Applicable — concurrent terminal writers and reconcilers race on one generation. | Application terminal arbitration and PostgreSQL history | AC-5, AC-7, AC-10, and AC-11 commands | Every visible Item was durable first; one terminal wins; stale writers are fenced. | AC-5, AC-7, AC-10, AC-11 | Pass — `cand_1_contract`, `turn_terminal_arbitration`, and `cand_1_liveness` deterministic tests. |
+| Timeout and deadline | Applicable — database or provider establishment/streaming stalls. | SQLx and OpenAI-compatible adapters | AC-9, AC-16, and AC-17 commands | Database attempts stop at 2 seconds; provider connect/header/idle/total deadlines are 5/30/30/120 seconds and produce typed terminal failure. | AC-9, AC-16, AC-17 | Pass — deadline behavior test plus `architecture::production_io_and_background_work_are_bounded`. |
+| Cancellation and interruption | Applicable — interrupt races with provider completion/failure or downstream disconnect. | Application runner and HTTP/SSE adapter | AC-7 and AC-15 commands | Accepted interrupt is the sole `interrupted` terminal; dependency/disconnect cancellation is `cancelled`; synchronous mappings are distinct 409 codes. | AC-7, AC-15 | Pass — `interrupt_and_cancel_are_distinct`, terminal-arbitration tests, and synchronous mapping regression. |
+| Resource bounds and backpressure | Applicable — provider floods frames or active Turns exhaust background capacity. | Provider, application durability policy, and PostgreSQL history | AC-9 and AC-16 commands | Item/payload caps fail closed; provider channel stays bounded; worker 257 is rejected while capacity is saturated and admission is reusable after release. | AC-9, AC-16 | Pass — durability-cap tests, bounded-channel inspection, and background admission unit test. |
+| Framework or trust-boundary rejection | Applicable — invalid identity, UTF-8, JSON/media type, body size, or method reaches Axum. | HTTP/Axum presentation boundary | AC-13 and AC-15 commands | Invalid identity returns 401 before service execution; malformed transport input returns owned 4xx problems; valid JSON parameters are accepted. | AC-13, AC-15 | Pass — identity, runtime transport, and JSON media-type contract regressions. |
+
 ## Acceptance Checks [Required]
 
 | Check ID | Subtask | Binary acceptance point | Preconditions or input | Verification method | Exact expected result | Expected evidence | Status | Actual result and evidence |
@@ -440,6 +480,9 @@ and must be added here before the affected source change proceeds.
 | AC-12 | T-3 | CAND-1 has no runtime dependency or fallback to predecessor infrastructure, Memory, or Multitask. | T-1 through T-3 source, manifests, configuration schema, and migrations exist. | Run `cargo test -p koduck-ai --test architecture cand_1_has_no_legacy_or_external_history_fallback -- --exact`. | Exit code 0; dependency inspection reports zero predecessor repository/artifact/route identifiers, zero Memory or Multitask clients in the CAND-1 execution graph, and exactly one canonical `TurnHistory` implementation configured: the AI-owned PostgreSQL adapter. | Command output and dependency/configuration report. | Pass | Exit 0 at `08cc1b3`; concrete SQLx history, Reqwest provider, Axum runtime/configuration, executable entry point, manifest, and idempotent migration satisfy the precondition; inspection finds zero forbidden fallback identifiers and exactly one production `TurnHistory`, `PostgresTurnHistory`. |
 | AC-13 | T-2 | A request without a validated trust context reaches neither the application Turn runner nor the provider/history ports. | Request omits or carries invalid identity; owned v1 error contract is loaded. | Run `cargo test -p koduck-ai --test cand_1_contract invalid_identity_stops_at_presentation_boundary -- --exact`. | Exit code 0; status is `401`; `WWW-Authenticate` is `Bearer`; content type is `application/problem+json`; body contains exactly `type: about:blank`, `title: Invalid identity`, numeric `status: 401`, `code: invalid-identity`, and a UUID `correlation_id`; provider call count, initial history-write count, and accepted Turn count are all zero. | Command output, response fixture hash, and adapter call counters. | Pass | Exit 0 at `80fc2ff`; normalized fixture SHA-256 is `3dbd2d782374da9d70e7dab6c5d49037257e780769b37e853deee21d179c9729`, and service call count is 0. |
 | AC-14 | T-1 | Root scope routing explicitly governs the new maintained `koduck-ai/**` source and configuration paths. | The root `AGENTS.md` routing table and new workspace manifest exist. | Deterministically inspect the Scope Routing table for exactly one `koduck-ai/**` row. | Exactly one row names `koduck-ai/**`, requires `docs/README.md`, the common software-engineering standard, and Rust standard, sets the repository root as working directory, and lists non-interactive formatting, lint, and test commands; the row states governed build commands still require an Accepted OCR. | Scope Routing row, structured inspection result, and tested commit. | Pass | Structured inspection at `80fc2ff` finds exactly one matching row with all declared standards, repository-root commands, and OCR note. |
+| AC-15 | T-2 | HTTP media-type and synchronous terminal mappings are exact. | Valid JSON with `Application/JSON; charset=utf-8`; completed, interrupted, cancelled, and failed results. | Run `cargo test -p koduck-ai --test cand_1_contract`. | Exit 0; both chat routes accept the parameterized JSON media type; completed returns 200, interrupted/cancelled return their distinct 409 problem codes, and failed returns `503 provider-unavailable`. | Command output and response assertions. | Pass | Local review-correction test run passes all nine contract tests. |
+| AC-16 | T-3 | Database calls and background liveness/recovery work are bounded and fail closed. | Slow database future and a background admission limit of one. | Run `cargo test -p koduck-ai adapters::history::postgres::tests` and `cargo test -p koduck-ai --test architecture production_io_and_background_work_are_bounded -- --exact`. | Exit 0; a slow database call returns `HistoryError::Unavailable`; a second worker is rejected while the first permit is held; dropping the permit restores capacity; production uses limit 256 for both renewal and recovery. | Command output and deterministic source inspection. | Pass | Local unit and architecture regression tests cover the deadline and shared admission policy. |
+| AC-17 | T-1 | Provider operations cannot remain pending past the owned deadlines. | Production Reqwest assembly and OpenAI-compatible response pump exist. | Run `cargo test -p koduck-ai adapters::provider::tests` and `cargo test -p koduck-ai --test architecture production_io_and_background_work_are_bounded -- --exact`. | Exit 0; runtime client sets a 5-second connect timeout and the pump enforces 30-second response-header, 30-second stream-idle, and 120-second total timeouts with stable error codes. | Command output, local protocol-server assertions, and deterministic source inspection. | Pass | Local protocol tests exercise typed header, idle, and total timeout failures; the architecture regression verifies all four production deadline guards. |
 
 Allowed final check statuses are `Pass`, `Fail`, or `N/A — <specific reason>`.
 `Fail` blocks completion. `N/A` is valid only when the check's stated trigger or
@@ -450,10 +493,10 @@ precondition demonstrably does not apply.
 | ID | Item | Completion Criterion | Expected Evidence | Status | Actual Evidence |
 | --- | --- | --- | --- | --- | --- |
 | A-1 | ADR approved | An eligible non-author approver, approval time, and exact `Approval Evidence: Approve` are recorded; any optional Approval Context Revision is informational, non-binding, and exactly represents the approved document | ADR metadata | Complete | `@linhai` identified ADR-0001 and supplied exact `Approve`; metadata records `2026-08-11T11:14:45+08:00`. No Approval Context Revision is recorded because no immutable revision yet represents the approved content. |
-| A-2 | Complete task delivered | Every declared subtask has actual implementation evidence, every applicable acceptance check is `Pass` with actual result and evidence, and together they satisfy the complete task outcome | Implementation Plan and Acceptance Checks rows | Complete | T-1 through T-3 are `Complete`; AC-1 through AC-14 are `Pass`; `cargo fmt --all -- --check`, strict Clippy for every `koduck-ai` target, and all 52 tests pass at review-correction commit `d444cf3`. |
+| A-2 | Complete task delivered | Every declared subtask has actual implementation evidence, every applicable acceptance check is `Pass` with actual result and evidence, and together they satisfy the complete task outcome | Implementation Plan and Acceptance Checks rows | Complete | T-1 through T-3 are `Complete`; AC-1 through AC-17 are `Pass`; the current review-correction worktree passes the routed format, strict Clippy, and full-test gates. |
 | A-3 | Reciprocal ADD link synchronized, when applicable | The selected candidate records this exact ADR path, this ADR records the exact ADD path and candidate ID, both references agree, and the candidate reaches `Complete` only with this ADR's `Complete` or `Verified` status | Exact ADD path, candidate ID, ADR path, and Git blob or commit | Complete | This completion change keeps `Architecture Source` at `docs/architecture/ADD-0001-ai-service-codex-alignment.md` — CAND-1 and atomically moves that candidate to `Complete` with this ADR path and `Accepted`, `Complete` evidence. |
 | A-4 | Requirement levels satisfied | Every required section is complete, every conditional trigger is assessed and completed or marked `N/A — <reason>`, and optional sections are complete or removed | Structured document review | Complete | Structured review confirmed the newly added Scope Routing deliverable and all other current-stage required and triggered content are complete; implementation-stage evidence remains governed by A-2 and the acceptance-check rows. |
-| A-5 | Acceptance checks are decidable | Every check names one subtask, preconditions or input, deterministic method, exact expected result, and evidence; no unqualified subjective criterion remains | Structured acceptance-check review | Complete | Structured inspection confirmed exactly 14 checks; each has one subtask, non-empty precondition, deterministic method, exact observable expected result, and evidence field. |
+| A-5 | Acceptance checks are decidable | Every check names one subtask, preconditions or input, deterministic method, exact expected result, and evidence; no unqualified subjective criterion remains | Structured acceptance-check review | Complete | Structured inspection confirmed exactly 17 checks; each has one subtask, non-empty precondition, deterministic method, exact observable expected result, and evidence field. |
 | A-6 | Engineering exceptions governed, when applicable | Every exceeded or waived engineering rule has one complete exception row, an accountable owner, a lifecycle, and verification evidence before approval; otherwise the conditional subsection records `N/A — <reason>` | Engineering Exceptions subsection and affected-file evidence | N/A — no exception proposed | Engineering Exceptions records `N/A` and requires an approval-invalidating update if implementation discovers an exception. |
 
 ## Supporting Notes [Optional]
@@ -535,3 +578,4 @@ implementation completion. When triggered:
 | 2026-08-11 | Recorded sixth review-correction commit `a7b6faa`: measured canonical serialized payload bytes including JSON escaping, cancelled the provider response pump when its consumer stream is dropped, and made renewal-guard shutdown non-blocking during a stalled database call. Format, strict all-target Clippy, and all 47 tests pass; this evidence-only update does not change the accepted decision or scope. | @codex |
 | 2026-08-11 | Recorded seventh review-correction commit `31ef43f`: returned bounded provider polls while response headers are pending, cancelled request establishment when the consumer closes, and rejected unterminated provider frames above 1 MiB without first growing the pending buffer past that limit. Format, strict all-target Clippy, and all 49 tests pass; this evidence-only update does not change the accepted decision or scope. | @codex |
 | 2026-08-11 | Recorded eighth review-correction commit `d444cf3`: kept concurrent same-Thread history contiguous by Turn, mapped oversized authenticated bodies to the owned `400 invalid-request` problem, and routed unsupported methods to the owned `405 method-not-allowed` problem. Format, strict all-target Clippy, and all 52 tests pass; this evidence-only update does not change the accepted decision or scope. | @codex |
+| 2026-08-12 | Repository owner `@linhai` explicitly replied `确认Approve` in the active Codex task, authorizing all seven current review corrections as ADR-0001 approved-scope defect fixes without reopening completed CAND-1 or generating a new ADR despite ADR-0002 serialization. Added mandatory contract traceability and the five-row risk matrix; corrected HTTP terminal/media-type behavior, bounded all database/provider waits and background renewal/recovery admission, and refreshed stale repository documentation. Decision Status remains `Accepted` and Implementation Status remains `Complete` under that owner determination. | @linhai |

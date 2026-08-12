@@ -1008,4 +1008,4 @@ multi-environment promotion is needed. Release and Git tag operations follow
 | Versioned source, configuration, automatic-review scope, and implementation evidence | Git commit and pull-request revisions |
 | Built container artifact identity | Docker repository digest, or documented immutable local image ID and cluster load path |
 | Observed local runtime state | Kubernetes context, namespace, workload status, and diagnostics recorded by the governing OCR |
-| Project structure, dependencies, and executable commands | Discover from root and service manifests/build files as they are added; no service exists yet in this repository |
+| Project structure, dependencies, and executable commands | Root and service manifests/build files, including `Cargo.toml` and `koduck-ai/Cargo.toml` |

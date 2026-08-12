@@ -3,7 +3,7 @@
 //! `PostgreSQL` history translation and exact foreground-lease policy.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -21,6 +21,39 @@ mod sqlx_executor;
 mod tests;
 
 pub use sqlx_executor::SqlxPostgresExecutor;
+
+const MAX_BACKGROUND_WORKERS: usize = 256;
+
+struct BackgroundAdmission {
+    active: AtomicUsize,
+    limit: usize,
+}
+
+impl BackgroundAdmission {
+    const fn new(limit: usize) -> Self {
+        Self {
+            active: AtomicUsize::new(0),
+            limit,
+        }
+    }
+
+    fn try_acquire(self: &Arc<Self>) -> Result<BackgroundPermit, HistoryError> {
+        self.active
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |active| {
+                (active < self.limit).then_some(active + 1)
+            })
+            .map_err(|_| HistoryError::Unavailable)?;
+        Ok(BackgroundPermit(Arc::clone(self)))
+    }
+}
+
+struct BackgroundPermit(Arc<BackgroundAdmission>);
+
+impl Drop for BackgroundPermit {
+    fn drop(&mut self) {
+        self.0.active.fetch_sub(1, Ordering::AcqRel);
+    }
+}
 
 /// Complete conditional key for one foreground lease generation.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -254,15 +287,17 @@ impl Drop for LeaseRenewalGuard {
 pub struct PostgresTurnHistory<E> {
     executor: E,
     timing: LeaseTiming,
+    background: Arc<BackgroundAdmission>,
 }
 
 impl<E: PostgresExecutor> PostgresTurnHistory<E> {
     /// Creates the `PostgreSQL` adapter with the exact approved lease timing.
     #[must_use]
-    pub const fn new(executor: E) -> Self {
+    pub fn new(executor: E) -> Self {
         Self {
             executor,
             timing: LeaseTiming::cand_1(),
+            background: Arc::new(BackgroundAdmission::new(MAX_BACKGROUND_WORKERS)),
         }
     }
 
@@ -345,11 +380,13 @@ impl<E: PostgresExecutor + Send + 'static> TurnHistory for PostgresTurnHistory<E
             turn.generation,
         );
         let heartbeat = self.timing.heartbeat_ms();
+        let permit = self.background.try_acquire()?;
         let stop = Arc::new(AtomicBool::new(false));
         let renewal_stop = Arc::clone(&stop);
         let thread = thread::Builder::new()
             .name("koduck-ai-lease-renewal".to_owned())
             .spawn(move || {
+                let _permit = permit;
                 while !renewal_stop.load(Ordering::Acquire) {
                     thread::park_timeout(Duration::from_millis(heartbeat));
                     if renewal_stop.load(Ordering::Acquire) {
@@ -415,7 +452,12 @@ impl<E: PostgresExecutor + Send + 'static> TurnHistory for PostgresTurnHistory<E
     }
 
     fn schedule_failed_recovery(&mut self, turn: &AcceptedTurn) -> Result<(), HistoryError> {
-        recovery::schedule(self.executor.clone(), turn.clone(), self.timing)
+        recovery::schedule(
+            self.executor.clone(),
+            turn.clone(),
+            self.timing,
+            &self.background,
+        )
     }
 }
 

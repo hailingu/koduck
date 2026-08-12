@@ -9,7 +9,21 @@ use sqlx::postgres::PgPoolOptions;
 
 use crate::application::HistoryError;
 
-use super::{LeaseRenewalGuard, ReconciliationWorker, SqlxPostgresExecutor};
+use super::{BackgroundAdmission, LeaseRenewalGuard, ReconciliationWorker, SqlxPostgresExecutor};
+
+#[test]
+fn background_admission_rejects_saturation_and_releases_capacity() {
+    let admission = Arc::new(BackgroundAdmission::new(1));
+    let permit = admission.try_acquire().expect("first worker is admitted");
+
+    assert!(matches!(
+        admission.try_acquire(),
+        Err(HistoryError::Unavailable)
+    ));
+
+    drop(permit);
+    assert!(admission.try_acquire().is_ok());
+}
 
 #[test]
 fn renewal_guard_drop_does_not_join_a_blocked_renewal() {

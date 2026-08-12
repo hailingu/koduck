@@ -125,6 +125,93 @@ fn production_runtime_wires_reviewed_failure_and_streaming_guards() {
 }
 
 #[test]
+fn production_io_and_background_work_are_bounded() {
+    let crate_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let sqlx =
+        fs::read_to_string(crate_root.join("src/adapters/history/postgres/sqlx_executor.rs"))
+            .expect("SQLx executor source is readable");
+    assert!(
+        !sqlx.contains("self.runtime.block_on(operation)")
+            && sqlx.contains("AppendPolicy::cand_1().deadline()"),
+        "every synchronous PostgreSQL operation must use the approved deadline"
+    );
+
+    let history = fs::read_to_string(crate_root.join("src/adapters/history/postgres.rs"))
+        .expect("PostgreSQL history source is readable");
+    let recovery = fs::read_to_string(crate_root.join("src/adapters/history/postgres/recovery.rs"))
+        .expect("PostgreSQL recovery source is readable");
+    assert!(
+        history.contains("MAX_BACKGROUND_WORKERS")
+            && history.contains("BackgroundAdmission")
+            && recovery.contains("admission.try_acquire"),
+        "lease renewal and recovery must share bounded background admission"
+    );
+
+    let provider = fs::read_to_string(crate_root.join("src/adapters/provider/mod.rs"))
+        .expect("provider adapter source is readable");
+    let runtime = fs::read_to_string(crate_root.join("src/runtime/mod.rs"))
+        .expect("runtime source is readable");
+    for timeout in [
+        "PROVIDER_RESPONSE_HEADER_TIMEOUT",
+        "PROVIDER_STREAM_IDLE_TIMEOUT",
+        "PROVIDER_TOTAL_TIMEOUT",
+    ] {
+        assert!(provider.contains(timeout), "provider must define {timeout}");
+    }
+    assert!(
+        provider.contains("tokio::time::timeout") && runtime.contains(".connect_timeout("),
+        "provider requests must have connect, header, idle, and total deadlines"
+    );
+}
+
+#[test]
+fn adr_0001_has_contract_traceability_and_complete_risk_coverage() {
+    let crate_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let repository_root = crate_root
+        .parent()
+        .expect("koduck-ai belongs to the repository workspace");
+    let adr = fs::read_to_string(
+        repository_root.join("docs/adr/ADR-0001-provider-neutral-turn-kernel.md"),
+    )
+    .expect("ADR-0001 is readable");
+
+    assert!(
+        adr.contains("## Contract-To-Check Traceability [Required]")
+            && adr.contains("## Risk Coverage Matrix [Required]"),
+        "ADR-0001 must carry the required traceability sections"
+    );
+    for risk in [
+        "Concurrency and ordering",
+        "Timeout and deadline",
+        "Cancellation and interruption",
+        "Resource bounds and backpressure",
+        "Framework or trust-boundary rejection",
+    ] {
+        assert_eq!(
+            adr.matches(risk).count(),
+            1,
+            "ADR-0001 must contain exactly one risk row for {risk}"
+        );
+    }
+}
+
+#[test]
+fn repository_introduction_describes_the_implemented_service() {
+    let crate_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let repository_root = crate_root
+        .parent()
+        .expect("koduck-ai belongs to the repository workspace");
+    let readme = fs::read_to_string(repository_root.join("README.md"))
+        .expect("repository README is readable");
+    let guide = fs::read_to_string(repository_root.join("AGENTS.md"))
+        .expect("repository agent guide is readable");
+
+    assert!(!readme.contains("No service has been added"));
+    assert!(!guide.contains("no service exists yet in this repository"));
+    assert!(readme.contains("koduck-ai"));
+}
+
+#[test]
 fn application_api_does_not_expose_an_unwired_unpublished_buffer() {
     let crate_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let application_module = fs::read_to_string(crate_root.join("src/application/mod.rs"))

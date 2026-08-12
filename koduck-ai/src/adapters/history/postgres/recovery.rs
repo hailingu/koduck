@@ -2,22 +2,28 @@
 
 //! Bounded recovery ownership for accepted turns whose append became unavailable.
 
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::application::{AcceptedTurn, HistoryError};
 
-use super::{LeaseTiming, PostgresExecutor, RecoveryOutcome};
+use super::{BackgroundAdmission, LeaseTiming, PostgresExecutor, RecoveryOutcome};
 
 /// Retains conditional recovery ownership until failure closes or fencing wins.
 pub(super) fn schedule<E: PostgresExecutor + Send + 'static>(
     executor: E,
     accepted: AcceptedTurn,
     timing: LeaseTiming,
+    admission: &Arc<BackgroundAdmission>,
 ) -> Result<(), HistoryError> {
+    let permit = admission.try_acquire()?;
     thread::Builder::new()
         .name("koduck-ai-turn-recovery".to_owned())
-        .spawn(move || recover(&executor, &accepted, timing))
+        .spawn(move || {
+            let _permit = permit;
+            recover(&executor, &accepted, timing);
+        })
         .map_err(|_| HistoryError::Unavailable)?;
     Ok(())
 }

@@ -15,9 +15,11 @@ does not reach the turn runner, provider, or history ports.
 
 ## Synchronous Chat
 
-`POST /api/v1/ai/chat` requires `Content-Type: application/json`. Its request
-object contains non-empty UTF-8 string `input` of at most 65,536 bytes and an
-optional UUID `thread_id`; unknown and duplicate fields are rejected.
+`POST /api/v1/ai/chat` requires the case-insensitive media type
+`application/json`; standard media-type parameters such as `charset=utf-8` are
+accepted. Its request object contains non-empty UTF-8 string `input` of at most
+65,536 bytes and an optional UUID `thread_id`; unknown and duplicate fields are
+rejected.
 
 Success is `200 application/json`. The body contains exactly `thread_id`,
 `turn_id`, `status`, `items`, and `usage`. `status` is `completed`. Each item
@@ -57,6 +59,9 @@ Invalid JSON or input returns `400`. Initial or mid-turn durability failure
 returns `503` with code `durability-unavailable`. Every problem body contains
 exactly `type: about:blank`, kebab-code-derived `title`, numeric `status`, stable
 `code`, and UUID `correlation_id`. Failed initial acceptance exposes no Turn.
+For synchronous chat, an interrupted Turn returns `409 turn-interrupted`, a
+cancelled Turn returns `409 turn-cancelled`, and a provider-failed Turn returns
+`503 provider-unavailable`.
 
 ## Golden Fixtures
 

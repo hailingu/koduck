@@ -5,9 +5,9 @@ governance and repository-organization problems found during that project's
 development — most importantly, ambiguous ADR/OCR naming, missing ADR
 archival, and unclear project-level vs. service-level decision-record scope.
 
-No service has been added to this repository yet. Its current content is the
-governance scaffolding — decision-record process, templates, and per-language
-development standards — that future services will build on.
+The repository now contains the first service, `koduck-ai`, alongside the
+governance scaffolding, decision-record process, templates, and per-language
+development standards used to evolve it.
 
 ## Start Here
 
@@ -35,6 +35,8 @@ development standards — that future services will build on.
 ```text
 AGENTS.md              Agent/contributor guide and governance rules
 CLAUDE.md              Claude-specific entry point (defers to AGENTS.md)
+Cargo.toml             Rust workspace manifest
+koduck-ai/              Provider-neutral AI turn service and its contracts
 docs/
   architecture/        Architecture Design Documents (ADDs), template, and index
   adr/                 Project-level ADRs, OCRs (in ocr/), templates, and indexes
