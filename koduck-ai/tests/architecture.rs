@@ -283,13 +283,13 @@ fn required_ci_maps_every_routed_command_and_postgres_boundary() {
     assert!(
         workflow.contains("pull_request:")
             && workflow.contains("- dev")
-            && workflow.contains("- docs/adr/ADR-0002-required-ai-ci-postgres-verification.md")
-            && workflow.contains("- docs/adr/INDEX.md")
+            && !workflow.contains("\n    paths:")
+            && !workflow.contains("\n    paths-ignore:")
             && workflow.contains("postgres:")
             && workflow.contains("KODUCK_AI_TEST_DATABASE_URL")
             && workflow.contains("timeout-minutes:")
             && !workflow.contains("upload-artifact"),
-        "workflow must bind dev pull requests to bounded disposable PostgreSQL verification"
+        "every dev pull request must emit the required bounded PostgreSQL verification checks"
     );
     assert!(
         !workflow.contains("\n  push:"),
