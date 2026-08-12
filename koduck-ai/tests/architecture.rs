@@ -181,6 +181,10 @@ fn required_ci_maps_every_routed_command_and_postgres_boundary() {
             && !workflow.contains("upload-artifact"),
         "workflow must bind dev pull requests to bounded disposable PostgreSQL verification"
     );
+    assert!(
+        !workflow.contains("\n  push:"),
+        "a task-branch push must not duplicate the pull-request checks for the same revision"
+    );
 }
 
 // ADR: docs/adr/ADR-0002-required-ai-ci-postgres-verification.md

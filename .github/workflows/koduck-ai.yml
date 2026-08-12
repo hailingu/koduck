@@ -10,15 +10,6 @@ on:
       - Cargo.lock
       - Cargo.toml
       - koduck-ai/**
-  push:
-    branches:
-      - codex/add-ai-service-codex-alignment
-    paths:
-      - .github/workflows/koduck-ai.yml
-      - Cargo.lock
-      - Cargo.toml
-      - koduck-ai/**
-
 concurrency:
   group: koduck-ai-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
