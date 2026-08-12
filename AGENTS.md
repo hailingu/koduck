@@ -31,6 +31,23 @@ informative and never override a rule.
   build, release, deployment, rollback, or runbook operation after acceptance.
 - **Decision record**: An ADR or OCR. An ADD is a design document, not a
   decision record.
+- **Disposable Verification Execution**: Running existing tests, static or
+  formatting checks in check-only mode, type checks, or a local verification
+  compile solely to evaluate the current source. It produces no reusable or
+  promotable artifact, does not mutate a running, shared, or external system,
+  and its disposable compiler or test output is deleted before task completion;
+  command output or a test report MAY be retained as verification evidence.
+- **Governed Build**: A build that intentionally creates or transforms an
+  artifact retained for reuse, distribution, publication, promotion, runtime
+  loading, deployment, or a later operational step. For decision-record
+  classification, an unqualified build operation means a Governed Build;
+  incidental compilation during Disposable Verification Execution does not.
+- **Implementation boundary**: One independently failing and reviewable owner
+  of behavior, such as domain or application policy, presentation or framework
+  delivery, provider or transport integration, persistence or data behavior,
+  or runtime assembly. A reviewable implementation slice has exactly one
+  primary implementation boundary; supporting interface changes in adjacent
+  boundaries MUST remain limited to what that slice requires.
 - **`Pending`**: A temporary placeholder showing that a field is deliberately
   incomplete at a lifecycle stage that permits incompleteness. It is valid only
   where a template permits it for the current stage and MUST be replaced with
@@ -106,10 +123,44 @@ for the new revision. When no such mechanism is configured, no automatic-review
 gate applies and its absence MUST be reported as `N/A — no automatic-review
 mechanism configured`. Automatic review never approves or rejects a document;
 the canonical Approval and Status section governs those actions.
-Record the configured/not-configured result once per pushed task in the pull
-request's verification section, or in the governing ADR/OCR evidence when no
-pull request exists; when neither exists, record it in the final task report.
-Repeat it after a later push only if the mechanism's availability changes.
+Record the reviewed commit SHA and result for every pushed revision that seeks
+review or merge in the pull request's verification section, or in the governing
+ADR/OCR evidence when no pull request exists; when neither exists, record it in
+the final task report. A later push invalidates that revision's review coverage.
+
+A source or configuration pull request MUST remain Draft while it obtains
+automatic review and MUST NOT be declared review-ready until all of the
+following are true for its latest pushed commit:
+
+- every Scope Routing verification command for the affected paths has a
+  corresponding required CI check, and every such check is green; absence of
+  required CI is a blocker, not `N/A`;
+- every applicable contract clause is mapped to a passing acceptance check or
+  deterministic test through the governing ADR's contract traceability;
+- every applicable row in the governing ADR's Risk Coverage Matrix is `Pass`,
+  and every non-applicable row has a specific `N/A` reason;
+- when automatic review is configured, it has reviewed that exact commit; when
+  none is configured, record the canonical `N/A` result; and
+- no actionable, non-outdated P0/P1/P2 or equivalent blocking thread from any
+  configured review is unresolved. A disputed finding is unresolved until an
+  evidence-backed disposition is recorded and the thread is resolved.
+
+Any later push removes review-ready status and requires the full gate again.
+Automatic review supplements rather than replaces CI, deterministic checks,
+contract traceability, or human review.
+
+When responding to a GitHub inline review comment, reply through `Reply` in the
+original review thread shown beside the affected diff. Every actionable or
+disputed thread MUST receive its own thread reply; a top-level pull-request
+comment, commit message, reaction, reply in another thread, or evidence recorded
+only in an ADR does not count. The reply MUST state whether the finding was
+addressed or disputed. An addressed finding cites the fixing commit SHA and
+relevant checks; a disputed finding cites the reviewed commit SHA and stable
+evidence supporting the disposition. Post the reply before selecting
+`Resolve conversation`. Resolve only after the cited revision is pushed and
+the thread reply demonstrates one of these outcomes: the finding is fixed, or
+an evidence-backed disposition is recorded. Never resolve a thread solely
+because it became outdated or received a reaction.
 
 When Trello is used under an Accepted workflow policy or the bootstrap
 authorization below, synchronize authoritative Git and ADD/ADR/OCR transitions
@@ -146,7 +197,8 @@ Classify requested work before editing:
 | Coordination Metadata | Routine Trello card creation, assignment, linking, labeling, commenting, or state synchronization under an Accepted workflow policy |
 | Source | Application, library, or test code |
 | Configuration | Build, CI, deployment, environment, or infrastructure config |
-| Operational | A reversible build/release/deploy/rollback/runbook action against a running or artifact-producing system |
+| Verification Execution | Disposable Verification Execution as defined above |
+| Operational | A Governed Build or a reversible release/deploy/rollback/runbook action against a running, shared, external, or artifact-producing system |
 
 Read-only work needs no decision record. Drafting or updating an Architecture
 Design Document (ADD) needs no prior ADR because an ADD is a non-authorizing
@@ -161,7 +213,11 @@ or label semantics, authority mappings, connector permissions, automation
 behavior, or failure handling is repository governance and requires a
 project-level Full ADR. Changing the ADD workflow, authority, status model,
 routing, or template contract is also repository governance rather than an
-ordinary ADD update.
+ordinary ADD update. Disposable Verification Execution needs no decision record
+and no additional `Approve`; when it verifies implementation governed by an
+ADR, that ADR must already authorize the source change, but running the
+verification does not require an OCR. If any disposable-verification condition
+is false, classify the action under the highest applicable class instead.
 
 ### Document Requirement Levels
 
@@ -296,6 +352,16 @@ precedence and stop at the first matching row:
   boundaries, dependencies, acceptance context, recommended ADR type, status,
   and eventual ADR path. It describes what must be achieved, not how to
   implement it.
+- Each candidate intended for source or configuration implementation MUST fit
+  one independently reviewable implementation pull request under the ADR scope
+  rule and identify one primary implementation boundary. If it contains
+  multiple implementation pull requests, multiple primary implementation
+  boundaries, or independently mergeable outcomes, split it into
+  dependency-ordered candidates while the ADD is `Draft`, then obtain `Approve`
+  before making the revised ADD `Current` or selecting any resulting candidate.
+  This rule applies to a candidate first added or materially changed under this
+  rule and does not retroactively invalidate an unchanged candidate in an
+  already `Current` ADD.
 - The complete ADD task-candidate status set is `Ready`, `Selected`, `Complete`,
   and `Deferred`. `Ready` means the candidate is fully specified and eligible
   for selection while its ADD is `Current`; `Selected` requires one reciprocal
@@ -348,26 +414,38 @@ precedence and stop at the first matching row:
 | --- | --- | --- |
 | Full ADR | Architecture, governance, cross-service behavior, public API/schema/protocol, security, data, dependency, or build/release/deployment strategy, pipeline, configuration, service-boundary, or irreversible decisions | Accepted before implementation |
 | Lightweight ADR | A localized, reversible source behavior change whose checklist proves no Full ADR concern applies | Accepted before implementation |
-| Operational Change Record (OCR) | A reversible build, release, deployment, rollback, or existing runbook operation within an accepted architecture, pipeline, artifact contract, and security/data boundary | Accepted before the operation |
-| No record | Read-only work, non-normative editorial documentation, routine coordination metadata under an Accepted policy, or a provably semantics-neutral formatting/comment-only edit | No decision-record gate; normal authorization and verification still apply |
+| Operational Change Record (OCR) | A Governed Build, release, deployment, rollback, or existing runbook operation within an accepted architecture, pipeline, artifact contract, and security/data boundary | Accepted before the operation |
+| No record | Read-only work, Disposable Verification Execution, non-normative editorial documentation, routine coordination metadata under an Accepted policy, or a provably semantics-neutral formatting/comment-only edit | No decision-record gate; normal authorization and verification still apply |
 
 Normative Markdown about governance, contracts, security, deployment, or
 process is not editorial. A formatting/comment-only edit qualifies only when
-its diff proves there is no semantic change. Tests, snapshots, generated
+its diff proves there is no semantic change. Test source, snapshots, generated
 artifacts, lock files, dependencies, config, and mixed-scope changes are not
 automatically exempt: classify them by the behavior or decision they support,
-using the highest applicable class.
+using the highest applicable class. Executing existing tests is exempt from an
+OCR only when it satisfies every Disposable Verification Execution condition.
 
 Use `docs/adr/template/0000-template.md` for Full ADRs,
 `docs/adr/template/0000-lightweight-template.md` for eligible Lightweight
 ADRs, and `docs/adr/template/0000-operational-change-template.md` for eligible
 OCRs.
 
-#### Task Completeness And ADR Serialization
+#### Task Completeness, Risk Coverage, And ADR Serialization
 
 - Every ADR and OCR MUST define exactly one complete, end-to-end task with an
   objectively verifiable outcome. A record MUST NOT serve as an umbrella for a
   backlog, program, or unrelated set of deliverables.
+- A source or configuration ADR first drafted under this rule MUST authorize
+  one independently reviewable implementation slice deliverable through one
+  implementation pull request. Its one to three subtasks may separate tightly
+  coupled implementation, migration, or verification work, but MUST NOT hide
+  multiple primary implementation boundaries or unrelated deliverables in one
+  ADR. The ADR MUST name its one primary implementation boundary. If an ADD
+  candidate requires multiple implementation pull requests, multiple primary
+  implementation boundaries, or independently mergeable outcomes, split and
+  reapprove the ADD candidates before selecting an ADR. This scope rule does
+  not retroactively invalidate an already `Accepted` ADR; an
+  approval-invalidating scope change to that ADR MUST comply before reapproval.
 - Each record MUST decompose its task into at least one and at most three
   implementation or operational subtasks. Each subtask MUST state its
   objective or deliverable, included scope or target, status, and actual
@@ -385,6 +463,23 @@ OCRs.
   method, the exact observable expected result, and the evidence to capture.
   Use a numeric threshold, exact state, response, invariant, or cited contract
   clause whenever the result can vary.
+- Every source or configuration ADR MUST contain a Contract-To-Check
+  Traceability table before acceptance. Each normative public or internal
+  contract clause that states a required response, transition, ordering,
+  invariant, limit, failure outcome, or prohibition MUST have a stable clause
+  ID and map to at least one declared acceptance check or deterministic test.
+  One check MAY cover multiple clauses only when its inputs and assertions
+  exercise each clause explicitly; an uncited implication is not coverage.
+- Every source or configuration ADR MUST contain a Risk Coverage Matrix with
+  exactly these baseline dimensions: concurrency and ordering; timeout and
+  deadline; cancellation and interruption; resource bounds and backpressure;
+  and framework or trust-boundary rejection. Before acceptance, every row MUST
+  identify applicability, a concrete scenario or a specific `N/A` reason, the
+  owning boundary, a deterministic verification method, an exact expected
+  result, and linked acceptance-check IDs. Before the implementation pull
+  request is review-ready or the ADR becomes `Complete` or `Verified`, every
+  applicable row MUST be `Pass` with stable evidence; `Fail` blocks both.
+  The matrix supplements rather than replaces acceptance checks.
 - A proposed ADR check is invalid when an independent reviewer must interpret
   what success means. Unqualified language such as "works", "normal",
   "reasonable", "appropriate", "complete", "optimized", "user-friendly",
@@ -515,6 +610,16 @@ directories and number sequences remain separate; sharing an index does not
 merge their identities.
 
 #### Operational Change Records
+
+Disposable Verification Execution does not require an OCR, even when the tool
+internally compiles a transient test executable or writes isolated temporary
+output. Before completion, delete that disposable output and confirm that no
+reusable artifact was retained, published, promoted, loaded, deployed, or made
+an input to a later operational step, and that no running, shared, or external
+system was mutated. A failed test does not retroactively require an OCR; retain
+its command, result, and diagnostic as normal verification evidence. If the
+output or side effects exceed this boundary, stop and classify the action as a
+Governed Build or other Operational work before continuing.
 
 Every OCR MUST record its operation type, target scope, owner, approved
 immutable input source or version, expected output or target state, actual
@@ -651,8 +756,9 @@ edit that changes any of the following approved content:
   cross-cutting constraints, traceability, or ADR task candidates.
 - For an ADR: the complete task outcome, scope, constraints, resolved question
   on which the decision depends, decision drivers, considered or selected
-  option, rationale, consequences, subtasks, affected paths, acceptance checks,
-  or migration and rollback strategy.
+  option, rationale, consequences, primary implementation boundary, subtasks,
+  affected paths, contract traceability, Risk Coverage Matrix, acceptance
+  checks, or migration and rollback strategy.
 - For an OCR: the complete task outcome, operation type, target or owner,
   approved input, expected output or artifact contract, scope, preflight,
   execution or verification runbook, stop condition, or recovery and rollback
@@ -743,7 +849,9 @@ implementation or operation continues.
 9. Apply the automatic-review rule in Work Coordination after each push and
    before merge or operational use.
 10. Run the narrowest relevant non-interactive checks, then the broader checks
-   required by the affected routing rows.
+    required by the affected routing rows. No separate approval or OCR is
+    required when these checks satisfy Disposable Verification Execution; clean
+    their disposable output and report the result.
 11. For a governed build, release, Git tag, or local Kubernetes action, read
     its applicable delivery or platform standards, create and accept an OCR
     before execution, then bind its actual source, artifact or tag, target,
@@ -769,8 +877,14 @@ operations applies the independently matched row for each one.
 | `AGENTS.md`, `AGENTS.template.md`, `CLAUDE.md` | This guide's Non-Negotiable Gates, Execution Workflow, and Version-Control Safety sections | repository root | None | Perform a structured review of the affected instructions and report the inspected contracts; no automated governance check is configured. |
 | `docs/architecture/**` or `<service-or-package>/docs/architecture/**` | `docs/README.md` and this guide's Document Requirement Levels and Architecture Design Documents sections | repository root | None | Review requirement-level labels and triggers, routing, Trello baseline capture, Figma references, solution completeness, task-detail boundary, traceability, index row, status, and cross-references; no automated governance check is configured. |
 | `docs/**` | `docs/README.md` and this guide's Document Requirement Levels, Architecture Design Documents, and Decision Records sections | repository root | None | Perform a structured review of requirement levels, affected navigation, templates, records, index rows, paths, and cross-references; no automated governance check is configured. |
-| `koduck-ai/**`, root `Cargo.toml`, or root `Cargo.lock` | `docs/README.md`, `docs/development/software-engineering-standard.md`, and `docs/development/rust-standard.md` | repository root | `cargo fmt --all --check`; `cargo clippy -p koduck-ai --all-targets --all-features -- -D warnings`; `cargo test -p koduck-ai --all-targets --all-features` | Use non-interactive commands. `cargo clippy`, `cargo test`, and any other command that compiles or produces an artifact are governed builds and require an Accepted OCR before execution. |
+| `koduck-ai/**`, root `Cargo.toml`, or root `Cargo.lock` | `docs/README.md`, `docs/development/software-engineering-standard.md`, and `docs/development/rust-standard.md` | repository root | `cargo fmt --all --check`; `cargo clippy -p koduck-ai --all-targets --all-features -- -D warnings`; `cargo test -p koduck-ai --all-targets --all-features` | Use non-interactive commands. These commands need no OCR when they satisfy Disposable Verification Execution; a retained, published, promoted, loaded, deployed, or later-consumed artifact is a Governed Build and requires an Accepted OCR. |
 | Release or Git tag operation | `docs/delivery/releases.md`, `docs/delivery/git-tags.md`, and the governing Accepted OCR | repository root | Commands approved by the OCR | Treat tag creation or mutation, release publication, and artifact publication as external operational writes. |
+
+Verification commands in a source or configuration routing row need no OCR
+when they satisfy Disposable Verification Execution. A routing row MUST NOT
+classify incidental verification compilation as a Governed Build; retained,
+published, promoted, loaded, deployed, or later-consumed artifacts remain
+Governed Builds and require an Accepted OCR.
 
 If no Scope Routing row matches, discover and run the narrowest relevant
 non-interactive check for every affected path. If no automated check exists,
@@ -809,8 +923,8 @@ Accepted record or workflow names it, or an already-authorized task tool creates
 and assigns it. A branch name alone never authorizes task scope or external
 writes.
 
-- **Protected branches**: `main` is the protected branch; no direct commits or
-  pushes to `main`.
+- **Protected branches**: `main` and `dev` are protected branches; no direct
+  commits or pushes to either branch.
 - **Task-branch base**: `dev` is the sole permitted base for every new task
   branch. Create from the current local `dev`; `main` MUST NOT be used as a
   branch point. Do not fetch, pull, or otherwise synchronize `dev` unless the
@@ -827,11 +941,13 @@ writes.
   authorize Trello mutation, remote synchronization, pushing, or other external
   writes. Create the branch from the current local `dev` before the first ADD
   mutation. Updating an existing ADD follows the normal task-branch rule.
-- **Pull requests**: target `main`; include the verification commands run and
+- **Task pull requests**: target `dev`; include the verification commands run and
   their results, link the governing decision record when one applies, and link
   the coordinating Trello card when one exists. Apply the automatic-review rule
-  in Work Coordination; passing review does not replace record acceptance or
-  operational verification.
+  and the original-thread reply rule in Work Coordination; passing review does
+  not replace record acceptance or operational verification. Only a
+  repository-integration or release pull request from `dev` may target `main`;
+  ordinary task branches MUST NOT target `main`.
 - **Commits**: use Conventional Commits (`<type>(<scope>): <imperative
   summary>`) with an appropriate type such as `feat`, `fix`, `docs`,
   `refactor`, `test`, `chore`, `ci`, or `build`. Every commit message MUST
@@ -846,8 +962,9 @@ writes.
   rebase, and manually authored merge commits whose messages can be edited are
   not exempt.
 
-This policy uses protected `main` as the pull-request target, `dev` as the sole
-task-branch base, and temporary task branches. Revisit it with a Full ADR once
+This policy uses protected `dev` as the task pull-request target and sole
+task-branch base, protected `main` as the integration or release target, and
+temporary task branches. Revisit it with a Full ADR once
 additional long-lived release branches, independent component versioning, or
 multi-environment promotion is needed. Release and Git tag operations follow
 `docs/delivery/releases.md` and `docs/delivery/git-tags.md`.
@@ -867,6 +984,10 @@ multi-environment promotion is needed. Release and Git tag operations follow
 - ADR verification MUST be reproducible from each declared acceptance check's
   preconditions, method, and expected result. Evidence without a predetermined,
   binary acceptance point does not prove completion.
+- Source and configuration verification MUST include the governing ADR's
+  complete Contract-To-Check Traceability table and Risk Coverage Matrix. A
+  green broad test suite does not compensate for an unmapped contract clause,
+  an unassessed baseline risk dimension, or a failing matrix row.
 - Document review MUST confirm that every `[Required]` item is complete, every
   conditional trigger is assessed and satisfied or explicitly not applicable,
   and every retained `[Optional]` item is accurate and complete.

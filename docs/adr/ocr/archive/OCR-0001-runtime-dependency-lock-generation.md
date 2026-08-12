@@ -2,7 +2,7 @@
 
 ---
 
-# OCR-0003: Runtime Dependency Lock Generation
+# OCR-0001: Runtime Dependency Lock Generation
 
 ## Metadata [Required]
 
@@ -16,17 +16,17 @@
 - **Approver [Conditionally Required — Decision Status is or has been `Accepted`]**: @linhai
 - **Approval Time [Conditionally Required — Decision Status is or has been `Accepted`]**: 2026-08-11T13:09:43+08:00
 - **Approval Evidence [Conditionally Required — Decision Status is or has been `Accepted`]**: Approve
-- **Rejector [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is `Proposed`
-- **Rejection Time [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is `Proposed`
-- **Rejection Evidence [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is `Proposed`
-- **Retired By [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — Decision Status is `Proposed`
-- **Retirement Time [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — Decision Status is `Proposed`
-- **Retirement Evidence [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — Decision Status is `Proposed`
-- **Retirement Reason [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — Decision Status is `Proposed`
-- **Blocked From [Conditionally Required — Implementation Status is `Blocked`]**: N/A — Implementation Status is `Not Started`
-- **Blocker And Evidence [Conditionally Required — Implementation Status is `Blocked`]**: N/A — Implementation Status is `Not Started`
-- **Blocker Owner [Conditionally Required — Implementation Status is `Blocked`]**: N/A — Implementation Status is `Not Started`
-- **Blocker Exit Or Recheck Criterion [Conditionally Required — Implementation Status is `Blocked`]**: N/A — Implementation Status is `Not Started`
+- **Rejector [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is `Accepted`
+- **Rejection Time [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is `Accepted`
+- **Rejection Evidence [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is `Accepted`
+- **Retired By [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — Decision Status is `Accepted`
+- **Retirement Time [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — Decision Status is `Accepted`
+- **Retirement Evidence [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — Decision Status is `Accepted`
+- **Retirement Reason [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — Decision Status is `Accepted`
+- **Blocked From [Conditionally Required — Implementation Status is `Blocked`]**: N/A — Implementation Status is `Complete`
+- **Blocker And Evidence [Conditionally Required — Implementation Status is `Blocked`]**: N/A — Implementation Status is `Complete`
+- **Blocker Owner [Conditionally Required — Implementation Status is `Blocked`]**: N/A — Implementation Status is `Complete`
+- **Blocker Exit Or Recheck Criterion [Conditionally Required — Implementation Status is `Blocked`]**: N/A — Implementation Status is `Complete`
 - **Operation Type**: Build
 - **Target Scope / Operation Owner**: Local repository task branch; root `Cargo.lock` / @codex
 - **Input Source or Version**: Git commit `543022574f74b6b1402fd22fd7950bd27bceae00`
@@ -230,7 +230,7 @@ establishes that archival-eligible state.
 Before that trigger, retain this section as inactive future-lifecycle guidance;
 its checklist does not affect approval or operation completion. When triggered:
 
-- [x] Move this file to `ocr/archive/OCR-0003-runtime-dependency-lock-generation.md`
+- [x] Move this file to `ocr/archive/OCR-0001-runtime-dependency-lock-generation.md`
       under `docs/adr/`.
 - [x] Update every code marker that cites this file's pre-archive path to the new
       archive path, or remove the marker if the governed artifact/config was reverted.

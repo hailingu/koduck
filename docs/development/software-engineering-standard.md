@@ -162,6 +162,18 @@ the stated problem and forces, not by matching a class diagram mechanically.
 - Test observable behavior and stable contracts. Avoid tests coupled to private
   call order, framework internals, or incidental data structures unless that
   detail is itself the contract.
+- For maintained source work, use the governing ADR's
+  Contract-To-Check Traceability table and Risk Coverage Matrix as required by
+  the root `AGENTS.md`. Every normative contract clause must be exercised by an
+  explicitly linked acceptance check or deterministic test; a broad suite name
+  or an uncited implication is not traceability.
+- When an applicable risk belongs to a production framework, datastore,
+  provider transport, queue, or other external adapter, at least one linked
+  check must exercise that production boundary or a behaviorally equivalent
+  integration harness. A unit double that bypasses framework rejection,
+  transaction or lock behavior, protocol framing, cancellation, timeout, or
+  resource ownership cannot by itself establish that boundary's matrix row as
+  `Pass`.
 - Keep unit tests near their owning module according to language convention.
   Put integration and contract tests at the boundary they exercise.
 - A bug fix should add the smallest regression test that fails for the reported

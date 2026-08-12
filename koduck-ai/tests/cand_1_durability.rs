@@ -279,6 +279,64 @@ fn execution_rejects_an_oversized_provider_delta_before_append() {
     ));
 }
 
+struct CumulativePayloadProvider {
+    consumed: Rc<Cell<usize>>,
+}
+
+impl ModelProvider for CumulativePayloadProvider {
+    fn stream(&mut self, _input: ModelInput) -> Result<ProviderStream<'_>, ProviderError> {
+        let consumed = Rc::clone(&self.consumed);
+        Ok(Box::new(
+            vec![
+                ProviderEvent::Delta("x".repeat(600_000)),
+                ProviderEvent::Delta("y".repeat(600_000)),
+                ProviderEvent::Completed,
+            ]
+            .into_iter()
+            .inspect(move |_| consumed.set(consumed.get() + 1)),
+        ))
+    }
+}
+
+#[test]
+fn execution_rejects_cumulative_provider_payload_over_one_mib_before_append() {
+    let items = Rc::new(RefCell::new(Vec::new()));
+    let consumed = Rc::new(Cell::new(0));
+    let result = TurnRunner::new(
+        CumulativePayloadProvider {
+            consumed: Rc::clone(&consumed),
+        },
+        FaultHistory {
+            fail_initial: false,
+            fail_append_at: None,
+            accepted: Rc::new(Cell::new(0)),
+            append_calls: 0,
+            items: Rc::clone(&items),
+        },
+    )
+    .execute(TurnCommand::new(trust(), None, "hello").expect("valid command"));
+
+    let Err(TurnRunError::Durability(failure)) = result else {
+        panic!("cumulative payload over one MiB must fail at the durability boundary");
+    };
+    assert!(failure.accepted);
+    assert_eq!(failure.published.len(), 1);
+    assert_eq!(consumed.get(), 2);
+    assert_eq!(
+        items
+            .borrow()
+            .iter()
+            .filter(|item| matches!(item.payload, ItemPayload::AgentMessageDelta { .. }))
+            .count(),
+        1
+    );
+    assert!(matches!(
+        items.borrow().last().map(|item| &item.payload),
+        Some(ItemPayload::Terminal(TerminalOutcome::Failed { code }))
+            if code == "DURABILITY_UNAVAILABLE"
+    ));
+}
+
 struct ExcessItemProvider {
     consumed: Rc<Cell<usize>>,
 }

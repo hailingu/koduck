@@ -48,7 +48,7 @@ CREATE TABLE IF NOT EXISTS turn_items (
             'cancelled'
         )
     ),
-    payload JSONB NOT NULL,
+    payload TEXT NOT NULL,
     is_terminal BOOLEAN NOT NULL DEFAULT FALSE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (tenant_id, thread_id, turn_id, sequence),

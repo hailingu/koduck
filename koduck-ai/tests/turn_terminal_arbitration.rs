@@ -151,6 +151,91 @@ fn accepted_interrupt_wins_before_provider_payload_validation() {
     ));
 }
 
+#[derive(Default)]
+struct LimitRaceHistory {
+    items: Vec<Item>,
+}
+
+impl TurnHistory for LimitRaceHistory {
+    fn request_interrupt(
+        &mut self,
+        _trust: &TrustContext,
+        _turn_id: TurnId,
+    ) -> Result<(), HistoryError> {
+        Ok(())
+    }
+
+    fn interruption_requested(&self, _turn: &AcceptedTurn) -> Result<bool, HistoryError> {
+        Ok(false)
+    }
+
+    fn prior_thread_items(
+        &self,
+        _trust: &TrustContext,
+        _thread_id: ThreadId,
+    ) -> Result<Vec<Item>, HistoryError> {
+        Ok(Vec::new())
+    }
+
+    fn accept_initial(&mut self, command: &TurnCommand) -> Result<AcceptedTurn, HistoryError> {
+        let input = Item::new(
+            1,
+            ItemPayload::UserMessage {
+                content: command.input.clone(),
+            },
+        );
+        self.items.push(input.clone());
+        Ok(AcceptedTurn::new(
+            command.trust.tenant_id.clone(),
+            ThreadId::new(),
+            TurnId::new(),
+            LeaseGeneration::initial(),
+            input,
+        ))
+    }
+
+    fn append(&mut self, _turn: &AcceptedTurn, item: NewItem) -> Result<Item, HistoryError> {
+        let durable = Item::new(self.items.len() as u64 + 1, item.into_payload());
+        self.items.push(durable.clone());
+        Ok(durable)
+    }
+
+    fn append_provider_terminal(
+        &mut self,
+        _turn: &AcceptedTurn,
+        _outcome: TerminalOutcome,
+    ) -> Result<Item, HistoryError> {
+        let durable = Item::new(
+            self.items.len() as u64 + 1,
+            ItemPayload::Terminal(TerminalOutcome::Interrupted),
+        );
+        self.items.push(durable.clone());
+        Ok(durable)
+    }
+
+    fn replay(&self, _tenant_id: &TenantId, _turn_id: TurnId) -> Result<Vec<Item>, HistoryError> {
+        Ok(self.items.clone())
+    }
+}
+
+#[test]
+fn accepted_interrupt_wins_when_payload_validation_races_with_the_request() {
+    let trust = TrustContext::new(
+        TenantId::new("tenant-a").expect("valid tenant"),
+        "subject-a",
+    )
+    .expect("valid trust context");
+    let result = TurnRunner::new(OversizedDeltaProvider, LimitRaceHistory::default())
+        .execute(TurnCommand::new(trust, None, "hello").expect("valid command"))
+        .expect("atomic terminal arbitration preserves the accepted interrupt");
+
+    assert_eq!(result.status, TurnStatus::Interrupted);
+    assert!(matches!(
+        result.replay.last().map(|item| &item.payload),
+        Some(ItemPayload::Terminal(TerminalOutcome::Interrupted))
+    ));
+}
+
 struct OutputAfterInterruptProvider;
 
 impl ModelProvider for OutputAfterInterruptProvider {

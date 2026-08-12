@@ -34,7 +34,11 @@
 - In Assumptions And Open Questions, retain resolved material questions and do
   not request approval while any material question remains unresolved.
 - Define each ADR task candidate as one complete outcome with boundaries and no
-  implementation plan.
+  implementation plan. A source or configuration candidate must fit one
+  independently reviewable implementation pull request and identify one
+  primary implementation boundary; split multiple primary boundaries,
+  independently mergeable outcomes, or multi-PR work into dependency-ordered
+  candidates before approval.
 - Trace every requirement to at least one capability and task candidate, plus
   every applicable data, component, and flow reference.
 - Replace every variable in retained or triggered content.
@@ -63,7 +67,7 @@
   change. First preserve the old Approver, Approval Time, Approval Evidence,
   optional Approval Context Revision, and invalidation details in Change Log.
   Then set active Approver, Approval Time, and Approval Evidence to `Pending —
-  reapproval required` and remove the active Approval Context Revision until a
+  re-approval required` and remove the active Approval Context Revision until a
   later approval records a new applicable value.
 - Remove this section and the Variable Dictionary from the instantiated ADD.
 - Finish with no unresolved `{{...}}` placeholders.
@@ -165,7 +169,7 @@ Variable Dictionary
 | `{{MITIGATION}}` | Risks And Trade-Offs | Solution-level mitigation |
 | `{{CANDIDATE_ID}}` | ADR Task Candidates | Stable ID with an ADD-candidate-specific prefix, e.g. CAND-1 |
 | `{{CANDIDATE_OUTCOME}}` | ADR Task Candidates | One complete, verifiable task outcome |
-| `{{CANDIDATE_BOUNDARY}}` | ADR Task Candidates | Included and excluded scope |
+| `{{CANDIDATE_BOUNDARY}}` | ADR Task Candidates | Included and excluded scope, the one primary implementation boundary, and why the candidate fits one independently reviewable implementation pull request |
 | `{{CANDIDATE_DEPENDENCIES}}` | ADR Task Candidates | Prerequisites and ordering constraints |
 | `{{CANDIDATE_ACCEPTANCE}}` | ADR Task Candidates | Acceptance context inherited from requirements |
 | `{{RECOMMENDED_ADR_TYPE}}` | ADR Task Candidates | Full or Lightweight |
@@ -356,7 +360,7 @@ Allowed task-candidate statuses: `Ready`, `Selected`, `Complete`, or `Deferred`.
 - [ ] UI scope cites exact accessible Figma context and does not override it.
 - [ ] Cross-cutting concerns, risks, and assumptions are documented with their treatment, and every material question is resolved.
 - [ ] Traceability connects every requirement to capabilities and ADR task candidates.
-- [ ] Task candidates contain outcomes and boundaries but no implementation details.
+- [ ] Task candidates contain outcomes and boundaries but no implementation details; every source or configuration candidate fits one independently reviewable implementation pull request, with larger work split into dependency-ordered candidates.
 - [ ] Every `Selected` or `Complete` candidate has an exact ADR path, and that ADR's `Architecture Source` points back to this ADD path and candidate ID.
 - [ ] Every required section is complete; every conditional trigger is assessed and completed or marked `N/A — <reason>`; optional sections are complete or removed.
 - [ ] An eligible non-author approver, approval time, and exact `Approval Evidence: Approve` are recorded before `Current`; any optional Approval Context Revision is informational, non-binding, and exactly represents the approved document.

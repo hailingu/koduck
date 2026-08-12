@@ -5,8 +5,6 @@
 use std::future::Future;
 use std::time::Duration;
 
-use serde_json::{Value, json};
-use sqlx::postgres::PgRow;
 use sqlx::{PgPool, Row};
 use tokio::runtime::Handle;
 use uuid::Uuid;
@@ -14,9 +12,9 @@ use uuid::Uuid;
 use crate::application::{AcceptedTurn, AppendPolicy, HistoryError, NewItem, TurnCommand};
 use crate::domain::{
     Item, ItemPayload, LeaseGeneration, TenantId, TerminalOutcome, ThreadId, TrustContext, TurnId,
-    Usage,
 };
 
+use super::payload_codec::{encode_payload, row_to_item};
 use super::{LeaseKey, LeaseTiming, PostgresExecutor, ReconcileOutcome, RecoveryOutcome};
 
 /// Production `PostgreSQL` executor using one `SQLx` pool and its owning Tokio runtime.
@@ -687,97 +685,6 @@ async fn insert_item(
     .await
     .map_err(unavailable)?;
     Ok(())
-}
-
-fn encode_payload(payload: &ItemPayload) -> (&'static str, Value, bool, Option<&'static str>) {
-    match payload {
-        ItemPayload::UserMessage { content } => {
-            ("user_message", json!({ "content": content }), false, None)
-        }
-        ItemPayload::AgentMessageDelta { content } => (
-            "agent_message_delta",
-            json!({ "content": content }),
-            false,
-            None,
-        ),
-        ItemPayload::Usage(usage) => ("usage", usage_json(*usage), false, None),
-        ItemPayload::Terminal(TerminalOutcome::Completed { usage }) => {
-            ("completed", usage_json(*usage), true, Some("completed"))
-        }
-        ItemPayload::Terminal(TerminalOutcome::Failed { code }) => {
-            ("failed", json!({ "code": code }), true, Some("failed"))
-        }
-        ItemPayload::Terminal(TerminalOutcome::Interrupted) => {
-            ("interrupted", json!({}), true, Some("interrupted"))
-        }
-        ItemPayload::Terminal(TerminalOutcome::Cancelled) => {
-            ("cancelled", json!({}), true, Some("cancelled"))
-        }
-    }
-}
-
-fn usage_json(usage: Usage) -> Value {
-    json!({
-        "input_tokens": usage.input_tokens,
-        "output_tokens": usage.output_tokens,
-        "total_tokens": usage.total_tokens,
-    })
-}
-
-fn row_to_item(row: &PgRow) -> Result<Item, HistoryError> {
-    let item_id: Uuid = row.try_get("item_id").map_err(unavailable)?;
-    let sequence: i64 = row.try_get("sequence").map_err(unavailable)?;
-    let item_type: String = row.try_get("item_type").map_err(unavailable)?;
-    let payload: Value = row.try_get("payload").map_err(unavailable)?;
-    let payload = decode_payload(&item_type, &payload)?;
-    Ok(Item {
-        item_id: crate::domain::ItemId::from_uuid(item_id),
-        sequence: u64::try_from(sequence).map_err(|_| HistoryError::Unavailable)?,
-        payload,
-    })
-}
-
-fn decode_payload(item_type: &str, payload: &Value) -> Result<ItemPayload, HistoryError> {
-    let text = || {
-        payload
-            .get("content")
-            .and_then(Value::as_str)
-            .map(str::to_owned)
-            .ok_or(HistoryError::Unavailable)
-    };
-    match item_type {
-        "user_message" => Ok(ItemPayload::UserMessage { content: text()? }),
-        "agent_message_delta" => Ok(ItemPayload::AgentMessageDelta { content: text()? }),
-        "usage" => Ok(ItemPayload::Usage(decode_usage(payload)?)),
-        "completed" => Ok(ItemPayload::Terminal(TerminalOutcome::Completed {
-            usage: decode_usage(payload)?,
-        })),
-        "failed" => Ok(ItemPayload::Terminal(TerminalOutcome::Failed {
-            code: payload
-                .get("code")
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-                .ok_or(HistoryError::Unavailable)?,
-        })),
-        "interrupted" => Ok(ItemPayload::Terminal(TerminalOutcome::Interrupted)),
-        "cancelled" => Ok(ItemPayload::Terminal(TerminalOutcome::Cancelled)),
-        _ => Err(HistoryError::Unavailable),
-    }
-}
-
-fn decode_usage(payload: &Value) -> Result<Usage, HistoryError> {
-    let input = payload
-        .get("input_tokens")
-        .and_then(Value::as_u64)
-        .ok_or(HistoryError::Unavailable)?;
-    let output = payload
-        .get("output_tokens")
-        .and_then(Value::as_u64)
-        .ok_or(HistoryError::Unavailable)?;
-    let usage = Usage::new(input, output).map_err(|_| HistoryError::Unavailable)?;
-    (payload.get("total_tokens").and_then(Value::as_u64) == Some(usage.total_tokens))
-        .then_some(usage)
-        .ok_or(HistoryError::Unavailable)
 }
 
 fn is_terminal_status(status: &str) -> bool {

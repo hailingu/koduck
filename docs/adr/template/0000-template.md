@@ -16,6 +16,10 @@
 - In Context, explain how the selected ADD candidate becomes this one complete
   ADR task; the ADD supplies solution boundaries and this ADR owns detailed
   design, implementation, and verification.
+- For source or configuration work, keep the ADR to one independently
+  reviewable implementation slice deliverable through one implementation pull
+  request and name its one primary implementation boundary. Split the ADD
+  candidate before selection when that is not possible.
 - List only constraints that bind this decision, and do not duplicate tensions.
 - In Open Questions, retain resolved material questions for the decision trail
   and do not request approval while any row remains unresolved. If no material
@@ -32,6 +36,11 @@
 - Define every acceptance check before approval. Each row verifies one subtask
   and must supply deterministic pass/fail inputs, method, expected result, and
   evidence under the canonical wording rules in `AGENTS.md`.
+- For source or configuration work, complete Contract-To-Check Traceability and
+  duplicate the Risk Coverage Matrix sample row exactly once for each of the
+  five baseline dimensions required by `AGENTS.md`. Every applicable risk row
+  must link to one or more acceptance checks; use only a specific `N/A` reason
+  for a dimension that cannot apply.
 - Before approval, define objective completion criteria and evidence types for
   every checklist item. Use stable evidence rather than workspace line numbers.
 - Put related ADR, issue, and PR links only in Metadata `Related`.
@@ -80,7 +89,8 @@ Variable Dictionary
 | `{{REQUIRED_APPROVER}}` | Concrete `@<actor-id>` or rule identifying who is authorized to approve |
 | `{{RECORD_SCOPE}}` | `Project` or `Service internal — <service>`; source for the central index Scope column |
 | `{{CONTEXT_AND_PROBLEM_STATEMENT}}` | The problem, its trigger, and the context needed to understand the decision |
-| `{{TASK_OUTCOME}}` | The single end-to-end, objectively verifiable outcome delivered by this ADR |
+| `{{TASK_OUTCOME}}` | The single independently reviewable, objectively verifiable outcome delivered by this ADR |
+| `{{PRIMARY_IMPLEMENTATION_BOUNDARY}}` | The one primary implementation boundary for source or configuration work; otherwise `N/A — <reason>` |
 | `{{SELECTED_OPTION}}` | The option chosen from Options Considered |
 | `{{DECISION_RATIONALE}}` | Why the selected option best satisfies the decision drivers and resolves the tensions |
 | `{{POSITIVE_CONSEQUENCES}}` | Expected benefits of the decision |
@@ -138,6 +148,17 @@ Variable Dictionary
 | `{{EXCEPTION_OWNER}}` | Engineering Exceptions | One accountable `@<actor-id>` |
 | `{{EXCEPTION_REVIEW_OR_REMOVAL}}` | Engineering Exceptions | Removal or review date, or specific permanent rationale |
 | `{{EXCEPTION_VERIFICATION}}` | Engineering Exceptions | Evidence that demonstrates the compensating controls |
+| `{{CONTRACT_CLAUSE_ID}}` | Contract-To-Check Traceability | Stable identifier for one normative contract clause |
+| `{{CONTRACT_LOCATION}}` | Contract-To-Check Traceability | Exact repository-relative contract path plus heading or anchor |
+| `{{CONTRACT_REQUIREMENT}}` | Contract-To-Check Traceability | Exact required response, transition, ordering, invariant, limit, failure outcome, or prohibition |
+| `{{CONTRACT_CHECK_IDS}}` | Contract-To-Check Traceability | Acceptance-check or deterministic-test IDs that explicitly exercise this clause |
+| `{{CONTRACT_COVERAGE_METHOD}}` | Contract-To-Check Traceability | How the linked checks exercise the complete clause |
+| `{{RISK_DIMENSION}}` | Risk Coverage Matrix | One required baseline dimension from `AGENTS.md`; duplicate the row exactly five times |
+| `{{RISK_SCENARIO_OR_NA}}` | Risk Coverage Matrix | Concrete failure or edge scenario, or `N/A — <specific reason>` |
+| `{{RISK_BOUNDARY}}` | Risk Coverage Matrix | Component, adapter, framework, datastore, or trust boundary that owns the behavior |
+| `{{RISK_VERIFICATION_METHOD}}` | Risk Coverage Matrix | Deterministic test or inspection that exercises the scenario |
+| `{{RISK_EXPECTED_RESULT}}` | Risk Coverage Matrix | Exact observable result required for Pass |
+| `{{RISK_CHECK_IDS}}` | Risk Coverage Matrix | Linked acceptance-check IDs |
 | `{{CHECK_ID}}` | Acceptance Checks | Stable check identifier, e.g. AC-1 |
 | `{{CHECK_SUBTASK_ID}}` | Acceptance Checks | Exactly one declared subtask ID verified by this check |
 | `{{ACCEPTANCE_POINT}}` | Acceptance Checks | One binary pass/fail assertion with an unambiguous subject and condition |
@@ -276,6 +297,8 @@ Mitigations:
 
 **Complete task outcome**: {{TASK_OUTCOME}}
 
+**Primary implementation boundary**: {{PRIMARY_IMPLEMENTATION_BOUNDARY}}
+
 Allowed subtask statuses: `Not Started`, `In Progress`, `Blocked`, `Complete`,
 or `N/A — <specific reason>`.
 
@@ -293,6 +316,24 @@ changes existing behavior]**: {{MIGRATION_AND_ROLLBACK_STRATEGY}}
 | Rule and affected unit | Measured value or condition | Rationale | Risks | Compensating controls | Owner | Removal, review, or permanent rationale | Verification evidence |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | {{EXCEPTION_RULE_AND_UNIT}} | {{EXCEPTION_MEASURED_VALUE}} | {{EXCEPTION_RATIONALE}} | {{EXCEPTION_RISKS}} | {{EXCEPTION_CONTROLS}} | {{EXCEPTION_OWNER}} | {{EXCEPTION_REVIEW_OR_REMOVAL}} | {{EXCEPTION_VERIFICATION}} |
+
+## Contract-To-Check Traceability [Conditionally Required — source or configuration implementation]
+
+| Clause ID | Authoritative contract path and heading | Exact normative requirement | Acceptance check or deterministic test IDs | Explicit coverage method |
+| --- | --- | --- | --- | --- |
+| {{CONTRACT_CLAUSE_ID}} | {{CONTRACT_LOCATION}} | {{CONTRACT_REQUIREMENT}} | {{CONTRACT_CHECK_IDS}} | {{CONTRACT_COVERAGE_METHOD}} |
+
+## Risk Coverage Matrix [Conditionally Required — source or configuration implementation]
+
+| Risk dimension | Applicability and scenario, or specific N/A reason | Owning boundary | Deterministic verification method | Exact expected result | Acceptance check IDs | Status | Actual evidence |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| {{RISK_DIMENSION}} | {{RISK_SCENARIO_OR_NA}} | {{RISK_BOUNDARY}} | {{RISK_VERIFICATION_METHOD}} | {{RISK_EXPECTED_RESULT}} | {{RISK_CHECK_IDS}} | Not Started | Not run — implementation not started |
+
+Duplicate the sample row exactly once for each baseline dimension: concurrency
+and ordering; timeout and deadline; cancellation and interruption; resource
+bounds and backpressure; and framework or trust-boundary rejection. Allowed
+final statuses are `Pass`, `Fail`, or `N/A — <specific reason>`. `Fail` blocks
+review-ready, `Complete`, and `Verified`.
 
 ## Acceptance Checks [Required]
 
@@ -314,6 +355,7 @@ precondition demonstrably does not apply.
 | A-4 | Requirement levels satisfied | Every required section is complete, every conditional trigger is assessed and completed or marked `N/A — <reason>`, and optional sections are complete or removed | Structured document review | Not Started | Pending |
 | A-5 | Acceptance checks are decidable | Every check names one subtask, preconditions or input, deterministic method, exact expected result, and evidence; no unqualified subjective criterion remains | Structured acceptance-check review | Not Started | Pending |
 | A-6 | Engineering exceptions governed, when applicable | Every exceeded or waived engineering rule has one complete exception row, an accountable owner, a lifecycle, and verification evidence before approval; otherwise the conditional subsection records `N/A — <reason>` | Engineering Exceptions subsection and affected-file evidence | Not Started | Pending |
+| A-7 | Contract and baseline risks covered, when applicable | Every normative contract clause maps to an explicit check or deterministic test, and every required Risk Coverage Matrix row is complete before approval and reaches Pass or specific N/A before review-ready or completion | Contract-To-Check Traceability, Risk Coverage Matrix, acceptance checks, and stable evidence | Not Started / N/A | Pending |
 
 ## Supporting Notes [Optional]
 

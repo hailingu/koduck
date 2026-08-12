@@ -164,6 +164,32 @@ fn synchronous_failed_turn_returns_provider_unavailable() {
 }
 
 #[test]
+fn synchronous_non_completed_turn_is_not_a_success_response() {
+    for (status, outcome) in [
+        (TurnStatus::Interrupted, TerminalOutcome::Interrupted),
+        (TurnStatus::Cancelled, TerminalOutcome::Cancelled),
+    ] {
+        let terminal = Item::new(2, ItemPayload::Terminal(outcome));
+        let mut adapter = adapter(TurnResult {
+            thread_id: ThreadId::new(),
+            turn_id: TurnId::new(),
+            status,
+            published: vec![terminal.clone()],
+            replay: vec![terminal],
+        });
+
+        let response = adapter.handle(post(
+            "/api/v1/ai/chat",
+            r#"{"input":"hello"}"#,
+            Some(trust()),
+        ));
+
+        assert_eq!(response.status, 503);
+        assert!(response.body.contains("\"code\":\"provider-unavailable\""));
+    }
+}
+
+#[test]
 fn sse_v1_contract_and_append_before_publish() {
     let result = completed_result(&["A", "B"]);
     let durable = result.replay.clone();

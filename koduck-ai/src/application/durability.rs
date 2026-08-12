@@ -53,10 +53,25 @@ impl AppendPolicy {
     ///
     /// Returns [`BufferLimitError::PayloadBytes`] when the item exceeds 1 MiB.
     pub fn check_item(self, item: &NewItem) -> Result<(), BufferLimitError> {
-        if payload_bytes(item) > self.max_payload_bytes {
+        self.accumulate_payload_bytes(0, item).map(|_| ())
+    }
+
+    /// Returns the next per-turn payload total when adding one provider item.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BufferLimitError::PayloadBytes`] when the cumulative serialized
+    /// payload would exceed 1 MiB.
+    pub fn accumulate_payload_bytes(
+        self,
+        current_payload_bytes: usize,
+        item: &NewItem,
+    ) -> Result<usize, BufferLimitError> {
+        let next_payload_bytes = current_payload_bytes.saturating_add(payload_bytes(item));
+        if next_payload_bytes > self.max_payload_bytes {
             Err(BufferLimitError::PayloadBytes)
         } else {
-            Ok(())
+            Ok(next_payload_bytes)
         }
     }
 
@@ -150,13 +165,17 @@ impl UnpublishedBuffer {
             self.stopped = true;
             return Err(BufferLimitError::ItemCount);
         }
-        let payload_bytes = payload_bytes(&item);
-        if self.pending_payload_bytes.saturating_add(payload_bytes) > self.policy.max_payload_bytes
+        let next_payload_bytes = match self
+            .policy
+            .accumulate_payload_bytes(self.pending_payload_bytes, &item)
         {
-            self.stopped = true;
-            return Err(BufferLimitError::PayloadBytes);
-        }
-        self.pending_payload_bytes += payload_bytes;
+            Ok(next_payload_bytes) => next_payload_bytes,
+            Err(error) => {
+                self.stopped = true;
+                return Err(error);
+            }
+        };
+        self.pending_payload_bytes = next_payload_bytes;
         self.pending.push(item);
         Ok(())
     }

@@ -235,7 +235,7 @@ impl<S: TurnService> HttpAdapter<S> {
     fn execute(&mut self, command: TurnCommand, stream: bool) -> HttpResponse {
         match self.service.execute(command) {
             Ok(result) if stream => response(200, "text/event-stream", sse_body(&result)),
-            Ok(result) if result.status == crate::domain::TurnStatus::Failed => {
+            Ok(result) if result.status != crate::domain::TurnStatus::Completed => {
                 map_service_error(&ServiceError::ProviderUnavailable)
             }
             Ok(result) => response(200, "application/json", sync_body(&result)),

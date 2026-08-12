@@ -14,6 +14,7 @@ use crate::domain::{
     Item, LeaseGeneration, TenantId, TerminalOutcome, ThreadId, TrustContext, TurnId,
 };
 
+mod payload_codec;
 mod recovery;
 mod sqlx_executor;
 #[cfg(test)]
@@ -222,7 +223,9 @@ impl Drop for ReconciliationWorker {
         self.stop.store(true, Ordering::Release);
         if let Some(thread) = self.thread.take() {
             thread.thread().unpark();
-            let _ = thread.join();
+            // A scan may be blocked inside a degraded database call. Dropping
+            // the handle lets runtime shutdown return while the owned worker
+            // observes `stop` as soon as that call completes.
         }
     }
 }
@@ -287,8 +290,11 @@ impl<E: PostgresExecutor> PostgresTurnHistory<E> {
     }
 
     /// Starts the production loop that fences orphaned expired generations.
-    #[must_use]
-    pub fn start_reconciliation_worker(&self) -> ReconciliationWorker
+    ///
+    /// # Errors
+    ///
+    /// Returns the operating-system spawn error when the worker thread cannot start.
+    pub fn start_reconciliation_worker(&self) -> Result<ReconciliationWorker, std::io::Error>
     where
         E: Send + 'static,
     {
@@ -296,30 +302,33 @@ impl<E: PostgresExecutor> PostgresTurnHistory<E> {
         let timing = self.timing;
         let stop = Arc::new(AtomicBool::new(false));
         let worker_stop = Arc::clone(&stop);
-        let thread = thread::spawn(move || {
-            while !worker_stop.load(Ordering::Acquire) {
-                let now_ms = unix_time_ms();
-                match executor.expired_lease_keys(now_ms, timing) {
-                    Ok(keys) => {
-                        for key in keys {
-                            match executor.reconcile_expired(&key, now_ms, timing) {
-                                Ok(_)
-                                | Err(HistoryError::Fenced | HistoryError::AlreadyTerminal) => {}
-                                Err(error) => {
-                                    eprintln!("event=lease_reconcile_failed error={error}");
+        let thread = thread::Builder::new()
+            .name("koduck-ai-reconciliation".to_owned())
+            .spawn(move || {
+                while !worker_stop.load(Ordering::Acquire) {
+                    let now_ms = unix_time_ms();
+                    match executor.expired_lease_keys(now_ms, timing) {
+                        Ok(keys) => {
+                            for key in keys {
+                                match executor.reconcile_expired(&key, now_ms, timing) {
+                                    Ok(_)
+                                    | Err(HistoryError::Fenced | HistoryError::AlreadyTerminal) => {
+                                    }
+                                    Err(error) => {
+                                        eprintln!("event=lease_reconcile_failed error={error}");
+                                    }
                                 }
                             }
                         }
+                        Err(error) => eprintln!("event=lease_scan_failed error={error}"),
                     }
-                    Err(error) => eprintln!("event=lease_scan_failed error={error}"),
+                    thread::park_timeout(Duration::from_millis(timing.heartbeat_ms()));
                 }
-                thread::park_timeout(Duration::from_millis(timing.heartbeat_ms()));
-            }
-        });
-        ReconciliationWorker {
+            })?;
+        Ok(ReconciliationWorker {
             stop,
             thread: Some(thread),
-        }
+        })
     }
 }
 

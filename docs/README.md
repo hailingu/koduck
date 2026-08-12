@@ -104,6 +104,17 @@ expected result, and evidence. Subjective wording without a threshold, exact
 state, reproducible procedure, or authoritative specification reference is not
 a valid ADR check.
 
+A source or configuration ADR first drafted under the current rules authorizes
+one independently reviewable implementation slice with one primary
+implementation boundary, delivered through one task pull request to `dev`;
+already `Accepted` ADRs are not retroactively invalidated. Before acceptance,
+the ADR maps every normative contract clause to an explicit acceptance check or
+deterministic test and assesses the five baseline Risk Coverage Matrix
+dimensions defined by `AGENTS.md`. Before the implementation pull request
+becomes review-ready, all required CI must be green on its latest commit, every
+applicable matrix row must be `Pass`, and no actionable non-outdated P0/P1/P2
+review thread may remain unresolved.
+
 ## Development Standards
 
 Before writing, modifying, or reviewing source code or infrastructure

@@ -148,7 +148,9 @@ pub async fn run(config: RuntimeConfig) -> Result<(), RuntimeError> {
         .map_err(RuntimeError::Database)?;
     let runtime = tokio::runtime::Handle::current();
     let history = PostgresTurnHistory::new(SqlxPostgresExecutor::new(pool, runtime.clone()));
-    let _reconciliation_worker = history.start_reconciliation_worker();
+    let _reconciliation_worker = history
+        .start_reconciliation_worker()
+        .map_err(RuntimeError::ReconciliationWorker)?;
     let client = reqwest::Client::builder()
         .build()
         .map_err(RuntimeError::ProviderClient)?;
@@ -315,6 +317,9 @@ pub enum RuntimeError {
     /// The configured provider client could not be constructed.
     #[error("provider client setup failed")]
     ProviderClient(#[source] reqwest::Error),
+    /// The global orphan-reconciliation worker could not be started.
+    #[error("reconciliation worker startup failed")]
+    ReconciliationWorker(#[source] std::io::Error),
     /// The configured listener address could not be bound.
     #[error("AI listener bind failed")]
     Bind(#[source] std::io::Error),

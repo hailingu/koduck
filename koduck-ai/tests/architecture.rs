@@ -124,6 +124,87 @@ fn production_runtime_wires_reviewed_failure_and_streaming_guards() {
     );
 }
 
+#[test]
+fn postgres_executor_stays_within_the_approved_file_size_limit() {
+    let crate_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let executor =
+        fs::read_to_string(crate_root.join("src/adapters/history/postgres/sqlx_executor.rs"))
+            .expect("SQLx executor source is readable");
+
+    assert!(
+        executor.lines().count() <= 800,
+        "sqlx_executor.rs must be split or governed by an approved engineering exception"
+    );
+}
+
+// ADR: docs/adr/ADR-0002-required-ai-ci-postgres-verification.md
+#[test]
+fn required_ci_maps_every_routed_command_and_postgres_boundary() {
+    let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("koduck-ai belongs to the repository workspace")
+        .to_path_buf();
+    let workflow_path = repository_root.join(".github/workflows/koduck-ai.yml");
+    let workflow = fs::read_to_string(&workflow_path).unwrap_or_else(|error| {
+        panic!(
+            "required Koduck AI workflow must exist at {}: {error}",
+            workflow_path.display()
+        )
+    });
+
+    for check_name in [
+        "name: koduck-ai-format",
+        "name: koduck-ai-clippy",
+        "name: koduck-ai-test-postgres",
+    ] {
+        assert!(
+            workflow.contains(check_name),
+            "workflow must expose required check {check_name}"
+        );
+    }
+    for command in [
+        "cargo fmt --all --check",
+        "cargo clippy -p koduck-ai --all-targets --all-features -- -D warnings",
+        "cargo test -p koduck-ai --all-targets --all-features",
+    ] {
+        assert!(
+            workflow.contains(command),
+            "workflow must execute routed command {command}"
+        );
+    }
+    assert!(
+        workflow.contains("pull_request:")
+            && workflow.contains("- dev")
+            && workflow.contains("postgres:")
+            && workflow.contains("KODUCK_AI_TEST_DATABASE_URL")
+            && workflow.contains("timeout-minutes:")
+            && !workflow.contains("upload-artifact"),
+        "workflow must bind dev pull requests to bounded disposable PostgreSQL verification"
+    );
+}
+
+// ADR: docs/adr/ADR-0002-required-ai-ci-postgres-verification.md
+#[test]
+fn postgres_claims_use_the_production_executor_instead_of_source_inspection() {
+    let crate_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let integration = fs::read_to_string(crate_root.join("tests/postgres_subject_ownership.rs"))
+        .expect("PostgreSQL integration test source is readable");
+
+    assert!(
+        integration.contains("KODUCK_AI_TEST_DATABASE_URL")
+            && integration.contains("SqlxPostgresExecutor")
+            && integration.contains("0001_cand_1_history.sql")
+            && integration.contains("production_postgres_contract"),
+        "PostgreSQL claims must run the production migration and SQLx executor"
+    );
+    assert!(
+        !integration
+            .contains("include_str!(\"../src/adapters/history/postgres/sqlx_executor.rs\")")
+            && !integration.contains("executor.contains("),
+        "source-string assertions cannot establish PostgreSQL behavior"
+    );
+}
+
 fn collect_text(path: &Path, output: &mut String) {
     for entry in fs::read_dir(path).expect("production source directory exists") {
         let entry = entry.expect("source directory entry is readable");

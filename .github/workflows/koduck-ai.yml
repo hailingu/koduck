@@ -1,0 +1,79 @@
+# ADR: docs/adr/ADR-0002-required-ai-ci-postgres-verification.md
+name: Koduck AI
+
+on:
+  pull_request:
+    branches:
+      - dev
+    paths:
+      - .github/workflows/koduck-ai.yml
+      - Cargo.lock
+      - Cargo.toml
+      - koduck-ai/**
+  push:
+    branches:
+      - codex/add-ai-service-codex-alignment
+    paths:
+      - .github/workflows/koduck-ai.yml
+      - Cargo.lock
+      - Cargo.toml
+      - koduck-ai/**
+
+concurrency:
+  group: koduck-ai-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  format:
+    name: koduck-ai-format
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.85"
+          components: rustfmt
+      - run: cargo fmt --all --check
+
+  clippy:
+    name: koduck-ai-clippy
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.85"
+          components: clippy
+      - run: cargo clippy -p koduck-ai --all-targets --all-features -- -D warnings
+
+  test-postgres:
+    name: koduck-ai-test-postgres
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_DB: koduck_test
+          POSTGRES_USER: koduck
+          POSTGRES_PASSWORD: koduck-test-only
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U koduck -d koduck_test"
+          --health-interval 2s
+          --health-timeout 2s
+          --health-retries 15
+    env:
+      KODUCK_AI_TEST_DATABASE_URL: postgresql://koduck:koduck-test-only@localhost:5432/koduck_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.85"
+      - run: cargo test -p koduck-ai --all-targets --all-features

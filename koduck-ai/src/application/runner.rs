@@ -4,11 +4,11 @@
 
 use crate::domain::{Item, TenantId, TerminalOutcome, TrustContext, Turn, TurnId, Usage};
 
-use super::AppendPolicy;
 use super::ports::{
     AcceptedTurn, DurabilityFailure, HistoryError, ModelInput, ModelProvider, NewItem,
     ProviderEvent, TurnCommand, TurnHistory, TurnResult, TurnRunError, TurnStreamEvent,
 };
+use super::{AppendPolicy, BufferLimitError};
 
 /// Owns provider-neutral lifecycle transitions and durable-before-visible ordering.
 #[derive(Clone)]
@@ -22,6 +22,7 @@ struct ExecutionState {
     usage: Usage,
     lifecycle: Turn,
     provider_item_count: usize,
+    provider_payload_bytes: usize,
 }
 
 impl ExecutionState {
@@ -31,6 +32,7 @@ impl ExecutionState {
             usage: Usage::zero(),
             lifecycle: Turn::start(),
             provider_item_count: 0,
+            provider_payload_bytes: 0,
         }
     }
 }
@@ -343,20 +345,26 @@ fn handle_event<H: TurnHistory>(
     match event {
         ProviderEvent::Delta(content) => {
             let item = NewItem::AgentMessageDelta { content };
-            validate_provider_item(state, &item)?;
+            if enforce_provider_limits(history, accepted, state, &item)? {
+                return Ok(true);
+            }
             let durable = history.append(accepted, item)?;
             accept_appended_provider_item(state, durable, true)
         }
         ProviderEvent::Usage(observed) => {
             state.usage = observed;
             let item = NewItem::Usage(observed);
-            validate_provider_item(state, &item)?;
+            if enforce_provider_limits(history, accepted, state, &item)? {
+                return Ok(true);
+            }
             let durable = history.append(accepted, item)?;
             accept_appended_provider_item(state, durable, false)
         }
         ProviderEvent::Completed => {
             let item = NewItem::Terminal(TerminalOutcome::Completed { usage: state.usage });
-            validate_provider_item(state, &item)?;
+            if enforce_provider_limits(history, accepted, state, &item)? {
+                return Ok(true);
+            }
             append_provider_terminal(
                 history,
                 accepted,
@@ -368,7 +376,9 @@ fn handle_event<H: TurnHistory>(
         ProviderEvent::Error { code } => {
             let outcome = TerminalOutcome::Failed { code };
             let item = NewItem::Terminal(outcome.clone());
-            validate_provider_item(state, &item)?;
+            if enforce_provider_limits(history, accepted, state, &item)? {
+                return Ok(true);
+            }
             append_provider_terminal(history, accepted, state, outcome)?;
             Ok(true)
         }
@@ -376,14 +386,61 @@ fn handle_event<H: TurnHistory>(
     }
 }
 
-fn validate_provider_item(state: &mut ExecutionState, item: &NewItem) -> Result<(), HistoryError> {
+fn enforce_provider_limits<H: TurnHistory>(
+    history: &mut H,
+    accepted: &AcceptedTurn,
+    state: &mut ExecutionState,
+    item: &NewItem,
+) -> Result<bool, TurnRunError> {
+    match validate_provider_item(state, item) {
+        Ok(()) => Ok(false),
+        Err(_) => terminalize_from_limit(history, accepted, state),
+    }
+}
+
+fn terminalize_from_limit<H: TurnHistory>(
+    history: &mut H,
+    accepted: &AcceptedTurn,
+    state: &mut ExecutionState,
+) -> Result<bool, TurnRunError> {
+    let terminal = history
+        .append_provider_terminal(
+            accepted,
+            TerminalOutcome::Failed {
+                code: "DURABILITY_UNAVAILABLE".to_owned(),
+            },
+        )
+        .map_err(|error| recover_append_failure(history, accepted, state, error))?;
+    match &terminal.payload {
+        crate::domain::ItemPayload::Terminal(TerminalOutcome::Interrupted) => {
+            apply_terminal_outcome(state, &TerminalOutcome::Interrupted)?;
+            state.published.push(terminal);
+            Ok(true)
+        }
+        crate::domain::ItemPayload::Terminal(TerminalOutcome::Failed { code })
+            if code == "DURABILITY_UNAVAILABLE" =>
+        {
+            Err(history_failure(
+                HistoryError::Unavailable,
+                true,
+                &state.published,
+            ))
+        }
+        _ => Err(HistoryError::Unavailable.into()),
+    }
+}
+
+fn validate_provider_item(
+    state: &mut ExecutionState,
+    item: &NewItem,
+) -> Result<(), BufferLimitError> {
     let policy = AppendPolicy::cand_1();
     let next_count = state.provider_item_count.saturating_add(1);
-    policy
+    let next_payload_bytes = policy
         .check_item_count(next_count)
-        .and_then(|()| policy.check_item(item))
-        .map_err(|_| HistoryError::Unavailable)?;
+        .and_then(|()| policy.accumulate_payload_bytes(state.provider_payload_bytes, item))?;
     state.provider_item_count = next_count;
+    state.provider_payload_bytes = next_payload_bytes;
     Ok(())
 }
 

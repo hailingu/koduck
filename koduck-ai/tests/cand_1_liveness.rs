@@ -293,7 +293,9 @@ fn lease_renewal_retries_after_a_transient_store_failure() {
 fn production_reconciliation_worker_scans_expired_turns() {
     let (executor, key, _) = SimulatedPostgres::seeded();
     let history = PostgresTurnHistory::new(executor);
-    let worker = history.start_reconciliation_worker();
+    let worker = history
+        .start_reconciliation_worker()
+        .expect("reconciliation worker starts");
     let deadline = Instant::now() + Duration::from_millis(500);
 
     loop {
@@ -315,6 +317,23 @@ fn production_reconciliation_worker_scans_expired_turns() {
         thread::sleep(Duration::from_millis(5));
     }
     drop(worker);
+}
+
+#[test]
+fn reconciliation_worker_startup_is_fallible_and_propagated() {
+    let history = include_str!("../src/adapters/history/postgres.rs");
+    let runtime = include_str!("../src/runtime/mod.rs");
+
+    assert!(
+        history.contains("thread::Builder::new()") && history.contains("koduck-ai-reconciliation"),
+        "the global worker must use the fallible named-thread builder"
+    );
+    assert!(
+        runtime.contains("RuntimeError::ReconciliationWorker")
+            && runtime.contains("start_reconciliation_worker()")
+            && runtime.contains("map_err(RuntimeError::ReconciliationWorker)?"),
+        "runtime assembly must propagate reconciliation-worker spawn failure"
+    );
 }
 
 #[test]
