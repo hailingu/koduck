@@ -145,12 +145,13 @@ where
         ) {
             Ok(()) => {}
             Err(TurnRunError::Durability(failure)) => {
-                drop(liveness);
-                if state.lifecycle.status() == crate::domain::TurnStatus::RecoveryPending
-                    && let Err(schedule_error) = self.history.schedule_failed_recovery(&accepted)
-                    && schedule_error != HistoryError::Unavailable
-                {
-                    return Err(TurnRunError::History(schedule_error));
+                if state.lifecycle.status() == crate::domain::TurnStatus::RecoveryPending {
+                    liveness.stop_for_recovery();
+                    if let Err(schedule_error) = self.history.schedule_failed_recovery(&accepted)
+                        && schedule_error != HistoryError::Unavailable
+                    {
+                        return Err(TurnRunError::History(schedule_error));
+                    }
                 }
                 return Err(TurnRunError::Durability(failure));
             }

@@ -184,7 +184,14 @@ pub enum HistoryError {
 }
 
 /// An active-turn resource whose drop stops its liveness maintenance.
-pub trait TurnLiveness: Send {}
+pub trait TurnLiveness: Send {
+    /// Stops liveness and confirms adapter-owned recovery capacity is released.
+    ///
+    /// The default implementation consumes and drops the resource. Adapters
+    /// whose worker owns admission must override this operation and wait for
+    /// that worker to release admission before returning.
+    fn stop_for_recovery(self: Box<Self>) {}
+}
 
 struct NoopTurnLiveness;
 

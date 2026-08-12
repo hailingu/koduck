@@ -268,7 +268,17 @@ struct LeaseRenewalGuard {
     thread: Option<JoinHandle<()>>,
 }
 
-impl TurnLiveness for LeaseRenewalGuard {}
+impl TurnLiveness for LeaseRenewalGuard {
+    fn stop_for_recovery(mut self: Box<Self>) {
+        self.stop.store(true, Ordering::Release);
+        if let Some(thread) = self.thread.take() {
+            thread.thread().unpark();
+            if thread.join().is_err() {
+                eprintln!("event=lease_renewal_join_failed error=worker-panicked");
+            }
+        }
+    }
+}
 
 impl Drop for LeaseRenewalGuard {
     fn drop(&mut self) {

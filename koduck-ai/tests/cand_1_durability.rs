@@ -477,9 +477,15 @@ fn accepted_append_outage_schedules_a_failed_terminal_recovery() {
 
 struct DropObservedLiveness {
     dropped: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    admission_released: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
-impl TurnLiveness for DropObservedLiveness {}
+impl TurnLiveness for DropObservedLiveness {
+    fn stop_for_recovery(self: Box<Self>) {
+        self.admission_released
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+}
 
 impl Drop for DropObservedLiveness {
     fn drop(&mut self) {
@@ -490,6 +496,7 @@ impl Drop for DropObservedLiveness {
 
 struct HandoffHistory {
     liveness_dropped: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    admission_released: std::sync::Arc<std::sync::atomic::AtomicBool>,
     items: Rc<RefCell<Vec<Item>>>,
 }
 
@@ -500,6 +507,7 @@ impl TurnHistory for HandoffHistory {
     ) -> Result<Box<dyn TurnLiveness>, HistoryError> {
         Ok(Box::new(DropObservedLiveness {
             dropped: std::sync::Arc::clone(&self.liveness_dropped),
+            admission_released: std::sync::Arc::clone(&self.admission_released),
         }))
     }
 
@@ -546,9 +554,9 @@ impl TurnHistory for HandoffHistory {
 
     fn schedule_failed_recovery(&mut self, _turn: &AcceptedTurn) -> Result<(), HistoryError> {
         assert!(
-            self.liveness_dropped
+            self.admission_released
                 .load(std::sync::atomic::Ordering::Acquire),
-            "renewal admission must be released before fallback recovery is scheduled"
+            "renewal admission must be synchronously handed off before recovery is scheduled"
         );
         Ok(())
     }
@@ -559,8 +567,9 @@ impl TurnHistory for HandoffHistory {
 }
 
 #[test]
-fn append_outage_releases_liveness_before_fallback_recovery() {
+fn append_outage_confirms_admission_handoff_before_recovery() {
     let liveness_dropped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let admission_released = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let result = TurnRunner::new(
         CountingProvider {
             calls: Rc::new(Cell::new(0)),
@@ -568,6 +577,7 @@ fn append_outage_releases_liveness_before_fallback_recovery() {
         },
         HandoffHistory {
             liveness_dropped: std::sync::Arc::clone(&liveness_dropped),
+            admission_released: std::sync::Arc::clone(&admission_released),
             items: Rc::new(RefCell::new(Vec::new())),
         },
     )

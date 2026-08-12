@@ -120,8 +120,10 @@ Fencing 的前台活性机制。它定义 AI 自有的持久化 Thread/Turn/Item
 - 所有生产 PostgreSQL Operation 均使用同一个 2 秒 Attempt Deadline。Lease-renewal
   与 Failed-append Recovery 在每个生产 History Instance 中共享最多 256 个
   Background Worker；Connection 与 Migration Startup Attempt 使用同一 Deadline。
-  Append Outage 在调度 Recovery 前释放 Renewal Permit，使满载时 Recovery 仍可接管
-  该容量；其他饱和情况以 `durability-unavailable` Fail Closed。
+  Append Outage 会停止 Renewal Worker，并等待该 Worker 释放 Permit 后才调度
+  Recovery，使满载时 Recovery 接管的是已确认释放的容量。该等待受 Renewal
+  Database Attempt 的 2 秒 Deadline 约束；其他饱和情况以
+  `durability-unavailable` Fail Closed。
 - Provider Connection Deadline 为 5 秒，Response Header 与 Stream Idle Deadline
   均为 30 秒，Total Response Processing Deadline 为 120 秒。超时产生 Provider
   Error，并通过正常 Terminal Arbitration 关闭已接受 Turn。
@@ -389,7 +391,7 @@ N/A — 所提设计不超出或豁免仓库工程规则。实施期间发现的
 | CT-8 | 初始或中途 Durability Outage 不发布未提交状态，并返回 `durability-unavailable`。 | AC-8 |
 | CT-9 | Unpublished Data 上限为 64 Items/1 MiB，所有 PostgreSQL Attempt 上限为 2 秒。 | AC-9、AC-16 |
 | CT-10 | Lease Renewal/Expiry/Skew/Fencing/Reconciliation 最多生成一个 Durable Orphan Terminal。 | AC-10、AC-11 |
-| CT-11 | Renewal 与 Recovery 共享 256-Worker Admission Bound，饱和时拒绝新任务。 | AC-16 |
+| CT-11 | Renewal 与 Recovery 共享 256-Worker Admission Bound；失败 Turn 在调度 Recovery 前确认 Renewal Worker 已释放 Admission，使满载交接无竞态。 | AC-16；`append_outage_confirms_admission_handoff_before_recovery`；`renewal_recovery_shutdown_confirms_permit_release` |
 | CT-12 | Provider Connect/Header/Idle/Total Deadline 分别为 5/30/30/120 秒。 | AC-17 |
 | CT-13 | 无 Validated Trust Context 的 Request 在 Application/Provider/History 前终止。 | AC-13 |
 | CT-14 | CAND-1 仅有一个 PostgreSQL History，且无前身、Memory 或 Multitask Fallback。 | AC-12 |
@@ -402,7 +404,7 @@ N/A — 所提设计不超出或豁免仓库工程规则。实施期间发现的
 | Concurrency and ordering | 适用 — 并发 Terminal Writer/Reconciler 争抢同一 Generation。 | Application Arbitration 与 PostgreSQL History | AC-5、AC-7、AC-10、AC-11 | Visible Item 先 Durable；唯一 Terminal 胜出；旧 Writer 被 Fence。 | AC-5、AC-7、AC-10、AC-11 | Pass — Contract、Terminal Arbitration、Liveness Test。 |
 | Timeout and deadline | 适用 — Database 或 Provider Establishment/Streaming 卡死。 | SQLx 与 Provider Adapter | AC-9、AC-16、AC-17 | DB 2 秒停止；Provider 5/30/30/120 秒停止并生成 Typed Terminal Failure。 | AC-9、AC-16、AC-17 | Pass — Deadline Behavior 与 Architecture Regression。 |
 | Cancellation and interruption | 适用 — Interrupt 与 Provider Terminal 或 Downstream Disconnect 竞争。 | Runner 与 HTTP/SSE Adapter | AC-7、AC-15 | Interrupt 是唯一 `interrupted`；Dependency/Disconnect 为 `cancelled`；同步 409 Code 可区分。 | AC-7、AC-15 | Pass — Interrupt、Arbitration、Sync Mapping Regression。 |
-| Resource bounds and backpressure | 适用 — Provider Flood 或 Active Turn 耗尽后台容量。 | Provider、Durability Policy、PostgreSQL History | AC-9、AC-16 | Item/Payload Cap Fail Closed；Channel 有界；第 257 个 Worker 被拒绝且 Permit 可复用。 | AC-9、AC-16 | Pass — Cap、Bounded Channel、Admission Test。 |
+| Resource bounds and backpressure | 适用 — Provider Flood 或 Active Turn 耗尽后台容量。 | Provider、Durability Policy、PostgreSQL History | AC-9、AC-16 | Item/Payload Cap Fail Closed；Channel 有界；第 257 个 Worker 被拒绝；Append Outage 在调度 Recovery 前确认 Renewal Permit 已释放。 | AC-9、AC-16 | Pass — Cap、Bounded Channel、同步 Permit-release 与 Handoff Regression。 |
 | Framework or trust-boundary rejection | 适用 — Invalid Identity/UTF-8/JSON/Media Type/Body/Method。 | HTTP/Axum Boundary | AC-13、AC-15 | Invalid Identity 在 Service 前返回 401；Malformed Input 返回自有 4xx；合法 JSON Parameter 被接受。 | AC-13、AC-15 | Pass — Identity、Runtime Transport、Media-type Test。 |
 
 ## 验收检查 [Required]
@@ -424,7 +426,7 @@ N/A — 所提设计不超出或豁免仓库工程规则。实施期间发现的
 | AC-13 | T-2 | 无 Validated Trust Context 的 Request 不得抵达 Application Turn Runner 或 Provider/History Port。 | Request 缺失或携带无效 Identity；加载自有 v1 Error Contract。 | 运行 `cargo test -p koduck-ai --test cand_1_contract invalid_identity_stops_at_presentation_boundary -- --exact`。 | Exit Code 0；Status `401`；`WWW-Authenticate` 为 `Bearer`；Content Type 为 `application/problem+json`；Body 恰好包含 `type: about:blank`、`title: Invalid identity`、数值 `status: 401`、`code: invalid-identity` 与 UUID `correlation_id`；Provider Call、Initial History Write 和 Accepted Turn 数量均为 0。 | Command Output、Response Fixture Hash 和 Adapter Call Counter。 | Pass | `46f2a39` 上 Exit 0；Fixture Hash 一致且 Service Call 为 0。 |
 | AC-14 | T-1 | 根 Scope Routing 明确治理新的维护型 `koduck-ai/**` Source 与 Configuration Path。 | 根 `AGENTS.md` Scope Routing Table 与新 Workspace Manifest 存在。 | 确定性检查 Scope Routing Table 中恰好一个 `koduck-ai/**` Row。 | 恰好一个 Row 指定 `koduck-ai/**`，要求读取 `docs/README.md`、公共软件工程标准与 Rust 标准，以仓库根为 Working Directory，并列出非交互 Format、Lint、Test Command；该 Row 说明受治理 Build Command 仍需要 Accepted OCR。 | Scope Routing Row、Structured Inspection Result 和 Tested Commit。 | Pass | `46f2a39` 上 Structured Inspection 找到恰好一个完整 Scope Routing Row。 |
 | AC-15 | T-2 | HTTP Media Type 与同步 Terminal Mapping 精确。 | 带 `Application/JSON; charset=utf-8` 的有效 JSON，以及 Completed/Interrupted/Cancelled/Failed Result。 | 运行 `cargo test -p koduck-ai --test cand_1_contract`。 | Exit 0；两条 Chat Route 接受 Parameterized JSON；Completed 返回 200，Interrupted/Cancelled 返回各自 409 Code，Failed 返回 `503 provider-unavailable`。 | Command Output 与 Response Assertion。 | Pass | 当前 Review Correction 的 9 项 Contract Test 全部通过。 |
-| AC-16 | T-3 | Database Call 与后台 Liveness/Recovery Work 有界且 Fail Closed。 | Slow Database Future 与 Limit=1 的 Background Admission。 | 运行 `cargo test -p koduck-ai adapters::history::postgres::tests` 及对应 Architecture Test。 | Exit 0；慢调用返回 `HistoryError::Unavailable`；第一 Permit 持有时第二 Worker 被拒绝；释放后恢复容量；生产 Renewal/Recovery 共用 256 上限。 | Command Output 与 Source Inspection。 | Pass | Deadline 与 Shared Admission Unit/Architecture Regression 通过。 |
+| AC-16 | T-3 | Database Call 与后台 Liveness/Recovery Work 有界且 Fail Closed。 | Slow Database Future、Limit=1 的 Background Admission，以及 Liveness 持有容量时发生 Append Outage。 | 运行 PostgreSQL Adapter Test、Database Startup Timeout Test、`append_outage_confirms_admission_handoff_before_recovery` 与对应 Architecture Test。 | Exit 0；慢调用返回 Typed Timeout/Unavailable；第一 Permit 持有时第二 Worker 被拒绝；普通 Guard Drop 非阻塞；Recovery Shutdown 仅等待有 2 秒 Deadline 的 Renewal Attempt，并在 Permit 已释放后返回；生产 Renewal/Recovery 共用 256 上限。 | Command Output 与 Source Inspection。 | Pass | Deadline、Shared Admission、同步 Permit-release、Handoff 与 Architecture Regression 通过。 |
 | AC-17 | T-1 | Provider Operation 不得超过自有 Deadline 持续 Pending。 | Production Reqwest Assembly 与 Provider Response Pump 已存在。 | 运行 Provider Unit Test 与 `architecture::production_io_and_background_work_are_bounded`。 | Exit 0；Connect Timeout 5 秒，Header/Idle/Total Timeout 为 30/30/120 秒，且返回 Stable Error Code。 | Command Output 与 Source Inspection。 | Pass | Local TCP Behavior Test 和 Production Deadline Regression 通过。 |
 
 允许的最终检查状态为 `Pass`、`Fail` 或 `N/A — <具体原因>`。`Fail` 会阻止完成。
@@ -512,3 +514,4 @@ N/A — 所提设计不超出或豁免仓库工程规则。实施期间发现的
 | 2026-08-11 | 记录第八个 Review Correction Commit `d444cf3`：使并发同 Thread History 按 Turn 保持连续，把已认证超大 Body 映射为自有 `400 invalid-request` Problem，并把不支持的 Method 路由到自有 `405 method-not-allowed` Problem。Format、严格 All-target Clippy 与全部 52 个测试通过；本次仅更新证据，不改变已接受的 Decision 或 Scope。 | @codex |
 | 2026-08-12 | 仓库 Owner `@linhai` 在当前 Codex 任务中明确回复 `确认Approve`，授权把当前 7 项 Review Correction 作为 ADR-0001 已批准范围内的缺陷修复，不重开已完成的 CAND-1，也不因 ADR-0002 序列化而新建 ADR。补齐必需的 Contract Traceability 与五行 Risk Matrix，修正 HTTP Terminal/Media-type 行为，为所有 Database/Provider Wait 和后台 Renewal/Recovery Admission 加入边界，并更新过时仓库说明。依据该 Owner Determination，Decision Status 保持 `Accepted`，Implementation Status 保持 `Complete`。 | @linhai |
 | 2026-08-12 | Review `4912786010` 后续纠错：Append Outage 在调度 Recovery 前释放该 Turn 的 Renewal Permit，使 256 个续租任务满载时仍能把容量移交给 Recovery；PostgreSQL Connection 与 Migration Startup 分别使用 2 秒 Deadline。补充确定性 Handoff/Startup-timeout Regression；本次不改变已接受 Scope 或状态。 | @codex |
+| 2026-08-12 | Review `4912891981` 后续纠错：用显式 Recovery Handoff 替代异步 Renewal-stop Signal；该 Handoff Join 受 Deadline 约束的 Renewal Worker，并确认 Permit 已释放后才调度 Recovery。普通 Request-shutdown Drop 保持非阻塞。补充 Permit 可用性与普通 Drop 的回归测试；本次不改变已接受 Scope 或状态。 | @codex |

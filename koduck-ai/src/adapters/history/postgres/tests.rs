@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use sqlx::postgres::PgPoolOptions;
 
-use crate::application::HistoryError;
+use crate::application::{HistoryError, TurnLiveness};
 
 use super::{BackgroundAdmission, LeaseRenewalGuard, ReconciliationWorker, SqlxPostgresExecutor};
 
@@ -56,6 +56,27 @@ fn renewal_guard_drop_does_not_join_a_blocked_renewal() {
     assert!(
         elapsed < Duration::from_millis(100),
         "guard shutdown must not synchronously join an unbounded renewal: {elapsed:?}"
+    );
+}
+
+#[test]
+fn renewal_recovery_shutdown_confirms_permit_release() {
+    let admission = Arc::new(BackgroundAdmission::new(1));
+    let permit = admission.try_acquire().expect("renewal is admitted");
+    let renewal = thread::spawn(move || {
+        let _permit = permit;
+        thread::park();
+    });
+    let guard = Box::new(LeaseRenewalGuard {
+        stop: Arc::new(AtomicBool::new(false)),
+        thread: Some(renewal),
+    });
+
+    guard.stop_for_recovery();
+
+    assert!(
+        admission.try_acquire().is_ok(),
+        "recovery shutdown must return only after its permit is available"
     );
 }
 
