@@ -188,14 +188,15 @@ fn verify_interrupt_terminal_arbitration(
             .iter()
             .filter(|result| result.is_ok())
             .count(),
-        1
+        0,
+        "an accepted interrupt is already the durable terminal winner"
     );
     assert_eq!(
         terminal_results
             .iter()
             .filter(|result| **result == Err(HistoryError::AlreadyTerminal))
             .count(),
-        1
+        2
     );
     let terminal_replay = executor
         .replay(tenant, accepted.turn_id)

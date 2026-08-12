@@ -64,6 +64,9 @@ fallback is configured.
   scheduled recovery worker cannot be created, the scheduling owner runs the
   same bounded recovery while retaining its permit.
 - The interrupt endpoint accepts only an owned `started` Turn whose lease is
-  unfenced and has not passed its 2-second skew window. A `recovery-pending` or
+  unfenced and has not passed its 2-second skew window. Before returning `202`,
+  one transaction locks that ownership, appends the unique durable
+  `interrupted` Item, and commits the terminal status. Provider or recovery
+  writers racing afterward replay that terminal. A `recovery-pending` or
   expired Turn rejects interruption because its original SSE observer can no
   longer be guaranteed to deliver `turn.interrupted`.

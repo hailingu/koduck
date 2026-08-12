@@ -56,43 +56,61 @@ impl SqlxPostgresExecutor {
         trust: &TrustContext,
         turn_id: TurnId,
     ) -> Result<(), HistoryError> {
-        let result = sqlx::query(
-            "UPDATE turns SET interrupt_requested = TRUE \
-             WHERE tenant_id = $1 AND turn_id = $3 AND status = 'started' \
-             AND EXISTS (SELECT 1 FROM threads WHERE threads.tenant_id = turns.tenant_id \
-             AND threads.thread_id = turns.thread_id AND threads.subject_id = $2) \
-             AND EXISTS (SELECT 1 FROM turn_leases WHERE turn_leases.tenant_id = turns.tenant_id \
-             AND turn_leases.thread_id = turns.thread_id \
-             AND turn_leases.turn_id = turns.turn_id AND NOT turn_leases.fenced \
-             AND turn_leases.expires_at + INTERVAL '2 seconds' > CURRENT_TIMESTAMP)",
+        let mut transaction = self.pool.begin().await.map_err(unavailable)?;
+        let ownership = sqlx::query(
+            "SELECT t.thread_id, t.status, t.next_sequence, l.fenced, \
+             l.expires_at + INTERVAL '2 seconds' > CURRENT_TIMESTAMP AS within_window \
+             FROM turns t JOIN threads h USING (tenant_id, thread_id) \
+             JOIN turn_leases l USING (tenant_id, thread_id, turn_id) \
+             WHERE t.tenant_id = $1 AND h.subject_id = $2 AND t.turn_id = $3 FOR UPDATE",
         )
         .bind(trust.tenant_id.as_str())
         .bind(trust.subject_id.as_str())
         .bind(turn_id.as_uuid())
-        .execute(&self.pool)
+        .fetch_optional(&mut *transaction)
         .await
         .map_err(unavailable)?;
-        if result.rows_affected() == 1 {
-            return Ok(());
+        let Some(ownership) = ownership else {
+            return Err(HistoryError::NotFound);
+        };
+        let status: String = ownership.try_get("status").map_err(unavailable)?;
+        if is_terminal_status(&status) {
+            return Err(HistoryError::AlreadyTerminal);
         }
-        let status = sqlx::query_scalar::<_, String>(
-            "SELECT turns.status FROM turns JOIN threads \
-             ON threads.tenant_id = turns.tenant_id AND threads.thread_id = turns.thread_id \
-             WHERE turns.tenant_id = $1 AND threads.subject_id = $2 AND turns.turn_id = $3",
+        let fenced: bool = ownership.try_get("fenced").map_err(unavailable)?;
+        let within_window: bool = ownership.try_get("within_window").map_err(unavailable)?;
+        if status != "started" || fenced || !within_window {
+            return Err(HistoryError::Fenced);
+        }
+        let thread_id: Uuid = ownership.try_get("thread_id").map_err(unavailable)?;
+        let sequence: i64 = ownership.try_get("next_sequence").map_err(unavailable)?;
+        let item = Item::new(
+            u64::try_from(sequence).map_err(|_| HistoryError::Unavailable)?,
+            ItemPayload::Terminal(TerminalOutcome::Interrupted),
+        );
+        insert_item(
+            &mut transaction,
+            &trust.tenant_id,
+            ThreadId::from_uuid(thread_id),
+            turn_id,
+            &item,
+        )
+        .await?;
+        sqlx::query(
+            "UPDATE turns SET interrupt_requested = TRUE, status = 'interrupted', \
+             next_sequence = next_sequence + 1 \
+             WHERE tenant_id = $1 AND thread_id = $2 AND turn_id = $3 \
+             AND next_sequence = $4 AND status = 'started'",
         )
         .bind(trust.tenant_id.as_str())
-        .bind(trust.subject_id.as_str())
+        .bind(thread_id)
         .bind(turn_id.as_uuid())
-        .fetch_optional(&self.pool)
+        .bind(sequence)
+        .execute(&mut *transaction)
         .await
         .map_err(unavailable)?;
-        match status.as_deref() {
-            None => Err(HistoryError::NotFound),
-            Some("completed" | "failed" | "interrupted" | "cancelled") => {
-                Err(HistoryError::AlreadyTerminal)
-            }
-            Some(_) => Err(HistoryError::Fenced),
-        }
+        transaction.commit().await.map_err(unavailable)?;
+        Ok(())
     }
 
     async fn interruption_requested_async(
