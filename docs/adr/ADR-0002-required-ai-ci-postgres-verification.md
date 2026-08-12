@@ -3,7 +3,7 @@
 ## Metadata [Required]
 
 - **Decision Status**: Accepted
-- **Implementation Status**: In Progress
+- **Implementation Status**: Blocked
 - **Date**: 2026-08-12
 - **Author**: @codex
 - **Decision Owner**: @linhai
@@ -19,10 +19,10 @@
 - **Retirement Time [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — Decision Status is `Accepted`
 - **Retirement Evidence [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — Decision Status is `Accepted`
 - **Retirement Reason [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — Decision Status is `Accepted`
-- **Blocked From [Conditionally Required — Implementation Status is `Blocked`]**: N/A — Implementation Status is `In Progress`
-- **Blocker And Evidence [Conditionally Required — Implementation Status is `Blocked`]**: N/A — Implementation Status is `In Progress`
-- **Blocker Owner [Conditionally Required — Implementation Status is `Blocked`]**: N/A — Implementation Status is `In Progress`
-- **Blocker Exit Or Recheck Criterion [Conditionally Required — Implementation Status is `Blocked`]**: N/A — Implementation Status is `In Progress`
+- **Blocked From [Conditionally Required — Implementation Status is `Blocked`]**: In Progress
+- **Blocker And Evidence [Conditionally Required — Implementation Status is `Blocked`]**: GitHub returned HTTP 403 for both `repos/hailingu/koduck/branches/dev/protection` and `repos/hailingu/koduck/rulesets`, stating that the private repository must upgrade to GitHub Pro or become public before branch protection or rulesets can be enabled; T-3 and AC-6 therefore cannot execute in the accepted scope.
+- **Blocker Owner [Conditionally Required — Implementation Status is `Blocked`]**: @linhai
+- **Blocker Exit Or Recheck Criterion [Conditionally Required — Implementation Status is `Blocked`]**: GitHub branch protection or rulesets become available for `hailingu/koduck`, and a read-only API request for `dev` returns the current settings instead of HTTP 403; then return this ADR to `In Progress`, draft OCR-0002 from the captured state, obtain `Approve`, and execute T-3.
 - **Related [Optional]**: [Pull request 1](https://github.com/hailingu/koduck/pull/1)
 - **Architecture Source [Conditionally Required — product demand]**: N/A — this is repository verification governance, not product demand
 - **Supersedes [Conditionally Required — this ADR replaces another]**: None
@@ -226,7 +226,7 @@ or `N/A — <specific reason>`.
 | --- | --- | --- | --- | --- |
 | T-1 | Add the three revision-bound routed verification checks. | One `.github/workflows/` workflow, Cargo cache/setup, exact format, strict-Clippy, and all-target/all-feature test commands, bounded job timeouts, and no retained artifact. | Complete | `.github/workflows/koduck-ai.yml` defines the exact three names and routed commands, `dev` PR and task-branch triggers, cancellation by workflow/ref, finite job timeouts, read-only repository permission, and no artifact upload. The architecture RED failed because this file was absent, then passed after the workflow was added. |
 | T-2 | Replace source-inspection-only PostgreSQL claims with production-boundary evidence. | Disposable PostgreSQL service; migration; `SqlxPostgresExecutor`; subject, U+0000, concurrent terminal, and stale-generation scenarios; deterministic cleanup. | Complete | The architecture RED rejected source-string assertions; `production_postgres_contract` now uses the production migration and `SqlxPostgresExecutor`. It passed against a no-volume `postgres:18-alpine` container and proved U+0000 replay, subject rejection, interrupt-priority terminal uniqueness, and stale-generation fencing; the container was deleted afterward. |
-| T-3 | Make the three emitted check names required on `dev`. | A separately Accepted OCR for the exact GitHub repository-setting mutation, preflight snapshot, required check names, verification, and rollback. | Not Started | Pending |
+| T-3 | Make the three emitted check names required on `dev`. | A separately Accepted OCR for the exact GitHub repository-setting mutation, preflight snapshot, required check names, verification, and rollback. | Blocked | GitHub branch-protection and ruleset reads both return HTTP 403 with the private-repository Pro/public requirement, so no executable OCR can yet capture or mutate the target state. |
 
 **Affected paths**: `.github/workflows/**`;
 `koduck-ai/tests/postgres_subject_ownership.rs`;
@@ -265,7 +265,7 @@ must remain within the standard guardrails or receive a decomposition review.
 | Concurrency and ordering | Two production SQLx terminal attempts race with an accepted interrupt and stale generation. | PostgreSQL integration harness and executor | Run the named concurrent integration scenario against the CI PostgreSQL service. | Exactly one terminal row commits; interrupt has the approved priority; the stale generation receives `Fenced`. | AC-4 | Pass | Local production-boundary run committed exactly one `Interrupted` terminal, returned `AlreadyTerminal` to the losing contender, and returned `Fenced` without another Item after generation advancement. CI revision evidence remains required by AC-4. |
 | Timeout and deadline | PostgreSQL service readiness or a verification job stalls. | GitHub Actions workflow | Inspect finite service health retries and per-job `timeout-minutes`; run the workflow. | Readiness failure or elapsed job timeout produces a non-success check rather than an indefinitely pending or successful check. | AC-1, AC-5 | Pass | Workflow inspection records 15 finite two-second health retries and 10/20-minute job timeouts. Pushed check evidence remains required by AC-1 and AC-5. |
 | Cancellation and interruption | A superseded workflow run is cancelled while a newer revision is pending. | GitHub Actions concurrency policy and branch protection | Push a later revision or deterministically inspect the concurrency key and required-check settings. | A cancelled old run does not satisfy the newer revision; all three checks for the latest SHA must conclude success. | AC-1, AC-6 | Not Started | Workflow config has revision-group cancellation; latest-SHA and branch-protection evidence require the pushed revision and T-3 OCR. |
-| Resource bounds and backpressure | CI jobs or PostgreSQL state accumulate without bound. | GitHub Actions runner and disposable PostgreSQL service | Inspect one service per test job, bounded timeouts, no artifact upload, and no persistent volume; run the workflow. | Each job terminates within its timeout and retains no database volume or build artifact. | AC-1, AC-5 | Pass | Workflow has one job-scoped PostgreSQL service, finite job timeout, no volume declaration, and no artifact upload; the local no-volume container was removed after the passing test. CI revision evidence remains required. |
+| Resource bounds and back-pressure | CI jobs or PostgreSQL state accumulate without bound. | GitHub Actions runner and disposable PostgreSQL service | Inspect one service per test job, bounded timeouts, no artifact upload, and no persistent volume; run the workflow. | Each job terminates within its timeout and retains no database volume or build artifact. | AC-1, AC-5 | Pass | Workflow has one job-scoped PostgreSQL service, finite job timeout, no volume declaration, and no artifact upload; the local no-volume container was removed after the passing test. CI revision evidence remains required. |
 | Framework or trust-boundary rejection | Non-owned subject access or invalid persisted ownership is accepted by SQL or hidden by a unit double. | Production SQLx/PostgreSQL boundary | Run subject-ownership and stale-generation cases against PostgreSQL. | Non-owned access returns `NotFound`, stale generation returns `Fenced`, and neither changes durable items. | AC-4 | Pass | Production-boundary run returned `NotFound` for the intruder and `Fenced` for the stale generation; replay equality proved neither rejected operation added an Item. CI revision evidence remains required. |
 
 ## Acceptance Checks [Required]
@@ -320,3 +320,4 @@ implementation completion. When triggered:
 | 2026-08-12 | Proposed one CI verification boundary with three routed required checks, disposable PostgreSQL production-boundary evidence, and a separately governed branch-protection operation after @linhai confirmed the approach in the active task. | @codex |
 | 2026-08-12 | Recorded @linhai's exact `Approve`, set the ADR to `Accepted / In Progress`, and began T-2 with the required RED production-boundary test. | @codex |
 | 2026-08-12 | Completed T-1 and T-2 locally: both architecture tests followed RED-to-Green, all three routed commands passed with 69 tests, and `production_postgres_contract` additionally passed against disposable PostgreSQL 18 before its no-volume container was deleted. T-3 and pushed-revision CI evidence remain pending. | @codex |
+| 2026-08-12 | Set Implementation Status from `In Progress` to `Blocked` after GitHub returned HTTP 403 for both `dev` branch protection and repository rulesets, with the explicit requirement to upgrade the private repository to GitHub Pro or make it public. T-1 and T-2 remain complete; T-3 cannot proceed until the recorded exit criterion is met. | @codex |

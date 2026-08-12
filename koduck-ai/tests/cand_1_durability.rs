@@ -7,7 +7,7 @@ use std::time::Duration;
 use koduck_ai::application::{
     AcceptedTurn, AppendPolicy, BufferLimitError, DurabilityFailure, HistoryError, ModelInput,
     ModelProvider, NewItem, ProviderError, ProviderEvent, ProviderStream, TurnCommand, TurnHistory,
-    TurnRunError, TurnRunner, UnpublishedBuffer,
+    TurnRunError, TurnRunner,
 };
 use koduck_ai::domain::{
     Item, ItemPayload, LeaseGeneration, TenantId, TerminalOutcome, ThreadId, TrustContext, TurnId,
@@ -179,37 +179,21 @@ fn initial_and_mid_turn_outages_fail_closed() {
 #[test]
 fn append_deadline_and_buffer_caps() {
     let policy = AppendPolicy::cand_1();
-    let mut deadline_buffer = UnpublishedBuffer::new(policy);
     assert_eq!(
-        deadline_buffer.observe_append_elapsed(Duration::from_millis(2_001)),
+        policy.check_deadline(Duration::from_millis(2_001)),
         Err(BufferLimitError::AppendDeadline)
     );
-    assert!(deadline_buffer.is_stopped());
-
-    let mut item_buffer = UnpublishedBuffer::new(policy);
-    for _ in 0..64 {
-        item_buffer
-            .push(NewItem::AgentMessageDelta {
-                content: "A".to_owned(),
-            })
-            .expect("first 64 items fit");
-    }
     assert_eq!(
-        item_buffer.push(NewItem::AgentMessageDelta {
-            content: "B".to_owned(),
-        }),
+        policy.check_item_count(65),
         Err(BufferLimitError::ItemCount)
     );
-    assert!(item_buffer.is_stopped());
 
-    let mut payload_buffer = UnpublishedBuffer::new(policy);
     assert_eq!(
-        payload_buffer.push(NewItem::AgentMessageDelta {
+        policy.check_item(&NewItem::AgentMessageDelta {
             content: "x".repeat(1_048_577),
         }),
         Err(BufferLimitError::PayloadBytes)
     );
-    assert!(payload_buffer.is_stopped());
     assert_eq!(
         policy.check_item(&NewItem::AgentMessageDelta {
             content: "\"".repeat(600_000),
@@ -224,9 +208,6 @@ fn append_deadline_and_buffer_caps() {
     ] {
         assert_eq!(error.problem_code(), "durability-unavailable");
     }
-    assert!(deadline_buffer.take_durable_prefix().is_empty());
-    assert!(item_buffer.take_durable_prefix().is_empty());
-    assert!(payload_buffer.take_durable_prefix().is_empty());
 }
 
 struct OversizedProvider {

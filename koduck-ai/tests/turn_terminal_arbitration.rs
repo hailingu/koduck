@@ -33,6 +33,24 @@ impl ModelProvider for FailingProvider {
     }
 }
 
+struct SetupFailingProvider;
+
+impl ModelProvider for SetupFailingProvider {
+    fn stream(&mut self, _input: ModelInput) -> Result<ProviderStream<'_>, ProviderError> {
+        Err(ProviderError {
+            code: "UPSTREAM_UNAVAILABLE".to_owned(),
+        })
+    }
+}
+
+struct EmptyProvider;
+
+impl ModelProvider for EmptyProvider {
+    fn stream(&mut self, _input: ModelInput) -> Result<ProviderStream<'_>, ProviderError> {
+        Ok(Box::new(std::iter::empty()))
+    }
+}
+
 struct OversizedDeltaProvider;
 
 impl ModelProvider for OversizedDeltaProvider {
@@ -437,6 +455,297 @@ fn fencing_replays_and_publishes_the_durable_cancellation() {
             },
             ..
         })
+    ));
+}
+
+#[derive(Default)]
+struct AppendFencedHistory {
+    items: Vec<Item>,
+}
+
+impl TurnHistory for AppendFencedHistory {
+    fn request_interrupt(
+        &mut self,
+        _trust: &TrustContext,
+        _turn_id: TurnId,
+    ) -> Result<(), HistoryError> {
+        Ok(())
+    }
+
+    fn interruption_requested(&self, _turn: &AcceptedTurn) -> Result<bool, HistoryError> {
+        Ok(false)
+    }
+
+    fn prior_thread_items(
+        &self,
+        _trust: &TrustContext,
+        _thread_id: ThreadId,
+    ) -> Result<Vec<Item>, HistoryError> {
+        Ok(Vec::new())
+    }
+
+    fn accept_initial(&mut self, command: &TurnCommand) -> Result<AcceptedTurn, HistoryError> {
+        let input = Item::new(
+            1,
+            ItemPayload::UserMessage {
+                content: command.input.clone(),
+            },
+        );
+        self.items.push(input.clone());
+        Ok(AcceptedTurn::new(
+            command.trust.tenant_id.clone(),
+            ThreadId::new(),
+            TurnId::new(),
+            LeaseGeneration::initial(),
+            input,
+        ))
+    }
+
+    fn append(&mut self, _turn: &AcceptedTurn, _item: NewItem) -> Result<Item, HistoryError> {
+        let terminal = Item::new(
+            self.items.len() as u64 + 1,
+            ItemPayload::Terminal(TerminalOutcome::Cancelled),
+        );
+        self.items.push(terminal);
+        Err(HistoryError::Fenced)
+    }
+
+    fn replay(&self, _tenant_id: &TenantId, _turn_id: TurnId) -> Result<Vec<Item>, HistoryError> {
+        Ok(self.items.clone())
+    }
+}
+
+#[test]
+fn append_fencing_replays_and_publishes_the_durable_terminal() {
+    let trust = TrustContext::new(
+        TenantId::new("tenant-a").expect("valid tenant"),
+        "subject-a",
+    )
+    .expect("valid trust context");
+    let mut observed = Vec::new();
+    let result = TurnRunner::new(OutputAfterInterruptProvider, AppendFencedHistory::default())
+        .execute_with_observer(
+            TurnCommand::new(trust, None, "hello").expect("valid command"),
+            &mut |event| observed.push(event),
+        )
+        .expect("append fencing publishes the durable terminal normally");
+
+    assert_eq!(result.status, TurnStatus::Cancelled);
+    assert!(matches!(
+        result.published.as_slice(),
+        [Item {
+            payload: ItemPayload::Terminal(TerminalOutcome::Cancelled),
+            ..
+        }]
+    ));
+    assert!(matches!(
+        observed.last(),
+        Some(TurnStreamEvent::Item {
+            item: Item {
+                payload: ItemPayload::Terminal(TerminalOutcome::Cancelled),
+                ..
+            },
+            ..
+        })
+    ));
+}
+
+#[derive(Default)]
+struct ProviderTerminalFencedHistory {
+    items: Vec<Item>,
+    interruption_requested: bool,
+}
+
+impl TurnHistory for ProviderTerminalFencedHistory {
+    fn request_interrupt(
+        &mut self,
+        _trust: &TrustContext,
+        _turn_id: TurnId,
+    ) -> Result<(), HistoryError> {
+        Ok(())
+    }
+
+    fn interruption_requested(&self, _turn: &AcceptedTurn) -> Result<bool, HistoryError> {
+        Ok(self.interruption_requested)
+    }
+
+    fn prior_thread_items(
+        &self,
+        _trust: &TrustContext,
+        _thread_id: ThreadId,
+    ) -> Result<Vec<Item>, HistoryError> {
+        Ok(Vec::new())
+    }
+
+    fn accept_initial(&mut self, command: &TurnCommand) -> Result<AcceptedTurn, HistoryError> {
+        let input = Item::new(
+            1,
+            ItemPayload::UserMessage {
+                content: command.input.clone(),
+            },
+        );
+        self.items.push(input.clone());
+        Ok(AcceptedTurn::new(
+            command.trust.tenant_id.clone(),
+            ThreadId::new(),
+            TurnId::new(),
+            LeaseGeneration::initial(),
+            input,
+        ))
+    }
+
+    fn append(&mut self, _turn: &AcceptedTurn, _item: NewItem) -> Result<Item, HistoryError> {
+        assert!(
+            self.interruption_requested,
+            "provider completion uses atomic terminal append"
+        );
+        let terminal = Item::new(
+            self.items.len() as u64 + 1,
+            ItemPayload::Terminal(TerminalOutcome::Cancelled),
+        );
+        self.items.push(terminal);
+        Err(HistoryError::Fenced)
+    }
+
+    fn append_provider_terminal(
+        &mut self,
+        _turn: &AcceptedTurn,
+        _outcome: TerminalOutcome,
+    ) -> Result<Item, HistoryError> {
+        let terminal = Item::new(
+            self.items.len() as u64 + 1,
+            ItemPayload::Terminal(TerminalOutcome::Cancelled),
+        );
+        self.items.push(terminal);
+        Err(HistoryError::Fenced)
+    }
+
+    fn replay(&self, _tenant_id: &TenantId, _turn_id: TurnId) -> Result<Vec<Item>, HistoryError> {
+        Ok(self.items.clone())
+    }
+}
+
+#[test]
+fn provider_terminal_fencing_replays_and_publishes_the_durable_terminal() {
+    let trust = TrustContext::new(
+        TenantId::new("tenant-a").expect("valid tenant"),
+        "subject-a",
+    )
+    .expect("valid trust context");
+    let mut observed = Vec::new();
+    let result = TurnRunner::new(CompletingProvider, ProviderTerminalFencedHistory::default())
+        .execute_with_observer(
+            TurnCommand::new(trust, None, "hello").expect("valid command"),
+            &mut |event| observed.push(event),
+        )
+        .expect("provider terminal fencing publishes the durable terminal normally");
+
+    assert_eq!(result.status, TurnStatus::Cancelled);
+    assert!(matches!(
+        result.published.as_slice(),
+        [Item {
+            payload: ItemPayload::Terminal(TerminalOutcome::Cancelled),
+            ..
+        }]
+    ));
+    assert!(matches!(
+        observed.last(),
+        Some(TurnStreamEvent::Item {
+            item: Item {
+                payload: ItemPayload::Terminal(TerminalOutcome::Cancelled),
+                ..
+            },
+            ..
+        })
+    ));
+}
+
+#[test]
+fn interrupt_terminal_fencing_replays_the_durable_terminal() {
+    let trust = TrustContext::new(
+        TenantId::new("tenant-a").expect("valid tenant"),
+        "subject-a",
+    )
+    .expect("valid trust context");
+    let history = ProviderTerminalFencedHistory {
+        interruption_requested: true,
+        ..ProviderTerminalFencedHistory::default()
+    };
+    let result = TurnRunner::new(CompletingProvider, history)
+        .execute(TurnCommand::new(trust, None, "hello").expect("valid command"))
+        .expect("interrupt append fencing replays the durable terminal");
+
+    assert_eq!(result.status, TurnStatus::Cancelled);
+}
+
+#[test]
+fn disconnect_terminal_fencing_replays_the_durable_terminal() {
+    let trust = TrustContext::new(
+        TenantId::new("tenant-a").expect("valid tenant"),
+        "subject-a",
+    )
+    .expect("valid trust context");
+    let result = TurnRunner::new(PendingProvider, ProviderTerminalFencedHistory::default())
+        .execute_with_observer_and_cancellation(
+            TurnCommand::new(trust, None, "hello").expect("valid command"),
+            &mut |_| {},
+            &|| true,
+        )
+        .expect("disconnect append fencing replays the durable terminal");
+
+    assert_eq!(result.status, TurnStatus::Cancelled);
+}
+
+#[test]
+fn provider_setup_terminal_fencing_replays_the_durable_terminal() {
+    let trust = TrustContext::new(
+        TenantId::new("tenant-a").expect("valid tenant"),
+        "subject-a",
+    )
+    .expect("valid trust context");
+    let mut observed = Vec::new();
+    let result = TurnRunner::new(
+        SetupFailingProvider,
+        ProviderTerminalFencedHistory::default(),
+    )
+    .execute_with_observer(
+        TurnCommand::new(trust, None, "hello").expect("valid command"),
+        &mut |event| observed.push(event),
+    )
+    .expect("setup-failure fencing publishes the durable terminal normally");
+
+    assert_eq!(result.status, TurnStatus::Cancelled);
+    assert!(matches!(
+        result.published.as_slice(),
+        [Item {
+            payload: ItemPayload::Terminal(TerminalOutcome::Cancelled),
+            ..
+        }]
+    ));
+}
+
+#[test]
+fn ended_provider_terminal_fencing_replays_the_durable_terminal() {
+    let trust = TrustContext::new(
+        TenantId::new("tenant-a").expect("valid tenant"),
+        "subject-a",
+    )
+    .expect("valid trust context");
+    let mut observed = Vec::new();
+    let result = TurnRunner::new(EmptyProvider, ProviderTerminalFencedHistory::default())
+        .execute_with_observer(
+            TurnCommand::new(trust, None, "hello").expect("valid command"),
+            &mut |event| observed.push(event),
+        )
+        .expect("end-of-stream fencing publishes the durable terminal normally");
+
+    assert_eq!(result.status, TurnStatus::Cancelled);
+    assert!(matches!(
+        result.published.as_slice(),
+        [Item {
+            payload: ItemPayload::Terminal(TerminalOutcome::Cancelled),
+            ..
+        }]
     ));
 }
 

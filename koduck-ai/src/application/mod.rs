@@ -6,6 +6,6 @@ mod durability;
 mod ports;
 mod runner;
 
-pub use durability::{AppendPolicy, BufferLimitError, UnpublishedBuffer};
+pub use durability::{AppendPolicy, BufferLimitError};
 pub use ports::*;
 pub use runner::TurnRunner;

@@ -75,6 +75,26 @@ fn runtime_config_requires_postgres_and_provider_inputs() {
 }
 
 #[test]
+fn runtime_config_rejects_unsafe_provider_base_url_components() {
+    for unsafe_url in [
+        "https://user:secret@provider.example/v1",
+        "https://provider.example/v1?tenant=other",
+        "https://provider.example/v1#fragment",
+    ] {
+        let mut environment = complete_environment();
+        environment.insert(
+            "KODUCK_AI_OPENAI_BASE_URL".to_owned(),
+            unsafe_url.to_owned(),
+        );
+        let error = RuntimeConfig::from_environment(&environment)
+            .expect_err("unsafe provider base URL components are rejected");
+
+        assert_eq!(error.to_string(), "invalid KODUCK_AI_OPENAI_BASE_URL");
+        assert!(!format!("{error:?}").contains("secret"));
+    }
+}
+
+#[test]
 fn concrete_runtime_adapters_implement_owned_ports() {
     fn assert_history<T: PostgresExecutor + Send + Sync>() {}
     fn assert_provider<T: OpenAiProtocolTransport + Send>() {}
@@ -454,6 +474,20 @@ impl ConcurrentHistory {
                 )
             })
     }
+
+    fn has_cancelled_terminal(&self, turn_id: TurnId) -> bool {
+        self.state
+            .lock()
+            .expect("history state lock")
+            .items
+            .get(&turn_id)
+            .is_some_and(|items| {
+                matches!(
+                    items.last().map(|item| &item.payload),
+                    Some(ItemPayload::Terminal(TerminalOutcome::Cancelled))
+                )
+            })
+    }
 }
 
 #[derive(Clone)]
@@ -652,6 +686,46 @@ async fn interrupt_is_observed_while_the_provider_stream_is_idle() {
         panic!("idle provider prevented the accepted interrupt from terminalizing");
     };
     assert!(String::from_utf8_lossy(&interrupted).contains("event: turn.interrupted"));
+    upstream.release();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn dropping_an_idle_sse_body_cancels_the_durable_turn() {
+    let upstream = IdleUpstream::start();
+    let transport = ReqwestOpenAiTransport::new(
+        reqwest::Client::new(),
+        tokio::runtime::Handle::current(),
+        &upstream.base_url,
+        "test-model",
+        "test-key",
+    );
+    let history = ConcurrentHistory::default();
+    let router = build_router(TurnRunner::new(
+        OpenAiCompatibleProvider::new(transport),
+        history.clone(),
+    ));
+    let response = router
+        .oneshot(chat_request("/api/v1/ai/chat/stream"))
+        .await
+        .expect("stream response");
+    let turn_id = history.accepted_turn_id();
+    let mut body = response.into_body().into_data_stream();
+    let started = body
+        .next()
+        .await
+        .expect("turn.started chunk")
+        .expect("turn.started is readable");
+    assert!(String::from_utf8_lossy(&started).contains("event: turn.started"));
+
+    drop(body);
+
+    timeout(Duration::from_millis(500), async {
+        while !history.has_cancelled_terminal(turn_id) {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("SSE disconnect durably cancels the idle turn");
     upstream.release();
 }
 

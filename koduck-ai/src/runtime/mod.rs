@@ -7,6 +7,7 @@ use std::convert::Infallible;
 use std::fmt;
 use std::net::{AddrParseError, SocketAddr};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use axum::Router;
 use axum::body::{Body, Bytes};
@@ -62,7 +63,13 @@ impl RuntimeConfig {
         let provider_base_url = required(environment, PROVIDER_BASE_URL)?;
         let provider_url = reqwest::Url::parse(provider_base_url)
             .map_err(|_| RuntimeConfigError::InvalidProviderBaseUrl)?;
-        if provider_url.scheme() != "https" {
+        if provider_url.scheme() != "https"
+            || provider_url.host_str().is_none()
+            || !provider_url.username().is_empty()
+            || provider_url.password().is_some()
+            || provider_url.query().is_some()
+            || provider_url.fragment().is_some()
+        {
             return Err(RuntimeConfigError::InvalidProviderBaseUrl);
         }
         Ok(Self {
@@ -228,20 +235,31 @@ where
     tokio::task::spawn_blocking(move || {
         let mut decision_sender = Some(decision_sender);
         let mut body_sender = Some(body_sender);
+        let delivery_aborted = Arc::new(AtomicBool::new(false));
+        let cancellation_sender = body_sender
+            .as_ref()
+            .expect("stream body sender is initialized")
+            .clone();
+        let cancellation_state = Arc::clone(&delivery_aborted);
         let mut adapter = HttpAdapter::new(service);
-        let response = adapter.handle_stream(request, &mut |chunk| {
-            if let Some(sender) = decision_sender.take() {
-                let _ = sender.send(Ok(()));
-            }
-            if !chunk.is_empty() {
-                let delivery = body_sender
-                    .as_ref()
-                    .map(|sender| sender.try_send(Ok(Bytes::from(chunk))));
-                if delivery.is_some_and(|result| result.is_err()) {
-                    body_sender = None;
+        let response = adapter.handle_stream_controlled(
+            request,
+            &mut |chunk| {
+                if let Some(sender) = decision_sender.take() {
+                    let _ = sender.send(Ok(()));
                 }
-            }
-        });
+                if !chunk.is_empty() {
+                    let delivery = body_sender
+                        .as_ref()
+                        .map(|sender| sender.try_send(Ok(Bytes::from(chunk))));
+                    if delivery.is_some_and(|result| result.is_err()) {
+                        delivery_aborted.store(true, Ordering::Release);
+                        body_sender = None;
+                    }
+                }
+            },
+            &|| cancellation_state.load(Ordering::Acquire) || cancellation_sender.is_closed(),
+        );
         if let Some(sender) = decision_sender.take() {
             let _ = sender.send(Err(response));
         }

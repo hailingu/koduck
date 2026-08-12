@@ -628,7 +628,10 @@ impl PostgresExecutor for SqlxPostgresExecutor {
     }
 
     fn renew_lease(&self, key: &LeaseKey, now_ms: u64) -> Result<(), HistoryError> {
-        self.wait(self.renew_lease_async(key, now_ms))
+        self.wait_with_deadline(
+            AppendPolicy::cand_1().deadline(),
+            self.renew_lease_async(key, now_ms),
+        )
     }
 
     fn reconcile_expired(
@@ -637,7 +640,10 @@ impl PostgresExecutor for SqlxPostgresExecutor {
         now_ms: u64,
         timing: LeaseTiming,
     ) -> Result<ReconcileOutcome, HistoryError> {
-        self.wait(self.reconcile_expired_async(key, now_ms, timing))
+        self.wait_with_deadline(
+            AppendPolicy::cand_1().deadline(),
+            self.reconcile_expired_async(key, now_ms, timing),
+        )
     }
 
     fn expired_lease_keys(
@@ -645,7 +651,10 @@ impl PostgresExecutor for SqlxPostgresExecutor {
         now_ms: u64,
         timing: LeaseTiming,
     ) -> Result<Vec<LeaseKey>, HistoryError> {
-        self.wait(self.expired_lease_keys_async(now_ms, timing))
+        self.wait_with_deadline(
+            AppendPolicy::cand_1().deadline(),
+            self.expired_lease_keys_async(now_ms, timing),
+        )
     }
 
     fn recover_failed(

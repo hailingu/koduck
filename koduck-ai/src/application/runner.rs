@@ -83,6 +83,20 @@ where
         command: TurnCommand,
         observer: &mut dyn FnMut(TurnStreamEvent),
     ) -> Result<TurnResult, TurnRunError> {
+        self.execute_with_observer_and_cancellation(command, observer, &|| false)
+    }
+
+    /// Executes one observed turn and durably cancels it when its consumer disconnects.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TurnRunError`] under the same conditions as [`Self::execute`].
+    pub fn execute_with_observer_and_cancellation(
+        &mut self,
+        command: TurnCommand,
+        observer: &mut dyn FnMut(TurnStreamEvent),
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<TurnResult, TurnRunError> {
         let prior_history = command
             .thread_id
             .map(|thread_id| self.history.prior_thread_items(&command.trust, thread_id))
@@ -125,6 +139,7 @@ where
             &accepted,
             input,
             observer,
+            cancelled,
         )?;
         Self::finish(
             &self.history,
@@ -161,12 +176,13 @@ fn run_accepted<P: ModelProvider, H: TurnHistory>(
     accepted: &AcceptedTurn,
     input: ModelInput,
     observer: &mut dyn FnMut(TurnStreamEvent),
+    cancelled: &dyn Fn() -> bool,
 ) -> Result<ExecutionState, TurnRunError> {
     let mut state = ExecutionState::started();
     let mut stream = match provider.stream(input) {
         Ok(stream) => stream,
         Err(error) => {
-            append_provider_terminal_observed(
+            append_terminal_or_replay_fenced(
                 history,
                 accepted,
                 &mut state,
@@ -176,10 +192,17 @@ fn run_accepted<P: ModelProvider, H: TurnHistory>(
             return Ok(state);
         }
     };
-    let reached_terminal = drive_stream(history, accepted, &mut state, &mut *stream, observer)?;
+    let reached_terminal = drive_stream(
+        history,
+        accepted,
+        &mut state,
+        &mut *stream,
+        observer,
+        cancelled,
+    )?;
     drop(stream);
     if !reached_terminal {
-        append_provider_terminal_observed(
+        append_terminal_or_replay_fenced(
             history,
             accepted,
             &mut state,
@@ -192,15 +215,31 @@ fn run_accepted<P: ModelProvider, H: TurnHistory>(
     Ok(state)
 }
 
+fn append_terminal_or_replay_fenced<H: TurnHistory>(
+    history: &mut H,
+    accepted: &AcceptedTurn,
+    state: &mut ExecutionState,
+    outcome: TerminalOutcome,
+    observer: &mut dyn FnMut(TurnStreamEvent),
+) -> Result<(), TurnRunError> {
+    match append_provider_terminal_observed(history, accepted, state, outcome, observer) {
+        Err(TurnRunError::History(HistoryError::Fenced)) => {
+            publish_replayed_terminal(history, accepted, state, observer)
+        }
+        result => result,
+    }
+}
+
 fn drive_stream<H: TurnHistory>(
     history: &mut H,
     accepted: &AcceptedTurn,
     state: &mut ExecutionState,
     stream: &mut dyn Iterator<Item = ProviderEvent>,
     observer: &mut dyn FnMut(TurnStreamEvent),
+    cancelled: &dyn Fn() -> bool,
 ) -> Result<bool, TurnRunError> {
     for event in stream {
-        if terminalize_from_control(history, accepted, state, observer)? {
+        if terminalize_from_control(history, accepted, state, observer, cancelled)? {
             return Ok(true);
         }
         let published_before = state.published.len();
@@ -208,10 +247,10 @@ fn drive_stream<H: TurnHistory>(
         for item in &state.published[published_before..] {
             observe_item(observer, accepted, item);
         }
-        if event_terminal_or_recover(history, accepted, state, event_result)? {
+        if event_terminal_or_recover(history, accepted, state, event_result, observer)? {
             return Ok(true);
         }
-        if terminalize_from_control(history, accepted, state, observer)? {
+        if terminalize_from_control(history, accepted, state, observer, cancelled)? {
             return Ok(true);
         }
     }
@@ -223,17 +262,34 @@ fn terminalize_from_control<H: TurnHistory>(
     accepted: &AcceptedTurn,
     state: &mut ExecutionState,
     observer: &mut dyn FnMut(TurnStreamEvent),
+    cancelled: &dyn Fn() -> bool,
 ) -> Result<bool, TurnRunError> {
     match history.interruption_requested(accepted) {
         Ok(true) => {
-            append_terminal(
+            if let Err(error) = append_terminal(
                 history,
                 accepted,
                 state,
                 TerminalOutcome::Interrupted,
                 observer,
-            )?;
+            ) {
+                if matches!(error, TurnRunError::History(HistoryError::Fenced)) {
+                    publish_replayed_terminal(history, accepted, state, observer)?;
+                    return Ok(true);
+                }
+                return Err(error);
+            }
             state.lifecycle = state.lifecycle.interrupt()?;
+            Ok(true)
+        }
+        Ok(false) if cancelled() => {
+            append_terminal_or_replay_fenced(
+                history,
+                accepted,
+                state,
+                TerminalOutcome::Cancelled,
+                observer,
+            )?;
             Ok(true)
         }
         Ok(false) => Ok(false),
@@ -273,9 +329,14 @@ fn event_terminal_or_recover<H: TurnHistory>(
     accepted: &AcceptedTurn,
     state: &mut ExecutionState,
     event_result: Result<bool, TurnRunError>,
+    observer: &mut dyn FnMut(TurnStreamEvent),
 ) -> Result<bool, TurnRunError> {
     match event_result {
         Ok(terminal) => Ok(terminal),
+        Err(TurnRunError::History(HistoryError::Fenced)) => {
+            publish_replayed_terminal(history, accepted, state, observer)?;
+            Ok(true)
+        }
         Err(TurnRunError::History(error)) => {
             Err(recover_append_failure(history, accepted, state, error))
         }

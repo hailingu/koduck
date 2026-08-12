@@ -114,6 +114,20 @@ pub trait TurnService {
         Ok(result)
     }
 
+    /// Executes one stream with a presentation-owned disconnect signal.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServiceError`] when no normal owned result can be exposed.
+    fn execute_stream_controlled(
+        &mut self,
+        command: TurnCommand,
+        observer: &mut dyn FnMut(TurnStreamEvent),
+        _cancelled: &dyn Fn() -> bool,
+    ) -> Result<TurnResult, ServiceError> {
+        self.execute_stream(command, observer)
+    }
+
     /// Requests interruption of one tenant-owned active turn.
     ///
     /// # Errors
@@ -138,6 +152,16 @@ where
         observer: &mut dyn FnMut(TurnStreamEvent),
     ) -> Result<TurnResult, ServiceError> {
         self.execute_with_observer(command, observer)
+            .map_err(|error| map_turn_run_error(&error))
+    }
+
+    fn execute_stream_controlled(
+        &mut self,
+        command: TurnCommand,
+        observer: &mut dyn FnMut(TurnStreamEvent),
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<TurnResult, ServiceError> {
+        self.execute_with_observer_and_cancellation(command, observer, cancelled)
             .map_err(|error| map_turn_run_error(&error))
     }
 
@@ -192,6 +216,17 @@ impl<S: TurnService> HttpAdapter<S> {
         request: HttpRequest,
         emit: &mut dyn FnMut(String),
     ) -> HttpResponse {
+        self.handle_stream_controlled(request, emit, &|| false)
+    }
+
+    /// Handles the SSE route while propagating downstream disconnect cancellation.
+    #[must_use]
+    pub fn handle_stream_controlled(
+        &mut self,
+        request: HttpRequest,
+        emit: &mut dyn FnMut(String),
+        cancelled: &dyn Fn() -> bool,
+    ) -> HttpResponse {
         let Some(trust) = request.trust else {
             return problem(401, "invalid-identity", true);
         };
@@ -208,18 +243,22 @@ impl<S: TurnService> HttpAdapter<S> {
         };
         let mut started = false;
         let mut terminal_emitted = false;
-        let result = self.service.execute_stream(command, &mut |event| {
-            started = true;
-            terminal_emitted |= matches!(
-                &event,
-                TurnStreamEvent::Item { item, .. }
-                    if matches!(
-                        &item.payload,
-                        crate::domain::ItemPayload::Terminal(_)
-                    )
-            );
-            emit(stream_event_body(event));
-        });
+        let result = self.service.execute_stream_controlled(
+            command,
+            &mut |event| {
+                started = true;
+                terminal_emitted |= matches!(
+                    &event,
+                    TurnStreamEvent::Item { item, .. }
+                        if matches!(
+                            &item.payload,
+                            crate::domain::ItemPayload::Terminal(_)
+                        )
+                );
+                emit(stream_event_body(event));
+            },
+            cancelled,
+        );
         match result {
             Ok(_) => response(200, "text/event-stream", String::new()),
             Err(_) if terminal_emitted => response(200, "text/event-stream", String::new()),

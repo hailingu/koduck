@@ -7,7 +7,7 @@ use std::time::Duration;
 use thiserror::Error;
 
 use super::NewItem;
-use crate::domain::{Item, TerminalOutcome};
+use crate::domain::TerminalOutcome;
 
 /// Exact append and unpublished-buffer limits selected by CAND-1.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -108,82 +108,6 @@ impl BufferLimitError {
     #[must_use]
     pub const fn problem_code(self) -> &'static str {
         "durability-unavailable"
-    }
-}
-
-/// Bounded unpublished items waiting for durable append confirmation.
-pub struct UnpublishedBuffer {
-    policy: AppendPolicy,
-    pending: Vec<NewItem>,
-    pending_payload_bytes: usize,
-    durable_prefix: Vec<Item>,
-    stopped: bool,
-}
-
-impl UnpublishedBuffer {
-    /// Creates an empty unpublished buffer under an explicit policy.
-    #[must_use]
-    pub const fn new(policy: AppendPolicy) -> Self {
-        Self {
-            policy,
-            pending: Vec::new(),
-            pending_payload_bytes: 0,
-            durable_prefix: Vec::new(),
-            stopped: false,
-        }
-    }
-
-    /// Records one append duration and stops further provider consumption on timeout.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`BufferLimitError::AppendDeadline`] and enters the stopped state
-    /// when elapsed time exceeds 2 seconds.
-    pub fn observe_append_elapsed(&mut self, elapsed: Duration) -> Result<(), BufferLimitError> {
-        if let Err(error) = self.policy.check_deadline(elapsed) {
-            self.stopped = true;
-            Err(error)
-        } else {
-            Ok(())
-        }
-    }
-
-    /// Reports whether provider consumption must stop without more publication.
-    #[must_use]
-    pub const fn is_stopped(&self) -> bool {
-        self.stopped
-    }
-
-    /// Adds one unpublished item without exceeding the exact count or byte cap.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`BufferLimitError`] without changing the buffer when either cap
-    /// would be exceeded.
-    pub fn push(&mut self, item: NewItem) -> Result<(), BufferLimitError> {
-        if self.pending.len() == self.policy.max_items {
-            self.stopped = true;
-            return Err(BufferLimitError::ItemCount);
-        }
-        let next_payload_bytes = match self
-            .policy
-            .accumulate_payload_bytes(self.pending_payload_bytes, &item)
-        {
-            Ok(next_payload_bytes) => next_payload_bytes,
-            Err(error) => {
-                self.stopped = true;
-                return Err(error);
-            }
-        };
-        self.pending_payload_bytes = next_payload_bytes;
-        self.pending.push(item);
-        Ok(())
-    }
-
-    /// Removes and returns only items already confirmed durable.
-    #[must_use]
-    pub fn take_durable_prefix(&mut self) -> Vec<Item> {
-        std::mem::take(&mut self.durable_prefix)
     }
 }
 

@@ -125,6 +125,21 @@ fn production_runtime_wires_reviewed_failure_and_streaming_guards() {
 }
 
 #[test]
+fn application_api_does_not_expose_an_unwired_unpublished_buffer() {
+    let crate_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let application_module = fs::read_to_string(crate_root.join("src/application/mod.rs"))
+        .expect("application module is readable");
+    let durability = fs::read_to_string(crate_root.join("src/application/durability.rs"))
+        .expect("durability source is readable");
+
+    assert!(
+        !application_module.contains("UnpublishedBuffer")
+            && !durability.contains("struct UnpublishedBuffer"),
+        "the application API must describe the production append policy, not expose an unused buffer"
+    );
+}
+
+#[test]
 fn postgres_executor_stays_within_the_approved_file_size_limit() {
     let crate_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let executor =
