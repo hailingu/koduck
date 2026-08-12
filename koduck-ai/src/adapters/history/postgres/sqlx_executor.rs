@@ -2,11 +2,11 @@
 
 //! `SQLx`-backed implementation of the canonical `PostgreSQL` transaction boundary.
 
-use std::future::Future;
 use std::time::Duration;
 
 use sqlx::{PgPool, Row};
 use tokio::runtime::Handle;
+use tokio_stream::StreamExt;
 use uuid::Uuid;
 
 use crate::application::{AcceptedTurn, AppendPolicy, HistoryError, NewItem, TurnCommand};
@@ -14,7 +14,9 @@ use crate::domain::{
     Item, ItemPayload, LeaseGeneration, TenantId, TerminalOutcome, ThreadId, TrustContext, TurnId,
 };
 
+use super::commit_reconciliation;
 use super::payload_codec::{encode_payload, row_to_item};
+use super::settle_commit_attempt;
 use super::{LeaseKey, LeaseTiming, PostgresExecutor, ReconcileOutcome, RecoveryOutcome};
 
 /// Production `PostgreSQL` executor using one `SQLx` pool and its owning Tokio runtime.
@@ -148,15 +150,24 @@ impl SqlxPostgresExecutor {
              AND threads.thread_id = turn_items.thread_id \
              WHERE turn_items.tenant_id = $1 AND turn_items.thread_id = $2 \
              AND threads.subject_id = $3 ORDER BY turns.created_at, \
-             turn_items.turn_id, turn_items.sequence",
+             turn_items.turn_id, turn_items.sequence LIMIT $4",
         )
         .bind(trust.tenant_id.as_str())
         .bind(thread_id.as_uuid())
         .bind(trust.subject_id.as_str())
-        .fetch_all(&self.pool)
-        .await
-        .map_err(unavailable)?;
-        if rows.is_empty() {
+        .bind(commit_reconciliation::MAX_PROVIDER_HISTORY_QUERY_ROWS)
+        .fetch(&self.pool);
+        tokio::pin!(rows);
+        let mut history = Vec::new();
+        let mut payload_bytes = 0_usize;
+        while let Some(row) = rows.next().await {
+            commit_reconciliation::push_bounded_history(
+                &mut history,
+                &mut payload_bytes,
+                row_to_item(&row.map_err(unavailable)?)?,
+            )?;
+        }
+        if history.is_empty() {
             let exists = sqlx::query_scalar::<_, bool>(
                 "SELECT EXISTS(SELECT 1 FROM threads WHERE tenant_id = $1 \
                  AND thread_id = $2 AND threads.subject_id = $3)",
@@ -171,25 +182,21 @@ impl SqlxPostgresExecutor {
                 return Err(HistoryError::NotFound);
             }
         }
-        rows.iter().map(row_to_item).collect()
+        Ok(history)
     }
 
-    async fn accept_initial_async(
+    async fn accept_initial_with_identity_async(
         &self,
         command: &TurnCommand,
+        thread_id: ThreadId,
+        turn_id: TurnId,
+        input: Item,
     ) -> Result<AcceptedTurn, HistoryError> {
         let tenant_id = command.trust.tenant_id.clone();
-        let thread_id = command.thread_id.unwrap_or_default();
-        let turn_id = TurnId::new();
         let generation = LeaseGeneration::initial();
-        let input = Item::new(
-            1,
-            ItemPayload::UserMessage {
-                content: command.input.clone(),
-            },
-        );
         let (_, payload, _, _) = encode_payload(&input.payload);
         let mut transaction = self.pool.begin().await.map_err(unavailable)?;
+        commit_reconciliation::lock_operation(&mut transaction, input.item_id.as_uuid()).await?;
         sqlx::query(
             "INSERT INTO threads (tenant_id, subject_id, thread_id) VALUES ($1, $2, $3) \
              ON CONFLICT (tenant_id, thread_id) DO NOTHING",
@@ -260,8 +267,10 @@ impl SqlxPostgresExecutor {
         &self,
         turn: &AcceptedTurn,
         new_item: NewItem,
+        item: Item,
     ) -> Result<Item, HistoryError> {
         let mut transaction = self.pool.begin().await.map_err(unavailable)?;
+        commit_reconciliation::lock_operation(&mut transaction, item.item_id.as_uuid()).await?;
         let ownership = sqlx::query(
             "SELECT t.status, t.next_sequence, t.interrupt_requested, l.fenced FROM turns t \
              JOIN turn_leases l USING (tenant_id, thread_id, turn_id) \
@@ -294,7 +303,9 @@ impl SqlxPostgresExecutor {
         };
         let sequence: i64 = ownership.try_get("next_sequence").map_err(unavailable)?;
         let sequence = u64::try_from(sequence).map_err(|_| HistoryError::Unavailable)?;
-        let item = Item::new(sequence, new_item.into_payload());
+        let mut item = item;
+        item.sequence = sequence;
+        item.payload = new_item.into_payload();
         insert_item(
             &mut transaction,
             &turn.tenant_id,
@@ -631,18 +642,33 @@ impl PostgresExecutor for SqlxPostgresExecutor {
     }
 
     fn accept_initial(&self, command: &TurnCommand) -> Result<AcceptedTurn, HistoryError> {
-        self.wait(self.accept_initial_async(command))
+        let command = command.clone();
+        let thread_id = command.thread_id.unwrap_or_default();
+        let turn_id = TurnId::new();
+        let input = Item::new(
+            1,
+            ItemPayload::UserMessage {
+                content: command.input.clone(),
+            },
+        );
+        self.runtime.block_on(settle_commit_attempt(
+            AppendPolicy::cand_1().deadline(),
+            self.accept_initial_with_identity_async(&command, thread_id, turn_id, input.clone()),
+            commit_reconciliation::accepted_turn(&self.pool, &command, thread_id, turn_id, input),
+        ))
     }
 
     fn append(&self, turn: &AcceptedTurn, item: NewItem) -> Result<Item, HistoryError> {
-        self.runtime.block_on(async {
-            tokio::time::timeout(
-                AppendPolicy::cand_1().deadline(),
-                self.append_async(turn, item),
-            )
-            .await
-            .map_err(|_| HistoryError::Unavailable)?
-        })
+        let operation_item = Item::new(1, item.clone().into_payload());
+        self.runtime.block_on(settle_commit_attempt(
+            AppendPolicy::cand_1().deadline(),
+            self.append_async(turn, item, operation_item.clone()),
+            commit_reconciliation::appended_item(
+                &self.pool,
+                turn,
+                operation_item.item_id.as_uuid(),
+            ),
+        ))
     }
 
     fn replay(&self, tenant_id: &TenantId, turn_id: TurnId) -> Result<Vec<Item>, HistoryError> {
@@ -688,6 +714,15 @@ impl PostgresExecutor for SqlxPostgresExecutor {
             AppendPolicy::cand_1().deadline(),
             self.recover_failed_async(turn, timing),
         )
+    }
+
+    fn recover_failed_with_deadline(
+        &self,
+        turn: &AcceptedTurn,
+        timing: LeaseTiming,
+        deadline: Duration,
+    ) -> Result<RecoveryOutcome, HistoryError> {
+        self.wait_with_deadline(deadline, self.recover_failed_async(turn, timing))
     }
 }
 

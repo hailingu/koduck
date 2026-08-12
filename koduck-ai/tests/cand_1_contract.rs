@@ -43,6 +43,36 @@ fn trust() -> TrustContext {
     .expect("valid trust context")
 }
 
+#[derive(Clone)]
+struct ContextLimitService;
+
+impl TurnService for ContextLimitService {
+    fn execute(&mut self, _command: TurnCommand) -> Result<TurnResult, ServiceError> {
+        Err(ServiceError::InvalidRequest)
+    }
+
+    fn interrupt(&mut self, _trust: &TrustContext, _turn_id: TurnId) -> Result<(), ServiceError> {
+        Err(ServiceError::NotFound)
+    }
+}
+
+#[test]
+fn oversized_resume_context_uses_the_owned_invalid_request_problem() {
+    let response = HttpAdapter::new(ContextLimitService).handle(HttpRequest {
+        method: HttpMethod::Post,
+        path: "/api/v1/ai/chat".to_owned(),
+        content_type: Some("application/json".to_owned()),
+        body: format!(
+            "{{\"input\":\"hello\",\"thread_id\":\"{}\"}}",
+            ThreadId::new().as_uuid()
+        ),
+        trust: Some(trust()),
+    });
+
+    assert_eq!(response.status, 400);
+    assert!(response.body.contains("\"code\":\"invalid-request\""));
+}
+
 fn completed_result(deltas: &[&str]) -> TurnResult {
     let thread_id = ThreadId::new();
     let turn_id = TurnId::new();

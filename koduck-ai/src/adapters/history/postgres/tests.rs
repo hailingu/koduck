@@ -9,6 +9,7 @@ use sqlx::postgres::PgPoolOptions;
 
 use crate::application::{HistoryError, RecoveryHandoff, TurnLiveness};
 
+use super::settle_commit_attempt;
 use super::{BackgroundAdmission, LeaseRenewalGuard, ReconciliationWorker, SqlxPostgresExecutor};
 
 #[test]
@@ -155,4 +156,46 @@ fn database_attempt_deadline_stops_a_slow_recovery_operation() {
     });
 
     assert_eq!(result, Err(HistoryError::Unavailable));
+}
+
+#[tokio::test]
+async fn timed_out_commit_returns_the_reconciled_durable_outcome() {
+    let result = settle_commit_attempt(
+        Duration::from_millis(1),
+        async {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            Ok(7_u8)
+        },
+        async { Ok(Some(7_u8)) },
+    )
+    .await;
+
+    assert_eq!(result, Ok(7));
+}
+
+#[tokio::test]
+async fn timed_out_commit_reports_unavailable_only_after_absence_is_reconciled() {
+    let result = settle_commit_attempt(
+        Duration::from_millis(1),
+        async {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            Ok(7_u8)
+        },
+        async { Ok(None) },
+    )
+    .await;
+
+    assert_eq!(result, Err(HistoryError::Unavailable));
+}
+
+#[tokio::test]
+async fn failed_commit_acknowledgement_returns_the_reconciled_durable_outcome() {
+    let result = settle_commit_attempt(
+        Duration::from_secs(1),
+        async { Err(HistoryError::Unavailable) },
+        async { Ok(Some(9_u8)) },
+    )
+    .await;
+
+    assert_eq!(result, Ok(9));
 }
