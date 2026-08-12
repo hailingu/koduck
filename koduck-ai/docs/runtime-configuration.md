@@ -54,9 +54,16 @@ fallback is configured.
 - Lease-renewal and failed-append recovery tasks share admission for at most
   256 background workers per production `PostgresTurnHistory` instance.
   On an append outage, the Turn stops its renewal worker and atomically moves
-  that worker's permit into the recovery worker without decrementing shared
+  that worker's permit into bounded recovery without decrementing shared
   admission between owners. Recovery therefore retains reserved capacity even
-  when all 256 slots were occupied. The handoff wait remains bounded by the
-  renewal database attempt's 2-second deadline. Other saturation rejects new
-  work with `durability-unavailable` instead of creating another operating-
-  system thread.
+  when all 256 slots were occupied. The original streaming observer remains
+  attached until recovery closes the Turn or defers to expiry reconciliation;
+  each renewal/recovery database attempt remains capped at 2 seconds and the
+  recovery owner is capped by the 22-second reconciliation window. Other
+  saturation rejects new work with `durability-unavailable`. If a separately
+  scheduled recovery worker cannot be created, the scheduling owner runs the
+  same bounded recovery while retaining its permit.
+- The interrupt endpoint accepts only an owned `started` Turn whose lease is
+  unfenced and has not passed its 2-second skew window. A `recovery-pending` or
+  expired Turn rejects interruption because its original SSE observer can no
+  longer be guaranteed to deliver `turn.interrupted`.

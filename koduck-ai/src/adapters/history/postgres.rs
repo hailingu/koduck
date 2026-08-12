@@ -290,7 +290,7 @@ impl TurnLiveness for LeaseRenewalGuard {
             .recv()
             .map_err(|_| HistoryError::Unavailable)?;
         self.recovery.take().ok_or(HistoryError::Unavailable)?(permit)?;
-        Ok(RecoveryHandoff::Scheduled)
+        Ok(RecoveryHandoff::Recovered)
     }
 }
 
@@ -438,12 +438,13 @@ impl<E: PostgresExecutor + Send + 'static> TurnHistory for PostgresTurnHistory<E
             thread: Some(thread),
             permit_receiver: Some(permit_receiver),
             recovery: Some(Box::new(move |permit| {
-                recovery::schedule_with_permit(
-                    recovery_executor,
-                    recovery_turn,
+                recovery::recover_with_permit(
+                    &recovery_executor,
+                    &recovery_turn,
                     recovery_timing,
                     permit,
-                )
+                );
+                Ok(())
             })),
         }))
     }

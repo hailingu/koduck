@@ -3,6 +3,7 @@
 //! Bounded recovery ownership for accepted turns whose append became unavailable.
 
 use std::sync::Arc;
+use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -20,24 +21,58 @@ pub(super) fn schedule<E: PostgresExecutor + Send + 'static>(
     admission: &Arc<BackgroundAdmission>,
 ) -> Result<(), HistoryError> {
     let permit = admission.try_acquire()?;
-    schedule_with_permit(executor, accepted, timing, permit)
+    schedule_job_with_permit(
+        permit,
+        Box::new(move || recover(&executor, &accepted, timing)),
+        |receiver| {
+            thread::Builder::new()
+                .name("koduck-ai-turn-recovery".to_owned())
+                .spawn(move || run_received_job(&receiver))
+                .map(|_| ())
+        },
+    );
+    Ok(())
 }
 
-/// Starts recovery while retaining an already-owned background reservation.
-pub(super) fn schedule_with_permit<E: PostgresExecutor + Send + 'static>(
-    executor: E,
-    accepted: AcceptedTurn,
+/// Completes recovery while retaining an already-owned background reservation.
+pub(super) fn recover_with_permit<E: PostgresExecutor>(
+    executor: &E,
+    accepted: &AcceptedTurn,
     timing: LeaseTiming,
     permit: BackgroundPermit,
-) -> Result<(), HistoryError> {
-    thread::Builder::new()
-        .name("koduck-ai-turn-recovery".to_owned())
-        .spawn(move || {
+) {
+    let _permit = permit;
+    recover(executor, accepted, timing);
+}
+
+type RecoveryJob = Box<dyn FnOnce() + Send + 'static>;
+type RecoveryEnvelope = (RecoveryJob, BackgroundPermit);
+
+fn schedule_job_with_permit(
+    permit: BackgroundPermit,
+    job: RecoveryJob,
+    spawn: impl FnOnce(mpsc::Receiver<RecoveryEnvelope>) -> std::io::Result<()>,
+) {
+    let (sender, receiver) = mpsc::channel();
+    if spawn(receiver).is_err() {
+        let _permit = permit;
+        job();
+        return;
+    }
+    match sender.send((job, permit)) {
+        Ok(()) => {}
+        Err(mpsc::SendError((job, permit))) => {
             let _permit = permit;
-            recover(&executor, &accepted, timing);
-        })
-        .map_err(|_| HistoryError::Unavailable)?;
-    Ok(())
+            job();
+        }
+    }
+}
+
+fn run_received_job(receiver: &mpsc::Receiver<RecoveryEnvelope>) {
+    if let Ok((job, permit)) = receiver.recv() {
+        let _permit = permit;
+        job();
+    }
 }
 
 fn recover<E: PostgresExecutor>(executor: &E, accepted: &AcceptedTurn, timing: LeaseTiming) {
@@ -57,5 +92,37 @@ fn recover<E: PostgresExecutor>(executor: &E, accepted: &AcceptedTurn, timing: L
                 thread::park_timeout(Duration::from_millis(100));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use super::{BackgroundAdmission, schedule_job_with_permit};
+
+    #[test]
+    fn spawn_failure_runs_recovery_while_retaining_the_permit() {
+        let admission = Arc::new(BackgroundAdmission::new(1));
+        let permit = admission.try_acquire().expect("recovery is admitted");
+        let ran = Arc::new(AtomicBool::new(false));
+        let observed_ran = Arc::clone(&ran);
+        let observed_admission = Arc::clone(&admission);
+
+        schedule_job_with_permit(
+            permit,
+            Box::new(move || {
+                assert!(
+                    observed_admission.try_acquire().is_err(),
+                    "synchronous fallback must retain the transferred permit"
+                );
+                observed_ran.store(true, Ordering::Release);
+            }),
+            |_| Err(std::io::Error::other("thread quota exhausted")),
+        );
+
+        assert!(ran.load(Ordering::Acquire));
+        assert!(admission.try_acquire().is_ok());
     }
 }

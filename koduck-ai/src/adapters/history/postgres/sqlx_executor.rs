@@ -58,10 +58,13 @@ impl SqlxPostgresExecutor {
     ) -> Result<(), HistoryError> {
         let result = sqlx::query(
             "UPDATE turns SET interrupt_requested = TRUE \
-             WHERE tenant_id = $1 AND turn_id = $3 \
-             AND status IN ('started', 'recovery-pending') \
+             WHERE tenant_id = $1 AND turn_id = $3 AND status = 'started' \
              AND EXISTS (SELECT 1 FROM threads WHERE threads.tenant_id = turns.tenant_id \
-             AND threads.thread_id = turns.thread_id AND threads.subject_id = $2)",
+             AND threads.thread_id = turns.thread_id AND threads.subject_id = $2) \
+             AND EXISTS (SELECT 1 FROM turn_leases WHERE turn_leases.tenant_id = turns.tenant_id \
+             AND turn_leases.thread_id = turns.thread_id \
+             AND turn_leases.turn_id = turns.turn_id AND NOT turn_leases.fenced \
+             AND turn_leases.expires_at + INTERVAL '2 seconds' > CURRENT_TIMESTAMP)",
         )
         .bind(trust.tenant_id.as_str())
         .bind(trust.subject_id.as_str())

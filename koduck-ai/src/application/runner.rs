@@ -154,6 +154,21 @@ where
                     {
                         return Err(TurnRunError::History(schedule_error));
                     }
+                    if handoff == super::RecoveryHandoff::Recovered
+                        && let Err(error) = publish_replayed_terminal(
+                            &self.history,
+                            &accepted,
+                            &mut state,
+                            observer,
+                        )
+                        && !matches!(
+                            error,
+                            TurnRunError::History(HistoryError::Fenced | HistoryError::NotFound)
+                                | TurnRunError::Durability(_)
+                        )
+                    {
+                        return Err(error);
+                    }
                 }
                 return Err(TurnRunError::Durability(failure));
             }

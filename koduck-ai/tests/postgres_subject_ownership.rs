@@ -40,13 +40,47 @@ fn production_postgres_contract() {
     let intruder = TrustContext::new(tenant.clone(), "intruder").expect("intruder trust context");
     let accepted = verify_payload_and_subject_ownership(&executor, &tenant, &owner, &intruder);
     verify_interrupt_terminal_arbitration(&executor, &tenant, &owner, &accepted);
-    verify_recovery_pending_interrupt(&runtime, &pool, &executor, &tenant, &owner);
+    verify_recovery_pending_interrupt_is_rejected(&runtime, &pool, &executor, &tenant, &owner);
+    verify_expired_started_interrupt_is_rejected(&runtime, &pool, &executor, &tenant, &owner);
     verify_stale_generation_fencing(&runtime, &pool, &executor, &tenant, owner);
 
     runtime.block_on(pool.close());
 }
 
-fn verify_recovery_pending_interrupt(
+fn verify_expired_started_interrupt_is_rejected(
+    runtime: &Runtime,
+    pool: &PgPool,
+    executor: &SqlxPostgresExecutor,
+    tenant: &TenantId,
+    owner: &TrustContext,
+) {
+    let command =
+        TurnCommand::new(owner.clone(), None, "expired interrupt").expect("valid expired command");
+    let accepted = executor
+        .accept_initial(&command)
+        .expect("accept expired fixture");
+    runtime
+        .block_on(
+            sqlx::query(
+                "UPDATE turn_leases SET renewed_at = CURRENT_TIMESTAMP - INTERVAL '23 seconds', \
+                 expires_at = CURRENT_TIMESTAMP - INTERVAL '3 seconds' \
+                 WHERE tenant_id = $1 AND thread_id = $2 AND turn_id = $3",
+            )
+            .bind(tenant.as_str())
+            .bind(accepted.thread_id.as_uuid())
+            .bind(accepted.turn_id.as_uuid())
+            .execute(pool),
+        )
+        .expect("expire active fixture");
+
+    assert_eq!(
+        executor.request_interrupt(owner, accepted.turn_id),
+        Err(HistoryError::Fenced),
+        "an expired owner must not accept an interrupt after its live stream can end"
+    );
+}
+
+fn verify_recovery_pending_interrupt_is_rejected(
     runtime: &Runtime,
     pool: &PgPool,
     executor: &SqlxPostgresExecutor,
@@ -71,9 +105,11 @@ fn verify_recovery_pending_interrupt(
         )
         .expect("enter durable recovery-pending state");
 
-    executor
-        .request_interrupt(owner, accepted.turn_id)
-        .expect("active recovery-pending turn accepts interruption");
+    assert_eq!(
+        executor.request_interrupt(owner, accepted.turn_id),
+        Err(HistoryError::Fenced),
+        "a detached recovery-pending turn must not accept an interrupt it cannot stream"
+    );
     assert_eq!(
         executor.recover_failed(&accepted, LeaseTiming::cand_1()),
         Ok(RecoveryOutcome::Failed)
@@ -83,7 +119,7 @@ fn verify_recovery_pending_interrupt(
         .expect("recovery interrupt replay");
     assert!(matches!(
         replay.last().map(|item| &item.payload),
-        Some(ItemPayload::Terminal(TerminalOutcome::Interrupted))
+        Some(ItemPayload::Terminal(TerminalOutcome::Failed { .. }))
     ));
 }
 

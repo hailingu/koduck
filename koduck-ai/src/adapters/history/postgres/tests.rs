@@ -92,7 +92,7 @@ fn renewal_recovery_handoff_retains_permit_reservation() {
         .handoff_to_recovery()
         .expect("reservation transfers to recovery");
 
-    assert_eq!(handoff, RecoveryHandoff::Scheduled);
+    assert_eq!(handoff, RecoveryHandoff::Recovered);
     assert!(recovery_started.load(std::sync::atomic::Ordering::Acquire));
     assert!(
         admission.try_acquire().is_ok(),

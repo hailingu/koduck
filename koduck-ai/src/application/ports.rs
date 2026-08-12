@@ -188,8 +188,8 @@ pub enum HistoryError {
 pub enum RecoveryHandoff {
     /// Liveness released its resources; the history port must schedule recovery.
     Released,
-    /// Liveness transferred its existing reservation directly into recovery.
-    Scheduled,
+    /// Liveness transferred its reservation and completed owned recovery work.
+    Recovered,
 }
 
 /// An active-turn resource whose drop stops its liveness maintenance.
