@@ -76,31 +76,68 @@ fn run_received_job(receiver: &mpsc::Receiver<RecoveryEnvelope>) {
 }
 
 fn recover<E: PostgresExecutor>(executor: &E, accepted: &AcceptedTurn, timing: LeaseTiming) {
-    let deadline = Instant::now().checked_add(Duration::from_millis(timing.reconcile_after_ms()));
+    let Some(deadline) =
+        Instant::now().checked_add(Duration::from_millis(timing.reconcile_after_ms()))
+    else {
+        eprintln!("event=turn_recovery_deferred_to_reconciler");
+        return;
+    };
     loop {
-        match executor.recover_failed(accepted, timing) {
+        let Some(attempt_timeout) = remaining_attempt_timeout(deadline, Instant::now()) else {
+            eprintln!("event=turn_recovery_deferred_to_reconciler");
+            return;
+        };
+        match executor.recover_failed_with_deadline(accepted, timing, attempt_timeout) {
             Ok(RecoveryOutcome::Pending) => {}
             Ok(RecoveryOutcome::Failed)
-            | Err(HistoryError::Fenced | HistoryError::AlreadyTerminal | HistoryError::NotFound) => {
+            | Err(
+                HistoryError::Fenced
+                | HistoryError::AlreadyTerminal
+                | HistoryError::NotFound
+                | HistoryError::ContextLimit,
+            ) => {
                 return;
             }
             Err(HistoryError::Unavailable) => {
-                if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
-                    eprintln!("event=turn_recovery_deferred_to_reconciler");
-                    return;
-                }
-                thread::park_timeout(Duration::from_millis(100));
+                let retry_delay = deadline
+                    .saturating_duration_since(Instant::now())
+                    .min(Duration::from_millis(100));
+                thread::park_timeout(retry_delay);
             }
         }
     }
+}
+
+fn remaining_attempt_timeout(deadline: Instant, now: Instant) -> Option<Duration> {
+    let remaining = deadline.checked_duration_since(now)?;
+    (!remaining.is_zero()).then_some(remaining.min(Duration::from_secs(2)))
 }
 
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::{Duration, Instant};
 
-    use super::{BackgroundAdmission, schedule_job_with_permit};
+    use super::{BackgroundAdmission, remaining_attempt_timeout, schedule_job_with_permit};
+
+    #[test]
+    fn final_recovery_attempt_is_capped_to_the_remaining_window() {
+        let now = Instant::now();
+        let remaining = Duration::from_millis(7);
+
+        assert_eq!(
+            remaining_attempt_timeout(now + remaining, now),
+            Some(remaining)
+        );
+    }
+
+    #[test]
+    fn expired_recovery_window_starts_no_further_attempt() {
+        let now = Instant::now();
+
+        assert_eq!(remaining_attempt_timeout(now, now), None);
+    }
 
     #[test]
     fn spawn_failure_runs_recovery_while_retaining_the_permit() {

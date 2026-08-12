@@ -55,7 +55,10 @@ terminal `turn.cancelled`.
 
 ## Problems
 
-Invalid JSON or input returns `400`. Initial or mid-turn durability failure
+Invalid JSON or input returns `400`. Resuming a Thread whose ordered provider
+context exceeds 4096 Items or 1 MiB of canonical serialized Item payload also
+returns `400` with code `invalid-request`; prior durable history is not
+truncated or mutated. Initial or mid-turn durability failure
 returns `503` with code `durability-unavailable`. Every problem body contains
 exactly `type: about:blank`, kebab-code-derived `title`, numeric `status`, stable
 `code`, and UUID `correlation_id`. Failed initial acceptance exposes no Turn.

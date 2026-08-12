@@ -66,6 +66,9 @@ impl HttpResponse {
 /// A presentation-facing service failure with stable HTTP mapping.
 #[derive(Clone, Debug, Error, Eq, PartialEq)]
 pub enum ServiceError {
+    /// The validated request cannot fit the owned provider-context budget.
+    #[error("invalid request")]
+    InvalidRequest,
     /// The tenant-scoped turn is unknown or not owned by the caller.
     #[error("turn not found")]
     NotFound,
@@ -326,6 +329,7 @@ fn interrupt_turn_id(path: &str) -> Option<TurnId> {
 
 fn map_service_error(error: &ServiceError) -> HttpResponse {
     match error {
+        ServiceError::InvalidRequest => problem(400, "invalid-request", false),
         ServiceError::NotFound => problem(404, "not-found", false),
         ServiceError::AlreadyTerminal => problem(409, "turn-already-terminal", false),
         ServiceError::DurabilityUnavailable => problem(503, "durability-unavailable", false),
@@ -342,6 +346,7 @@ fn map_turn_run_error(error: &TurnRunError) -> ServiceError {
             ServiceError::NotFound
         }
         TurnRunError::History(HistoryError::AlreadyTerminal) => ServiceError::AlreadyTerminal,
+        TurnRunError::History(HistoryError::ContextLimit) => ServiceError::InvalidRequest,
         TurnRunError::Provider(_) | TurnRunError::Transition(_) => {
             ServiceError::ProviderUnavailable
         }
@@ -368,4 +373,19 @@ fn problem(status: u16, code: &str, authenticate: bool) -> HttpResponse {
             .insert("WWW-Authenticate".to_owned(), "Bearer".to_owned());
     }
     response
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::application::{HistoryError, TurnRunError};
+
+    use super::{ServiceError, map_turn_run_error};
+
+    #[test]
+    fn context_limit_maps_to_the_owned_invalid_request_service_error() {
+        assert_eq!(
+            map_turn_run_error(&TurnRunError::History(HistoryError::ContextLimit)),
+            ServiceError::InvalidRequest
+        );
+    }
 }

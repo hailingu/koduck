@@ -2,6 +2,7 @@
 
 //! `PostgreSQL` history translation and exact foreground-lease policy.
 
+use std::future::Future;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, mpsc};
 use std::thread::{self, JoinHandle};
@@ -14,6 +15,7 @@ use crate::domain::{
     Item, LeaseGeneration, TenantId, TerminalOutcome, ThreadId, TrustContext, TurnId,
 };
 
+mod commit_reconciliation;
 mod payload_codec;
 mod recovery;
 mod sqlx_executor;
@@ -23,6 +25,25 @@ mod tests;
 pub use sqlx_executor::SqlxPostgresExecutor;
 
 const MAX_BACKGROUND_WORKERS: usize = 256;
+
+async fn settle_commit_attempt<T, O, R>(
+    deadline: Duration,
+    operation: O,
+    reconcile: R,
+) -> Result<T, HistoryError>
+where
+    O: Future<Output = Result<T, HistoryError>>,
+    R: Future<Output = Result<Option<T>, HistoryError>>,
+{
+    match tokio::time::timeout(deadline, operation).await {
+        Ok(Ok(value)) => Ok(value),
+        Ok(Err(HistoryError::Unavailable)) | Err(_) => tokio::time::timeout(deadline, reconcile)
+            .await
+            .map_err(|_| HistoryError::Unavailable)??
+            .ok_or(HistoryError::Unavailable),
+        Ok(Err(error)) => Err(error),
+    }
+}
 
 struct BackgroundAdmission {
     active: AtomicUsize,
@@ -172,7 +193,8 @@ pub trait PostgresExecutor: Clone {
     ///
     /// # Errors
     ///
-    /// Returns [`HistoryError`] when the Thread is not owned or storage fails.
+    /// Returns [`HistoryError`] when the Thread is not owned, storage fails, or
+    /// the canonical provider context exceeds its aggregate budget.
     fn prior_thread_items(
         &self,
         trust: &TrustContext,
@@ -243,6 +265,20 @@ pub trait PostgresExecutor: Clone {
         turn: &AcceptedTurn,
         timing: LeaseTiming,
     ) -> Result<RecoveryOutcome, HistoryError>;
+
+    /// Advances recovery within one caller-owned attempt budget.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`HistoryError`] when the bounded attempt cannot determine an outcome.
+    fn recover_failed_with_deadline(
+        &self,
+        turn: &AcceptedTurn,
+        timing: LeaseTiming,
+        _deadline: Duration,
+    ) -> Result<RecoveryOutcome, HistoryError> {
+        self.recover_failed(turn, timing)
+    }
 }
 
 /// A background orphan-reconciliation worker stopped when dropped.

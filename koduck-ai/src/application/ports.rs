@@ -181,6 +181,9 @@ pub enum HistoryError {
     /// The tenant-scoped thread or turn does not exist.
     #[error("turn not found")]
     NotFound,
+    /// Prior durable history exceeds the owned provider-context budget.
+    #[error("thread history exceeds provider context budget")]
+    ContextLimit,
 }
 
 /// Result of transferring active-turn liveness ownership into recovery.
@@ -242,7 +245,8 @@ pub trait TurnHistory {
     ///
     /// # Errors
     ///
-    /// Returns [`HistoryError`] when history is unavailable or ownership is invalid.
+    /// Returns [`HistoryError`] when history is unavailable, ownership is invalid,
+    /// or the canonical provider context exceeds its aggregate budget.
     fn interruption_requested(&self, turn: &AcceptedTurn) -> Result<bool, HistoryError>;
 
     /// Atomically chooses `interrupted` over any provider terminal when requested.
