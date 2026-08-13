@@ -1,4 +1,5 @@
 // ADR: docs/adr/ADR-0001-provider-neutral-turn-kernel.md
+// ADR: docs/adr/ADR-0003-default-deny-tool-approval-execution-boundary.md
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -18,6 +19,286 @@ fn domain_and_application_dependencies_are_inward() {
         "forbidden outward dependencies: {}",
         violations.join(", ")
     );
+}
+
+#[test]
+fn cand_2_policy_dependencies_are_inward_and_unbypassable() {
+    let crate_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let mut violations = Vec::new();
+    inspect_rust_files(&crate_root.join("src/domain"), &mut violations);
+    inspect_rust_files(&crate_root.join("src/application"), &mut violations);
+    assert!(
+        violations.is_empty(),
+        "CAND-2 policy has outward dependencies: {}",
+        violations.join(", ")
+    );
+
+    let mut production = String::new();
+    collect_text(&crate_root.join("src"), &mut production);
+    assert_eq!(
+        production.matches("impl IsolatedExecutor for").count(),
+        1,
+        "exactly one production executor implementation must exist"
+    );
+    assert!(production.contains("impl IsolatedExecutor for DisabledExecutor"));
+    for forbidden in ["std::process::Command", "tokio::process::Command"] {
+        assert!(
+            !production.contains(forbidden),
+            "CAND-2 contains forbidden direct execution API {forbidden}"
+        );
+    }
+}
+
+#[test]
+fn cand_2_has_no_direct_or_legacy_execution_fallback() {
+    let crate_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let mut production = String::new();
+    collect_text(&crate_root.join("src"), &mut production);
+    production.push_str(
+        &fs::read_to_string(crate_root.join("Cargo.toml")).expect("crate manifest is readable"),
+    );
+    assert!(production.contains("DisabledExecutor"));
+    assert!(production.contains("ExecutorUnavailable"));
+    assert!(production.contains("DispatchPermit"));
+    assert_eq!(
+        production.matches("self.executor.execute(&permit").count(),
+        1,
+        "only the coordinator may present the opaque dispatch permit"
+    );
+    for forbidden in [
+        "koduck-quant",
+        "native_tool_loop",
+        "std::process::Command",
+        "tokio::process::Command",
+    ] {
+        assert!(
+            !production.contains(forbidden),
+            "production graph contains forbidden direct or legacy path {forbidden}"
+        );
+    }
+}
+
+#[test]
+fn cand_2_digest_and_turn_budget_are_stable_authorities() {
+    let crate_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let execution = fs::read_to_string(crate_root.join("src/domain/execution.rs"))
+        .expect("CAND-2 domain execution source is readable");
+    let application_execution = fs::read_to_string(crate_root.join("src/application/execution.rs"))
+        .expect("CAND-2 application execution source is readable");
+
+    assert!(!execution.contains("DefaultHasher"));
+    assert!(!execution.contains("OnceLock"));
+    assert!(execution.contains("Arc<Mutex<TurnAuthorityState>>"));
+    assert!(!execution.contains("Weak<Mutex<TurnAuthorityState>>"));
+    assert!(!execution.contains("pub struct TurnAuthorityCatalog"));
+    assert!(!execution.contains("pub struct AttemptBudget"));
+    assert!(!execution.contains("pub struct TurnExecutionRegistry"));
+    assert!(execution.contains("pub struct TurnExecutionAuthority"));
+    let mut production = String::new();
+    collect_text(&crate_root.join("src"), &mut production);
+    // Count the bare identifier regardless of call syntax — method `.x(`, UFCS
+    // `Type::x(`, or whitespace `x (` all register — so a second dispatch claim
+    // cannot hide behind phrasing, and a longer identifier such as
+    // `claim_dispatched` does not match. The expected count includes each
+    // method's single definition plus its call sites.
+    assert_eq!(
+        count_identifier_tokens(&production, "claim_dispatch"),
+        2,
+        "claim_dispatch must have exactly one definition and one coordinator call site"
+    );
+    assert_eq!(
+        count_identifier_tokens(&production, "mirror_terminal"),
+        3,
+        "mirror_terminal must have exactly one definition and two conditional-commit call sites"
+    );
+    assert!(!execution.contains("pub fn authority_for_binding"));
+    assert!(
+        !execution.contains("    pub fn resolve(\n"),
+        "D-6 resolution must be reachable only through authenticated application policy"
+    );
+    assert!(
+        application_execution.contains("AttemptCommitResult"),
+        "the durable commit port must represent a won or existing canonical terminal"
+    );
+    assert!(
+        application_execution.contains("AttemptCommitError::Conflict"),
+        "the durable commit port must represent a conflicting terminal race"
+    );
+    assert_eq!(
+        count_identifier_tokens(&production, "allocate_attempt"),
+        2,
+        "allocate_attempt must have exactly one definition and one lease-validating preparer call site"
+    );
+    assert!(
+        !application_execution.contains("pub const fn new(lease: L)"),
+        "preparers must be created by the injected Tool execution runtime"
+    );
+    assert!(
+        application_execution.contains("approval: Option<&ApprovalRequest>"),
+        "the execution boundary must preserve the policy-authorized no-D-6 path"
+    );
+    assert!(
+        !application_execution.contains("pub trait ApprovalAuthorizer"),
+        "untrusted callers must not be able to supply their own C-7 authority"
+    );
+    assert!(!application_execution.contains("can_approve_tools: bool"));
+    assert!(
+        !application_execution.contains("pub struct ToolExecutionAuthorityStore"),
+        "runtime assembly must own the sole Turn authority store"
+    );
+    assert!(application_execution.contains("ToolExecutionAuthorityRoot"));
+    assert!(application_execution.contains("pub(crate) fn new(root: &ToolExecutionAuthorityRoot)"));
+    assert!(!execution.contains("#[derive(Clone, Debug)]\npub struct TurnExecutionAuthority"));
+    assert!(!execution.contains("#[derive(Clone, Debug)]\npub struct ApprovalRequest"));
+    assert!(
+        !execution.contains("#[derive(Clone, Debug, Eq, PartialEq)]\npub struct ExecutionAttempt")
+    );
+    assert!(
+        !execution
+            .contains("pub fn start(\n        &mut self,\n        approval: &ApprovalRequest")
+    );
+    assert!(
+        !execution.contains("pub fn finish(") && !execution.contains("pub(crate) fn finish("),
+        "finish must remain private so only mirror_terminal can mutate the D-7 terminal"
+    );
+}
+
+#[test]
+fn cand_2_authority_issuers_are_not_public_extension_points() {
+    let crate_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let policy = fs::read_to_string(crate_root.join("src/application/policy.rs"))
+        .expect("CAND-2 policy source is readable");
+    let execution = fs::read_to_string(crate_root.join("src/application/execution.rs"))
+        .expect("CAND-2 execution source is readable");
+    let authority = fs::read_to_string(crate_root.join("src/domain/execution/authority.rs"))
+        .expect("CAND-2 authority catalog source is readable");
+
+    assert!(
+        !policy.contains("pub trait ToolPolicyConfiguration"),
+        "untrusted callers must not be able to provide descriptor/profile authority"
+    );
+    assert!(
+        !policy.contains("pub struct ToolAuthorizationService"),
+        "only trusted runtime assembly may construct the C-5 sealing service"
+    );
+    assert!(
+        !execution.contains("pub const fn new(authorizer: A)"),
+        "untrusted callers must not be able to inject a self-asserted C-7 authorizer"
+    );
+    assert!(
+        !execution.contains("pub fn new() -> Self"),
+        "no public zero-argument constructor may create a second Turn authority root"
+    );
+    assert!(
+        !execution.contains("OnceLock"),
+        "Turn authority must be explicitly owned by runtime assembly, not a global singleton"
+    );
+    assert!(
+        execution.contains("ToolExecutionAuthorityRoot"),
+        "runtime assembly must own one explicit Turn authority root"
+    );
+    assert!(
+        !execution.contains("reclaim_terminal_turn") && !authority.contains("reclaim_terminal("),
+        "Turn authority must remain retained until T-3 can prove canonical terminal state and prevent resurrection"
+    );
+
+    // The crate-visible policy and approval setters carry unique names so the
+    // sole-call-site count is syntax-independent: each must be reachable only
+    // from its trusted service, never from a Tool/MCP or approval-transport
+    // adapter. The expected count is one definition plus one service call site.
+    let mut production = String::new();
+    collect_text(&crate_root.join("src"), &mut production);
+    assert_eq!(
+        count_identifier_tokens(&production, "authorize_policy"),
+        2,
+        "authorize_policy must have exactly one definition and one ToolAuthorizationService caller"
+    );
+    assert_eq!(
+        count_identifier_tokens(&production, "apply_validated_decision"),
+        2,
+        "apply_validated_decision must have exactly one definition and one ApprovalDecisionService caller"
+    );
+}
+
+#[test]
+fn adr_0003_evidence_matches_current_authority_and_decomposition_state() {
+    let crate_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let repository_root = crate_root
+        .parent()
+        .expect("koduck-ai belongs to the repository");
+    let adr = fs::read_to_string(
+        repository_root.join("docs/adr/ADR-0003-default-deny-tool-approval-execution-boundary.md"),
+    )
+    .expect("ADR-0003 is readable");
+    let authority = fs::read_to_string(crate_root.join("src/domain/execution/authority.rs"))
+        .expect("CAND-2 authority catalog source is readable");
+    let execution = fs::read_to_string(crate_root.join("src/application/execution.rs"))
+        .expect("CAND-2 execution coordinator source is readable");
+    let tool_execution = fs::read_to_string(crate_root.join("src/application/tool_execution.rs"))
+        .expect("CAND-2 retry driver source is readable");
+    let execute_start_marker =
+        "    /// Authorizes, dispatches, and validates one exact D-7 result.";
+    let execute_start = execution
+        .find(execute_start_marker)
+        .expect("ExecutionCoordinator::execute intent documentation exists");
+    let execute_end = execution[execute_start..]
+        .find("\n    fn commit_terminal(")
+        .map(|offset| execute_start + offset)
+        .expect("ExecutionCoordinator::execute ends before commit_terminal");
+    let execute_lines = execution[execute_start..execute_end]
+        .trim_end()
+        .lines()
+        .count();
+
+    assert!(!adr.contains("Process-local state is reclaimed only after"));
+    assert!(!adr.contains("DisabledExecutor` remains the only runtime path"));
+    assert!(!authority.contains("safe reclamation"));
+    for path in [
+        "src/domain/execution.rs",
+        "src/application/execution.rs",
+        "src/domain/execution/authority.rs",
+        "src/domain/tool.rs",
+        "tests/internal/cand_2_execution.rs",
+        "tests/internal/cand_2_retry.rs",
+    ] {
+        let source =
+            fs::read_to_string(crate_root.join(path)).expect("reviewed source is readable");
+        let lines = source.lines().count();
+        let lines = if lines >= 1_000 {
+            format!("{},{:03}", lines / 1_000, lines % 1_000)
+        } else {
+            lines.to_string()
+        };
+        let required_review = format!("`koduck-ai/{path}` is {lines} physical lines");
+        assert!(
+            adr.contains(&required_review),
+            "ADR-0003 decomposition review is missing {required_review}"
+        );
+    }
+    assert!(adr.contains(&format!(
+        "`ExecutionCoordinator::execute` is {execute_lines} physical lines"
+    )));
+    let driver_start_marker =
+        "    /// Executes one tool call with at most one retry on a proven pre-effect failure.";
+    let driver_start = tool_execution
+        .find(driver_start_marker)
+        .expect("ToolExecutionDriver::execute intent documentation exists");
+    let driver_end = tool_execution[driver_start..]
+        .find("\n    /// Authorizes policy and prepares")
+        .map(|offset| driver_start + offset)
+        .expect("ToolExecutionDriver::execute ends before authorize_and_prepare");
+    let driver_lines = tool_execution[driver_start..driver_end]
+        .trim_end()
+        .lines()
+        .count();
+    assert!(adr.contains(&format!(
+        "`ToolExecutionDriver::execute` is {driver_lines} physical lines"
+    )));
+    assert!(
+        execution.contains("    /// Started-at timestamp of the most recent dispatch, retained as evidence.\n    #[cfg(test)]\n    last_started_at_millis: u64,"),
+        "test-only dispatch timestamp evidence must not be retained in production builds"
+    );
+    assert!(adr.contains("`N/A — no configured complexity tool`"));
 }
 
 fn inspect_rust_files(path: &Path, violations: &mut Vec<String>) {
@@ -367,4 +648,28 @@ fn collect_text(path: &Path, output: &mut String) {
             output.push_str(&fs::read_to_string(path).expect("production source is readable"));
         }
     }
+}
+
+/// Counts `identifier` as a complete Rust token in `source`, independent of the
+/// surrounding call syntax, so the single-dispatch boundary cannot be bypassed
+/// by phrasing a call as a method `.x(`, UFCS `Type::x(`, or whitespace `x (`,
+/// and a longer identifier such as `claim_dispatched` does not match.
+fn count_identifier_tokens(source: &str, identifier: &str) -> usize {
+    fn is_ident_continue(byte: u8) -> bool {
+        byte.is_ascii_alphanumeric() || byte == b'_'
+    }
+    let bytes = source.as_bytes();
+    let mut count = 0;
+    let mut search_from = 0;
+    while let Some(relative) = source[search_from..].find(identifier) {
+        let start = search_from + relative;
+        let end = start + identifier.len();
+        let left_is_boundary = start == 0 || !is_ident_continue(bytes[start - 1]);
+        let right_is_boundary = end == bytes.len() || !is_ident_continue(bytes[end]);
+        if left_is_boundary && right_is_boundary {
+            count += 1;
+        }
+        search_from = end;
+    }
+    count
 }
