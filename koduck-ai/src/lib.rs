@@ -15,6 +15,9 @@ extern crate self as koduck_ai;
 #[path = "../tests/internal/cand_2_approval.rs"]
 mod cand_2_approval_tests;
 #[cfg(test)]
+#[path = "../tests/internal/cand_2_cancellation.rs"]
+mod cand_2_cancellation_tests;
+#[cfg(test)]
 #[path = "../tests/internal/cand_2_execution.rs"]
 mod cand_2_execution_tests;
 #[cfg(test)]

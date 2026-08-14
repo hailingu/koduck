@@ -23,6 +23,12 @@
   otherwise stop and use `0000-template.md` for a Full ADR.
 - Define one to three subtasks that together deliver the complete task outcome;
   do not use lifecycle gates as subtasks unless they are actual deliverables.
+- List each decisive implementation touchpoint with its repository-relative
+  path, stable fully qualified symbol or contract anchor, purpose, and
+  represented source revision. Use the shortest key code excerpt only when no
+  stable symbol or anchor expresses the constraint; never copy a complete
+  function or require later source to preserve line counts, function layout, or
+  ordinary wording.
 - When implementation exceeds or waives the common software-engineering
   standard, complete the Engineering Exceptions subsection with one row per
   affected unit before approval. A pull request may link to the exception but
@@ -115,6 +121,11 @@ Variable Dictionary
 | `{{SUBTASK_ID}}` | Implementation Plan | Stable identifier from T-1 through T-3 |
 | `{{SUBTASK_OBJECTIVE}}` | Implementation Plan | One objective or deliverable that contributes to the single task outcome |
 | `{{SUBTASK_SCOPE}}` | Implementation Plan | Included paths, components, or boundaries for this subtask |
+| `{{TOUCHPOINT_PATH}}` | Stable Implementation Touchpoints | Repository-relative source path |
+| `{{TOUCHPOINT_SYMBOL_OR_ANCHOR}}` | Stable Implementation Touchpoints | Fully qualified function, method, type, module, configuration key, schema object, route, table, or contract-clause name; use `N/A — <reason>` only when a key excerpt is required instead |
+| `{{TOUCHPOINT_EXCERPT}}` | Stable Implementation Touchpoints | Short decisive code excerpt when the symbol or anchor is insufficient; otherwise `N/A — stable symbol or anchor is sufficient` |
+| `{{TOUCHPOINT_PURPOSE}}` | Stable Implementation Touchpoints | Constraint, ownership boundary, or behavior established by this touchpoint |
+| `{{TOUCHPOINT_SOURCE_REVISION}}` | Stable Implementation Touchpoints | Immutable source revision represented by the evidence, or an explicit pre-commit state that must be replaced before completion |
 | `{{EXCEPTION_RULE_AND_UNIT}}` | Engineering Exceptions | Exact exceeded or waived rule plus affected repository-relative path and symbol |
 | `{{EXCEPTION_MEASURED_VALUE}}` | Engineering Exceptions | Measured value or structural condition that triggers the exception |
 | `{{EXCEPTION_RATIONALE}}` | Engineering Exceptions | Why the unit remains cohesive or why compliance is currently unsafe |
@@ -238,6 +249,12 @@ or `N/A — <specific reason>`.
 | --- | --- | --- | --- | --- |
 | {{SUBTASK_ID}} | {{SUBTASK_OBJECTIVE}} | {{SUBTASK_SCOPE}} | Not Started | Pending |
 
+### Stable Implementation Touchpoints [Required]
+
+| Path | Stable symbol or contract anchor | Key code excerpt, when needed | Purpose | Source revision |
+| --- | --- | --- | --- | --- |
+| {{TOUCHPOINT_PATH}} | {{TOUCHPOINT_SYMBOL_OR_ANCHOR}} | {{TOUCHPOINT_EXCERPT}} | {{TOUCHPOINT_PURPOSE}} | {{TOUCHPOINT_SOURCE_REVISION}} |
+
 ### Engineering Exceptions [Conditionally Required — an engineering rule is exceeded or waived]
 
 | Rule and affected unit | Measured value or condition | Rationale | Risks | Compensating controls | Owner | Removal, review, or permanent rationale | Verification evidence |
@@ -283,6 +300,7 @@ precondition demonstrably does not apply.
 | A-5 | Acceptance checks are decidable | Every check names one subtask, preconditions or input, deterministic method, exact expected result, and evidence; no unqualified subjective criterion remains | Structured acceptance-check review | Not Started | Pending |
 | A-6 | Engineering exceptions governed, when applicable | Every exceeded or waived engineering rule has one complete exception row, an accountable owner, a lifecycle, and verification evidence before approval; otherwise the conditional subsection records `N/A — <reason>` | Engineering Exceptions subsection and affected-file evidence | Not Started | Pending |
 | A-7 | Contract and baseline risks covered | Every normative contract clause maps to an explicit check or deterministic test, and every required Risk Coverage Matrix row is complete before approval and reaches Pass or specific N/A before review-ready or completion | Contract-To-Check Traceability, Risk Coverage Matrix, acceptance checks, and stable evidence | Not Started | Pending |
+| A-8 | Governance validation passed | The independent validator reports no required-section, template-field, lifecycle-status, index, reciprocal-link, or Mermaid contract error for this record and repository | `npm run validate --prefix tools/governance-validator` output | Not Started | Pending |
 
 ## Notes [Optional]
 

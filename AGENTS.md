@@ -219,6 +219,15 @@ ADR, that ADR must already authorize the source change, but running the
 verification does not require an OCR. If any disposable-verification condition
 is false, classify the action under the highest applicable class instead.
 
+Test-driven development applies to source-code features and reproducible defect
+fixes: write the smallest failing behavior or regression test before the
+production-code change, observe the expected failure, then implement and keep
+the suite green. A pure ADR, ADD, `AGENTS.md`, template, index, or other
+documentation-only change does not require a Red-Green-Refactor cycle. It MUST
+instead pass the configured deterministic governance validation plus the
+applicable structured review. A change to the governance validator itself is
+source work and follows test-driven development.
+
 ### Document Requirement Levels
 
 Every ADD, ADR, and OCR template and instantiated document MUST distinguish
@@ -463,6 +472,17 @@ OCRs.
   method, the exact observable expected result, and the evidence to capture.
   Use a numeric threshold, exact state, response, invariant, or cited contract
   clause whenever the result can vary.
+- Every source or configuration ADR first drafted or changed in an
+  approval-invalidating way under this rule MUST identify its stable
+  implementation touchpoints. Use a repository-relative path plus a fully
+  qualified function, method, type, module, configuration key, schema object,
+  route, table, or contract-clause name. When no stable symbol or anchor can
+  express the decisive constraint, include the shortest key code excerpt that
+  can. Record the source revision represented by the touchpoint. Line numbers,
+  physical line counts, function layout, and ordinary prose are supplementary
+  point-in-time evidence only and MUST NOT be maintained as equality assertions
+  against later source revisions. Do not copy complete functions into an ADR.
+  This rule does not retroactively invalidate an unchanged Accepted record.
 - Every source or configuration ADR MUST contain a Contract-To-Check
   Traceability table before acceptance. Each normative public or internal
   contract clause that states a required response, transition, ordering,
@@ -874,9 +894,11 @@ operations applies the independently matched row for each one.
 
 | Scope | Read first | Working directory | Verification command | Notes |
 | --- | --- | --- | --- | --- |
-| `AGENTS.md`, `AGENTS.template.md`, `CLAUDE.md` | This guide's Non-Negotiable Gates, Execution Workflow, and Version-Control Safety sections | repository root | None | Perform a structured review of the affected instructions and report the inspected contracts; no automated governance check is configured. |
-| `docs/architecture/**` or `<service-or-package>/docs/architecture/**` | `docs/README.md` and this guide's Document Requirement Levels and Architecture Design Documents sections | repository root | None | Review requirement-level labels and triggers, routing, Trello baseline capture, Figma references, solution completeness, task-detail boundary, traceability, index row, status, and cross-references; no automated governance check is configured. |
-| `docs/**` | `docs/README.md` and this guide's Document Requirement Levels, Architecture Design Documents, and Decision Records sections | repository root | None | Perform a structured review of requirement levels, affected navigation, templates, records, index rows, paths, and cross-references; no automated governance check is configured. |
+| `AGENTS.md`, `AGENTS.template.md`, `CLAUDE.md` | This guide's Non-Negotiable Gates, Execution Workflow, and Version-Control Safety sections | repository root | `npm test --prefix tools/governance-validator`; `npm run validate --prefix tools/governance-validator` | Run deterministic governance validation and perform a structured review of the affected instruction contracts. Documentation-only changes do not require Red-Green-Refactor. |
+| `docs/architecture/**` or `<service-or-package>/docs/architecture/**` | `docs/README.md` and this guide's Document Requirement Levels and Architecture Design Documents sections | repository root | `npm test --prefix tools/governance-validator`; `npm run validate --prefix tools/governance-validator` | Validate requirement levels, template fields, status, index and reciprocal links, and Mermaid syntax/ID coverage; also review Trello baseline capture, Figma references, solution completeness, task-detail boundary, and traceability. |
+| `docs/**` | `docs/README.md` and this guide's Document Requirement Levels, Architecture Design Documents, and Decision Records sections | repository root | `npm test --prefix tools/governance-validator`; `npm run validate --prefix tools/governance-validator` | Validate requirement levels, template fields, lifecycle status, index rows, paths, and cross-references, then perform the applicable structured review. Documentation-only changes do not require Red-Green-Refactor. |
+| `tools/governance-validator/**` | `docs/README.md`, `docs/development/software-engineering-standard.md`, and this guide's Document Requirement Levels and Decision Records sections | `tools/governance-validator` | `npm test`; `npm run validate` | This validator and its tests are source work: develop behavior test-first and keep dependencies exactly locked. |
+| `.github/workflows/koduck-ai.yml` | `docs/README.md`, `docs/development/software-engineering-standard.md`, `docs/adr/ADR-0002-required-ai-ci-postgres-verification.md`, and this guide's Work Coordination and Decision Records sections | repository root | `npm test --prefix tools/governance-validator`; `npm run validate --prefix tools/governance-validator`; `cargo test -p koduck-ai --test architecture required_ci_maps_every_routed_command_and_postgres_boundary -- --exact` | Keep every routed governance command inside an existing required `dev` check and preserve the exact three required check contexts. Configuration changes use the deterministic architecture contract test plus governance validation. |
 | `koduck-ai/**`, root `Cargo.toml`, or root `Cargo.lock` | `docs/README.md`, `docs/development/software-engineering-standard.md`, and `docs/development/rust-standard.md` | repository root | `cargo fmt --all --check`; `cargo clippy -p koduck-ai --all-targets --all-features -- -D warnings`; `cargo test -p koduck-ai --all-targets --all-features` | Use non-interactive commands. These commands need no OCR when they satisfy Disposable Verification Execution; a retained, published, promoted, loaded, deployed, or later-consumed artifact is a Governed Build and requires an Accepted OCR. |
 | Release or Git tag operation | `docs/delivery/releases.md`, `docs/delivery/git-tags.md`, and the governing Accepted OCR | repository root | Commands approved by the OCR | Treat tag creation or mutation, release publication, and artifact publication as external operational writes. |
 
@@ -971,7 +993,11 @@ multi-environment promotion is needed. Release and Git tag operations follow
 
 ## Verification And Completion Evidence
 
-- Reproduce a reported failure before fixing it when feasible.
+- For a source-code feature or reproducible defect fix, use Red-Green-Refactor:
+  first add the smallest focused test, observe it fail for the expected missing
+  behavior, then implement and observe focused and routed checks pass. Pure
+  documentation changes do not manufacture a failing source test; they run the
+  existing governance validator and structured review instead.
 - Run focused checks first and broader checks when shared behavior is
   affected.
 - Use the exact commands and working directories from Scope Routing.
@@ -979,6 +1005,10 @@ multi-environment promotion is needed. Release and Git tag operations follow
 - Prefer stable evidence such as commit identifiers, immutable links, symbols,
   headings, and command-result summaries. Treat mutable line numbers as
   supplementary evidence only.
+- ADR source evidence SHOULD cite fully qualified symbols or stable contract
+  anchors and MAY include a short decisive code excerpt when the symbol alone
+  is insufficient. It MUST NOT require current source to preserve an exact
+  physical line count, function arrangement, or ordinary wording.
 - Completion requires the requested behavior, required documentation, required
   checks, and required evidence — not merely an implementation attempt.
 - ADR verification MUST be reproducible from each declared acceptance check's
@@ -990,7 +1020,10 @@ multi-environment promotion is needed. Release and Git tag operations follow
   an unassessed baseline risk dimension, or a failing matrix row.
 - Document review MUST confirm that every `[Required]` item is complete, every
   conditional trigger is assessed and satisfied or explicitly not applicable,
-  and every retained `[Optional]` item is accurate and complete.
+  and every retained `[Optional]` item is accurate and complete. Run
+  `npm run validate --prefix tools/governance-validator` for every affected
+  governance document; automated validation supplements rather than replaces
+  the structured semantic review.
 
 ## Sources Of Truth
 

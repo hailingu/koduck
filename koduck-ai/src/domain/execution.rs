@@ -490,6 +490,9 @@ pub enum ExecutionError {
     /// No unforgeable C-5 policy result accompanies the requested binding.
     #[error("policy authorization is required before execution preparation")]
     PolicyAuthorizationRequired,
+    /// The Turn was interrupted and cannot allocate more execution attempts.
+    #[error("turn interruption prevents execution attempt allocation")]
+    InterruptionRequested,
 }
 
 /// One canonical D-7 whose dispatch claim is single-winner.
@@ -540,6 +543,12 @@ impl ExecutionAttempt {
     #[must_use]
     pub const fn binding(&self) -> &ExactActionBinding {
         &self.binding
+    }
+
+    /// Returns the canonical dispatch time after this D-7 is running.
+    #[must_use]
+    pub(crate) const fn started_at_millis(&self) -> Option<u64> {
+        self.started_at_millis
     }
 
     /// Claims the only permitted dispatch for this D-7.
@@ -626,7 +635,8 @@ struct TurnAuthorityState {
     profile_id: String,
     profile_version: String,
     budget: AttemptBudget,
-    attempts: BTreeMap<AttemptId, (ExactActionBinding, ExecutionStatus)>,
+    attempts: BTreeMap<AttemptId, (ExactActionBinding, ExecutionStatus, Option<u64>, bool)>,
+    interruption_requested: bool,
 }
 
 fn recover_lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -678,14 +688,18 @@ impl TurnExecutionAuthority {
         {
             return Err(ExecutionError::TurnMismatch);
         }
+        if state.interruption_requested {
+            return Err(ExecutionError::InterruptionRequested);
+        }
         if state.attempts.contains_key(&binding.attempt_id) {
             return Err(ExecutionError::AttemptAlreadyAllocated);
         }
         state.budget.allocate()?;
         let attempt_id = binding.attempt_id;
-        state
-            .attempts
-            .insert(attempt_id, (binding.clone(), ExecutionStatus::Prepared));
+        state.attempts.insert(
+            attempt_id,
+            (binding.clone(), ExecutionStatus::Prepared, None, false),
+        );
         drop(state);
         Ok(ExecutionAttempt::prepare(binding, Arc::clone(&self.state)))
     }
@@ -707,7 +721,12 @@ impl TurnExecutionAuthority {
         }
         let mut state = recover_lock(&self.state);
         let attempt_id = attempt.binding().attempt_id;
-        let Some((allocated_binding, allocated_status)) = state.attempts.get(&attempt_id) else {
+        if state.interruption_requested {
+            return Err(ExecutionError::InterruptionRequested);
+        }
+        let Some((allocated_binding, allocated_status, _, terminal_commit_in_flight)) =
+            state.attempts.get(&attempt_id)
+        else {
             return Err(ExecutionError::TurnMismatch);
         };
         if allocated_binding != attempt.binding() {
@@ -715,44 +734,25 @@ impl TurnExecutionAuthority {
         }
         if *allocated_status != ExecutionStatus::Prepared
             || attempt.status() != ExecutionStatus::Prepared
+            || *terminal_commit_in_flight
         {
             return Err(ExecutionError::AlreadyDispatched);
         }
         if state
             .attempts
             .values()
-            .any(|(_, status)| *status == ExecutionStatus::Running)
+            .any(|(_, status, _, _)| *status == ExecutionStatus::Running)
         {
             return Err(ExecutionError::ConcurrentAttempt);
         }
         attempt.start(approval, started_at_millis)?;
-        let Some((_, allocated_status)) = state.attempts.get_mut(&attempt_id) else {
+        let Some((_, allocated_status, allocated_started_at, _)) =
+            state.attempts.get_mut(&attempt_id)
+        else {
             return Err(ExecutionError::InvalidTransition);
         };
         *allocated_status = ExecutionStatus::Running;
-        Ok(())
-    }
-
-    /// Applies one guarded terminal to both the authority and its local D-7 mirror.
-    pub(crate) fn mirror_terminal(
-        &mut self,
-        attempt: &mut ExecutionAttempt,
-        status: ExecutionStatus,
-    ) -> Result<(), ExecutionError> {
-        if !Arc::ptr_eq(&self.state, &attempt.authority_state) {
-            return Err(ExecutionError::TurnMismatch);
-        }
-        let mut state = recover_lock(&self.state);
-        let attempt_id = attempt.binding().attempt_id;
-        let Some((allocated_binding, allocated_status)) = state.attempts.get_mut(&attempt_id)
-        else {
-            return Err(ExecutionError::TurnMismatch);
-        };
-        if allocated_binding != attempt.binding() || *allocated_status != attempt.status() {
-            return Err(ExecutionError::AlreadyDispatched);
-        }
-        attempt.finish(status)?;
-        *allocated_status = status;
+        *allocated_started_at = attempt.started_at_millis;
         Ok(())
     }
 

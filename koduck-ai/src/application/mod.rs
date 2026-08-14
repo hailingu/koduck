@@ -3,13 +3,23 @@
 
 //! Provider-neutral application orchestration and consumer-owned ports.
 
+mod cancellation;
+mod deadline;
 mod durability;
 mod execution;
 mod policy;
 mod ports;
 mod runner;
+mod terminal;
 mod tool_execution;
 
+#[cfg(test)]
+pub(crate) use cancellation::{
+    AttemptCancellationService, ExecutionInterrupter, InterruptionOutcome,
+    PendingApprovalCancellation, PendingApprovalCanceller,
+};
+pub use cancellation::{CancelAcknowledgement, CancelPermit, CancelledEffectState};
+pub use deadline::ActionDeadline;
 pub use durability::{AppendPolicy, BufferLimitError};
 #[cfg(test)]
 pub(crate) use execution::ToolExecutionAuthorityRoot;

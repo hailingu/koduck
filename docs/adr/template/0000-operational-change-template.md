@@ -261,6 +261,9 @@ stated condition does not apply.
   content for the target status is complete, every conditional trigger is
   completed or marked `N/A — <reason>`, and optional content is complete or
   removed
+- **Governance validation**: Pending — replace with `Pass` only when
+  `npm run validate --prefix tools/governance-validator` exits zero for the
+  repository revision containing this record
 
 ## Supporting Notes [Optional]
 

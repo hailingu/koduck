@@ -5,13 +5,13 @@ use std::collections::VecDeque;
 use koduck_ai::adapters::execution::DisabledExecutor;
 use koduck_ai::adapters::tool::{parse_action_parameters, parse_input_schema};
 use koduck_ai::application::{
-    ApprovalAuthorizer, ApprovalDecisionService, AttemptCommitError, AttemptCommitResult,
-    AttemptCommitter, CanonicalAttemptTerminal, CanonicalTerminalError, DenialCode, DispatchPermit,
-    EffectState, ExecutionCoordinator, ExecutionFailure, ExecutionPending,
-    ExecutionPreparationError, ExecutionResponse, ExecutionResponseBuilder, ExecutorError,
-    IsolatedExecutor, LeaseValidator, PolicyDecision, ToolAuthorizationService,
-    ToolExecutionAuthorityRoot, ToolExecutionOutcome, ToolExecutionRuntime, ToolPolicy,
-    ToolPolicyConfiguration,
+    ActionDeadline, ApprovalAuthorizer, ApprovalDecisionService, AttemptCommitError,
+    AttemptCommitResult, AttemptCommitter, CancelAcknowledgement, CancelPermit,
+    CanonicalAttemptTerminal, CanonicalTerminalError, DenialCode, DispatchPermit, EffectState,
+    ExecutionCoordinator, ExecutionFailure, ExecutionPending, ExecutionPreparationError,
+    ExecutionResponse, ExecutionResponseBuilder, ExecutorError, IsolatedExecutor, LeaseValidator,
+    PolicyDecision, ToolAuthorizationService, ToolExecutionAuthorityRoot, ToolExecutionOutcome,
+    ToolExecutionRuntime, ToolPolicy, ToolPolicyConfiguration,
 };
 use koduck_ai::domain::execution::{
     ApprovalDecision, ApprovalError, ApprovalRequest, ApprovalStatus, AttemptId,
@@ -32,9 +32,19 @@ impl IsolatedExecutor for RecordingExecutor {
         &mut self,
         _permit: &DispatchPermit,
         _binding: &ExactActionBinding,
+        _deadline: ActionDeadline,
     ) -> Result<ExecutionResponse, ExecutorError> {
         self.calls += 1;
         self.response.clone()
+    }
+
+    fn cancel(
+        &mut self,
+        _permit: &CancelPermit,
+        _binding: &ExactActionBinding,
+        _deadline: ActionDeadline,
+    ) -> CancelAcknowledgement {
+        CancelAcknowledgement::NotAcknowledged
     }
 }
 
@@ -213,7 +223,7 @@ fn stale_owner_never_commits_tool_result() {
     let mut coordinator = ExecutionCoordinator::new(executor, lease, committer(Ok(())));
 
     assert_eq!(
-        coordinator.execute(&mut authority, Some(&approval), &mut attempt, 2),
+        coordinator.execute(&mut authority, Some(&approval), &mut attempt, 2, &mut || 2),
         Err(ExecutionPending::ReconciliationRequired {
             code: ExecutionFailure::OwnerFencedAfterDispatch,
             effect_state: EffectState::Started,
@@ -237,7 +247,7 @@ fn fencing_before_dispatch_makes_no_executor_call() {
     let mut coordinator = ExecutionCoordinator::new(executor, lease, committer(Ok(())));
 
     assert_eq!(
-        coordinator.execute(&mut authority, Some(&approval), &mut attempt, 2),
+        coordinator.execute(&mut authority, Some(&approval), &mut attempt, 2, &mut || 2),
         Ok(ToolExecutionOutcome::Cancelled {
             effect_state: EffectState::NotStarted,
         })
@@ -397,7 +407,7 @@ fn policy_authorized_read_dispatches_without_creating_d6() {
     );
 
     assert_eq!(
-        coordinator.execute(&mut authority, None, &mut attempt, 1),
+        coordinator.execute(&mut authority, None, &mut attempt, 1, &mut || 1),
         Ok(ToolExecutionOutcome::Succeeded {
             output: b"read-result".to_vec(),
             effect_state: EffectState::NotStarted,
@@ -582,6 +592,7 @@ fn coordinator_preserves_the_concurrent_attempt_code() {
             Some(&second_approval),
             &mut second_attempt,
             3,
+            &mut || 3,
         ),
         Err(ExecutionPending::DispatchRejected {
             code: ExecutionFailure::ConcurrentAttempt,
@@ -609,7 +620,7 @@ fn disabled_executor_fails_closed_without_fallback() {
     let (mut authority, mut attempt) = prepared(binding);
 
     assert_eq!(
-        coordinator.execute(&mut authority, Some(&approval), &mut attempt, 2),
+        coordinator.execute(&mut authority, Some(&approval), &mut attempt, 2, &mut || 2),
         Ok(ToolExecutionOutcome::Failed {
             code: ExecutionFailure::ExecutorUnavailable,
             effect_state: EffectState::NotStarted,
@@ -628,7 +639,7 @@ fn production_disabled_executor_has_no_effect_path() {
     let mut coordinator = ExecutionCoordinator::new(DisabledExecutor, lease, committer(Ok(())));
 
     assert_eq!(
-        coordinator.execute(&mut authority, Some(&approval), &mut attempt, 2),
+        coordinator.execute(&mut authority, Some(&approval), &mut attempt, 2, &mut || 2),
         Ok(ToolExecutionOutcome::Failed {
             code: ExecutionFailure::ExecutorUnavailable,
             effect_state: EffectState::NotStarted,
@@ -649,9 +660,9 @@ fn accepted_attempt_cannot_dispatch_twice() {
     };
     let mut coordinator = ExecutionCoordinator::new(executor, lease, committer(Ok(())));
 
-    let _first = coordinator.execute(&mut authority, Some(&approval), &mut attempt, 2);
+    let _first = coordinator.execute(&mut authority, Some(&approval), &mut attempt, 2, &mut || 2);
     assert_eq!(
-        coordinator.execute(&mut authority, Some(&approval), &mut attempt, 3),
+        coordinator.execute(&mut authority, Some(&approval), &mut attempt, 3, &mut || 3),
         Err(ExecutionPending::DispatchRejected {
             code: ExecutionFailure::ApprovalAlreadyConsumed,
         })
@@ -681,7 +692,7 @@ fn executor_error_without_effect_evidence_is_unknown() {
     let mut coordinator = ExecutionCoordinator::new(executor, lease, committer(Ok(())));
 
     assert_eq!(
-        coordinator.execute(&mut authority, Some(&approval), &mut attempt, 2),
+        coordinator.execute(&mut authority, Some(&approval), &mut attempt, 2, &mut || 2),
         Ok(ToolExecutionOutcome::Failed {
             code: ExecutionFailure::ExecutorUnavailable,
             effect_state: EffectState::Unknown,
@@ -706,7 +717,7 @@ fn fenced_executor_error_never_commits_a_terminal() {
     let mut coordinator = ExecutionCoordinator::new(executor, lease, committer(Ok(())));
 
     assert_eq!(
-        coordinator.execute(&mut authority, Some(&approval), &mut attempt, 2),
+        coordinator.execute(&mut authority, Some(&approval), &mut attempt, 2, &mut || 2),
         Err(ExecutionPending::ReconciliationRequired {
             code: ExecutionFailure::OwnerFencedAfterDispatch,
             effect_state: EffectState::Unknown,
@@ -729,7 +740,7 @@ fn successful_outcome_preserves_executor_effect_state() {
     let mut coordinator = ExecutionCoordinator::new(executor, lease, committer(Ok(())));
 
     assert_eq!(
-        coordinator.execute(&mut authority, Some(&approval), &mut attempt, 2),
+        coordinator.execute(&mut authority, Some(&approval), &mut attempt, 2, &mut || 2),
         Ok(ToolExecutionOutcome::Succeeded {
             output: b"result".to_vec(),
             effect_state: EffectState::Started,
@@ -750,9 +761,9 @@ fn stale_replay_cannot_rewrite_a_terminal_attempt() {
     };
     let mut coordinator = ExecutionCoordinator::new(executor, lease, committer(Ok(())));
 
-    let first = coordinator.execute(&mut authority, Some(&approval), &mut attempt, 2);
+    let first = coordinator.execute(&mut authority, Some(&approval), &mut attempt, 2, &mut || 2);
     let terminal_status = attempt.status();
-    let replay = coordinator.execute(&mut authority, Some(&approval), &mut attempt, 3);
+    let replay = coordinator.execute(&mut authority, Some(&approval), &mut attempt, 3, &mut || 3);
 
     assert!(matches!(first, Ok(ToolExecutionOutcome::Succeeded { .. })));
     assert_eq!(attempt.status(), terminal_status);
@@ -782,7 +793,7 @@ fn durable_commit_failure_never_reports_success() {
     );
 
     assert_eq!(
-        coordinator.execute(&mut authority, Some(&approval), &mut attempt, 2),
+        coordinator.execute(&mut authority, Some(&approval), &mut attempt, 2, &mut || 2),
         Err(ExecutionPending::ReconciliationRequired {
             code: ExecutionFailure::DurabilityUnavailable,
             effect_state: EffectState::Started,
@@ -821,7 +832,7 @@ fn lost_idempotent_commit_returns_the_existing_canonical_terminal() {
     );
 
     assert_eq!(
-        coordinator.execute(&mut authority, Some(&approval), &mut attempt, 2),
+        coordinator.execute(&mut authority, Some(&approval), &mut attempt, 2, &mut || 2),
         Ok(existing)
     );
     assert_eq!(attempt.status(), ExecutionStatus::Failed);
@@ -853,7 +864,7 @@ fn existing_terminal_that_cannot_update_the_local_mirror_requires_reconciliation
     );
 
     assert_eq!(
-        coordinator.execute(&mut authority, Some(&approval), &mut attempt, 2),
+        coordinator.execute(&mut authority, Some(&approval), &mut attempt, 2, &mut || 2),
         Err(ExecutionPending::ReconciliationRequired {
             code: ExecutionFailure::TerminalConflict,
             effect_state: EffectState::Started,
@@ -861,6 +872,10 @@ fn existing_terminal_that_cannot_update_the_local_mirror_requires_reconciliation
     );
     assert_eq!(attempt.status(), ExecutionStatus::Prepared);
     assert_eq!(coordinator.executor().calls, 0);
+    assert!(
+        authority.live_attempts().is_empty(),
+        "a known canonical terminal must stay unavailable until reconciliation mirrors it"
+    );
 }
 
 #[test]
@@ -892,7 +907,7 @@ fn existing_terminal_for_another_attempt_requires_reconciliation() {
     );
 
     assert_eq!(
-        coordinator.execute(&mut authority, Some(&approval), &mut attempt, 2),
+        coordinator.execute(&mut authority, Some(&approval), &mut attempt, 2, &mut || 2),
         Err(ExecutionPending::ReconciliationRequired {
             code: ExecutionFailure::TerminalConflict,
             effect_state: EffectState::Started,
@@ -933,13 +948,17 @@ fn conflicting_terminal_commit_requires_reconciliation() {
     );
 
     assert_eq!(
-        coordinator.execute(&mut authority, Some(&approval), &mut attempt, 2),
+        coordinator.execute(&mut authority, Some(&approval), &mut attempt, 2, &mut || 2),
         Err(ExecutionPending::ReconciliationRequired {
             code: ExecutionFailure::TerminalConflict,
             effect_state: EffectState::Started,
         })
     );
     assert_eq!(attempt.status(), ExecutionStatus::Running);
+    assert!(
+        authority.live_attempts().is_empty(),
+        "a conflicting canonical terminal must stay unavailable until reconciliation"
+    );
 }
 
 #[test]
@@ -977,7 +996,7 @@ fn fenced_commit_before_dispatch_has_a_pre_dispatch_reason() {
         ExecutionCoordinator::new(executor, lease, committer(Err(AttemptCommitError::Fenced)));
 
     assert_eq!(
-        coordinator.execute(&mut authority, Some(&approval), &mut attempt, 2),
+        coordinator.execute(&mut authority, Some(&approval), &mut attempt, 2, &mut || 2),
         Err(ExecutionPending::ReconciliationRequired {
             code: ExecutionFailure::OwnerFencedBeforeDispatch,
             effect_state: EffectState::NotStarted,
@@ -1002,7 +1021,7 @@ fn fenced_terminal_commit_remains_running_for_reconciliation() {
         ExecutionCoordinator::new(executor, lease, committer(Err(AttemptCommitError::Fenced)));
 
     assert_eq!(
-        coordinator.execute(&mut authority, Some(&approval), &mut attempt, 2),
+        coordinator.execute(&mut authority, Some(&approval), &mut attempt, 2, &mut || 2),
         Err(ExecutionPending::ReconciliationRequired {
             code: ExecutionFailure::OwnerFencedAfterDispatch,
             effect_state: EffectState::NotStarted,

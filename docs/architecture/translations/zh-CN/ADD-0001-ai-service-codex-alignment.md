@@ -345,10 +345,10 @@ sequenceDiagram
     Store-->>Core: 持久状态、Checkpoint 或类型化失败
     alt 存储不可用
       alt 不存在持久 started Turn
-        Core-->>C1: 拒绝操作；未接受 Turn
+        Core-->>C1: 拒绝操作，未接受 Turn
         C1-->>Client: 无副作用的 durability-unavailable 拒绝
       else 已存在持久 started Turn
-        Core-->>C1: 停止工作；不得发布未持久化 Item
+        Core-->>C1: 停止工作，不得发布未持久化 Item
         C1-->>Client: 带外 durability-unavailable 通知
         opt C-6 恢复
           Core->>Store: 为 recovery-pending Turn 追加 failed 终态
@@ -396,7 +396,7 @@ sequenceDiagram
       C1->>Identity: 校验审批者身份与 Scope
       Identity-->>C1: 不可变审批者信任上下文或拒绝
       alt 审批者身份被拒绝
-        C1-->>Approver: 类型化拒绝；请求保持 Pending 直至过期
+        C1-->>Approver: 类型化拒绝，请求保持 Pending 直至过期
       else 审批者身份有效
         C1->>Policy: 精确 D-6 身份的已校验决策
         alt 审批者接受精确范围

@@ -37,6 +37,12 @@ Apply the guardrails as follows:
 - Count the physical span, including comments and documentation, because that
   is the amount a reviewer must navigate. Use configured tool output for
   complexity when available; do not add a dependency solely to obtain a metric.
+- Treat every measurement as point-in-time evidence for the inspected source
+  revision. A decision record may cite that revision and the measured result,
+  but no test may require the record to mirror later physical line counts,
+  function layout, or ordinary source wording. Re-run the review when an
+  affected change crosses a threshold; do not continuously rewrite historical
+  evidence after unrelated edits.
 - Generated, vendored, lock, machine-produced schema, snapshot, fixture-data,
   and immutable migration-history files are excluded from the numeric limits.
   Their source or generating workflow remains subject to review.
@@ -159,6 +165,14 @@ the stated problem and forces, not by matching a class diagram mechanically.
 
 ## Testing And Change Design
 
+- Develop source-code features and reproducible defect fixes with
+  Red-Green-Refactor: first add the smallest focused test for the missing
+  behavior, observe the expected failure, then implement and keep focused and
+  routed suites green. Pure ADR, ADD, agent-guide, template, index, or other
+  documentation-only edits do not manufacture a failing source test; they use
+  the repository's deterministic governance validator and structured document
+  review. The governance validator itself is maintained source and follows the
+  source-code rule.
 - Test observable behavior and stable contracts. Avoid tests coupled to private
   call order, framework internals, or incidental data structures unless that
   detail is itself the contract.

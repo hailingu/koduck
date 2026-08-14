@@ -4,11 +4,12 @@ use std::collections::VecDeque;
 
 use koduck_ai::adapters::tool::{parse_action_parameters, parse_input_schema};
 use koduck_ai::application::{
-    ApprovalAuthorizer, ApprovalDecisionService, AttemptCommitError, AttemptCommitResult,
-    AttemptCommitter, DispatchPermit, EffectState, ExecutionCoordinator, ExecutionFailure,
-    ExecutionPreparationError, ExecutionResponse, ExecutionResponseBuilder, ExecutorError,
-    IsolatedExecutor, LeaseValidator, ToolAuthorizationService, ToolCallError, ToolCallInputs,
-    ToolExecutionAuthorityRoot, ToolExecutionDriver, ToolExecutionOutcome, ToolExecutionRuntime,
+    ActionDeadline, ApprovalAuthorizer, ApprovalDecisionService, AttemptCommitError,
+    AttemptCommitResult, AttemptCommitter, CancelAcknowledgement, CancelPermit, DispatchPermit,
+    EffectState, ExecutionCoordinator, ExecutionFailure, ExecutionPreparationError,
+    ExecutionResponse, ExecutionResponseBuilder, ExecutorError, IsolatedExecutor, LeaseValidator,
+    ToolAuthorizationService, ToolCallError, ToolCallInputs, ToolExecutionAuthorityRoot,
+    ToolExecutionDriver, ToolExecutionOutcome, ToolExecutionRuntime,
 };
 use koduck_ai::domain::execution::{
     ApprovalDecision, ApprovalRequest, AttemptId, ExactActionBinding,
@@ -49,11 +50,21 @@ impl IsolatedExecutor for ScriptedExecutor {
         &mut self,
         _permit: &DispatchPermit,
         binding: &ExactActionBinding,
+        _deadline: ActionDeadline,
     ) -> Result<ExecutionResponse, ExecutorError> {
         self.seen.push(binding.attempt_id());
         self.responses
             .pop_front()
             .expect("the scripted executor provides one response per dispatch")
+    }
+
+    fn cancel(
+        &mut self,
+        _permit: &CancelPermit,
+        _binding: &ExactActionBinding,
+        _deadline: ActionDeadline,
+    ) -> CancelAcknowledgement {
+        CancelAcknowledgement::NotAcknowledged
     }
 }
 
@@ -674,13 +685,15 @@ fn retry_reads_a_fresh_clock_for_each_d6_and_dispatch() {
         AlwaysCurrentLease,
         WinningCommitter { calls: 0 },
     );
-    // The clock advances on every read so a delayed approval cannot pin the D-6
-    // window or D-7 start time to the original call time.
-    let mut time = 1_000u64;
+    // Each D-6 receives a later creation time, while the dispatch and response
+    // reads remain inside their respective 30-second action budgets.
+    let mut clock_reads = VecDeque::from([
+        1_000, 101_000, 301_000, 301_001, 401_000, 501_000, 600_000, 600_001,
+    ]);
     let mut clock = || {
-        let t = time;
-        time += 100_000;
-        t
+        clock_reads
+            .pop_front()
+            .expect("fixture supplies every creation, dispatch, and response clock read")
     };
     let mut observed_expires_at = Vec::new();
     let mut decision = |request: &ApprovalRequest| {

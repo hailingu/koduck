@@ -10,6 +10,10 @@ use crate::domain::execution::{
 };
 use crate::domain::{ThreadId, TrustContext};
 
+use super::cancellation::{CancelAcknowledgement, CancelPermit};
+use super::deadline::{ActionDeadline, MAX_ACTION_DURATION_MILLIS};
+use super::terminal::TerminalReservationFailure;
+
 /// Maximum buffered byte size for one isolated executor response.
 pub const MAX_EXECUTOR_OUTPUT_BYTES: usize = 1_048_576;
 
@@ -39,6 +43,8 @@ pub enum ExecutionFailure {
     ApprovalMismatch,
     /// The canonical D-7 already claimed its only dispatch.
     ApprovalAlreadyConsumed,
+    /// An authenticated interruption sealed the Turn before the dispatch claim.
+    InterruptionRequested,
     /// The canonical result could not be committed durably.
     DurabilityUnavailable,
     /// A different canonical terminal won the conditional commit race.
@@ -47,6 +53,8 @@ pub enum ExecutionFailure {
     ConcurrentAttempt,
     /// The Turn's 16-slot D-7 attempt budget is exhausted.
     AttemptLimit,
+    /// The addressed D-7 is not running, so no bounded cancellation exists.
+    AttemptNotRunning,
 }
 
 /// Executor failure paired with truthful external-effect evidence.
@@ -156,6 +164,11 @@ pub enum ToolExecutionOutcome {
     },
     /// No result is delivered because policy or ownership cancelled the attempt.
     Cancelled { effect_state: EffectState },
+    /// The 30-second action deadline elapsed before a bounded terminal commit.
+    TimedOut {
+        /// Best executor evidence about whether an effect started.
+        effect_state: EffectState,
+    },
     /// Execution failed with truthful effect-state evidence.
     Failed {
         /// Stable owned failure code.
@@ -170,14 +183,16 @@ impl ToolExecutionOutcome {
         match self {
             Self::Succeeded { effect_state, .. }
             | Self::Cancelled { effect_state }
+            | Self::TimedOut { effect_state }
             | Self::Failed { effect_state, .. } => *effect_state,
         }
     }
 
-    const fn status(&self) -> ExecutionStatus {
+    pub(super) const fn status(&self) -> ExecutionStatus {
         match self {
             Self::Succeeded { .. } => ExecutionStatus::Succeeded,
             Self::Cancelled { .. } => ExecutionStatus::Cancelled,
+            Self::TimedOut { .. } => ExecutionStatus::TimedOut,
             Self::Failed { .. } => ExecutionStatus::Failed,
         }
     }
@@ -185,7 +200,7 @@ impl ToolExecutionOutcome {
     fn is_bounded(&self) -> bool {
         match self {
             Self::Succeeded { output, .. } => output.len() <= MAX_EXECUTOR_OUTPUT_BYTES,
-            Self::Cancelled { .. } | Self::Failed { .. } => true,
+            Self::Cancelled { .. } | Self::TimedOut { .. } | Self::Failed { .. } => true,
         }
     }
 }
@@ -218,7 +233,22 @@ pub trait IsolatedExecutor {
         &mut self,
         permit: &DispatchPermit,
         binding: &ExactActionBinding,
+        deadline: ActionDeadline,
     ) -> Result<ExecutionResponse, ExecutorError>;
+
+    /// Sends exactly one bounded cancellation for a running D-7.
+    ///
+    /// The implementation must stop waiting at `deadline` and return
+    /// [`CancelAcknowledgement::NotAcknowledged`] when no acknowledgement has
+    /// arrived by then. It returns [`CancelAcknowledgement::Unavailable`]
+    /// immediately only when no cancellation boundary exists to perform that
+    /// bounded wait; the coordinator then retains the D-7 for reconciliation.
+    fn cancel(
+        &mut self,
+        permit: &CancelPermit,
+        binding: &ExactActionBinding,
+        deadline: ActionDeadline,
+    ) -> CancelAcknowledgement;
 }
 
 /// Opaque single-call authority created only by [`ExecutionCoordinator`].
@@ -364,7 +394,8 @@ impl ToolExecutionAuthorityRoot {
 /// Runtime handle that shares the process-owned authority root across preparers.
 #[derive(Clone, Debug)]
 pub struct ToolExecutionRuntime {
-    catalog: Arc<TurnAuthorityCatalog>,
+    /// Shared authority catalog, also read by the interruption boundary.
+    pub(super) catalog: Arc<TurnAuthorityCatalog>,
 }
 
 impl ToolExecutionRuntime {
@@ -504,16 +535,20 @@ where
 
 /// C-5 coordinator that makes isolation and lease fencing unbypassable.
 pub struct ExecutionCoordinator<E, L, C> {
-    executor: E,
-    lease: L,
-    committer: C,
+    /// Isolated executor port; only the cancellation boundary in this module
+    /// family may present the bounded cancel permit beside the dispatch path.
+    pub(super) executor: E,
+    /// C-6 current-generation validation shared with the cancellation boundary.
+    pub(super) lease: L,
+    /// Conditional canonical terminal committer shared with cancellation.
+    pub(super) committer: C,
     /// Started-at timestamp of the most recent dispatch, retained as evidence.
     #[cfg(test)]
     last_started_at_millis: u64,
 }
 
 #[derive(Clone, Copy)]
-enum DispatchPhase {
+pub(super) enum DispatchPhase {
     BeforeDispatch,
     AfterDispatch,
 }
@@ -556,6 +591,12 @@ where
 
     /// Authorizes, dispatches, and validates one exact D-7 result.
     ///
+    /// `now` is re-read after the executor returns; when the observed
+    /// completion time is at or beyond `started_at_millis` plus 30 seconds,
+    /// the deadline dominates and the D-7 commits `timed_out` with the
+    /// executor's observed effect-state evidence instead of a succeeded or
+    /// failed result.
+    ///
     /// # Errors
     ///
     /// Returns [`ExecutionPending`] when the canonical dispatch claim was rejected
@@ -566,6 +607,7 @@ where
         approval: Option<&ApprovalRequest>,
         attempt: &mut ExecutionAttempt,
         started_at_millis: u64,
+        now: &mut dyn FnMut() -> u64,
     ) -> Result<ToolExecutionOutcome, ExecutionPending> {
         if attempt.status() != ExecutionStatus::Prepared {
             return Err(rejected_start(ExecutionError::AlreadyDispatched));
@@ -597,11 +639,23 @@ where
             );
         }
         let permit = DispatchPermit { _private: () };
+        let deadline = ActionDeadline::from_started_at(started_at_millis, now());
+        if deadline.remaining_millis() == 0 {
+            return self.commit_terminal(
+                authority,
+                attempt,
+                ToolExecutionOutcome::TimedOut {
+                    effect_state: EffectState::NotStarted,
+                },
+                ExecutionStatus::TimedOut,
+                DispatchPhase::BeforeDispatch,
+            );
+        }
         #[cfg(test)]
         {
             self.last_started_at_millis = started_at_millis;
         }
-        let response = self.executor.execute(&permit, &binding);
+        let response = self.executor.execute(&permit, &binding, deadline);
         let effect_state = match &response {
             Ok(response) => response.effect_state,
             Err(error) => error.effect_state,
@@ -611,6 +665,17 @@ where
                 code: ExecutionFailure::OwnerFencedAfterDispatch,
                 effect_state,
             });
+        }
+        let deadline_elapsed =
+            now().saturating_sub(started_at_millis) >= MAX_ACTION_DURATION_MILLIS;
+        if deadline_elapsed {
+            return self.commit_terminal(
+                authority,
+                attempt,
+                ToolExecutionOutcome::TimedOut { effect_state },
+                ExecutionStatus::TimedOut,
+                DispatchPhase::AfterDispatch,
+            );
         }
         let response = match response {
             Ok(response) => response,
@@ -640,7 +705,7 @@ where
         )
     }
 
-    fn commit_terminal(
+    pub(super) fn commit_terminal(
         &mut self,
         authority: &mut TurnExecutionAuthority,
         attempt: &mut ExecutionAttempt,
@@ -648,76 +713,32 @@ where
         status: ExecutionStatus,
         dispatch_phase: DispatchPhase,
     ) -> Result<ToolExecutionOutcome, ExecutionPending> {
-        let binding = attempt.binding().clone();
-        match self.committer.commit_outcome(&binding, &outcome) {
-            Ok(AttemptCommitResult::Won) => {
-                if authority.mirror_terminal(attempt, status).is_err() {
-                    Err(ExecutionPending::ReconciliationRequired {
-                        code: ExecutionFailure::TerminalConflict,
-                        effect_state: outcome.effect_state(),
-                    })
-                } else {
-                    Ok(outcome)
-                }
-            }
-            Ok(AttemptCommitResult::Existing(existing)) => {
-                if existing.binding() != &binding {
-                    return Err(ExecutionPending::ReconciliationRequired {
-                        code: ExecutionFailure::TerminalConflict,
-                        effect_state: outcome.effect_state(),
-                    });
-                }
-                let existing = existing.outcome().clone();
-                if authority
-                    .mirror_terminal(attempt, existing.status())
-                    .is_err()
-                {
-                    Err(ExecutionPending::ReconciliationRequired {
-                        code: ExecutionFailure::TerminalConflict,
-                        effect_state: existing.effect_state(),
-                    })
-                } else {
-                    Ok(existing)
-                }
-            }
-            Err(error) => Err(ExecutionPending::ReconciliationRequired {
-                code: match error {
-                    AttemptCommitError::Fenced => match dispatch_phase {
-                        DispatchPhase::BeforeDispatch => {
-                            ExecutionFailure::OwnerFencedBeforeDispatch
-                        }
-                        DispatchPhase::AfterDispatch => ExecutionFailure::OwnerFencedAfterDispatch,
-                    },
-                    AttemptCommitError::Unavailable => ExecutionFailure::DurabilityUnavailable,
-                    AttemptCommitError::Conflict => ExecutionFailure::TerminalConflict,
-                },
+        if authority.reserve_terminal(attempt).is_err() {
+            return Err(ExecutionPending::ReconciliationRequired {
+                code: ExecutionFailure::TerminalConflict,
                 effect_state: outcome.effect_state(),
-            }),
+            });
         }
-    }
-
-    /// Commits a cancelled terminal for one prepared D-7 without executor dispatch.
-    ///
-    /// Used when a requested D-6 is declined, cancelled, or expired: the prepared
-    /// D-7 must close to `cancelled/not_started` rather than remain prepared or
-    /// dispatch against a non-accepted approval.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ExecutionPending`] when the conditional durable write did not win.
-    pub(crate) fn cancel_prepared_attempt(
-        &mut self,
-        authority: &mut TurnExecutionAuthority,
-        attempt: &mut ExecutionAttempt,
-    ) -> Result<ToolExecutionOutcome, ExecutionPending> {
-        self.commit_terminal(
+        // A running D-7 has consumed its dispatch claim even when the deadline
+        // or a lease fence prevents the executor call. An unresolved terminal
+        // write must retain that reservation so an interrupter cannot send a
+        // cancellation for an effect that was never requested. A still-prepared
+        // D-7 may safely release its pre-effect reservation for another close.
+        let reservation_failure = match dispatch_phase {
+            DispatchPhase::BeforeDispatch if attempt.status() == ExecutionStatus::Prepared => {
+                TerminalReservationFailure::ReleaseBeforeExternalEffect
+            }
+            DispatchPhase::BeforeDispatch | DispatchPhase::AfterDispatch => {
+                TerminalReservationFailure::HoldForReconciliation
+            }
+        };
+        self.commit_reserved_terminal(
             authority,
             attempt,
-            ToolExecutionOutcome::Cancelled {
-                effect_state: EffectState::NotStarted,
-            },
-            ExecutionStatus::Cancelled,
-            DispatchPhase::BeforeDispatch,
+            outcome,
+            status,
+            dispatch_phase,
+            reservation_failure,
         )
     }
 }
@@ -733,6 +754,9 @@ fn rejected_start(error: ExecutionError) -> ExecutionPending {
             | ExecutionError::InvalidTransition
             | ExecutionError::AttemptAlreadyAllocated
             | ExecutionError::PolicyAuthorizationRequired => ExecutionFailure::ApprovalMismatch,
+            // A sealed Turn is an interruption, not an approval problem: report
+            // its own code so callers do not take the approval-failure path.
+            ExecutionError::InterruptionRequested => ExecutionFailure::InterruptionRequested,
             ExecutionError::ConcurrentAttempt => ExecutionFailure::ConcurrentAttempt,
         },
     }

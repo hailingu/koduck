@@ -3,8 +3,8 @@
 //! Production executor adapter kept fail-closed until a capability is approved.
 
 use crate::application::{
-    DispatchPermit, EffectState, ExecutionFailure, ExecutionResponse, ExecutorError,
-    IsolatedExecutor,
+    ActionDeadline, CancelAcknowledgement, CancelPermit, DispatchPermit, EffectState,
+    ExecutionFailure, ExecutionResponse, ExecutorError, IsolatedExecutor,
 };
 use crate::domain::execution::ExactActionBinding;
 
@@ -17,10 +17,22 @@ impl IsolatedExecutor for DisabledExecutor {
         &mut self,
         _permit: &DispatchPermit,
         _binding: &ExactActionBinding,
+        _deadline: ActionDeadline,
     ) -> Result<ExecutionResponse, ExecutorError> {
         Err(ExecutorError::new(
             ExecutionFailure::ExecutorUnavailable,
             EffectState::NotStarted,
         ))
+    }
+
+    fn cancel(
+        &mut self,
+        _permit: &CancelPermit,
+        _binding: &ExactActionBinding,
+        _deadline: ActionDeadline,
+    ) -> CancelAcknowledgement {
+        // Nothing is ever dispatched, and this adapter cannot wait for a
+        // cancellation deadline that belongs to an external executor.
+        CancelAcknowledgement::Unavailable
     }
 }

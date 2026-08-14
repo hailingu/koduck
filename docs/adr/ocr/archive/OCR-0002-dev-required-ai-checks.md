@@ -246,6 +246,7 @@ stated condition does not apply.
 - **Requirement-level review**: Pass — all required and triggered content for
   `Verified` is complete, and every non-triggered conditional has a specific
   N/A reason.
+- **Governance validation**: Pass — governance validation passed (`npm run validate --prefix tools/governance-validator`).
 
 ## Archival [Conditionally Required — Decision Status is retired or Implementation Status is final]
 

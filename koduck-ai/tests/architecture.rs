@@ -121,7 +121,7 @@ fn cand_2_digest_and_turn_budget_are_stable_authorities() {
         "the durable commit port must represent a won or existing canonical terminal"
     );
     assert!(
-        application_execution.contains("AttemptCommitError::Conflict"),
+        production.contains("AttemptCommitError::Conflict"),
         "the durable commit port must represent a conflicting terminal race"
     );
     assert_eq!(
@@ -218,87 +218,6 @@ fn cand_2_authority_issuers_are_not_public_extension_points() {
         2,
         "apply_validated_decision must have exactly one definition and one ApprovalDecisionService caller"
     );
-}
-
-#[test]
-fn adr_0003_evidence_matches_current_authority_and_decomposition_state() {
-    let crate_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let repository_root = crate_root
-        .parent()
-        .expect("koduck-ai belongs to the repository");
-    let adr = fs::read_to_string(
-        repository_root.join("docs/adr/ADR-0003-default-deny-tool-approval-execution-boundary.md"),
-    )
-    .expect("ADR-0003 is readable");
-    let authority = fs::read_to_string(crate_root.join("src/domain/execution/authority.rs"))
-        .expect("CAND-2 authority catalog source is readable");
-    let execution = fs::read_to_string(crate_root.join("src/application/execution.rs"))
-        .expect("CAND-2 execution coordinator source is readable");
-    let tool_execution = fs::read_to_string(crate_root.join("src/application/tool_execution.rs"))
-        .expect("CAND-2 retry driver source is readable");
-    let execute_start_marker =
-        "    /// Authorizes, dispatches, and validates one exact D-7 result.";
-    let execute_start = execution
-        .find(execute_start_marker)
-        .expect("ExecutionCoordinator::execute intent documentation exists");
-    let execute_end = execution[execute_start..]
-        .find("\n    fn commit_terminal(")
-        .map(|offset| execute_start + offset)
-        .expect("ExecutionCoordinator::execute ends before commit_terminal");
-    let execute_lines = execution[execute_start..execute_end]
-        .trim_end()
-        .lines()
-        .count();
-
-    assert!(!adr.contains("Process-local state is reclaimed only after"));
-    assert!(!adr.contains("DisabledExecutor` remains the only runtime path"));
-    assert!(!authority.contains("safe reclamation"));
-    for path in [
-        "src/domain/execution.rs",
-        "src/application/execution.rs",
-        "src/domain/execution/authority.rs",
-        "src/domain/tool.rs",
-        "tests/internal/cand_2_execution.rs",
-        "tests/internal/cand_2_retry.rs",
-    ] {
-        let source =
-            fs::read_to_string(crate_root.join(path)).expect("reviewed source is readable");
-        let lines = source.lines().count();
-        let lines = if lines >= 1_000 {
-            format!("{},{:03}", lines / 1_000, lines % 1_000)
-        } else {
-            lines.to_string()
-        };
-        let required_review = format!("`koduck-ai/{path}` is {lines} physical lines");
-        assert!(
-            adr.contains(&required_review),
-            "ADR-0003 decomposition review is missing {required_review}"
-        );
-    }
-    assert!(adr.contains(&format!(
-        "`ExecutionCoordinator::execute` is {execute_lines} physical lines"
-    )));
-    let driver_start_marker =
-        "    /// Executes one tool call with at most one retry on a proven pre-effect failure.";
-    let driver_start = tool_execution
-        .find(driver_start_marker)
-        .expect("ToolExecutionDriver::execute intent documentation exists");
-    let driver_end = tool_execution[driver_start..]
-        .find("\n    /// Authorizes policy and prepares")
-        .map(|offset| driver_start + offset)
-        .expect("ToolExecutionDriver::execute ends before authorize_and_prepare");
-    let driver_lines = tool_execution[driver_start..driver_end]
-        .trim_end()
-        .lines()
-        .count();
-    assert!(adr.contains(&format!(
-        "`ToolExecutionDriver::execute` is {driver_lines} physical lines"
-    )));
-    assert!(
-        execution.contains("    /// Started-at timestamp of the most recent dispatch, retained as evidence.\n    #[cfg(test)]\n    last_started_at_millis: u64,"),
-        "test-only dispatch timestamp evidence must not be retained in production builds"
-    );
-    assert!(adr.contains("`N/A — no configured complexity tool`"));
 }
 
 fn inspect_rust_files(path: &Path, violations: &mut Vec<String>) {
@@ -452,53 +371,6 @@ fn production_io_and_background_work_are_bounded() {
 }
 
 #[test]
-fn adr_0001_has_contract_traceability_and_complete_risk_coverage() {
-    let crate_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let repository_root = crate_root
-        .parent()
-        .expect("koduck-ai belongs to the repository workspace");
-    let adr = fs::read_to_string(
-        repository_root.join("docs/adr/ADR-0001-provider-neutral-turn-kernel.md"),
-    )
-    .expect("ADR-0001 is readable");
-
-    assert!(
-        adr.contains("## Contract-To-Check Traceability [Required]")
-            && adr.contains("## Risk Coverage Matrix [Required]"),
-        "ADR-0001 must carry the required traceability sections"
-    );
-    for risk in [
-        "Concurrency and ordering",
-        "Timeout and deadline",
-        "Cancellation and interruption",
-        "Resource bounds and backpressure",
-        "Framework or trust-boundary rejection",
-    ] {
-        assert_eq!(
-            adr.matches(risk).count(),
-            1,
-            "ADR-0001 must contain exactly one risk row for {risk}"
-        );
-    }
-}
-
-#[test]
-fn repository_introduction_describes_the_implemented_service() {
-    let crate_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let repository_root = crate_root
-        .parent()
-        .expect("koduck-ai belongs to the repository workspace");
-    let readme = fs::read_to_string(repository_root.join("README.md"))
-        .expect("repository README is readable");
-    let guide = fs::read_to_string(repository_root.join("AGENTS.md"))
-        .expect("repository agent guide is readable");
-
-    assert!(!readme.contains("No service has been added"));
-    assert!(!guide.contains("no service exists yet in this repository"));
-    assert!(readme.contains("koduck-ai"));
-}
-
-#[test]
 fn application_api_does_not_expose_an_unwired_unpublished_buffer() {
     let crate_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let application_module = fs::read_to_string(crate_root.join("src/application/mod.rs"))
@@ -559,6 +431,20 @@ fn required_ci_maps_every_routed_command_and_postgres_boundary() {
         assert!(
             workflow.contains(command),
             "workflow must execute routed command {command}"
+        );
+    }
+    let format_job = workflow
+        .split_once("  format:")
+        .and_then(|(_, jobs)| jobs.split_once("\n  clippy:"))
+        .map(|(job, _)| job)
+        .expect("the required format job has a bounded workflow section");
+    for command in [
+        "npm test --prefix tools/governance-validator",
+        "npm run validate --prefix tools/governance-validator",
+    ] {
+        assert!(
+            format_job.contains(command),
+            "required koduck-ai-format check must execute routed governance command {command}"
         );
     }
     assert!(

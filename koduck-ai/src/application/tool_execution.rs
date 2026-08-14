@@ -103,7 +103,10 @@ impl<C, A> ToolExecutionDriver<C, A> {
     /// and when each dispatch starts, and the dispatch start time is clamped to
     /// never precede the verified decision time, so a delayed approval cannot
     /// produce a D-7 start time earlier than the approval, nor a retry D-6 window
-    /// computed from the original call time. A declined, cancelled, or expired D-6
+    /// computed from the original call time. The same clock is re-read by the
+    /// coordinator after each executor response, so an action whose observed
+    /// completion reaches the 30-second deadline commits `timed_out` instead of
+    /// a succeeded or failed result. A declined, cancelled, or expired D-6
     /// cancels the prepared D-7 without dispatch.
     ///
     /// # Errors
@@ -167,6 +170,7 @@ impl<C, A> ToolExecutionDriver<C, A> {
                         approval.as_deref(),
                         &mut attempt,
                         started_at_millis,
+                        &mut *now,
                     )
                 }
                 ApprovalPlan::Cancel => {

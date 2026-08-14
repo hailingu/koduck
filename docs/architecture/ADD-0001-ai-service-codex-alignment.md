@@ -4,7 +4,7 @@
 
 - **Design Status**: Current
 - **Date**: 2026-08-10
-- **Author**: Codex
+- **Author**: @codex
 - **Architecture Owner**: @linhai
 - **Required Approver**: @linhai
 - **Approver [Conditionally Required — Design Status is or has been `Current`]**: @linhai
@@ -387,10 +387,10 @@ sequenceDiagram
     Store-->>Core: Durable state, checkpoint, or typed failure
     alt Storage unavailable
       alt No durable started turn exists
-        Core-->>C1: Reject operation; no turn was accepted
+        Core-->>C1: Reject operation, no turn was accepted
         C1-->>Client: Durability-unavailable rejection with no side effect
       else Durable started turn exists
-        Core-->>C1: Stop work; no unpersisted item is publishable
+        Core-->>C1: Stop work, no unpersisted item is publishable
         C1-->>Client: Out-of-band durability-unavailable notification
         opt C-6 recovers
           Core->>Store: Append failed terminal for recovery-pending turn
@@ -438,7 +438,7 @@ sequenceDiagram
       C1->>Identity: Validate approver identity and scope
       Identity-->>C1: Immutable approver trust context or rejection
       alt Approver identity rejected
-        C1-->>Approver: Typed rejection; request remains pending until expiry
+        C1-->>Approver: Typed rejection, request remains pending until expiry
       else Approver identity valid
         C1->>Policy: Validated decision for exact D-6 identity
         alt Approver accepts exact scope
