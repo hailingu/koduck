@@ -6,6 +6,8 @@
 pub mod execution;
 pub mod tool;
 
+use std::collections::BTreeSet;
+
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -46,6 +48,42 @@ impl TenantId {
     }
 }
 
+/// C-7-validated approval scopes for one authenticated principal.
+///
+/// Construction is crate-internal: only the configured authenticated trust
+/// adapter may seal scopes it has validated, so no external caller can mint
+/// `ai.tool.approve` or any other approval scope (ADR-0003 TC-05).
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ApprovalScopes {
+    scopes: BTreeSet<String>,
+}
+
+impl ApprovalScopes {
+    /// Wraps scopes the configured C-7 boundary has already validated.
+    #[cfg_attr(
+        not(test),
+        allow(
+            dead_code,
+            reason = "T-2 authenticated trust adapter wiring is not complete"
+        )
+    )]
+    pub(crate) fn from_validated<I, S>(scopes: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        Self {
+            scopes: scopes.into_iter().map(Into::into).collect(),
+        }
+    }
+
+    /// Reports whether the validated identity carries one exact scope.
+    #[must_use]
+    pub fn contains(&self, scope: &str) -> bool {
+        self.scopes.contains(scope)
+    }
+}
+
 /// Immutable identity information supplied by the configured trust boundary.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TrustContext {
@@ -53,10 +91,17 @@ pub struct TrustContext {
     pub tenant_id: TenantId,
     /// Authenticated subject within the tenant.
     pub subject_id: String,
+    /// C-7-validated approval scopes; empty until the authenticated adapter
+    /// supplies them, so an unscoped principal can never resolve an approval.
+    approval_scopes: ApprovalScopes,
 }
 
 impl TrustContext {
     /// Creates a trust context from already validated identity components.
+    ///
+    /// The returned context carries no approval scopes; use
+    /// [`TrustContext::with_approval_scopes`] only with scopes the configured
+    /// C-7 boundary has already validated.
     ///
     /// # Errors
     ///
@@ -74,8 +119,25 @@ impl TrustContext {
             Ok(Self {
                 tenant_id,
                 subject_id,
+                approval_scopes: ApprovalScopes::default(),
             })
         }
+    }
+
+    /// Returns a copy of this context carrying already-validated scopes.
+    ///
+    /// Only the sealed [`ApprovalScopes`] capability can enter this method, so
+    /// request, Tool, and MCP content can never attach approval scope.
+    #[must_use]
+    pub fn with_approval_scopes(mut self, scopes: ApprovalScopes) -> Self {
+        self.approval_scopes = scopes;
+        self
+    }
+
+    /// Reports whether the validated identity carries one exact approval scope.
+    #[must_use]
+    pub fn has_approval_scope(&self, scope: &str) -> bool {
+        self.approval_scopes.contains(scope)
     }
 }
 

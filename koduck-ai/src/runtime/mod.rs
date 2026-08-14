@@ -148,6 +148,10 @@ where
 /// Returns [`RuntimeError`] when `PostgreSQL`, provider-client construction,
 /// listener binding, or HTTP serving fails.
 pub async fn run(config: RuntimeConfig) -> Result<(), RuntimeError> {
+    // Assembled at startup and held for the process lifetime: the state owns
+    // the process's sole C-5 Turn authority root; T-2 wires its shared handles
+    // into the transport consumers.
+    let _runtime_state = RuntimeState::assemble();
     let database_deadline = AppendPolicy::cand_1().deadline();
     let pool = database_setup_attempt(
         database_deadline,
@@ -295,6 +299,39 @@ fn streaming_response(receiver: mpsc::Receiver<Result<Bytes, Infallible>>) -> Re
         HeaderValue::from_static("text/event-stream"),
     );
     response
+}
+
+// ADR: docs/adr/ADR-0003-default-deny-tool-approval-execution-boundary.md
+
+/// Production runtime state assembled once at startup.
+///
+/// The state holds the process's sole C-5 Turn authority root and only
+/// distributes shared `ToolExecutionRuntimeRoot` handles (ADR-0003
+/// TC-09/TC-12): every handle returned by one state shares one authority
+/// catalog, so one Turn keeps exactly one 16-slot attempt budget and one
+/// running D-7 in this process. T-2 wires the transport consumers; until then
+/// the handles are exercised by the crate-internal boundary harness.
+pub(crate) struct RuntimeState {
+    tool_execution_root: crate::application::ToolExecutionRuntimeRoot,
+}
+
+impl RuntimeState {
+    /// Assembles the runtime state at startup, issuing the process's sole C-5
+    /// Turn authority root.
+    pub(crate) fn assemble() -> Self {
+        Self {
+            tool_execution_root: crate::application::ToolExecutionRuntimeRoot::issue(),
+        }
+    }
+
+    /// Distributes one shared handle to the held C-5 Turn authority root.
+    #[cfg_attr(
+        not(test),
+        allow(dead_code, reason = "T-2 runtime execution wiring is not complete")
+    )]
+    pub(crate) fn tool_execution_root(&self) -> crate::application::ToolExecutionRuntimeRoot {
+        self.tool_execution_root.clone()
+    }
 }
 
 fn trust_context(headers: &HeaderMap) -> Option<TrustContext> {

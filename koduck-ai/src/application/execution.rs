@@ -12,145 +12,10 @@ use crate::domain::{ThreadId, TrustContext};
 
 use super::cancellation::{CancelAcknowledgement, CancelPermit};
 use super::deadline::{ActionDeadline, MAX_ACTION_DURATION_MILLIS};
+use super::executor_envelope::{
+    EffectState, ExecutionFailure, ExecutionResponse, ExecutorError, MAX_EXECUTOR_OUTPUT_BYTES,
+};
 use super::terminal::TerminalReservationFailure;
-
-/// Maximum buffered byte size for one isolated executor response.
-pub const MAX_EXECUTOR_OUTPUT_BYTES: usize = 1_048_576;
-
-/// Executor-observed state of an external effect.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum EffectState {
-    /// The executor proves that no effect started.
-    NotStarted,
-    /// The executor observed that the effect started.
-    Started,
-    /// The executor cannot prove whether the effect started.
-    Unknown,
-}
-
-/// A stable failure emitted by the C-5 execution boundary.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ExecutionFailure {
-    /// The configured isolated executor is unavailable.
-    ExecutorUnavailable,
-    /// The owner was fenced before executor dispatch and no terminal write won.
-    OwnerFencedBeforeDispatch,
-    /// The owner was fenced after dispatch and no result may reach the model.
-    OwnerFencedAfterDispatch,
-    /// The isolated result exceeded 1,048,576 serialized bytes.
-    OutputLimitExceeded,
-    /// D-6 does not authorize this exact binding.
-    ApprovalMismatch,
-    /// The canonical D-7 already claimed its only dispatch.
-    ApprovalAlreadyConsumed,
-    /// An authenticated interruption sealed the Turn before the dispatch claim.
-    InterruptionRequested,
-    /// The canonical result could not be committed durably.
-    DurabilityUnavailable,
-    /// A different canonical terminal won the conditional commit race.
-    TerminalConflict,
-    /// Another D-7 owns this Turn's single running slot.
-    ConcurrentAttempt,
-    /// The Turn's 16-slot D-7 attempt budget is exhausted.
-    AttemptLimit,
-    /// The addressed D-7 is not running, so no bounded cancellation exists.
-    AttemptNotRunning,
-}
-
-/// Executor failure paired with truthful external-effect evidence.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct ExecutorError {
-    code: ExecutionFailure,
-    effect_state: EffectState,
-}
-
-impl ExecutorError {
-    /// Creates a failure whose effect state was observed by the executor boundary.
-    #[must_use]
-    pub const fn new(code: ExecutionFailure, effect_state: EffectState) -> Self {
-        Self { code, effect_state }
-    }
-}
-
-/// One bounded response from the isolated executor.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ExecutionResponse {
-    effect_state: EffectState,
-    output: Vec<u8>,
-}
-
-impl ExecutionResponse {
-    /// Returns executor evidence about whether the external effect started.
-    #[must_use]
-    pub const fn effect_state(&self) -> EffectState {
-        self.effect_state
-    }
-
-    /// Returns the opaque bounded output for conditional durable commit.
-    #[must_use]
-    pub fn output(&self) -> &[u8] {
-        &self.output
-    }
-}
-
-/// Incremental constructor that enforces the executor output cap before buffering.
-#[derive(Debug)]
-pub struct ExecutionResponseBuilder {
-    effect_state: EffectState,
-    output: Vec<u8>,
-    overflowed: bool,
-}
-
-impl ExecutionResponseBuilder {
-    /// Starts an empty response with the executor's observed effect state.
-    #[must_use]
-    pub const fn new(effect_state: EffectState) -> Self {
-        Self {
-            effect_state,
-            output: Vec::new(),
-            overflowed: false,
-        }
-    }
-
-    /// Appends one transport chunk without allowing the buffer to exceed 1,048,576 bytes.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ExecutionFailure::OutputLimitExceeded`] before appending any chunk that
-    /// would cross the response limit.
-    pub fn push_chunk(&mut self, chunk: &[u8]) -> Result<(), ExecutorError> {
-        if self.overflowed
-            || chunk.len() > MAX_EXECUTOR_OUTPUT_BYTES.saturating_sub(self.output.len())
-        {
-            self.overflowed = true;
-            return Err(ExecutorError::new(
-                ExecutionFailure::OutputLimitExceeded,
-                self.effect_state,
-            ));
-        }
-        self.output.extend_from_slice(chunk);
-        Ok(())
-    }
-
-    /// Finishes the already bounded response for coordinator commitment.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ExecutionFailure::OutputLimitExceeded`] when any prior chunk
-    /// crossed the response limit, even if the caller ignored that append error.
-    pub fn finish(self) -> Result<ExecutionResponse, ExecutorError> {
-        if self.overflowed {
-            return Err(ExecutorError::new(
-                ExecutionFailure::OutputLimitExceeded,
-                self.effect_state,
-            ));
-        }
-        Ok(ExecutionResponse {
-            effect_state: self.effect_state,
-            output: self.output,
-        })
-    }
-}
 
 /// Final application outcome after lease, bounds, and durable-commit validation.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -351,10 +216,30 @@ pub trait AttemptCommitter {
     ) -> Result<AttemptCommitResult, AttemptCommitError>;
 }
 
+/// Typed result of one C-6 foreground-generation validation.
+///
+/// `Unavailable` MUST NOT be treated as `Fenced`: a validator that panicked or
+/// failed leaves ownership undetermined, so the attempt is retained for
+/// reconciliation with zero dispatch instead of being closed as a fenced
+/// cancellation (TC-07).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LeaseCheck {
+    /// The bound owner is still the current foreground owner.
+    Current,
+    /// The bound owner was definitively fenced by a newer generation.
+    Fenced,
+    /// Validation itself failed; ownership is undetermined.
+    Unavailable,
+}
+
 /// Consumer-owned port for C-6 foreground generation validation.
 pub trait LeaseValidator {
-    /// Reports whether every bound owner field still identifies the current owner.
-    fn is_current(&mut self, binding: &ExactActionBinding) -> bool;
+    /// Reports the typed current-ownership state of the bound generation.
+    ///
+    /// Implementations return [`LeaseCheck::Unavailable`] — never a guessed
+    /// `Current`/`Fenced` — when they cannot validate ownership, so callers
+    /// can distinguish an undetermined validator from a fenced owner.
+    fn check_current(&mut self, binding: &ExactActionBinding) -> LeaseCheck;
 }
 
 /// A rejected attempt preparation before any D-7 slot is consumed.
@@ -362,6 +247,9 @@ pub trait LeaseValidator {
 pub enum ExecutionPreparationError {
     /// The exact binding no longer belongs to the current foreground generation.
     OwnerFenced,
+    /// The current foreground generation could not be validated; ownership is
+    /// undetermined and no D-7 slot was consumed.
+    LeaseUnavailable,
     /// The Turn authority rejected the requested allocation.
     Rejected(ExecutionError),
 }
@@ -371,18 +259,10 @@ pub enum ExecutionPreparationError {
 /// Exactly one root is injected into runtime handles. T-3 replaces its
 /// process-local catalog with canonical persistence.
 #[derive(Debug, Default)]
-#[cfg_attr(
-    not(test),
-    allow(dead_code, reason = "T-2 runtime execution wiring is not complete")
-)]
 pub(crate) struct ToolExecutionAuthorityRoot {
     catalog: Arc<TurnAuthorityCatalog>,
 }
 
-#[cfg_attr(
-    not(test),
-    allow(dead_code, reason = "T-2 runtime execution wiring is not complete")
-)]
 impl ToolExecutionAuthorityRoot {
     /// Creates the authority root owned by runtime assembly.
     #[must_use]
@@ -401,10 +281,6 @@ pub struct ToolExecutionRuntime {
 impl ToolExecutionRuntime {
     /// Creates a handle borrowing authority from runtime assembly's sole root.
     #[must_use]
-    #[cfg_attr(
-        not(test),
-        allow(dead_code, reason = "T-2 runtime execution wiring is not complete")
-    )]
     pub(crate) fn new(root: &ToolExecutionAuthorityRoot) -> Self {
         Self {
             catalog: Arc::clone(&root.catalog),
@@ -445,7 +321,9 @@ where
     /// # Errors
     ///
     /// Returns [`ExecutionPreparationError::OwnerFenced`] without allocation when
-    /// the binding is stale, or the underlying authority allocation failure.
+    /// the binding is stale, [`ExecutionPreparationError::LeaseUnavailable`]
+    /// without allocation when ownership could not be validated, or the
+    /// underlying authority allocation failure.
     pub fn prepare(
         &mut self,
         binding: ExactActionBinding,
@@ -455,8 +333,10 @@ where
                 ExecutionError::PolicyAuthorizationRequired,
             ));
         }
-        if !self.lease.is_current(&binding) {
-            return Err(ExecutionPreparationError::OwnerFenced);
+        match self.lease.check_current(&binding) {
+            LeaseCheck::Current => {}
+            LeaseCheck::Fenced => return Err(ExecutionPreparationError::OwnerFenced),
+            LeaseCheck::Unavailable => return Err(ExecutionPreparationError::LeaseUnavailable),
         }
         let authority = self
             .authority
@@ -470,33 +350,21 @@ where
 }
 
 /// Trusted C-7 port for the exact approval identity and `ai.tool.approve` scope.
-#[cfg_attr(
-    not(test),
-    allow(dead_code, reason = "T-2 approval transport wiring is not complete")
-)]
 pub(crate) trait ApprovalAuthorizer {
     /// Reports whether this authenticated principal owns the approval context and scope.
     fn can_resolve_tool_approval(
         &mut self,
-        approval: &ApprovalRequest,
+        binding: &ExactActionBinding,
         trust: &TrustContext,
         thread_id: ThreadId,
     ) -> bool;
 }
 
 /// Sole application service allowed to mutate one requested D-6.
-#[cfg_attr(
-    not(test),
-    allow(dead_code, reason = "T-2 approval transport wiring is not complete")
-)]
 pub(crate) struct ApprovalDecisionService<A> {
     authorizer: A,
 }
 
-#[cfg_attr(
-    not(test),
-    allow(dead_code, reason = "T-2 approval transport wiring is not complete")
-)]
 impl<A> ApprovalDecisionService<A>
 where
     A: ApprovalAuthorizer,
@@ -505,6 +373,53 @@ where
     #[must_use]
     pub(crate) const fn new(authorizer: A) -> Self {
         Self { authorizer }
+    }
+
+    /// Validates that `trust` may resolve approvals for `binding` without
+    /// mutating state, before any D-6 request or D-7 allocation exists.
+    ///
+    /// An expired D-6 window does not waive this check (TC-05/TC-09): without
+    /// it an unscoped principal could drain the Turn's attempt budget through
+    /// allocate-then-cancel loops.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApprovalError::NotAuthorized`] without mutation for invalid
+    /// ownership or scope.
+    pub(crate) fn validate_resolver_for_binding(
+        &mut self,
+        binding: &ExactActionBinding,
+        trust: &TrustContext,
+        thread_id: ThreadId,
+    ) -> Result<(), ApprovalError> {
+        if binding.tenant_id() != &trust.tenant_id
+            || binding.thread_id() != thread_id
+            || !self
+                .authorizer
+                .can_resolve_tool_approval(binding, trust, thread_id)
+        {
+            return Err(ApprovalError::NotAuthorized);
+        }
+        Ok(())
+    }
+
+    /// Validates that `trust` may resolve `approval` without mutating state.
+    ///
+    /// Callers MUST run this check before exposing the D-6 to any decision
+    /// provider, so an unauthorized principal can neither observe the approval
+    /// nor trigger decision-provider side effects (TC-05).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApprovalError::NotAuthorized`] without mutation for invalid
+    /// ownership or scope.
+    pub(crate) fn validate_resolver(
+        &mut self,
+        approval: &ApprovalRequest,
+        trust: &TrustContext,
+        thread_id: ThreadId,
+    ) -> Result<(), ApprovalError> {
+        self.validate_resolver_for_binding(approval.binding(), trust, thread_id)
     }
 
     /// Applies an authenticated same-tenant, same-Thread, scoped decision.
@@ -521,14 +436,7 @@ where
         decision: ApprovalDecision,
         decided_at_millis: u64,
     ) -> Result<u64, ApprovalError> {
-        if approval.tenant_id() != &trust.tenant_id
-            || approval.thread_id() != thread_id
-            || !self
-                .authorizer
-                .can_resolve_tool_approval(approval, trust, thread_id)
-        {
-            return Err(ApprovalError::NotAuthorized);
-        }
+        self.validate_resolver(approval, trust, thread_id)?;
         approval.apply_validated_decision(decision, trust.subject_id.clone(), decided_at_millis)
     }
 }
@@ -613,30 +521,14 @@ where
             return Err(rejected_start(ExecutionError::AlreadyDispatched));
         }
         let binding = attempt.binding().clone();
-        if !self.lease.is_current(&binding) {
-            return self.commit_terminal(
-                authority,
-                attempt,
-                ToolExecutionOutcome::Cancelled {
-                    effect_state: EffectState::NotStarted,
-                },
-                ExecutionStatus::Cancelled,
-                DispatchPhase::BeforeDispatch,
-            );
+        if let Some(cancelled) = self.pre_dispatch_lease(authority, attempt, &binding)? {
+            return Ok(cancelled);
         }
         if let Err(error) = authority.claim_dispatch(attempt, approval, started_at_millis) {
             return Err(rejected_start(error));
         }
-        if !self.lease.is_current(&binding) {
-            return self.commit_terminal(
-                authority,
-                attempt,
-                ToolExecutionOutcome::Cancelled {
-                    effect_state: EffectState::NotStarted,
-                },
-                ExecutionStatus::Cancelled,
-                DispatchPhase::BeforeDispatch,
-            );
+        if let Some(cancelled) = self.post_claim_lease(authority, attempt, &binding)? {
+            return Ok(cancelled);
         }
         let permit = DispatchPermit { _private: () };
         let deadline = ActionDeadline::from_started_at(started_at_millis, now());
@@ -657,14 +549,30 @@ where
         }
         let response = self.executor.execute(&permit, &binding, deadline);
         let effect_state = match &response {
-            Ok(response) => response.effect_state,
-            Err(error) => error.effect_state,
+            Ok(response) => response.effect_state(),
+            Err(error) => error.effect_state(),
         };
-        if !self.lease.is_current(&binding) {
-            return Err(ExecutionPending::ReconciliationRequired {
-                code: ExecutionFailure::OwnerFencedAfterDispatch,
-                effect_state,
-            });
+        if let Err(pending) = self.post_dispatch_lease(&binding, effect_state) {
+            // The executor already returned, so an external effect may exist.
+            // When ownership is merely undetermined rather than proven fenced,
+            // hold the running attempt's terminal reservation for
+            // reconciliation; otherwise a recovered lease would let the
+            // interruption boundary cancel an already-executed effect
+            // (TC-07/TC-10).
+            if matches!(
+                pending,
+                ExecutionPending::ReconciliationRequired {
+                    code: ExecutionFailure::LeaseUnavailable,
+                    ..
+                }
+            ) && authority.reserve_terminal(attempt).is_err()
+            {
+                return Err(ExecutionPending::ReconciliationRequired {
+                    code: ExecutionFailure::TerminalConflict,
+                    effect_state,
+                });
+            }
+            return Err(pending);
         }
         let deadline_elapsed =
             now().saturating_sub(started_at_millis) >= MAX_ACTION_DURATION_MILLIS;
@@ -684,17 +592,18 @@ where
                     authority,
                     attempt,
                     ToolExecutionOutcome::Failed {
-                        code: error.code,
-                        effect_state: error.effect_state,
+                        code: error.code(),
+                        effect_state: error.effect_state(),
                     },
                     ExecutionStatus::Failed,
                     DispatchPhase::AfterDispatch,
                 );
             }
         };
+        let effect_state = response.effect_state();
         let outcome = ToolExecutionOutcome::Succeeded {
-            output: response.output,
-            effect_state: response.effect_state,
+            output: response.into_output(),
+            effect_state,
         };
         self.commit_terminal(
             authority,
@@ -703,6 +612,106 @@ where
             ExecutionStatus::Succeeded,
             DispatchPhase::AfterDispatch,
         )
+    }
+
+    /// Validates the lease immediately before dispatch (TC-07).
+    ///
+    /// A fenced owner closes the still-prepared D-7 as `cancelled/not_started`
+    /// and the terminal is returned to the caller as the final outcome; an
+    /// undetermined validator must not close the attempt as a fenced
+    /// cancellation, so reconciliation owns the next transition with zero
+    /// dispatch.
+    pub(super) fn pre_dispatch_lease(
+        &mut self,
+        authority: &mut TurnExecutionAuthority,
+        attempt: &mut ExecutionAttempt,
+        binding: &ExactActionBinding,
+    ) -> Result<Option<ToolExecutionOutcome>, ExecutionPending> {
+        match self.lease.check_current(binding) {
+            LeaseCheck::Current => Ok(None),
+            LeaseCheck::Fenced => self
+                .commit_terminal(
+                    authority,
+                    attempt,
+                    ToolExecutionOutcome::Cancelled {
+                        effect_state: EffectState::NotStarted,
+                    },
+                    ExecutionStatus::Cancelled,
+                    DispatchPhase::BeforeDispatch,
+                )
+                .map(Some),
+            LeaseCheck::Unavailable => Err(ExecutionPending::ReconciliationRequired {
+                code: ExecutionFailure::LeaseUnavailable,
+                effect_state: EffectState::NotStarted,
+            }),
+        }
+    }
+
+    /// Validates the lease after the dispatch claim and before the executor
+    /// call (TC-07/TC-10).
+    ///
+    /// The claim has already marked the D-7 Running, so an undetermined
+    /// validator must hold the terminal reservation for reconciliation:
+    /// without it the interruption boundary would treat the never-dispatched
+    /// attempt as running work and send an executor cancellation for an effect
+    /// that was never requested. A fenced owner still closes the attempt as
+    /// `cancelled/not_started` through the conditional commit, which reserves
+    /// before writing.
+    pub(super) fn post_claim_lease(
+        &mut self,
+        authority: &mut TurnExecutionAuthority,
+        attempt: &mut ExecutionAttempt,
+        binding: &ExactActionBinding,
+    ) -> Result<Option<ToolExecutionOutcome>, ExecutionPending> {
+        match self.lease.check_current(binding) {
+            LeaseCheck::Current => Ok(None),
+            LeaseCheck::Fenced => self
+                .commit_terminal(
+                    authority,
+                    attempt,
+                    ToolExecutionOutcome::Cancelled {
+                        effect_state: EffectState::NotStarted,
+                    },
+                    ExecutionStatus::Cancelled,
+                    DispatchPhase::BeforeDispatch,
+                )
+                .map(Some),
+            LeaseCheck::Unavailable => {
+                if authority.reserve_terminal(attempt).is_err() {
+                    return Err(ExecutionPending::ReconciliationRequired {
+                        code: ExecutionFailure::TerminalConflict,
+                        effect_state: EffectState::NotStarted,
+                    });
+                }
+                Err(ExecutionPending::ReconciliationRequired {
+                    code: ExecutionFailure::LeaseUnavailable,
+                    effect_state: EffectState::NotStarted,
+                })
+            }
+        }
+    }
+
+    /// Validates the lease after an effect may have started (TC-07).
+    ///
+    /// A fenced owner commits no Tool result and an undetermined validator
+    /// cannot prove ownership, so both defer to reconciliation with truthful
+    /// effect evidence and distinct codes.
+    pub(super) fn post_dispatch_lease(
+        &mut self,
+        binding: &ExactActionBinding,
+        effect_state: EffectState,
+    ) -> Result<(), ExecutionPending> {
+        match self.lease.check_current(binding) {
+            LeaseCheck::Current => Ok(()),
+            LeaseCheck::Fenced => Err(ExecutionPending::ReconciliationRequired {
+                code: ExecutionFailure::OwnerFencedAfterDispatch,
+                effect_state,
+            }),
+            LeaseCheck::Unavailable => Err(ExecutionPending::ReconciliationRequired {
+                code: ExecutionFailure::LeaseUnavailable,
+                effect_state,
+            }),
+        }
     }
 
     pub(super) fn commit_terminal(

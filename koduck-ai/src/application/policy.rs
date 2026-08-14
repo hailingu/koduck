@@ -7,6 +7,10 @@ use crate::domain::tool::{
     Action, CapabilityDescriptor, DescriptorState, Effect, PermissionProfile,
 };
 
+/// C-5 approval scope that a C-7-validated principal must carry to resolve a
+/// requested D-6 (ADR-0003 TC-05).
+pub const TOOL_APPROVAL_SCOPE: &str = "ai.tool.approve";
+
 /// A stable reason why C-5 denied an action before approval or dispatch.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DenialCode {
@@ -47,10 +51,6 @@ pub struct ToolPolicy;
 ///
 /// Implementations belong to runtime configuration adapters. Request, model, Tool,
 /// and MCP content must never implement or replace this dependency at runtime.
-#[cfg_attr(
-    not(test),
-    allow(dead_code, reason = "T-2 runtime configuration wiring is not complete")
-)]
 pub(crate) trait ToolPolicyConfiguration {
     /// Returns the configured descriptor snapshot for this exact action identity.
     fn descriptor_for(&self, action: &Action) -> Option<&CapabilityDescriptor>;
@@ -59,19 +59,101 @@ pub(crate) trait ToolPolicyConfiguration {
     fn profile_for(&self, profile_id: &str, profile_version: &str) -> Option<&PermissionProfile>;
 }
 
+/// An immutable value snapshot of the configured descriptors and Permission
+/// Profiles that may authorize C-5 bindings.
+///
+/// Every entry is an already validated owned domain value, so constructing a
+/// snapshot cannot forge policy authority; runtime assembly decides which
+/// snapshots exist in production, and the initial production snapshot is empty.
+#[derive(Clone, Debug, Default)]
+pub struct ToolConfigurationSnapshot {
+    descriptors: Vec<CapabilityDescriptor>,
+    profiles: Vec<PermissionProfile>,
+}
+
+/// A rejected snapshot registration.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ToolConfigurationError {
+    /// A descriptor with the same identifier and version is already registered.
+    DuplicateDescriptor,
+    /// A profile with the same identifier and version is already registered.
+    DuplicateProfile,
+}
+
+impl ToolConfigurationSnapshot {
+    /// Creates an empty snapshot; this is the only production-authorized shape
+    /// until a later accepted capability record enables descriptors.
+    #[must_use]
+    pub const fn empty() -> Self {
+        Self {
+            descriptors: Vec::new(),
+            profiles: Vec::new(),
+        }
+    }
+
+    /// Registers one validated descriptor snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ToolConfigurationError::DuplicateDescriptor`] without mutation
+    /// when the exact descriptor identity and version is already registered.
+    pub fn register_descriptor(
+        &mut self,
+        descriptor: CapabilityDescriptor,
+    ) -> Result<(), ToolConfigurationError> {
+        let duplicate = self.descriptors.iter().any(|existing| {
+            existing.id() == descriptor.id() && existing.version() == descriptor.version()
+        });
+        if duplicate {
+            return Err(ToolConfigurationError::DuplicateDescriptor);
+        }
+        self.descriptors.push(descriptor);
+        Ok(())
+    }
+
+    /// Registers one validated Permission Profile snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ToolConfigurationError::DuplicateProfile`] without mutation
+    /// when the exact profile identity and version is already registered.
+    pub fn register_profile(
+        &mut self,
+        profile: PermissionProfile,
+    ) -> Result<(), ToolConfigurationError> {
+        let duplicate = self.profiles.iter().any(|existing| {
+            existing.id() == profile.id() && existing.version() == profile.version()
+        });
+        if duplicate {
+            return Err(ToolConfigurationError::DuplicateProfile);
+        }
+        self.profiles.push(profile);
+        Ok(())
+    }
+}
+
+impl ToolPolicyConfiguration for ToolConfigurationSnapshot {
+    fn descriptor_for(&self, action: &Action) -> Option<&CapabilityDescriptor> {
+        // An unregistered identity stays None so default-deny policy rejects
+        // the action (TC-02).
+        self.descriptors.iter().find(|existing| {
+            existing.id() == action.descriptor_id()
+                && existing.version() == action.descriptor_version()
+        })
+    }
+
+    fn profile_for(&self, profile_id: &str, profile_version: &str) -> Option<&PermissionProfile> {
+        self.profiles
+            .iter()
+            .find(|existing| existing.id() == profile_id && existing.version() == profile_version)
+    }
+}
+
 /// C-5 authorization boundary backed by one injected trusted configuration source.
-#[cfg_attr(
-    not(test),
-    allow(dead_code, reason = "T-2 runtime configuration wiring is not complete")
-)]
 pub(crate) struct ToolAuthorizationService<C> {
     configuration: C,
 }
 
-#[cfg_attr(
-    not(test),
-    allow(dead_code, reason = "T-2 runtime configuration wiring is not complete")
-)]
 impl<C> ToolAuthorizationService<C>
 where
     C: ToolPolicyConfiguration,

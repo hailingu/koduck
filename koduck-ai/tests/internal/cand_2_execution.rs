@@ -9,9 +9,9 @@ use koduck_ai::application::{
     AttemptCommitResult, AttemptCommitter, CancelAcknowledgement, CancelPermit,
     CanonicalAttemptTerminal, CanonicalTerminalError, DenialCode, DispatchPermit, EffectState,
     ExecutionCoordinator, ExecutionFailure, ExecutionPending, ExecutionPreparationError,
-    ExecutionResponse, ExecutionResponseBuilder, ExecutorError, IsolatedExecutor, LeaseValidator,
-    PolicyDecision, ToolAuthorizationService, ToolExecutionAuthorityRoot, ToolExecutionOutcome,
-    ToolExecutionRuntime, ToolPolicy, ToolPolicyConfiguration,
+    ExecutionResponse, ExecutionResponseBuilder, ExecutorError, IsolatedExecutor, LeaseCheck,
+    LeaseValidator, PolicyDecision, ToolAuthorizationService, ToolExecutionAuthorityRoot,
+    ToolExecutionOutcome, ToolExecutionRuntime, ToolPolicy, ToolPolicyConfiguration,
 };
 use koduck_ai::domain::execution::{
     ApprovalDecision, ApprovalError, ApprovalRequest, ApprovalStatus, AttemptId,
@@ -73,8 +73,12 @@ fn new_runtime() -> ToolExecutionRuntime {
 }
 
 impl LeaseValidator for SequencedLease {
-    fn is_current(&mut self, _binding: &ExactActionBinding) -> bool {
-        self.decisions.pop_front().unwrap_or(false)
+    fn check_current(&mut self, _binding: &ExactActionBinding) -> LeaseCheck {
+        if self.decisions.pop_front().unwrap_or(false) {
+            LeaseCheck::Current
+        } else {
+            LeaseCheck::Fenced
+        }
     }
 }
 
@@ -169,11 +173,11 @@ struct FixtureApprovalAuthorizer;
 impl ApprovalAuthorizer for FixtureApprovalAuthorizer {
     fn can_resolve_tool_approval(
         &mut self,
-        approval: &ApprovalRequest,
+        binding: &ExactActionBinding,
         trust: &TrustContext,
         thread_id: ThreadId,
     ) -> bool {
-        approval.tenant_id() == &trust.tenant_id && approval.thread_id() == thread_id
+        binding.tenant_id() == &trust.tenant_id && binding.thread_id() == thread_id
     }
 }
 

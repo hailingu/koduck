@@ -202,12 +202,72 @@ fn cand_2_authority_issuers_are_not_public_extension_points() {
         "Turn authority must remain retained until T-3 can prove canonical terminal state and prevent resurrection"
     );
 
+    // The C-5 boundary must be crate-internal: root issuance lives only in
+    // runtime assembly, assemblies and boundaries are handed out as shared
+    // crate-internal handles, and no global root exists (TC-09/TC-12).
+    let tool_boundary = fs::read_to_string(crate_root.join("src/application/tool_boundary.rs"))
+        .expect("tool boundary source is readable");
+    let runtime_source = fs::read_to_string(crate_root.join("src/runtime/mod.rs"))
+        .expect("runtime source is readable");
+    let domain_source = fs::read_to_string(crate_root.join("src/domain/mod.rs"))
+        .expect("domain source is readable");
+    assert!(
+        !tool_boundary.contains("OnceLock"),
+        "the boundary must not promote the Turn authority root to a process global"
+    );
+    assert!(
+        tool_boundary.contains("pub(crate) fn issue() -> Self"),
+        "root issuance must be crate-internal so callers cannot mint a second authority root"
+    );
+    assert!(
+        !tool_boundary.contains("pub fn issue()"),
+        "root issuance must never be a public extension point"
+    );
+    assert!(
+        tool_boundary.contains("pub(crate) fn new(")
+            && tool_boundary.contains("root: &ToolExecutionRuntimeRoot,"),
+        "assemblies must be crate-internal and constructed only from the injected root"
+    );
+    assert!(
+        !tool_boundary.contains("pub struct ToolExecutionBoundary")
+            && !tool_boundary.contains("pub struct ToolExecutionAssembly")
+            && !tool_boundary.contains("pub struct ToolExecutionRuntimeRoot"),
+        "the C-5 boundary surface must not be publicly constructible"
+    );
+    // Approval scopes are a sealed capability: only the crate's authenticated
+    // adapters can construct them, so no caller can mint ai.tool.approve
+    // (TC-05 / C-7 constraint).
+    assert!(
+        domain_source.contains("pub struct ApprovalScopes"),
+        "approval scopes must be carried by one dedicated domain type"
+    );
+    assert!(
+        domain_source.contains("pub(crate) fn from_validated")
+            && !domain_source.contains("pub fn from_validated"),
+        "approval scopes must be constructible only inside the crate"
+    );
+    assert!(
+        domain_source.contains("pub fn with_approval_scopes(mut self, scopes: ApprovalScopes)"),
+        "a trust context can only receive already-validated sealed approval scopes"
+    );
+
     // The crate-visible policy and approval setters carry unique names so the
     // sole-call-site count is syntax-independent: each must be reachable only
     // from its trusted service, never from a Tool/MCP or approval-transport
     // adapter. The expected count is one definition plus one service call site.
     let mut production = String::new();
     collect_text(&crate_root.join("src"), &mut production);
+    assert_eq!(
+        production
+            .matches("ToolExecutionRuntimeRoot::issue")
+            .count(),
+        1,
+        "runtime assembly must be the sole issuance site for Turn authority roots"
+    );
+    assert!(
+        runtime_source.contains("ToolExecutionRuntimeRoot::issue"),
+        "the single issuance site must live in runtime assembly"
+    );
     assert_eq!(
         count_identifier_tokens(&production, "authorize_policy"),
         2,

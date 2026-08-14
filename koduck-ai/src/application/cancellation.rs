@@ -22,9 +22,10 @@ use crate::domain::{TenantId, ThreadId, TurnId};
 
 use super::deadline::{ActionDeadline, MAX_ACTION_DURATION_MILLIS};
 use super::execution::{
-    AttemptCommitter, DispatchPhase, EffectState, ExecutionCoordinator, ExecutionFailure,
-    ExecutionPending, IsolatedExecutor, LeaseValidator, ToolExecutionOutcome, ToolExecutionRuntime,
+    AttemptCommitter, DispatchPhase, ExecutionCoordinator, ExecutionPending, IsolatedExecutor,
+    LeaseCheck, LeaseValidator, ToolExecutionOutcome, ToolExecutionRuntime,
 };
+use super::executor_envelope::{EffectState, ExecutionFailure};
 use super::terminal::TerminalReservationFailure;
 
 /// Opaque single-call authority created only by the C-5 cancellation boundary.
@@ -314,11 +315,20 @@ where
         attempt: &mut ExecutionAttempt,
     ) -> Result<ToolExecutionOutcome, ExecutionPending> {
         let binding = attempt.binding().clone();
-        if !self.lease.is_current(&binding) {
-            return Err(ExecutionPending::ReconciliationRequired {
-                code: ExecutionFailure::OwnerFencedBeforeDispatch,
-                effect_state: EffectState::NotStarted,
-            });
+        match self.lease.check_current(&binding) {
+            LeaseCheck::Current => {}
+            LeaseCheck::Fenced => {
+                return Err(ExecutionPending::ReconciliationRequired {
+                    code: ExecutionFailure::OwnerFencedBeforeDispatch,
+                    effect_state: EffectState::NotStarted,
+                });
+            }
+            LeaseCheck::Unavailable => {
+                return Err(ExecutionPending::ReconciliationRequired {
+                    code: ExecutionFailure::LeaseUnavailable,
+                    effect_state: EffectState::NotStarted,
+                });
+            }
         }
         self.commit_terminal(
             authority,
@@ -360,12 +370,7 @@ where
             });
         }
         let binding = attempt.binding().clone();
-        if !self.lease.is_current(&binding) {
-            return Err(ExecutionPending::ReconciliationRequired {
-                code: ExecutionFailure::OwnerFencedAfterDispatch,
-                effect_state: EffectState::Unknown,
-            });
-        }
+        self.post_dispatch_lease(&binding, EffectState::Unknown)?;
         let Some(started_at_millis) = attempt.started_at_millis() else {
             return Err(ExecutionPending::ReconciliationRequired {
                 code: ExecutionFailure::TerminalConflict,
@@ -408,12 +413,7 @@ where
                 });
             }
         };
-        if !self.lease.is_current(&binding) {
-            return Err(ExecutionPending::ReconciliationRequired {
-                code: ExecutionFailure::OwnerFencedAfterDispatch,
-                effect_state,
-            });
-        }
+        self.post_dispatch_lease(&binding, effect_state)?;
         // The bounded cancellation acknowledgement may arrive after the 30-second
         // action deadline. The deadline then dominates: the D-7 commits
         // `timed_out/unknown` rather than a `cancelled` terminal whose effect

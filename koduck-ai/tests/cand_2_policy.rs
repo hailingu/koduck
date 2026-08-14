@@ -67,6 +67,12 @@ fn invalid_descriptors_fail_closed() {
             Some(active_descriptor(Effect::Unknown)),
             DenialCode::UnknownEffect,
         ),
+        // An active, matching descriptor outside the immutable profile is
+        // denied exactly like every invalid descriptor state.
+        (
+            Some(active_descriptor(Effect::ReadData)),
+            DenialCode::OutsidePermissionProfile,
+        ),
     ];
 
     for (descriptor, expected) in cases {
@@ -80,17 +86,46 @@ fn invalid_descriptors_fail_closed() {
 #[test]
 fn untrusted_content_cannot_grant_authority() {
     let policy = ToolPolicy;
-    let descriptor = active_descriptor(Effect::ProcessExecute);
-    let requested = action(Effect::ProcessExecute);
-    let profile = PermissionProfile::empty("profile-default", "v1").expect("valid profile");
+    let profile = PermissionProfile::builder("profile-default", "v1")
+        .expect("valid profile")
+        .allow("fixture.read", "v1", Effect::ReadData, "fixture-target")
+        .expect("valid profile entry")
+        .build();
 
+    // Model content requesting a privileged effect the immutable read-only
+    // profile never grants is denied without mutating the profile.
+    let requested = action(Effect::ProcessExecute);
+    let descriptor = active_descriptor(Effect::ProcessExecute);
     assert_eq!(
         policy.evaluate(Some(&descriptor), &requested, &profile),
         PolicyDecision::Denied(DenialCode::OutsidePermissionProfile)
     );
+
+    // A caller-forged approval cannot even be constructed for a
+    // caller-constructed unsealed binding, so a forged projection can never
+    // authorize execution. The boundary-level counters live in the
+    // crate-internal `cand_2_denial_tests` harness.
+    let unsealed = ExactActionBinding::new(
+        TenantId::new("tenant-a").expect("valid tenant"),
+        ThreadId::new(),
+        TurnId::new(),
+        LeaseGeneration::initial(),
+        ("profile-default", "v1"),
+        AttemptId::new(),
+        requested,
+    )
+    .expect("syntactically valid binding");
+    assert!(
+        matches!(
+            ApprovalRequest::new(unsealed, 1_000, 600_000),
+            Err(ApprovalError::PolicyAuthorizationRequired)
+        ),
+        "a forged approval cannot even be constructed for an unsealed binding"
+    );
+
     assert_eq!(profile.id(), "profile-default");
     assert_eq!(profile.version(), "v1");
-    assert_eq!(profile.allowed_capability_count(), 0);
+    assert_eq!(profile.allowed_capability_count(), 1);
 }
 
 #[test]

@@ -18,8 +18,14 @@ mod cand_2_approval_tests;
 #[path = "../tests/internal/cand_2_cancellation.rs"]
 mod cand_2_cancellation_tests;
 #[cfg(test)]
+#[path = "../tests/internal/cand_2_denials.rs"]
+mod cand_2_denial_tests;
+#[cfg(test)]
 #[path = "../tests/internal/cand_2_execution.rs"]
 mod cand_2_execution_tests;
+#[cfg(test)]
+#[path = "../tests/internal/cand_2_limits.rs"]
+mod cand_2_limits_tests;
 #[cfg(test)]
 #[path = "../tests/internal/cand_2_retry.rs"]
 mod cand_2_retry_tests;

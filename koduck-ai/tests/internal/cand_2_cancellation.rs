@@ -11,7 +11,7 @@ use koduck_ai::application::{
     AttemptCommitter, CancelAcknowledgement, CancelPermit, CancelledEffectState, DenialCode,
     DispatchPermit, EffectState, ExecutionCoordinator, ExecutionFailure, ExecutionInterrupter,
     ExecutionPending, ExecutionResponse, ExecutionResponseBuilder, ExecutorError,
-    InterruptionOutcome, IsolatedExecutor, LeaseValidator, PendingApprovalCancellation,
+    InterruptionOutcome, IsolatedExecutor, LeaseCheck, LeaseValidator, PendingApprovalCancellation,
     PendingApprovalCanceller, ToolAuthorizationService, ToolExecutionAuthorityRoot,
     ToolExecutionOutcome, ToolExecutionRuntime, ToolPolicyConfiguration,
 };
@@ -30,6 +30,8 @@ mod blocking_dispatch;
 mod disabled_executor;
 #[path = "cand_2_cancellation_interruption_seal.rs"]
 mod interruption_seal;
+#[path = "cand_2_cancellation_post_claim_lease.rs"]
+mod post_claim_lease;
 #[path = "cand_2_cancellation_pre_dispatch.rs"]
 mod pre_dispatch;
 
@@ -142,8 +144,8 @@ impl IsolatedExecutor for CancellingExecutor {
 struct AlwaysCurrentLease;
 
 impl LeaseValidator for AlwaysCurrentLease {
-    fn is_current(&mut self, _binding: &ExactActionBinding) -> bool {
-        true
+    fn check_current(&mut self, _binding: &ExactActionBinding) -> LeaseCheck {
+        LeaseCheck::Current
     }
 }
 
@@ -153,8 +155,12 @@ struct SequencedLease {
 }
 
 impl LeaseValidator for SequencedLease {
-    fn is_current(&mut self, _binding: &ExactActionBinding) -> bool {
-        self.decisions.pop_front().unwrap_or(false)
+    fn check_current(&mut self, _binding: &ExactActionBinding) -> LeaseCheck {
+        if self.decisions.pop_front().unwrap_or(false) {
+            LeaseCheck::Current
+        } else {
+            LeaseCheck::Fenced
+        }
     }
 }
 

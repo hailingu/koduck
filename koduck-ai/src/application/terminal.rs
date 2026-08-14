@@ -6,8 +6,9 @@ use crate::domain::execution::{ExecutionAttempt, ExecutionStatus, TurnExecutionA
 
 use super::execution::{
     AttemptCommitError, AttemptCommitResult, AttemptCommitter, DispatchPhase, ExecutionCoordinator,
-    ExecutionFailure, ExecutionPending, IsolatedExecutor, LeaseValidator, ToolExecutionOutcome,
+    ExecutionPending, IsolatedExecutor, LeaseValidator, ToolExecutionOutcome,
 };
+use super::executor_envelope::ExecutionFailure;
 
 /// Determines whether an unresolved terminal write reopens the cataloged D-7.
 #[derive(Clone, Copy)]

@@ -376,7 +376,7 @@ C-1/C-3/C-6 和 Runtime 变更仅限于该边界所需的传输、Tool 调用输
 
 | ID | 目标或交付物 | 包含范围 | 状态 | 实际实施证据 |
 | --- | --- | --- | --- | --- |
-| T-1 | 实现自有 Tool/MCP Action、Descriptor、Effect、Profile、C-5 策略、D-6/D-7 状态机、边界、重试、取消和租约 Fencing 行为。 | `koduck-ai` 领域/应用模块、Consumer-owned Port、Runner 集成、带意图说明的公开文档、聚焦的单元/契约测试。 | In Progress | Test-first 的 Source 现已定义自有描述符/动作/效果/Profile、默认拒绝决策、精确目标作用域的 Permission Profile ID/版本绑定，以及 Adapter 校验的 JSON/object-schema 输入——独立的 65,536 字节动作输入上限和描述符 Schema 上限在解析前强制执行，任意精度十进制文本被保留。每个不可信动作 Envelope 字段在哈希或 D-7 分配前都有界：描述符 ID 和版本上限为 128 字节，精确目标上限为 256 字节，并拒绝 ASCII/控制字符；Permission Profile Allowlist 按同一动作边界校验每个条目，使超大的配置条目无法扩大 Envelope。Permission Profile ID 和版本通过 Profile 构造函数与精确动作绑定共用的一个共享校验器限制在 128 字节并拒绝 ASCII/控制字符，使 Profile 身份在哈希或保留进 D-6/D-7 状态之前即有界。JSON Adapter 和领域 Schema 构造函数都在策略评估前拒绝重复属性。非权威的 `ToolPolicy` 评估不再能 Seal 绑定：Crate 自有的 Sealing 服务通过 Crate 自有的配置 Port 解析描述符/Profile 快照，重新检查精确的 Profile 身份/版本，并在 D-6/D-7 创建前写入私有的审批要求。审批要求 Setter 受单一调用点防护，因此没有 Tool/MCP Adapter 能自我授权特权绑定。被拒绝的绑定两者都不分配，已授权的 `read_data` 不经 D-6 直接派发。条件/幂等的审批决议需要 Crate 自有的 C-7 Authorizer 和决策服务，同时独立强制同租户和同 Thread 所有权。Source 和聚焦测试定义了一个显式注入的强 Turn 权威根；其构造函数为 Crate 自有且非全局，因此公开调用方无法构造第二个根来重置重复 D-7 拒绝、单运行尝试仲裁或 16 槽位预算。该根在临时句柄丢失期间强保留进程内状态；在 T-3 能证明规范 Turn 终态并防止预算复活之前，回收有意不可用。所有 Executor 成功与失败路径在终态提交前立即校验当前租约。受防护的迁移、精确的 `concurrent_attempt`、较早 Deadline 到期和规范 SHA-256 动作摘要均有聚焦证据。一个 C-5 Tool 执行 Driver 现已编排 authorize、prepare、approve 与 execute，并带有恰好一次已证明的效果前重试（TC-08）：它仅在已提交的 Executor `Failed{effect_state=NotStarted}` 终态时重试（绝不在成功或取消时重试），分配新的 D-7 身份、重新运行描述符/Profile 策略，并为需要审批的效果创建新的 D-6；被 Declined、Cancelled 或过期的 D-6（包括在 D-6 到期后到达的决策）通过受防护的 Coordinator 路径把仍处于 Prepared 的 D-7 关闭为 `cancelled/not_started`，且不派发；耗尽 16 槽位预算的重试返回 `failed/attempt_limit`；并且受控时钟在每次 D-6 创建和派发时重新读取（审批决策也携带其实际决策时间），使延迟审批无法把 D-6 窗口或 D-7 启动时间钉死在原调用时间；而重试准备阶段被 Fence 的所有者返回错误，不送达任何已提交的旧终态。聚焦的内部 Fixture 覆盖重试逻辑（`cargo test -p koduck-ai --lib cand_2_retry_tests`：效果前未开始的成功、started/unknown、至多一次、新 D-6、预算耗尽的 `failed/attempt_limit`、对账、declined/cancelled 取消、成功/取消不重试以及迟到决策的到期）；这些仅为逻辑层覆盖——AC-9 通过公共运行时/Runner 入口的端到端重试验证仍是 T-2 交付物，待该公共边界存在后由黑盒 `tests/cand_2_retry.rs` 验证。取消与超时逻辑现已实现：Executor Port 在一个不透明的 Permit 之后携带一次有界取消，在 30 秒动作 Deadline 时报告已确认的效果状态或没有任何确认；Coordinator 在取消一个 running 的 D-7 前校验当前租约，以 Executor 报告的状态提交 `cancelled`，在取消未获确认时提交 `timed_out/unknown`，并在每次 Executor 响应后（包括有界取消响应后）重新读取受控时钟，使在 30 秒动作期限之后到达的取消确认提交 `timed_out/unknown` 而非 `cancelled`，并使观测完成时间达到 30 秒的动作以如实的 effect-state 证据提交 `timed_out`，而非成功或失败的结果；中断句柄通过共享进程权威解析 Turn 已登记的 prepared 或 running D-7，并经同一受防护的条件提交路径关闭它，被 Fence 的所有者会收到对账要求而运行中尝试保持已登记，已取消 D-7 的迟到 Executor 响应被拒绝且不交付模型。`DisabledExecutor` 将取消边界报告为不可用，因此 C-5 会保留运行中的 D-7 供对账，而不会在动作期限前伪造超时；禁用的运行时仍不暴露任何效果路径。聚焦的内部 Fixture 覆盖取消与超时契约（`cargo test -p koduck-ai --lib cand_2_cancellation_tests`：prepared 中断零派发且零取消调用、已确认 not_started/started 终态、未确认 `timed_out/unknown`、被 Fence 所有者对账并保留运行中尝试、两侧精确的 30 秒 Deadline 边界、取消后迟到结果拒绝、非 running 的 Typed 拒绝以及未知 Turn 的无操作）；与重试 Fixture 一样这些仅为逻辑层覆盖——AC-8 通过已认证传输的端到端取消验证仍是 T-2 交付物。生产根/Runner 接线、PostgreSQL 权威与安全回收以及 Runner 集成仍未完成。 |
+| T-1 | 实现自有 Tool/MCP Action、Descriptor、Effect、Profile、C-5 策略、D-6/D-7 状态机、边界、重试、取消和租约 Fencing 行为。 | `koduck-ai` 领域/应用模块、Consumer-owned Port、Runner 集成、带意图说明的公开文档、聚焦的单元/契约测试。 | In Progress | Test-first 的 Source 现已定义自有描述符/动作/效果/Profile、默认拒绝决策、精确目标作用域的 Permission Profile ID/版本绑定，以及 Adapter 校验的 JSON/object-schema 输入——独立的 65,536 字节动作输入上限和描述符 Schema 上限在解析前强制执行，任意精度十进制文本被保留。每个不可信动作 Envelope 字段在哈希或 D-7 分配前都有界：描述符 ID 和版本上限为 128 字节，精确目标上限为 256 字节，并拒绝 ASCII/控制字符；Permission Profile Allowlist 按同一动作边界校验每个条目，使超大的配置条目无法扩大 Envelope。Permission Profile ID 和版本通过 Profile 构造函数与精确动作绑定共用的一个共享校验器限制在 128 字节并拒绝 ASCII/控制字符，使 Profile 身份在哈希或保留进 D-6/D-7 状态之前即有界。JSON Adapter 和领域 Schema 构造函数都在策略评估前拒绝重复属性。非权威的 `ToolPolicy` 评估不再能 Seal 绑定：Crate 自有的 Sealing 服务通过 Crate 自有的配置 Port 解析描述符/Profile 快照，重新检查精确的 Profile 身份/版本，并在 D-6/D-7 创建前写入私有的审批要求。审批要求 Setter 受单一调用点防护，因此没有 Tool/MCP Adapter 能自我授权特权绑定。被拒绝的绑定两者都不分配，已授权的 `read_data` 不经 D-6 直接派发。条件/幂等的审批决议需要 Crate 自有的 C-7 Authorizer 和决策服务，同时独立强制同租户和同 Thread 所有权。对需要审批的动作，C-7 所有权与作用域预校验在任何 D-7 分配之前运行——包括 D-6 窗口已过期的调用，它在分配后取消路径之前完成授权——因此未授权调用不会留下已准备尝试，重复的无作用域请求无法耗尽 Turn 的 16 槽位预算（TC-05）。Source 和聚焦测试定义了一个显式注入的强 Turn 权威根；其构造函数为 Crate 自有且非全局，因此公开调用方无法构造第二个根来重置重复 D-7 拒绝、单运行尝试仲裁或 16 槽位预算。该根在临时句柄丢失期间强保留进程内状态；在 T-3 能证明规范 Turn 终态并防止预算复活之前，回收有意不可用。所有 Executor 成功与失败路径在终态提交前立即校验当前租约。受防护的迁移、精确的 `concurrent_attempt`、较早 Deadline 到期和规范 SHA-256 动作摘要均有聚焦证据。一个 C-5 Tool 执行 Driver 现已编排 authorize、prepare、approve 与 execute，并带有恰好一次已证明的效果前重试（TC-08）：它仅在已提交的 Executor `Failed{effect_state=NotStarted}` 终态时重试（绝不在成功或取消时重试），分配新的 D-7 身份、重新运行描述符/Profile 策略，并为需要审批的效果创建新的 D-6；被 Declined、Cancelled 或过期的 D-6（包括在 D-6 到期后到达的决策）通过受防护的 Coordinator 路径把仍处于 Prepared 的 D-7 关闭为 `cancelled/not_started`，且不派发；耗尽 16 槽位预算的重试返回 `failed/attempt_limit`；并且受控时钟在每次 D-6 创建和派发时重新读取（审批决策也携带其实际决策时间），使延迟审批无法把 D-6 窗口或 D-7 启动时间钉死在原调用时间；而重试准备阶段被 Fence 的所有者返回错误，不送达任何已提交的旧终态。聚焦的内部 Fixture 覆盖重试逻辑（`cargo test -p koduck-ai --lib cand_2_retry_tests`：效果前未开始的成功、started/unknown、至多一次、新 D-6、预算耗尽的 `failed/attempt_limit`、对账、declined/cancelled 取消、成功/取消不重试以及迟到决策的到期）；这些仅为逻辑层覆盖——AC-9 通过公共运行时/Runner 入口的端到端重试验证仍是 T-2 交付物，待该公共边界存在后由黑盒 `tests/cand_2_retry.rs` 验证。取消与超时逻辑现已实现：Executor Port 在一个不透明的 Permit 之后携带一次有界取消，在 30 秒动作 Deadline 时报告已确认的效果状态或没有任何确认；Coordinator 在取消一个 running 的 D-7 前校验当前租约，以 Executor 报告的状态提交 `cancelled`，在取消未获确认时提交 `timed_out/unknown`，并在每次 Executor 响应后（包括有界取消响应后）重新读取受控时钟，使在 30 秒动作期限之后到达的取消确认提交 `timed_out/unknown` 而非 `cancelled`，并使观测完成时间达到 30 秒的动作以如实的 effect-state 证据提交 `timed_out`，而非成功或失败的结果；中断句柄通过共享进程权威解析 Turn 已登记的 prepared 或 running D-7，并经同一受防护的条件提交路径关闭它，被 Fence 的所有者会收到对账要求而运行中尝试保持已登记，已取消 D-7 的迟到 Executor 响应被拒绝且不交付模型。`DisabledExecutor` 将取消边界报告为不可用，因此 C-5 会保留运行中的 D-7 供对账，而不会在动作期限前伪造超时；禁用的运行时仍不暴露任何效果路径。聚焦的内部 Fixture 覆盖取消与超时契约（`cargo test -p koduck-ai --lib cand_2_cancellation_tests`：prepared 中断零派发且零取消调用、已确认 not_started/started 终态、未确认 `timed_out/unknown`、被 Fence 所有者对账并保留运行中尝试、两侧精确的 30 秒 Deadline 边界、取消后迟到结果拒绝、非 running 的 Typed 拒绝、未知 Turn 的无操作，以及 Claim 后或派发后租约不可用时保留运行中尝试的终态保留、使中断对从未派发或已执行的效果发出零次 Executor 取消）；与重试 Fixture 一样这些仅为逻辑层覆盖——AC-8 通过已认证传输的端到端取消验证仍是 T-2 交付物。与重试 Fixture 一样这些仅为逻辑层覆盖——AC-8 通过已认证传输的端到端取消验证仍是 T-2 交付物。T-1 尚未完成；其包含范围仍要求 Runner 集成。公共 Runner 侧 C-5 入口现已存在于当前未提交任务修订：`koduck-ai/src/application/tool_boundary.rs` 现将整个 C-5 边界面收敛为 crate 内部：`ToolExecutionRuntimeRoot::issue` 为 `pub(crate)` 且运行时装配（`runtime::tool_execution_root`）是其唯一生产调用点，Assembly 与 Boundary 仅以 crate 内部句柄分发，刻意不设进程全局根与公共签发路径，因此任何调用方都无法铸造第二份权威目录（TC-09/TC-12；crate 内部回归证明同一装配的同级 Boundary 与同一根上第二个 Assembly 的 Boundary 均被拒绝 `concurrent_attempt` 与 `attempt_limit` 且自身零派发；架构断言禁止全局根、要求注入根构造函数并固定唯一的运行时签发点）。该装配应用 Crate 自有的配置支撑 Sealing 服务，以及一个要求 `ai.tool.approve` 作用域的 Crate 自有 C-7 作用域 Authorizer——该作用域现建模为封闭的 `ApprovalScopes` 能力，只能在 crate 内部由已认证信任 Adapter 构造，且只能经 `with_approval_scopes(ApprovalScopes)` 附加，因此任何外部调用方都无法铸造审批作用域——生产中为空，直到 T-2 签名作用域 Adapter 填充，因此无作用域的主体永远无法决议 D-6；调用方只能提供已校验的 `ToolConfigurationSnapshot` 值和 Consumer-owned 的 Executor/租约/提交方 Port，且不接受任何调用方构造的权威存储。C-5 Driver 仅在 `ApprovalDecisionService::validate_resolver` 确认租户、Thread 和 `ai.tool.approve` 作用域之后才调用决策提供方，因此未授权主体的决策回调从未被调用、也观察不到 D-6（TC-05 回归断言回调计数为 0）；`LeaseValidator` Port 现返回类型化的 `LeaseCheck`，其 `Unavailable` 结果——包括校验器 panic 导致共享租约锁中毒——以类型化的 `LeaseUnavailable` 对账传播且零派发，而不是复用可能不完整的校验器状态或伪装成 Fence（TC-07 回归断言类型化的 `ExecutionPreparationError::LeaseUnavailable` 结果；该类型化结果即机器可读诊断，结构化日志接收器需要本切片授权范围之外的日志依赖，随 T-2 运行时可观测性接线落地）。Driver 另外在策略评估和任何 D-7 分配前拒绝租户与已认证主体不一致的调用——包括免审批的 `read_data` 路径——返回精确的 `TenantMismatch` 代码、零 D-6 创建和零派发（跨租户回归）。完整的 AC-10 虚拟时钟边界表以 crate 内部 `koduck-ai/tests/internal/cand_2_limits.rs` Harness 运行：两条审批到期分支均精确到期（Turn Deadline 较晚时 4:59.999/5:00.000，两分钟 Turn Deadline 时 1:59.999/2:00.000，过期用例零派发）；无作用域主体收到 `NotAuthorized` 且零派发；执行恰在 30.000 秒提交 `timed_out`、29.999 秒成功；第 16 次尝试完成而第 17 槽位与耗尽预算的重试分配返回精确的 `attempt_limit` 结果/代码；65,536 字节动作输入可执行而 65,537 字节在解析前返回 `input_limit`；1,048,576 字节输出提交而 1,048,577 字节被丢弃为 `failed/output_limit_exceeded` 且不携带任何 Payload；同一 Turn 的第二个并发动作在恰好一次运行中派发下被拒绝 `concurrent_attempt`。T-1 保持 `In Progress`，因为生产 `TurnRunner`/运行时链路尚未调用该入口，且在 T-2 传输入口点存在之前无法推导 AC-1 的入口委托计数；完成 T-1 需要在既有 T-1 范围内让 Runner 链路消费该边界，或走审批失效流程修订范围。Provider Tool-call 翻译、D-3 投影、HTTP/SSE 审批传输、Executor Client 和运行时配置是尚未开始的 T-2 范围；规范 PostgreSQL 权威与安全回收仍属 T-3 范围。 |
 | T-2 | 实现已认证审批与投影传输，以及采用空生产描述符 Allowlist 的 Tool/MCP 和隔离 Executor Adapter。 | REST 决策路由、SSE/D-3 Payload、Provider Tool 调用翻译、Tool/MCP 描述符 Adapter、Executor Client 与运行时配置；无直接主机/MCP 执行。 | In Progress | 新增了可感知重复、Fail-closed 的 JSON-Schema 翻译（反序列化前 65,536 字节 Schema 上限）、由不透明的仅 Coordinator 派发 Permit 保护的 Consumer-owned 隔离 Executor Port，以及一个增量响应构建器——它在缓冲超过 1,048,576 字节前拒绝输出，溢出后无法完成。条件终态提交 Port 区分获胜写入、已存在的规范终态、冲突终态、Fencing 和不可用。现有终态只能通过一个校验非零规范版本和输出上限的类型重建，保留精确的 D-7 绑定，并在该绑定不同时被拒绝用于对账；因此 Coordinator 只返回匹配的有界规范获胜者，绝不返回失败的本地输出。被拒绝的规范派发声明返回非终态的 `ExecutionPending::DispatchRejected` 路径，同时保留已准备或已存在的规范 D-7 状态，因此不会被误认为已持久提交的 Tool 输出；已 Seal 的 Turn 的被拒声明携带独立的中断代码而非审批不匹配诊断，因此调用方不会走上审批失败的恢复路径。Crate 内部生命周期方法使用唯一的 `claim_dispatch`、`mirror_terminal` 和 `allocate_attempt` 命名，架构测试扫描完整生产 Source 图，强制其一个 Coordinator 声明调用点、两个条件提交调用点和一个校验租约的准备方分配调用点，因此没有 D-7 能在缺少 TC-07 当前 Generation 租约检查的情况下被分配。C-7 已验证决策 Setter 同样受单一调用点防护，因此审批传输不能在没有 ApprovalDecisionService 和 ApprovalAuthorizer 的情况下应用调用方提供的决策。`DisabledExecutor` 是唯一的生产 `IsolatedExecutor` 实现，但生产运行时接线仍未完成；架构测试扫描完整 Source 图和 Crate Manifest 以查找直接/遗留执行路径。审批 HTTP/投影/Provider Tool 调用接线仍待 C-7 签名 Scope Adapter 完成。 |
 | T-3 | 持久化规范 D-6/D-7/审计元数据，并证明多实例、Fencing、生产边界和 Fail-closed 行为。 | 幂等 PostgreSQL Migration/Adapter 操作、集成 Harness、竞争/故障/上限测试、契约副本和运行时文档。 | Not Started | Pending |
 
@@ -458,25 +458,25 @@ N/A — 未提出工程规则例外。任何超出或豁免规则的实现都需
 | 风险维度 | 适用性与场景或具体 N/A 原因 | 负责边界 | 确定性验证方法 | 精确预期结果 | 验收检查 ID | 状态 | 实际证据 |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | concurrency and ordering | 两个审批人和 32 个派发方争抢一个 requested D-6/prepared D-7，同时一个终态结果也在竞争。 | C-5 加 C-6 PostgreSQL Adapter | AC-12 生产 PostgreSQL 竞争测试。 | 一个 D-6 决策和一个派发声明获胜；一个 D-7 终态持久化；Executor 派发计数恰好为 1；每个失败者返回现有终态或 Typed 冲突。 | AC-12 | Not Started | 未运行 — T-3 PostgreSQL 迁移 Adapter 和 32 派发方生产竞争 Harness 尚未实现 |
-| timeout and deadline | 审批跨越五分钟时限或更早的 Turn Deadline；Executor 跨越 30 秒。 | C-5 时钟/Deadline 策略和 Executor Adapter | AC-10 中两条审批到期分支和执行超时的虚拟时钟边界用例。 | 在较早的适用 Deadline，pending 的 D-6 过期且零派发；running 的 D-7 为 `timed_out`；没有迟到的审批或结果到达模型。 | AC-10 | Not Started | 未运行 — 聚焦的审批到期检查已存在，但完整的虚拟时钟审批和 30 秒 Executor Deadline 表尚未实现 |
-| cancellation and interruption | Turn 在审批待决时、效果未开始时、效果已开始后，以及取消确认丢失时被中断。 | C-2/C-5 取消和 Executor Adapter | AC-8 中的故障驱动用例。 | 待决工作零次派发；已确认的运行中工作为带报告效果状态的 `cancelled`；未确认的工作为 `timed_out/unknown`；一个 CAND-1 Turn 终态保持持久。 | AC-8 | Not Started | 未在 AC-8 端到端边界运行 — 已认证取消传输是 T-2 交付物。内部取消与超时契约已实现，并由聚焦的逻辑层 Fixture 覆盖（`cargo test -p koduck-ai --lib cand_2_cancellation_tests`：prepared 中断零派发且零取消调用、已确认 not_started/started 终态、未确认 `timed_out/unknown`、两侧精确的 30 秒 Deadline 边界、取消后迟到结果拒绝以及被 Fence 所有者的对账）；这些不提升 AC-8，因为它们不经过已认证传输。 |
-| resource bounds and backpressure | 一个 Turn 请求第 17 次尝试、两个并发尝试、65,537 字节输入或 1,048,577 字节输出。 | C-5 策略和 Executor Envelope/结果 Adapter | AC-10 中的精确边界表。 | 每个超限用例被以其稳定上限代码拒绝或失败，零个超限字节到达历史/模型，且最多一个 D-7 运行。 | AC-10 | Not Started | 未运行 — 聚焦的尝试、输入、输出和并发回归已存在，但完整的 AC-10 边界表和历史/模型交付断言尚未实现 |
+| timeout and deadline | 审批跨越五分钟时限或更早的 Turn Deadline；Executor 跨越 30 秒。 | C-5 时钟/Deadline 策略和 Executor Adapter | AC-10 中两条审批到期分支和执行超时的虚拟时钟边界用例。 | 在较早的适用 Deadline，pending 的 D-6 过期且零派发；running 的 D-7 为 `timed_out`；没有迟到的审批或结果到达模型。 | AC-10 | Pass | AC-10 黑盒边界表在当前未提交任务修订上经公共 `ToolExecutionBoundary` 通过：恰在 5:00.000（Turn Deadline 较晚）与 2:00.000（两分钟 Turn Deadline）到达的决议使 D-6 过期并以零派发关闭 Prepared D-7，而 4:59.999 与 1:59.999 接受并派发一次；窗口内无作用域决议被拒绝且零派发；恰在 30.000 秒完成的执行提交 `timed_out` 而不交付结果，29.999 秒成功。 |
+| cancellation and interruption | Turn 在审批待决时、效果未开始时、效果已开始后，以及取消确认丢失时被中断。 | C-2/C-5 取消和 Executor Adapter | AC-8 中的故障驱动用例。 | 待决工作零次派发；已确认的运行中工作为带报告效果状态的 `cancelled`；未确认的工作为 `timed_out/unknown`；一个 CAND-1 Turn 终态保持持久。 | AC-8 | Not Started | 未在 AC-8 端到端边界运行 — 已认证取消传输是 T-2 交付物。内部取消与超时契约已实现，并由聚焦的逻辑层 Fixture 覆盖（`cargo test -p koduck-ai --lib cand_2_cancellation_tests`：prepared 中断零派发且零取消调用、已确认 not_started/started 终态、未确认 `timed_out/unknown`、两侧精确的 30 秒 Deadline 边界、取消后迟到结果拒绝、被 Fence 所有者的对账，以及使从未派发或已执行的尝试远离取消流程的 Claim 后或派发后租约不可用保留）；这些不提升 AC-8，因为它们不经过已认证传输。 |
+| resource bounds and backpressure | 一个 Turn 请求第 17 次尝试、两个并发尝试、65,537 字节输入或 1,048,577 字节输出。 | C-5 策略和 Executor Envelope/结果 Adapter | AC-10 中的精确边界表。 | 每个超限用例被以其稳定上限代码拒绝或失败，零个超限字节到达历史/模型，且最多一个 D-7 运行。 | AC-10 | Pass | AC-10 黑盒边界表在当前未提交任务修订上通过：第 17 次分配与耗尽预算的重试分配返回精确的 `attempt_limit` 结果/代码且不再派发；65,537 字节动作输入在解析前返回 `InputTooLarge` 而 65,536 字节输入可执行；1,048,577 字节 Executor 输出被丢弃为 `failed/output_limit_exceeded` 且无 Payload，而 1,048,576 字节提交；同一 Turn 的第二个并发动作以恰好一次运行中派发被拒绝 `concurrent_attempt`。 |
 | framework or trust-boundary rejection | 尝试缺失/伪造身份、跨租户决策、恶意 MCP 描述符/结果和直接 Executor 绕过。 | C-1/C-7、C-5、Tool/MCP/Executor Adapter | AC-1/AC-6/AC-11 中的 Axum HTTP 契约、恶意 Adapter Fixture 和架构检查。 | 身份用例返回精确的 401/404 行为且零变更；不可信内容不能改变权限；不存在禁用的直接执行路径。 | AC-1, AC-6, AC-11 | Not Started | 未运行 — 领域、Adapter 和无绕过检查已存在，但已认证 HTTP 契约和完整的恶意描述符/结果 Fixture 尚未实现 |
 
 ## 验收检查 [Required]
 
 | 检查 ID | 子任务 | 二元验收点 | 前置条件或输入 | 验证方法 | 精确预期结果 | 预期证据 | 状态 | 实际结果与证据 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| AC-1 | T-1 | 领域/应用 Tool 策略不依赖 HTTP、Provider-wire、SQLx、Tool/MCP-wire 或 Executor 实现，且每个调用都进入 C-5。 | T-1/T-2 Source 已存在。 | 运行 `cargo test -p koduck-ai --test architecture cand_2_policy_dependencies_are_inward_and_unbypassable -- --exact`。 | Exit 0；禁用 Import 计数为 0；原生 Tool 和 MCP 入口点计数等于委托给 C-5 Port 的计数；C-1/C-2 中直接文件系统/进程/MCP 执行入口点计数为 0。 | Command Output 和所检查的 Commit。 | Not Started | Pending |
-| AC-2 | T-1 | 每个缺失、过期、禁用、不兼容、冲突、未知效果或超出 Profile 的描述符都在审批或执行前被拒绝。 | 表 Fixture 包含每种无效状态的一个用例。 | 运行 `cargo test -p koduck-ai --test cand_2_policy invalid_descriptors_fail_closed -- --exact`。 | Exit 0；每个用例返回其声明的 Typed 拒绝；D-6 计数和 Executor 派发计数为 0。 | Command Output 和逐用例计数。 | Not Started | Pending |
-| AC-3 | T-1 | 模型、描述符、审批投影和 Tool/MCP 结果内容不能扩大不可变的 Turn Permission Profile 或授权执行。 | 固定 Profile 只允许合成 `read_data`；四个恶意 Fixture 请求 `process_execute`。 | 运行 `cargo test -p koduck-ai --test cand_2_policy untrusted_content_cannot_grant_authority -- --exact`。 | Exit 0；Profile ID/版本不变；四个特权请求全部被拒绝或要求规范 D-6；伪造投影导致 0 次派发。 | Command Output 和决策 Trace。 | Not Started | Pending |
+| AC-1 | T-1 | 领域/应用 Tool 策略不依赖 HTTP、Provider-wire、SQLx、Tool/MCP-wire 或 Executor 实现，且每个调用都进入 C-5。 | T-1/T-2 Source 已存在。 | 运行 `cargo test -p koduck-ai --test architecture cand_2_policy_dependencies_are_inward_and_unbypassable -- --exact`。 | Exit 0；禁用 Import 计数为 0；原生 Tool 和 MCP 入口点计数等于委托给 C-5 Port 的计数；C-1/C-2 中直接文件系统/进程/MCP 执行入口点计数为 0。 | Command Output 和所检查的 Commit。 | Not Started | 指定测试在当前未提交任务修订上 Exit 0（依赖方向向内、恰好一个生产 `impl IsolatedExecutor for DisabledExecutor`、零直接进程 API），但它并未统计原生 Tool/MCP 入口点相对 C-5 委托的计数，且在 T-2 传输之前不存在任何原生入口点，因此声明的入口委托相等性尚未被观测；该检查保持开放，直至与 T-2 入口点一同落地增强的计数测试。 |
+| AC-2 | T-1 | 每个缺失、过期、禁用、不兼容、冲突、未知效果或超出 Profile 的描述符都在审批或执行前被拒绝。 | 表 Fixture 包含每种无效状态的一个用例。 | 运行 `cargo test -p koduck-ai --test cand_2_policy invalid_descriptors_fail_closed -- --exact` 和 `cargo test -p koduck-ai --lib cand_2_denial_tests`。 | 两条命令均 Exit 0；每个用例返回其声明的 Typed 拒绝；D-6 计数和 Executor 派发计数为 0。 | Command Output 和逐用例计数。 | Pass | 在当前未提交任务修订上两条命令均 Exit 0：公开策略表（1 项通过）对全部七类声明状态——缺失、过期、禁用、不兼容、冲突、未知效果和超出 Profile——返回其精确 `DenialCode`；crate 内部边界 Harness（2 项通过）以需审批的特权效果驱动同样七类，并观测到零 D-6 创建（决策回调从未被调用）、零 Executor 派发和零终态提交。 |
+| AC-3 | T-1 | 模型、描述符、审批投影和 Tool/MCP 结果内容不能扩大不可变的 Turn Permission Profile 或授权执行。 | 固定 Profile 只允许合成 `read_data`；四个恶意 Fixture 请求 `process_execute`。 | 运行 `cargo test -p koduck-ai --test cand_2_policy untrusted_content_cannot_grant_authority -- --exact`。 | Exit 0；Profile ID/版本不变；四个特权请求全部被拒绝或要求规范 D-6；伪造投影导致 0 次派发。 | Command Output 和决策 Trace。 | Not Started | 当前未提交任务修订上已有三类声明恶意 Fixture Fail Closed——请求 `process_execute` 的模型内容被拒绝 `OutsidePermissionProfile`；已配置的 read_data 描述符无法重标记特权请求（`DescriptorConflicting`）；嵌入特权指令的成功读取结果不改变 Profile，其后的特权请求仍被拒绝且仅有一次 Profile 内派发——同时调用方构造的未 Seal 绑定甚至无法创建 D-6（`PolicyAuthorizationRequired`），被策略拒绝的动作不会到达决策回调或派发。但声明的伪造 D-3 审批投影 Fixture 在 T-2 投影传输存在之前无法演练，因此该检查保持开放。 |
 | AC-4 | T-2 | 一个 accepted 的精确 D-6 通过 Executor Adapter 恰好授权一个匹配的 D-7。 | 一个需要审批的合成动作，固定租户/Thread/Turn/Generation/Profile/描述符/目标/参数/尝试，以及隔离 Executor Harness。 | 运行 `cargo test -p koduck-ai --lib cand_2_approval_tests::exact_approval_authorizes_one_attempt -- --exact`。 | Exit 0；精确动作派发一次；第二次使用返回 `approval-already-consumed`；每个绑定字段的漂移派发零次且需要新的策略结果/D-6。 | Command Output、ID/摘要和派发计数。 | Not Started | Pending |
 | AC-5 | T-2 | 过期 Owner 不能通过 Executor Adapter 准备、派发或提交 Tool 结果。 | 隔离 Executor Harness；三个用例分别在准备前、派发前和结果提交前一刻 Fence 租约；派发后 Fixture 报告每种效果状态。 | 运行 `cargo test -p koduck-ai --test cand_2_fencing stale_owner_never_commits_tool_result -- --exact`。 | Exit 0；派发前用例发起 0 次 Executor 调用并取消 D-7/not_started；派发后 not_started 为 cancelled，started/unknown 为 failed `owner_fenced_after_dispatch`；每个用例的模型结果计数为 0。 | Command Output 和 D-7/历史 Trace。 | Not Started | Pending |
 | AC-6 | T-2 | 审批决策路由强制执行精确的已认证所有权、Scope、幂等性和冲突行为。 | Requested D-6，加上缺失身份、错误租户、错误 Thread、缺失 `ai.tool.approve`、有效 Principal、重复相同决策和冲突决策。 | 运行 `cargo test -p koduck-ai --test cand_2_http approval_decision_v1_contract -- --exact`。 | Exit 0；缺失身份为 401；错误所有权/Scope 为不可区分的 404 且零变更；有效和重复相同决策返回相同终态版本；冲突决策为 409 `approval-already-resolved`。 | Command Output、归一化响应 Fixture 和记录版本。 | Not Started | Pending |
 | AC-7 | T-2 | 审批和执行 SSE 投影是有序持久视图，绝不是独立权威。 | 一个需要审批的合成 Tool 调用被接受并完成；安装 Append/发布观察者。 | 运行 `cargo test -p koduck-ai --test cand_2_http projections_append_before_publish -- --exact`。 | Exit 0；requested、accepted、running 和 succeeded 投影引用递增的规范版本；每次 Append 先于发布；删除/伪造/重放一个投影不改变任何 D-6/D-7 且导致零次额外派发。 | Command Output 和 Append/发布 Trace。 | Not Started | Pending |
 | AC-8 | T-2 | 已认证中断和租约 Fencing 产生如实的 Executor 取消结果，且无迟到结果交付。 | 审批传输和隔离 Executor Harness；待决审批；prepared 尝试；已确认 not_started/started 的运行中尝试和缺失取消确认。 | 运行 `cargo test -p koduck-ai --test cand_2_cancellation`。 | Exit 0；待决/prepared 用例派发 0 次并取消；已确认用例为带精确状态的 cancelled；缺失确认在 30 秒到达 `timed_out/unknown`；迟到结果交付计数为 0；存在一个 Turn 终态。 | Command Output、虚拟时钟 Trace 和重放。 | Not Started | Pending |
 | AC-9 | T-2 | 自动重试只在经证明的 Executor 效果未开始后发生一次，获得全新授权，并再消耗一个尝试槽位。 | Executor 在效果前失败、效果已开始后失败，以及状态未知；特权和只读描述符；一个用例以 15 次在先尝试开始，使初始动作消耗槽位 16。 | 运行 `cargo test -p koduck-ai --test cand_2_retry pre_effect_retry_requires_fresh_attempt_and_policy -- --exact`。 | Exit 0；预算可用时，not_started 恰好有两个不同的 D-7 ID、消耗两个槽位，特权效果有两个不同的 accepted D-6 ID；started/unknown 有一个 D-7 且无重试；初始槽位 16 之后，重试分配/派发计数为 0，动作为 `failed/attempt_limit`。 | Command Output 和身份/审批/尝试/派发 Trace。 | Not Started | Pending |
-| AC-10 | T-1 | 审批、执行、尝试、输入、输出和并发上限精确。 | 虚拟时钟；Turn Deadline 更晚时的 4:59.999/5:00.000 审批用例和两分钟 Turn Deadline 的 1:59.999/2:00.000 用例；30 秒及超过 30 秒的执行；尝试 16/17；输入 65,536/65,537 字节；输出 1,048,576/1,048,577 字节；以及两个并发动作。 | 运行 `cargo test -p koduck-ai --test cand_2_limits exact_policy_and_execution_limits -- --exact`。 | Exit 0；Turn Deadline 更晚时审批恰好在五分钟过期，Turn Deadline 更早时恰好在两分钟过期，两种过期用例均零派发；其他等于上限的用例遵循策略；超限用例返回精确的 timeout/attempt_limit/input_limit/output_limit/concurrent_attempt 代码；没有超限 Payload 到达模型/历史，运行中尝试计数绝不超过 1。 | Command Output 和覆盖两条审批到期分支的边界表。 | Not Started | Pending |
+| AC-10 | T-1 | 审批、执行、尝试、输入、输出和并发上限精确。 | 虚拟时钟；Turn Deadline 更晚时的 4:59.999/5:00.000 审批用例和两分钟 Turn Deadline 的 1:59.999/2:00.000 用例；30 秒及超过 30 秒的执行；尝试 16/17；输入 65,536/65,537 字节；输出 1,048,576/1,048,577 字节；以及两个并发动作。 | 运行 `cargo test -p koduck-ai --lib cand_2_limits_tests::exact_policy_and_execution_limits -- --exact`。 | Exit 0；Turn Deadline 更晚时审批恰好在五分钟过期，Turn Deadline 更早时恰好在两分钟过期，两种过期用例均零派发；其他等于上限的用例遵循策略；超限用例返回精确的 timeout/attempt_limit/input_limit/output_limit/concurrent_attempt 代码；没有超限 Payload 到达模型/历史，运行中尝试计数绝不超过 1。 | Command Output 和覆盖两条审批到期分支的边界表。 | Pass | 在当前未提交任务修订上经 crate 内部 `ToolExecutionBoundary` Harness Exit 0（1 项通过）：观测到的 D-6 到期在 Turn Deadline 较晚时恰为请求+300,000 ms，较早时恰为两分钟 Turn Deadline；4:59.999 与 1:59.999 的决议派发一次，而 5:00.000 与 2:00.000 取消且零派发，无作用域主体为 `NotAuthorized` 且零派发、零 D-7 分配，因此重复的无作用域请求——包括 D-6 窗口已过期的请求——不消耗完整的 16 槽位预算；29.999 秒成功而 30.000 秒提交 `timed_out`；第 16 次尝试完成，第 17 次分配与耗尽预算的重试均返回精确 `attempt_limit` 代码；65,536 字节输入可执行而 65,537 字节解析前返回 `InputTooLarge`；1,048,576 字节输出提交而 1,048,577 字节被丢弃为 `failed/output_limit_exceeded` 且无 Payload；第二个并发动作以恰好一次派发被拒绝 `concurrent_attempt`；并且经生产 `RuntimeState` 访问路径分发的两个根句柄共享一份权威目录，因此经第一个句柄声明的运行中 D-7 会拒绝第二个句柄的并发尝试且零派发。 |
 | AC-11 | T-2 | Tool 和 MCP Adapter 使用同一个隔离 Executor Envelope，且禁用运行时没有直接或前身 Fallback。 | 合成原生 Tool 和 MCP 描述符，加上生产清单为空/Executor 禁用的运行时。 | 运行 `cargo test -p koduck-ai --test cand_2_execution isolated_executor_is_only_effect_path -- --exact` 和 `cargo test -p koduck-ai --test architecture cand_2_has_no_direct_or_legacy_execution_fallback -- --exact`。 | 两者均 Exit 0；每个启用的合成调用在 Harness 产生恰好一个相同的自有 Envelope；禁用运行时返回 Typed 不可用且 0 次派发；禁用的直接/遗留标识符和 API 计数为 0。 | Command Output、Envelope Fixture 哈希、依赖/配置报告。 | Not Started | Pending |
 | AC-12 | T-3 | PostgreSQL 在多实例竞争下恰好允许一个决策、一个派发声明和一个终态提交。 | 设置了 `KODUCK_AI_TEST_DATABASE_URL` 的全新 PostgreSQL 数据库；Migration 此前未应用；一个 D-6/D-7 的每次迁移有 32 个竞争者。 | 运行 `cargo test -p koduck-ai --test postgres_cand_2 postgres_cand_2_transitions_are_single_winner -- --exact`。 | Exit 0；Migration 成功；每次迁移有 1 个获胜者和 31 个已存在终态/冲突结果；该 D-7 的 Executor 派发计数为 1；重放包含一个终态 D-7 投影。 | Command Output、SQL 迁移计数和重放哈希。 | Not Started | Pending |
 | AC-13 | T-3 | 审计元数据完整、关联、有界，且不含凭据或原始无界内容。 | 合成凭据引用、65,536 字节参数边界、1,048,576 字节结果边界和所有终态类别。 | 运行 `cargo test -p koduck-ai --test cand_2_audit audit_is_correlated_and_content_minimized -- --exact`。 | Exit 0；每条终态记录包含声明的 ID/版本/摘要/效果状态/时序/字节数/代码；凭据值和原始参数/结果子串出现 0 次；序列化审计记录最多 16,384 字节。 | Command Output 和脱敏审计 Fixture。 | Not Started | Pending |
@@ -514,11 +514,12 @@ N/A — 未提出工程规则例外。任何超出或豁免规则的实现都需
   | `koduck-ai/src/application/cancellation.rs` | `ExecutionInterrupter::interrupt`、`ExecutionCoordinator::cancel_running_attempt` | N/A — 稳定方法已标识有序取消边界 | 防止部分中断，并在外部取消请求前保留运行中终态 | 当前未提交任务修订；完成前替换为实施 Commit |
   | `koduck-ai/src/application/terminal.rs` | `ExecutionCoordinator::commit_reserved_terminal` | `let canonical_terminal_known = matches!(error, AttemptCommitError::Conflict);` | 规范终态已获胜时保留权威并要求对账 | 当前未提交任务修订；完成前替换为实施 Commit |
   | `koduck-ai/src/application/tool_execution.rs` | `ToolExecutionDriver::execute` | N/A — 稳定方法已标识完整重试序列 | 拥有 authorize、prepare、approve-or-cancel、dispatch 与唯一允许的效果前重试 | 当前未提交任务修订；完成前替换为实施 Commit |
+  | `koduck-ai/src/application/tool_boundary.rs` | `ToolExecutionRuntimeRoot::issue`、`ToolExecutionAssembly::boundary`、`ToolExecutionBoundary::execute` | N/A — 稳定符号已标识受控工厂与装配所有的公共 C-5 入口 | 签发运行时注入 Turn 权威根的受控工厂；每个派生 Boundary 共享该根的目录、Crate 自有 Sealing 服务与 Crate 自有 `ai.tool.approve` 作用域 Authorizer，并围绕 Consumer-owned Port | 当前未提交任务修订；完成前替换为实施 Commit |
 
 - 当前任务修订的时间点分解评审；这些测量仅是评审证据，不是要求 ADR
   或 Source 在后续编辑后继续保持相等的断言：
-  `koduck-ai/src/domain/execution.rs` 为 764 物理行，
-  `koduck-ai/src/application/execution.rs` 为 763 物理行。两者都超过
+  `koduck-ai/src/domain/execution.rs` 为 782 物理行，
+  `koduck-ai/src/application/execution.rs` 为 772 物理行。两者都超过
   400 行评审阈值，且低于 800 行例外上限。领域文件保留一个精确尝试
   权威聚合：共享绑定身份、D-6 授权和 D-7 单次派发迁移，它们必须一起
   变化才能保持 TC-04/TC-08/TC-12。
@@ -527,25 +528,27 @@ N/A — 未提出工程规则例外。任何超出或豁免规则的实现都需
   句柄不授予生命周期权限，因为每个受防护迁移仍会校验目录成员资格。在 T-3
   能把它绑定到规范终态持久化并防止被回收的 Turn 以全新预算重建之前，回收
   保持延后。应用文件保留使 TC-07 不可绕过所需的单一租约/准备/派发/条件提交
-  边界；现在拆分其 Port 与 Coordinator 会让评审者为一条失败路径跨模块追踪，
-  而不会产生独立生命周期。有界取消位于同级的
+  边界；有界的 Executor 响应构建器与错误证据位于同级
+  `koduck-ai/src/application/executor_envelope.rs` 模块（162 物理行），该模块
+  拥有一份内聚的 Executor Port 契约；再抽取 Coordinator 的其余阶段会模糊
+  一条失败路径而不产生独立生命周期。有界取消位于同级的
   `koduck-ai/src/application/cancellation.rs` 模块；该文件为 450 物理行，高于
   生产文件评审阈值且低于例外上限。它保留单一的中断/取消边界，其权威快照、
   终态保留、Executor 确认、Deadline 和对账规则必须保持有序；拆分这些阶段会
   产生一个没有独立生命周期的直通模块。它在外部取消请求前保留运行中的 D-7；
-  共享的 `koduck-ai/src/application/terminal.rs` 为 113 物理行，低于所有文件
+  共享的 `koduck-ai/src/application/terminal.rs` 为 114 物理行，低于所有文件
   评审阈值；该模块拥有派发与取消共同使用的条件提交，因此不存在第二条终态
   路径。
   `ExecutionInterrupter::interrupt` 为 87 物理行（包含意图和错误文档），
   高于方法评审阈值且低于例外上限。它把一次权威锁内快照与按序关闭全部活跃
   D-7 的结果保留在一起；抽取一个阶段会模糊“不部分关闭”的对账边界，而不会
-  产生独立生命周期。`ExecutionCoordinator::cancel_running_attempt` 为 116 物理行
+  产生独立生命周期。`ExecutionCoordinator::cancel_running_attempt` 为 106 物理行
   （包含意图和错误文档），高于方法评审阈值且低于例外上限。它把租约检查、
   副作用前终态保留、有界 Executor 取消和如实终态选择保留在一个有序边界中。
   `ExecutionCoordinator::commit_reserved_terminal` 为 86 物理行（包含意图和错误文档），
   高于方法评审阈值且低于例外上限。它保留派发和取消共同使用的单一条件提交
   结果映射与保留释放决策；拆分会产生分叉的终态对账规则。Cyclomatic Complexity
-  为 `N/A — 未配置复杂度工具`；所需替代评审测得这三个方法分别为 87、116 和
+  为 `N/A — 未配置复杂度工具`；所需替代评审测得这三个方法分别为 87、106 和
   86 物理行，最大可执行嵌套深度分别为五、二和三。中断方法超过嵌套评审阈值
   但低于例外上限；第五层是唯一有序迭代内的 prepared 尝试竞争恢复分支，抽取
   它会把过期 prepared 到 running 的刷新与其保护的原子快照分离。当 T-3 期间
@@ -555,45 +558,49 @@ N/A — 未提出工程规则例外。任何超出或豁免规则的实现都需
   高于生产文件评审阈值且低于例外上限。它保持为一个自有 Tool 值聚合，
   其 JSON 值与 Schema、描述符、动作和 Permission Profile 共享校验和
   策略不变量；现在拆分会把这些不变量移到跨模块位置而没有独立生命周期。
-  `ExecutionCoordinator::execute` 为 115 物理行（含其意图和错误文档），
+  `ExecutionCoordinator::execute` 为 116 物理行（含其意图和错误文档），
   高于方法评审阈值且低于例外上限。它保留一个有序的租约检查、派发、
   效果观测、Deadline 和条件提交序列；抽取某个阶段会模糊 TC-07 的顺序而不产生
   独立 Owner。Cyclomatic Complexity 为 `N/A — 未配置复杂度工具`；所需的
-  替代评审测量了 115 行跨度和最大可执行嵌套深度二，低于嵌套阈值。
-- `ToolExecutionDriver::execute` 为 102 物理行（含意图与错误文档），高于
+  替代评审测量了 116 行跨度和最大可执行嵌套深度二，低于嵌套阈值。
+- `ToolExecutionDriver::execute` 为 116 物理行（含意图与错误文档），高于
   方法评审阈值且低于例外上限。它保留一条 authorize、prepare、
   approve-or-cancel、dispatch 与条件重试的序列，其顺序编码 TC-08（仅在已
   提交 `Failed{NotStarted}` 时重试）和 TC-07（被 Fence 的重试不送达结果）；
   抽取任一阶段会把重试决策状态拆分到不同 Owner 而无独立生命周期。
-  Cyclomatic Complexity 为 `N/A — 未配置复杂度工具`；替代评审测量了 102 行
+  Cyclomatic Complexity 为 `N/A — 未配置复杂度工具`；替代评审测量了 116 行
   跨度和最大可执行嵌套深度三（loop、match、arm），低于嵌套阈值。
-  `koduck-ai/tests/internal/cand_2_execution.rs` 为 1,031 物理行，高于
+  `koduck-ai/tests/internal/cand_2_execution.rs` 为 1,035 物理行，高于
   600 行测试评审阈值且低于 1,200 行例外上限；它保持为一个内聚的隔离
   执行契约 Harness，其 Executor、租约、提交方、策略和权威 Fixture 被
   Fencing、边界、竞争和终态结果用例共享。现在拆分这些用例会复制安全
   敏感的 Fixture，而不是创建独立测试边界。与 T-2 传输 Harness 一起
   重新评估；按实测大小不需要工程例外。
-- `koduck-ai/tests/internal/cand_2_retry.rs` 为 757 物理行，高于 600 行
+- `koduck-ai/tests/internal/cand_2_retry.rs` 为 761 物理行，高于 600 行
   测试评审阈值且低于 1,200 行例外上限。它是一个内聚的重试契约 Harness，
   其脚本化 Executor、租约、提交方、策略和审批 Fixture 被 not-started、
   started/unknown、至多一次、新 D-6、预算耗尽、对账、declined/cancelled
   取消、成功/取消不重试、重试期间 Fence 和时钟顺序用例共享。现在拆分会
   复制 Fixture 而不是创建独立测试边界；待 T-2 黑盒 `tests/cand_2_retry.rs`
   落地后重新评估。按实测大小不需要工程例外。
-- `koduck-ai/tests/internal/cand_2_cancellation.rs` 为 1,169 物理行，高于 600 行
+- `koduck-ai/tests/internal/cand_2_cancellation.rs` 为 1,175 物理行，高于 600 行
   测试评审阈值且低于 1,200 行例外上限。其 170 行同级
   `koduck-ai/tests/internal/cand_2_cancellation_blocking_dispatch.rs` 在复用父模块
   Fixture 的同时隔离了阻塞派发并发用例和已 Seal 派发声明的中断代码诊断；46 行的
   `koduck-ai/tests/internal/cand_2_cancellation_disabled_executor.rs` 同级模块隔离了
-  生产禁用 Adapter 回归，且不使共享 Harness 超过 1,200 行例外上限。它们共同构成
+  生产禁用 Adapter 回归，174 行的
+  `koduck-ai/tests/internal/cand_2_cancellation_post_claim_lease.rs` 同级模块隔离了
+  Claim 后与派发后租约不可用的保留回归，均不使共享 Harness 超过 1,200 行例外上限。它们共同构成
   TC-09/TC-10 的逻辑级取消与超时 Harness：其脚本化 Executor、租约、提交方和共享
   运行时 Fixture 覆盖 prepared 中断、确认的 not-started/started 取消、未确认的
   `timed_out/unknown`、被 Fence Owner 的对账、精确 30 秒 Deadline 边界、迟到结果
   拒绝、非运行状态的 Typed 拒绝、未知 Turn 无操作、阻塞派发时的独立取消边界、
   过期 prepared 快照防护、D-6 已接受但尚未派发的处理、取消前终态保留、终态提交
   进行中的对账、原子中断快照、取消后 Fencing 保留、已 Seal Turn 的独立派发拒绝
-  中断代码，以及无提前超时的不可用 Adapter 对账。待 T-2 黑盒
+  中断代码、使从未派发或已执行的尝试远离取消流程的 Claim 后或派发后租约不可用终态保留，
+  以及无提前超时的不可用 Adapter 对账。待 T-2 黑盒
   `tests/cand_2_cancellation.rs` 传输 Harness 落地后重新评估父 Harness。
+- `koduck-ai/tests/internal/cand_2_limits.rs`（边界面移入 crate 后为 crate 内部测试）为 1,083 物理行，超过 600 行测试评审阈值、低于 1,200 行例外上限；它是内聚的 AC-10 边界表 Harness，其脚本化计数 Executor、获胜/冲突提交方、共享租约校验器、装配派生的Boundary 与时序/固定时钟 Fixture 被每个上限族共用；拆分各族会复制安全敏感的 Executor Fixture，而不是形成独立的测试边界。其 139 行同级 `koduck-ai/tests/internal/cand_2_limits_budget.rs` 在复用父模块 Fixture 的同时隔离未授权与过期窗口的预算保留回归，使父 Harness 保持在例外上限以下。`koduck-ai/tests/internal/cand_2_denials.rs` 为 492 物理行，低于所有测试评审阈值，拥有边界级 AC-2/AC-3 拒绝与不可信内容计数器；`koduck-ai/tests/cand_2_policy.rs` 在边界 Fixture 移入 crate 后重新测量为 612 物理行——略高于 600 行评审阈值、远低于例外上限——它保留一个内聚的策略表 Harness，其描述符与动作构造器被每个策略用例共享；拆分这些表会复制这些已校验 Fixture，而不是形成独立的测试边界。`koduck-ai/src/application/tool_boundary.rs` 为 208 物理行，低于所有生产文件评审阈值；它把受控权威根工厂、Sealing 服务与作用域审批服务保留在一个有序边界中。
 - 仓库在之前的 Pull Request 修订上已有配置的自动评审证据。ADR-0003
   尚无已推送的实施修订；因此精确修订的评审覆盖仍待完成，并仍是后续
   review-ready 的 Gate。
@@ -620,6 +627,17 @@ Status 为 `In Progress`。触发时：
 
 | 日期 | 变更 | 作者 |
 | --- | --- | --- |
+| 2026-08-14 | 用 Test-first 回归处理两个阻塞评审发现：过期 D-6 窗口不再豁免 C-7 校验——新的绑定级 `validate_resolver_for_binding` 在分配后取消路径之前运行，过期窗口的无作用域循环零消耗尝试槽位（观察到红灯：首个过期无作用域调用在消耗槽位后返回 `cancelled/not_started`）；派发后租约 `Unavailable` 现在为对账保留已执行尝试的终态保留，租约恢复后中断无法取消 Executor 已运行的效果（观察到红灯：中断提交了 `cancelled/started`）。C-7 Authorizer Port 改为接收精确绑定，使校验在 D-6 请求存在之前即可运行；两个预算回归位于 139 行的 `cand_2_limits_budget.rs` 同级模块，使上限 Harness 保持在 1,200 行例外上限以下。分解证据已重新测量，zh-CN 翻译已重新同步。未改变任何已批准决策内容或验收状态。 | @kimi |
+| 2026-08-14 | 验证阻塞发现修正：`cargo fmt --all --check`、严格 `koduck-ai` all-target/all-feature Clippy，以及完整 216 个测试的 `koduck-ai` all-target/all-feature 套件通过，其中包括 89 个聚焦 CAND-2 库测试和 14 个架构契约测试。未把任何未完成的验收检查提升为 `Pass`。 | @kimi |
+| 2026-08-14 | 用 Test-first 回归处理两个阻塞评审发现：C-7 所有权与作用域预校验现在在任何 D-7 分配之前运行，未授权的需审批调用不再留下已准备尝试，重复的无作用域请求无法耗尽 16 槽位预算（观察到红灯：十六次无作用域调用后首个已授权尝试命中 `attempt_limit`）；Claim 后租约 `Unavailable` 现在为对账保留运行中尝试的终态保留，不再把从未派发的尝试暴露给取消流程（观察到红灯：中断对其提交了 `cancelled/not_started`）。新的取消回归位于 84 行的 `cand_2_cancellation_post_claim_lease.rs` 同级模块，使父 Harness 保持在 1,200 行例外上限以下；分解证据已重新测量，zh-CN 翻译已重新同步。未改变任何已批准决策内容或验收状态。 | @kimi |
+| 2026-08-14 | 验证阻塞发现修正：`cargo fmt --all --check`、严格 `koduck-ai` all-target/all-feature Clippy，以及完整 215 个测试的 `koduck-ai` all-target/all-feature 套件通过，其中包括 88 个聚焦 CAND-2 库测试和 14 个架构契约测试。未把任何未完成的验收检查提升为 `Pass`。 | @kimi |
+| 2026-08-14 | 处理运行时根与证据评审轮次：生产运行时现在在启动时装配一个 `RuntimeState`，持有进程唯一的 C-5 Turn 权威根且只分发共享句柄，取代按调用签发；新增 AC-10 回归经生产访问路径驱动两个句柄，证明共享目录拒绝跨句柄并发尝试且零派发（修复前观察到意外的 `Succeeded` 红灯）。AC-2 的验证方法现在列出两条已执行命令（公开策略表加 crate 内部拒绝 Harness），相互矛盾的过期分解测量（已移除的外部 `tests/cand_2_limits.rs` 引用、970 行策略与 192 行边界的重复旧值、较早的 Coordinator/Driver 方法跨度）已删除或按当前 Source 重新测量；zh-CN 翻译已重新同步。未改变任何已批准决策内容或验收状态。 | @kimi |
+| 2026-08-14 | 验证运行时根与证据修正：`cargo fmt --all --check`、严格 `koduck-ai` all-target/all-feature Clippy、14 个架构契约测试、两条 AC-2 命令（分别 1 项和 2 项通过）、87 个聚焦 CAND-2 库测试，以及完整 214 个测试的 `koduck-ai` all-target/all-feature 套件通过。未把任何未完成的验收检查提升为 `Pass`。 | @kimi |
+| 2026-08-14 | 通过封闭两条权威路径处理第四轮评审：根签发转为 crate 内部（`ToolExecutionRuntimeRoot::issue` 为 `pub(crate)`，运行时装配的 `tool_execution_root` 是唯一生产调用点，由架构断言固定），边界面（`ToolExecutionAssembly`/`ToolExecutionBoundary`）移入 crate 内部，任何调用方都无法铸造第二份权威目录；审批作用域成为封闭的 `ApprovalScopes` 能力，其构造器 crate 内部私有，`TrustContext::with_approval_scopes` 是唯一附加途径，因此任何外部调用方都无法铸造 `ai.tool.approve`（回归由编译器私有性加架构断言强制）。AC-10 边界 Harness 移至 `tests/internal/cand_2_limits.rs`，边界级 AC-2/AC-3 计数器移至 `tests/internal/cand_2_denials.rs`；AC-10 验证命令更新为 `cargo test -p koduck-ai --lib cand_2_limits_tests::exact_policy_and_execution_limits -- --exact`，属沿用第九轮评审 AC-4 先例的审批保全路径维护——测试名称、输入与精确断言不变，仅位置移入 crate 内部。 | @zcode |
+| 2026-08-14 | 处理未提交修订上的第三轮评审：以显式注入、经 `ToolExecutionRuntimeRoot::issue` 受控工厂签发的 `ToolExecutionRuntimeRoot` 取代第二轮引入的进程全局 `PROCESS_AUTHORITY_ROOT`——宿主运行时拥有签发权且不存在全局根，由更新后的架构断言强制——跨 Assembly 回归改为证明同一注入根上的共享；并以类型化 `LeaseCheck` Port 取代锁中毒时伪装成 Fenced 的 Fail Closed，其 `Unavailable` 结果以新增的 `ExecutionFailure::LeaseUnavailable` / `ExecutionPreparationError::LeaseUnavailable` 对账传播、零派发且不伪装为 Fence（锁中毒回归断言该类型化结果）。执行器信封类型移入 `application/executor_envelope.rs`，使 `execution.rs` 保持 686 物理行，低于 800 行例外上限。 | @zcode |
+| 2026-08-14 | 以三项红-绿回归处理未提交修订上的第二轮评审：决策提供方现仅在 `ApprovalDecisionService::validate_resolver` 确认租户、Thread 和 `ai.tool.approve` 作用域之后被调用，未授权主体回调计数为 0 且不暴露 D-6（TC-05）；每个 `ToolExecutionAssembly` 解析由架构断言固定的进程共享 `PROCESS_AUTHORITY_ROOT`，跨 Assembly 回归证明第二个 Assembly 继承同样的运行中尝试与 16 槽位限制（TC-09/TC-12）；中毒的共享租约锁以 Fenced 方式 Fail Closed 且零派发，而不是复用 panic 校验器的状态（TC-07）。AC-3 因其声明的伪造 D-3 审批投影 Fixture 依赖 T-2 投影传输而回到 `Not Started`。 | @zcode |
+| 2026-08-14 | 以红-绿增量新增公共 C-5 执行入口，并处理未提交修订上的全部五项评审发现：`ToolExecutionAssembly` 现持有唯一 Turn 权威根，每个 `ToolExecutionBoundary` 均由它派生，因此一个 Turn 跨端口特定 Boundary 恰好保留一个 16 槽位预算和一个 running D-7（新增 `concurrent_attempt` 与 `attempt_limit` 跨 Boundary 回归）；C-5 Driver 在策略评估和 D-7 分配前拒绝租户不匹配的调用——包括免审批的 `read_data` 路径——返回精确 `TenantMismatch` 代码、零 D-6 创建和零派发（新增跨租户回归）；AC-2 经边界覆盖全部七类声明拒绝并带零 D-6/派发/提交计数；AC-3 覆盖全部四类声明恶意 Fixture 且特权零派发；因 Runner 集成未交付且 T-1 范围未修订，T-1 回到 `In Progress`；因指定测试未统计入口委托且 T-2 之前无原生入口点，AC-1 回到 `Not Started`。 | @zcode |
+| 2026-08-14 | 验证评审修正后的增量：`git diff --check`、`cargo fmt --all --check`、严格 `koduck-ai` all-target/all-feature Clippy、精确的 AC-2/AC-3/AC-10 命令及 AC-1 命令结果，以及完整 212 个测试的 `koduck-ai` all-target/all-feature 套件通过；两个既有 Provider 超时测试使用了被允许的回环绑定。 | @zcode |
 | 2026-08-14 | 用 Test-first 回归处理中断诊断与测试确定性评审：已 Seal 的 Turn 的被拒派发声明现在报告独立的 `ExecutionFailure::InterruptionRequested` 代码，而非审批不匹配诊断；已 Seal 声明回归改为用 `recv_timeout` 确定性等待阻塞取消服务发出的封印后信号，取代固定 50ms 休眠，并在释放前证明“已封印但仍为 Prepared”的关键中间状态。分解证据已按当前 Source 重新测量，zh-CN 翻译的分解评审块已重新同步。未改变任何已批准决策内容或验收状态。 | @kimi |
 | 2026-08-14 | 验证中断诊断修正：`cargo fmt --all --check`、严格 `koduck-ai` all-target/all-feature Clippy、31 个聚焦取消回归，以及完整 211 个测试的 `koduck-ai` all-target/all-feature 套件通过；治理验证器测试与仓库治理校验通过。未把任何未完成的验收检查提升为 `Pass`。 | @kimi |
 | 2026-08-14 | 用 Test-first 回归处理取消收敛评审发现：`DisabledExecutor` 返回独立的不可用结果；目录会原子封闭已知和未知的已中断 Turn，阻止后续 D-7 分配；派发前终态提交失败时会保留已处于 running 的权威保留，使中断无法取消从未派发的 Executor 动作。聚焦取消测试已拆入按职责命名的同级模块，使共享 Harness 保持在 1,200 行例外上限以下。聚焦及完整 Rust 测试、格式化、严格 Clippy、治理测试和仓库治理校验均通过。 | @codex |

@@ -163,6 +163,18 @@ impl ExactActionBinding {
         self.attempt_id
     }
 
+    /// Returns the tenant bound to this exact action.
+    #[must_use]
+    pub const fn tenant_id(&self) -> &TenantId {
+        &self.tenant_id
+    }
+
+    /// Returns the Thread bound to this exact action.
+    #[must_use]
+    pub const fn thread_id(&self) -> ThreadId {
+        self.thread_id
+    }
+
     /// Returns a bounded audit-correlation digest.
     ///
     /// Authorization always compares this complete structure, never the digest alone.
@@ -437,6 +449,12 @@ impl ApprovalRequest {
     #[must_use]
     pub fn tenant_id(&self) -> &TenantId {
         &self.binding.tenant_id
+    }
+
+    /// Returns the exact D-7 binding this approval authorizes.
+    #[must_use]
+    pub const fn binding(&self) -> &ExactActionBinding {
+        &self.binding
     }
 
     /// Returns the Thread bound to this canonical approval.

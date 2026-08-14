@@ -3,8 +3,8 @@
 use koduck_ai::adapters::tool::{parse_action_parameters, parse_input_schema};
 use koduck_ai::application::{
     ApprovalAuthorizer, ApprovalDecisionService, ExecutionPreparationError, ExecutionPreparer,
-    LeaseValidator, ToolAuthorizationService, ToolExecutionAuthorityRoot, ToolExecutionRuntime,
-    ToolPolicyConfiguration,
+    LeaseCheck, LeaseValidator, ToolAuthorizationService, ToolExecutionAuthorityRoot,
+    ToolExecutionRuntime, ToolPolicyConfiguration,
 };
 use koduck_ai::domain::execution::{
     ApprovalDecision, ApprovalError, ApprovalRequest, ApprovalStatus, AttemptId,
@@ -98,7 +98,7 @@ struct FixtureApprovalAuthorizer {
 impl ApprovalAuthorizer for FixtureApprovalAuthorizer {
     fn can_resolve_tool_approval(
         &mut self,
-        _approval: &ApprovalRequest,
+        _binding: &ExactActionBinding,
         _trust: &TrustContext,
         _thread_id: ThreadId,
     ) -> bool {
@@ -130,8 +130,8 @@ fn new_preparer() -> ExecutionPreparer<CurrentLease> {
 struct CurrentLease;
 
 impl LeaseValidator for CurrentLease {
-    fn is_current(&mut self, _binding: &ExactActionBinding) -> bool {
-        true
+    fn check_current(&mut self, _binding: &ExactActionBinding) -> LeaseCheck {
+        LeaseCheck::Current
     }
 }
 
@@ -144,6 +144,9 @@ fn prepare(
         Err(ExecutionPreparationError::Rejected(error)) => Err(error),
         Err(ExecutionPreparationError::OwnerFenced) => {
             panic!("the deterministic test lease is current")
+        }
+        Err(ExecutionPreparationError::LeaseUnavailable) => {
+            panic!("the deterministic test lease never becomes unavailable")
         }
     }
 }

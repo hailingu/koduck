@@ -7,9 +7,9 @@ use koduck_ai::application::{
     ActionDeadline, ApprovalAuthorizer, ApprovalDecisionService, AttemptCommitError,
     AttemptCommitResult, AttemptCommitter, CancelAcknowledgement, CancelPermit, DispatchPermit,
     EffectState, ExecutionCoordinator, ExecutionFailure, ExecutionPreparationError,
-    ExecutionResponse, ExecutionResponseBuilder, ExecutorError, IsolatedExecutor, LeaseValidator,
-    ToolAuthorizationService, ToolCallError, ToolCallInputs, ToolExecutionAuthorityRoot,
-    ToolExecutionDriver, ToolExecutionOutcome, ToolExecutionRuntime,
+    ExecutionResponse, ExecutionResponseBuilder, ExecutorError, IsolatedExecutor, LeaseCheck,
+    LeaseValidator, ToolAuthorizationService, ToolCallError, ToolCallInputs,
+    ToolExecutionAuthorityRoot, ToolExecutionDriver, ToolExecutionOutcome, ToolExecutionRuntime,
 };
 use koduck_ai::domain::execution::{
     ApprovalDecision, ApprovalRequest, AttemptId, ExactActionBinding,
@@ -22,8 +22,8 @@ use koduck_ai::domain::{LeaseGeneration, TenantId, ThreadId, TrustContext, TurnI
 struct AlwaysCurrentLease;
 
 impl LeaseValidator for AlwaysCurrentLease {
-    fn is_current(&mut self, _binding: &ExactActionBinding) -> bool {
-        true
+    fn check_current(&mut self, _binding: &ExactActionBinding) -> LeaseCheck {
+        LeaseCheck::Current
     }
 }
 
@@ -34,8 +34,12 @@ struct SequencedLease {
 }
 
 impl LeaseValidator for SequencedLease {
-    fn is_current(&mut self, _binding: &ExactActionBinding) -> bool {
-        self.decisions.pop_front().unwrap_or(false)
+    fn check_current(&mut self, _binding: &ExactActionBinding) -> LeaseCheck {
+        if self.decisions.pop_front().unwrap_or(false) {
+            LeaseCheck::Current
+        } else {
+            LeaseCheck::Fenced
+        }
     }
 }
 
@@ -117,7 +121,7 @@ struct FixtureApprovalAuthorizer;
 impl ApprovalAuthorizer for FixtureApprovalAuthorizer {
     fn can_resolve_tool_approval(
         &mut self,
-        _approval: &ApprovalRequest,
+        _binding: &ExactActionBinding,
         _trust: &TrustContext,
         _thread_id: ThreadId,
     ) -> bool {
