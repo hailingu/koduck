@@ -60,13 +60,6 @@ pub struct ApprovalScopes {
 
 impl ApprovalScopes {
     /// Wraps scopes the configured C-7 boundary has already validated.
-    #[cfg_attr(
-        not(test),
-        allow(
-            dead_code,
-            reason = "T-2 authenticated trust adapter wiring is not complete"
-        )
-    )]
     pub(crate) fn from_validated<I, S>(scopes: I) -> Self
     where
         I: IntoIterator<Item = S>,

@@ -1,4 +1,5 @@
 <!-- ADR: docs/adr/ADR-0001-provider-neutral-turn-kernel.md -->
+<!-- ADR: docs/adr/ADR-0003-default-deny-tool-approval-execution-boundary.md -->
 
 # Koduck AI Runtime Configuration
 
@@ -28,9 +29,21 @@ gateway must remove caller-supplied values and set both headers from its
 validated identity. A deployment must prevent direct untrusted access to the
 AI listener; that topology and its verification require an Accepted OCR.
 
+The same handoff governs approval authority (ADR-0003 TC-05): the gateway must
+also remove any caller-supplied `X-Koduck-Approval-Scopes` value and set that
+header only from the scopes its validated signed claims actually grant. The
+runtime seals whatever the header carries into `TrustContext` as approval
+authority, so a forwarded caller-supplied value would be an approval-scope
+injection; the runtime performs no independent signed-claim validation of this
+header. A deployment that cannot enforce the strip-and-reissue rule at the
+gateway must not expose the approval decision route.
+
 Missing, blank, or non-UTF-8 identity values produce the owned `401
 invalid-identity` response before the turn runner, provider, or history ports
-are called.
+are called. A missing `X-Koduck-Approval-Scopes` header yields a trusted
+context with no approval scopes; a present but malformed value (empty tokens,
+whitespace or other forbidden characters, oversized tokens, or more than 16
+tokens) invalidates the whole identity the same way.
 
 ## Startup
 

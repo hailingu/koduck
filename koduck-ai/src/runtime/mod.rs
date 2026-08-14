@@ -37,6 +37,12 @@ const PROVIDER_BASE_URL: &str = "KODUCK_AI_OPENAI_BASE_URL";
 const PROVIDER_MODEL: &str = "KODUCK_AI_OPENAI_MODEL";
 const PROVIDER_API_KEY: &str = "KODUCK_AI_OPENAI_API_KEY";
 const PROVIDER_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+/// Gateway-validated approval-scope header of the trusted context channel.
+const APPROVAL_SCOPES_HEADER: &str = "x-koduck-approval-scopes";
+/// Maximum number of validated scopes one principal may carry.
+const MAX_APPROVAL_SCOPES: usize = 16;
+/// Maximum size of one validated scope token in bytes.
+const MAX_APPROVAL_SCOPE_BYTES: usize = 128;
 // One turn.started chunk, up to 64 provider items, and one terminal or error chunk.
 const STREAM_BUFFER_CAPACITY: usize = 66;
 
@@ -336,7 +342,48 @@ impl RuntimeState {
 
 fn trust_context(headers: &HeaderMap) -> Option<TrustContext> {
     let tenant_id = TenantId::new(header(headers, "x-koduck-tenant-id")?).ok()?;
-    TrustContext::new(tenant_id, header(headers, "x-koduck-subject-id")?).ok()
+    let trust = TrustContext::new(tenant_id, header(headers, "x-koduck-subject-id")?).ok()?;
+    match headers.get(APPROVAL_SCOPES_HEADER) {
+        None => Some(trust),
+        // The configured gateway/Auth boundary validates signed claims and
+        // injects the scope header as part of the validated context channel
+        // (ADR-0003 TC-05, per repository-owner direction on 2026-08-14);
+        // koduck-ai only seals what that boundary already validated. A
+        // present-but-unreadable or malformed value invalidates the whole
+        // identity rather than being silently downgraded to no scopes,
+        // because the gateway never emits malformed context.
+        Some(value) => {
+            Some(trust.with_approval_scopes(gateway_validated_scopes(value.to_str().ok()?)?))
+        }
+    }
+}
+
+/// Seals the gateway-validated approval scopes carried by the trusted context
+/// channel.
+///
+/// Returns `None` for any malformed value — empty tokens, whitespace or other
+/// forbidden characters, oversized tokens, or more than
+/// [`MAX_APPROVAL_SCOPES`] entries — so a malformed scope header yields an
+/// invalid identity instead of a partially trusted one. Tokens are validated
+/// exactly as delivered: surrounding whitespace is not normalized away,
+/// because the gateway issues canonical comma-separated values only. The
+/// count bound is enforced before a token is copied, so an over-count header
+/// allocates at most [`MAX_APPROVAL_SCOPES`] tokens before rejection.
+fn gateway_validated_scopes(raw: &str) -> Option<crate::domain::ApprovalScopes> {
+    let mut scopes = Vec::new();
+    for token in raw.split(',') {
+        if scopes.len() == MAX_APPROVAL_SCOPES
+            || token.is_empty()
+            || token.len() > MAX_APPROVAL_SCOPE_BYTES
+            || !token.bytes().all(|byte| {
+                byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'-')
+            })
+        {
+            return None;
+        }
+        scopes.push(token.to_owned());
+    }
+    Some(crate::domain::ApprovalScopes::from_validated(scopes))
 }
 
 fn header<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
@@ -445,7 +492,9 @@ fn required<'a>(
 mod tests {
     use std::time::Duration;
 
-    use super::{RuntimeError, database_setup_attempt};
+    use axum::http::{HeaderMap, HeaderName, HeaderValue};
+
+    use super::{RuntimeError, database_setup_attempt, trust_context};
 
     #[tokio::test]
     async fn database_setup_attempt_maps_deadline_expiration() {
@@ -456,5 +505,102 @@ mod tests {
         .await;
 
         assert!(matches!(result, Err(RuntimeError::DatabaseTimeout)));
+    }
+
+    fn identity_headers() -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            HeaderName::from_static("x-koduck-tenant-id"),
+            HeaderValue::from_static("tenant-a"),
+        );
+        headers.insert(
+            HeaderName::from_static("x-koduck-subject-id"),
+            HeaderValue::from_static("subject-a"),
+        );
+        headers
+    }
+
+    fn with_scope_header(mut headers: HeaderMap, scopes: &str) -> HeaderMap {
+        headers.insert(
+            HeaderName::from_static("x-koduck-approval-scopes"),
+            HeaderValue::from_str(scopes).expect("test scope header is valid header text"),
+        );
+        headers
+    }
+
+    fn with_scope_header_bytes(mut headers: HeaderMap, scopes: &[u8]) -> HeaderMap {
+        headers.insert(
+            HeaderName::from_static("x-koduck-approval-scopes"),
+            HeaderValue::from_bytes(scopes).expect("test scope header is valid header bytes"),
+        );
+        headers
+    }
+
+    #[test]
+    fn trust_context_seals_gateway_validated_approval_scopes() {
+        let headers = with_scope_header(identity_headers(), "ai.tool.approve,audit.read");
+        let trust = trust_context(&headers).expect("gateway-validated identity is accepted");
+        assert!(trust.has_approval_scope("ai.tool.approve"));
+        assert!(trust.has_approval_scope("audit.read"));
+        assert!(!trust.has_approval_scope("ai.tool.execute"));
+    }
+
+    #[test]
+    fn trust_context_without_scope_header_carries_no_approval_scope() {
+        let headers = identity_headers();
+        let trust = trust_context(&headers).expect("identity without scopes is accepted");
+        assert!(!trust.has_approval_scope("ai.tool.approve"));
+    }
+
+    #[test]
+    fn trust_context_rejects_malformed_gateway_scope_header() {
+        let oversize_token = format!("{}.{}", "a".repeat(128), "b");
+        let too_many_scopes = vec!["scope.n"; 17].join(",");
+        for malformed in [
+            String::new(),
+            ",ai.tool.approve".to_owned(),
+            "ai.tool.approve,".to_owned(),
+            "ai.tool approve".to_owned(),
+            " ai.tool.approve".to_owned(),
+            "ai.tool.approve ".to_owned(),
+            "ai.tool.approve ,audit.read".to_owned(),
+            "\tai.tool.approve".to_owned(),
+            oversize_token,
+            too_many_scopes,
+        ] {
+            let headers = with_scope_header(identity_headers(), &malformed);
+            assert!(
+                trust_context(&headers).is_none(),
+                "malformed gateway scope header must invalidate identity: {malformed:?}"
+            );
+        }
+        // Obs-text bytes survive header parsing as valid UTF-8 but are not
+        // valid scope tokens, so the validator must still reject them.
+        let headers = with_scope_header_bytes(identity_headers(), "范围.工具".as_bytes());
+        assert!(trust_context(&headers).is_none());
+    }
+
+    #[test]
+    fn trust_context_scope_header_is_tenant_independent() {
+        // The sealed scopes attach only to the gateway-validated identity; a
+        // different tenant header still produces that tenant's context.
+        let mut headers = with_scope_header(identity_headers(), "ai.tool.approve");
+        headers.insert(
+            HeaderName::from_static("x-koduck-tenant-id"),
+            HeaderValue::from_static("tenant-b"),
+        );
+        let trust = trust_context(&headers).expect("identity is accepted");
+        assert_eq!(trust.tenant_id.as_str(), "tenant-b");
+        assert!(trust.has_approval_scope("ai.tool.approve"));
+    }
+
+    #[test]
+    fn trust_context_rejects_invalid_tenant_even_with_valid_scopes() {
+        let mut headers = with_scope_header(identity_headers(), "ai.tool.approve");
+        headers.insert(
+            HeaderName::from_static("x-koduck-tenant-id"),
+            HeaderValue::from_static("  "),
+        );
+        assert!(trust_context(&headers).is_none());
     }
 }
