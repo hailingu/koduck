@@ -2,6 +2,10 @@
 
 //! Production executor adapter kept fail-closed until a capability is approved.
 
+pub mod postgres;
+
+pub use postgres::SqlxApprovalRecordStore;
+
 use crate::application::{
     ActionDeadline, CancelAcknowledgement, CancelPermit, DispatchPermit, EffectState,
     ExecutionFailure, ExecutionResponse, ExecutorError, IsolatedExecutor,

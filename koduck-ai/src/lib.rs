@@ -27,5 +27,8 @@ mod cand_2_execution_tests;
 #[path = "../tests/internal/cand_2_limits.rs"]
 mod cand_2_limits_tests;
 #[cfg(test)]
+#[path = "../tests/internal/cand_2_postgres.rs"]
+mod cand_2_postgres_tests;
+#[cfg(test)]
 #[path = "../tests/internal/cand_2_retry.rs"]
 mod cand_2_retry_tests;

@@ -8,8 +8,9 @@ use crate::domain::tool::{
 };
 
 /// C-5 approval scope that a C-7-validated principal must carry to resolve a
-/// requested D-6 (ADR-0003 TC-05).
-pub const TOOL_APPROVAL_SCOPE: &str = "ai.tool.approve";
+/// requested D-6 (ADR-0003 TC-05); defined by the domain so both the scope
+/// authorizer and the sealed approver capability share one constant.
+pub use crate::domain::execution::TOOL_APPROVAL_SCOPE;
 
 /// A stable reason why C-5 denied an action before approval or dispatch.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

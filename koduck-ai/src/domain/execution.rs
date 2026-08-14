@@ -46,6 +46,44 @@ impl Default for ApprovalId {
     }
 }
 
+/// The C-7-validated approval scope a principal must carry to resolve a D-6.
+pub const TOOL_APPROVAL_SCOPE: &str = "ai.tool.approve";
+
+/// The C-7-validated subject identity that resolved one D-6 decision.
+///
+/// Construction is crate-internal and derivable only from an authenticated
+/// [`TrustContext`](super::TrustContext) whose sealed scopes carry
+/// [`TOOL_APPROVAL_SCOPE`], so no external caller can mint this capability
+/// and mutate canonical approval state around the C-5 decision service
+/// (ADR-0003 TC-05); the durable store commits a terminal only from this
+/// validated identity, never from request or Tool/MCP content.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct ApproverId(String);
+
+impl ApproverId {
+    /// Derives the approver identity from one authenticated, scoped principal.
+    ///
+    /// Returns `None` when the subject is blank or the validated identity
+    /// does not carry [`TOOL_APPROVAL_SCOPE`], because such a principal may
+    /// never resolve a D-6.
+    #[cfg_attr(
+        not(test),
+        allow(dead_code, reason = "T-2 approval transport wiring is not complete")
+    )]
+    pub(crate) fn from_authenticated(trust: &super::TrustContext) -> Option<Self> {
+        if trust.subject_id.trim().is_empty() || !trust.has_approval_scope(TOOL_APPROVAL_SCOPE) {
+            return None;
+        }
+        Some(Self(trust.subject_id.clone()))
+    }
+
+    /// Returns the validated approver identity.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 /// Stable identity for one canonical D-7 Execution Attempt.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct AttemptId(Uuid);
@@ -173,6 +211,18 @@ impl ExactActionBinding {
     #[must_use]
     pub const fn thread_id(&self) -> ThreadId {
         self.thread_id
+    }
+
+    /// Returns the Turn bound to this exact action.
+    #[must_use]
+    pub const fn turn_id(&self) -> TurnId {
+        self.turn_id
+    }
+
+    /// Returns the foreground lease generation bound to this exact action.
+    #[must_use]
+    pub const fn lease_generation(&self) -> LeaseGeneration {
+        self.lease_generation
     }
 
     /// Returns a bounded audit-correlation digest.
@@ -329,6 +379,7 @@ pub enum ApprovalError {
 pub struct ApprovalRequest {
     approval_id: ApprovalId,
     binding: ExactActionBinding,
+    requested_at_millis: u64,
     expires_at_millis: u64,
     status: ApprovalStatus,
     decision: Option<ApprovalDecision>,
@@ -360,6 +411,7 @@ impl ApprovalRequest {
         Ok(Self {
             approval_id: ApprovalId::new(),
             binding,
+            requested_at_millis,
             expires_at_millis,
             status: ApprovalStatus::Requested,
             decision: None,
@@ -390,6 +442,12 @@ impl ApprovalRequest {
     #[must_use]
     pub const fn expires_at_millis(&self) -> u64 {
         self.expires_at_millis
+    }
+
+    /// Returns the durable D-6 creation time the expiry window was computed from.
+    #[must_use]
+    pub const fn requested_at_millis(&self) -> u64 {
+        self.requested_at_millis
     }
 
     /// Applies one authenticated decision with idempotent identical replay.

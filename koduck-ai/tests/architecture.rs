@@ -619,3 +619,26 @@ fn count_identifier_tokens(source: &str, identifier: &str) -> usize {
     }
     count
 }
+
+#[test]
+fn approver_identity_cannot_be_minted_outside_the_crate() {
+    let crate_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let source = fs::read_to_string(crate_root.join("src/domain/execution.rs"))
+        .expect("domain execution source is readable");
+    let start = source
+        .find("impl ApproverId {")
+        .expect("ApproverId implementation exists");
+    let end = source[start..]
+        .find("\n}\n")
+        .map(|offset| start + offset)
+        .expect("ApproverId implementation is terminated");
+    let block = &source[start..end];
+    assert!(
+        !block.contains("pub fn new") && !block.contains("pub const fn new"),
+        "ApproverId must not expose a public constructor; approval authority stays unforgeable (TC-05)"
+    );
+    assert!(
+        block.contains("pub(crate) fn from_authenticated"),
+        "ApproverId must be derivable only from an authenticated scoped TrustContext"
+    );
+}

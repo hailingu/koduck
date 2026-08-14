@@ -3,6 +3,7 @@
 
 //! Provider-neutral application orchestration and consumer-owned ports.
 
+mod approval_store;
 mod cancellation;
 mod deadline;
 mod durability;
@@ -15,6 +16,9 @@ mod terminal;
 mod tool_boundary;
 mod tool_execution;
 
+pub use approval_store::{
+    ApprovalDecisionResolution, ApprovalInsertResolution, ApprovalRecordStore, ApprovalStoreError,
+};
 #[cfg(test)]
 pub(crate) use cancellation::{
     AttemptCancellationService, ExecutionInterrupter, InterruptionOutcome,

@@ -1,0 +1,384 @@
+// ADR: docs/adr/ADR-0003-default-deny-tool-approval-execution-boundary.md
+
+//! `SQLx`-backed canonical D-6 approval-record persistence.
+
+use std::future::Future;
+use std::time::Duration;
+
+use sqlx::{PgPool, Row};
+use tokio::runtime::Handle;
+
+use crate::application::{
+    AppendPolicy, ApprovalDecisionResolution, ApprovalInsertResolution, ApprovalRecordStore,
+    ApprovalStoreError,
+};
+use crate::domain::TenantId;
+use crate::domain::execution::{
+    ApprovalDecision, ApprovalId, ApprovalRequest, ApprovalStatus, ApproverId,
+};
+
+/// Production D-6 store using one `SQLx` pool and its owning Tokio runtime.
+///
+/// Every operation is one conditional durable write or read on the canonical
+/// `tool_approvals` table, so competing decisions converge on a single
+/// committed terminal (ADR-0003 TC-12): exactly one conditional
+/// `requested -> terminal` update wins per approval identity and every loser
+/// reads the already-committed canonical row.
+#[derive(Clone)]
+pub struct SqlxApprovalRecordStore {
+    pool: PgPool,
+    runtime: Handle,
+}
+
+impl SqlxApprovalRecordStore {
+    /// Creates a store whose synchronous port calls drive `SQLx` on `runtime`.
+    #[must_use]
+    pub const fn new(pool: PgPool, runtime: Handle) -> Self {
+        Self { pool, runtime }
+    }
+
+    fn wait<T>(
+        &self,
+        operation: impl Future<Output = Result<T, ApprovalStoreError>>,
+    ) -> Result<T, ApprovalStoreError> {
+        let deadline: Duration = AppendPolicy::cand_1().deadline();
+        self.runtime.block_on(async {
+            tokio::time::timeout(deadline, operation)
+                .await
+                .map_err(|_| ApprovalStoreError::Unavailable)?
+        })
+    }
+}
+
+impl ApprovalRecordStore for SqlxApprovalRecordStore {
+    fn insert_requested(
+        &mut self,
+        request: &ApprovalRequest,
+    ) -> Result<ApprovalInsertResolution, ApprovalStoreError> {
+        let binding = request.binding();
+        let action = binding.action();
+        self.wait(async {
+            // ON CONFLICT DO NOTHING keeps a lost-acknowledgement replay from
+            // becoming an error: the conflict branch below then verifies the
+            // immutable fields against the committed canonical row, so the
+            // caller reconciles the record instead of retrying blind.
+            let outcome = sqlx::query(
+                "INSERT INTO tool_approvals (
+                    tenant_id, approval_id, thread_id, turn_id, attempt_id,
+                    lease_generation, descriptor_id, descriptor_version, effect,
+                    action_digest, profile_id, profile_version,
+                    requested_at_millis, expires_at_millis,
+                    status, version
+                ) VALUES (
+                    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, 'requested', 1
+                )
+                ON CONFLICT (tenant_id, approval_id) DO NOTHING",
+            )
+            .bind(binding.tenant_id().as_str())
+            .bind(request.approval_id().as_uuid())
+            .bind(binding.thread_id().as_uuid())
+            .bind(binding.turn_id().as_uuid())
+            .bind(binding.attempt_id().as_uuid())
+            .bind(millis(binding.lease_generation().get())?)
+            .bind(action.descriptor_id())
+            .bind(action.descriptor_version())
+            .bind(effect_code(action.effect()))
+            .bind(hex_digest(binding.action_digest().as_bytes()))
+            .bind(binding.profile_id())
+            .bind(binding.profile_version())
+            .bind(millis(request.requested_at_millis())?)
+            .bind(millis(request.expires_at_millis())?)
+            .execute(&self.pool)
+            .await
+            .map_err(|_| ApprovalStoreError::Unavailable)?;
+            if outcome.rows_affected() == 1 {
+                return Ok(ApprovalInsertResolution::Inserted);
+            }
+            let existing = sqlx::query(
+                "SELECT thread_id, turn_id, attempt_id, lease_generation,
+                        descriptor_id, descriptor_version, effect, action_digest,
+                        profile_id, profile_version,
+                        requested_at_millis, expires_at_millis,
+                        status, decision, version
+                 FROM tool_approvals
+                 WHERE tenant_id = $1 AND approval_id = $2",
+            )
+            .bind(binding.tenant_id().as_str())
+            .bind(request.approval_id().as_uuid())
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|_| ApprovalStoreError::Unavailable)?;
+            let Some(row) = existing else {
+                // DO NOTHING reported a conflict the same transaction cannot
+                // observe again; treat undecidable durable state as unavailable.
+                return Err(ApprovalStoreError::Unavailable);
+            };
+            Self::conflict_resolution(&row, request)
+        })
+    }
+
+    fn resolve_decision(
+        &mut self,
+        approval_id: ApprovalId,
+        tenant_id: &TenantId,
+        decision: ApprovalDecision,
+        approver: &ApproverId,
+        decided_at_millis: u64,
+    ) -> Result<ApprovalDecisionResolution, ApprovalStoreError> {
+        self.wait(async {
+            let winner = sqlx::query(
+                "UPDATE tool_approvals
+                 SET status = $3, decision = $3, approver = $4,
+                     decided_at_millis = $5, version = version + 1
+                 WHERE tenant_id = $1 AND approval_id = $2
+                   AND status = 'requested' AND expires_at_millis > $5
+                 RETURNING version",
+            )
+            .bind(tenant_id.as_str())
+            .bind(approval_id.as_uuid())
+            .bind(decision_code(decision))
+            .bind(approver.as_str())
+            .bind(millis(decided_at_millis)?)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|_| ApprovalStoreError::Unavailable)?;
+            if let Some(row) = winner {
+                return Ok(ApprovalDecisionResolution::Won {
+                    decision,
+                    version: row_version(&row)?,
+                });
+            }
+            let existing = sqlx::query(
+                "SELECT status, decision, version FROM tool_approvals
+                 WHERE tenant_id = $1 AND approval_id = $2",
+            )
+            .bind(tenant_id.as_str())
+            .bind(approval_id.as_uuid())
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|_| ApprovalStoreError::Unavailable)?;
+            let Some(row) = existing else {
+                return Ok(ApprovalDecisionResolution::NotFound);
+            };
+            let status_text: String = row
+                .try_get("status")
+                .map_err(|_| ApprovalStoreError::Unavailable)?;
+            if status_text == "requested" {
+                // The decision arrived at or after expiry: commit no decision
+                // and conditionally transition the record to its terminal
+                // `expired` state so every later contender reads one outcome.
+                let expired = sqlx::query(
+                    "UPDATE tool_approvals
+                     SET status = 'expired', version = version + 1
+                     WHERE tenant_id = $1 AND approval_id = $2 AND status = 'requested'
+                     RETURNING version",
+                )
+                .bind(tenant_id.as_str())
+                .bind(approval_id.as_uuid())
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(|_| ApprovalStoreError::Unavailable)?;
+                return match expired {
+                    Some(expired_row) => Ok(ApprovalDecisionResolution::ExistingTerminal {
+                        decision: None,
+                        status: ApprovalStatus::Expired,
+                        version: row_version(&expired_row)?,
+                    }),
+                    // Another contender won a transition between the read and
+                    // this write; the canonical row is already terminal.
+                    None => self.reread_terminal(approval_id, tenant_id).await,
+                };
+            }
+            Ok(ApprovalDecisionResolution::ExistingTerminal {
+                decision: row
+                    .try_get::<Option<String>, _>("decision")
+                    .map_err(|_| ApprovalStoreError::Unavailable)?
+                    .as_deref()
+                    .and_then(decision_from_code),
+                status: status_from_code(&status_text).ok_or(ApprovalStoreError::Unavailable)?,
+                version: row_version(&row)?,
+            })
+        })
+    }
+}
+
+impl SqlxApprovalRecordStore {
+    /// Classifies one conflicting canonical row against the replayed record.
+    ///
+    /// Matching immutable fields yield the row's current canonical projection
+    /// so the replaying caller can reconcile unambiguously; any drift is the
+    /// typed identity conflict.
+    fn conflict_resolution(
+        row: &sqlx::postgres::PgRow,
+        request: &ApprovalRequest,
+    ) -> Result<ApprovalInsertResolution, ApprovalStoreError> {
+        let binding = request.binding();
+        let action = binding.action();
+        // Decode numeric canonical values fail-closed before comparing, so a
+        // drifted negative durable value surfaces as `Unavailable` instead of
+        // comparing equal to its expected positive counterpart.
+        let lease_generation = canonical_non_negative(row, "lease_generation")?;
+        let requested_at_millis = canonical_non_negative(row, "requested_at_millis")?;
+        let expires_at_millis = canonical_non_negative(row, "expires_at_millis")?;
+        let matches = row
+            .try_get::<uuid::Uuid, _>("thread_id")
+            .is_ok_and(|value| value == binding.thread_id().as_uuid())
+            && row
+                .try_get::<uuid::Uuid, _>("turn_id")
+                .is_ok_and(|value| value == binding.turn_id().as_uuid())
+            && row
+                .try_get::<uuid::Uuid, _>("attempt_id")
+                .is_ok_and(|value| value == binding.attempt_id().as_uuid())
+            && lease_generation == binding.lease_generation().get()
+            && row
+                .try_get::<String, _>("descriptor_id")
+                .is_ok_and(|value| value == action.descriptor_id())
+            && row
+                .try_get::<String, _>("descriptor_version")
+                .is_ok_and(|value| value == action.descriptor_version())
+            && row
+                .try_get::<String, _>("effect")
+                .is_ok_and(|value| value == effect_code(action.effect()))
+            && row
+                .try_get::<String, _>("action_digest")
+                .is_ok_and(|value| value == hex_digest(binding.action_digest().as_bytes()))
+            && row
+                .try_get::<String, _>("profile_id")
+                .is_ok_and(|value| value == binding.profile_id())
+            && row
+                .try_get::<String, _>("profile_version")
+                .is_ok_and(|value| value == binding.profile_version())
+            && requested_at_millis == request.requested_at_millis()
+            && expires_at_millis == request.expires_at_millis();
+        if !matches {
+            return Err(ApprovalStoreError::IdentityConflict);
+        }
+        let status_text: String = row
+            .try_get("status")
+            .map_err(|_| ApprovalStoreError::Unavailable)?;
+        Ok(ApprovalInsertResolution::Existing {
+            status: status_from_code(&status_text).ok_or(ApprovalStoreError::Unavailable)?,
+            decision: row
+                .try_get::<Option<String>, _>("decision")
+                .map_err(|_| ApprovalStoreError::Unavailable)?
+                .as_deref()
+                .and_then(decision_from_code),
+            version: row_version(row)?,
+        })
+    }
+
+    async fn reread_terminal(
+        &self,
+        approval_id: ApprovalId,
+        tenant_id: &TenantId,
+    ) -> Result<ApprovalDecisionResolution, ApprovalStoreError> {
+        let row = sqlx::query(
+            "SELECT status, decision, version FROM tool_approvals
+             WHERE tenant_id = $1 AND approval_id = $2",
+        )
+        .bind(tenant_id.as_str())
+        .bind(approval_id.as_uuid())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|_| ApprovalStoreError::Unavailable)?;
+        let Some(row) = row else {
+            return Ok(ApprovalDecisionResolution::NotFound);
+        };
+        let status_text: String = row
+            .try_get("status")
+            .map_err(|_| ApprovalStoreError::Unavailable)?;
+        if status_text == "requested" {
+            // The record became requested again, which no legal transition
+            // permits; treat undecidable durable state as unavailable.
+            return Err(ApprovalStoreError::Unavailable);
+        }
+        Ok(ApprovalDecisionResolution::ExistingTerminal {
+            decision: row
+                .try_get::<Option<String>, _>("decision")
+                .map_err(|_| ApprovalStoreError::Unavailable)?
+                .as_deref()
+                .and_then(decision_from_code),
+            status: status_from_code(&status_text).ok_or(ApprovalStoreError::Unavailable)?,
+            version: row_version(&row)?,
+        })
+    }
+}
+
+fn canonical_non_negative(
+    row: &sqlx::postgres::PgRow,
+    column: &str,
+) -> Result<u64, ApprovalStoreError> {
+    let value = row
+        .try_get::<i64, _>(column)
+        .map_err(|_| ApprovalStoreError::Unavailable)?;
+    u64::try_from(value).map_err(|_| ApprovalStoreError::Unavailable)
+}
+
+fn row_version(row: &sqlx::postgres::PgRow) -> Result<u64, ApprovalStoreError> {
+    let version = row
+        .try_get::<i64, _>("version")
+        .map_err(|_| ApprovalStoreError::Unavailable)?;
+    u64::try_from(version)
+        .ok()
+        .filter(|version| *version >= 1)
+        .ok_or(ApprovalStoreError::Unavailable)
+}
+
+/// Converts one non-negative millisecond timestamp to its durable binding.
+///
+/// # Errors
+///
+/// Returns [`ApprovalStoreError::Unavailable`] when the timestamp exceeds the
+/// durable column domain.
+fn millis(value: u64) -> Result<i64, ApprovalStoreError> {
+    i64::try_from(value).map_err(|_| ApprovalStoreError::Unavailable)
+}
+
+fn decision_code(decision: ApprovalDecision) -> &'static str {
+    match decision {
+        ApprovalDecision::Accepted => "accepted",
+        ApprovalDecision::Declined => "declined",
+        ApprovalDecision::Cancelled => "cancelled",
+    }
+}
+
+fn decision_from_code(code: &str) -> Option<ApprovalDecision> {
+    match code {
+        "accepted" => Some(ApprovalDecision::Accepted),
+        "declined" => Some(ApprovalDecision::Declined),
+        "cancelled" => Some(ApprovalDecision::Cancelled),
+        _ => None,
+    }
+}
+
+fn status_from_code(code: &str) -> Option<ApprovalStatus> {
+    match code {
+        "requested" => Some(ApprovalStatus::Requested),
+        "accepted" => Some(ApprovalStatus::Accepted),
+        "declined" => Some(ApprovalStatus::Declined),
+        "cancelled" => Some(ApprovalStatus::Cancelled),
+        "expired" => Some(ApprovalStatus::Expired),
+        _ => None,
+    }
+}
+
+fn effect_code(effect: crate::domain::tool::Effect) -> &'static str {
+    match effect {
+        crate::domain::tool::Effect::ReadData => "read_data",
+        crate::domain::tool::Effect::ExternalWrite => "external_write",
+        crate::domain::tool::Effect::FilesystemWrite => "filesystem_write",
+        crate::domain::tool::Effect::ProcessExecute => "process_execute",
+        crate::domain::tool::Effect::NetworkEgress => "network_egress",
+        crate::domain::tool::Effect::CredentialUse => "credential_use",
+        crate::domain::tool::Effect::Unknown => "unknown",
+    }
+}
+
+fn hex_digest(bytes: &[u8; 32]) -> String {
+    let mut text = String::with_capacity(64);
+    for byte in bytes {
+        use std::fmt::Write as _;
+        let _ = write!(text, "{byte:02x}");
+    }
+    text
+}
