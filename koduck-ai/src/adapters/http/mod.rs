@@ -2,6 +2,8 @@
 
 //! Owned HTTP/SSE v1 presentation contract around the application turn kernel.
 
+pub mod approvals;
+
 mod wire;
 
 use std::collections::BTreeMap;

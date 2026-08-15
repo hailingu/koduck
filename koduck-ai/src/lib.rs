@@ -24,6 +24,9 @@ mod cand_2_denial_tests;
 #[path = "../tests/internal/cand_2_execution.rs"]
 mod cand_2_execution_tests;
 #[cfg(test)]
+#[path = "../tests/internal/cand_2_http.rs"]
+mod cand_2_http_tests;
+#[cfg(test)]
 #[path = "../tests/internal/cand_2_limits.rs"]
 mod cand_2_limits_tests;
 #[cfg(test)]

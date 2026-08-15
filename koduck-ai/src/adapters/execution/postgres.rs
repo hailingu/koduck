@@ -54,6 +54,7 @@ impl ApprovalRecordStore for SqlxApprovalRecordStore {
     fn insert_requested(
         &mut self,
         request: &ApprovalRequest,
+        requester_subject: &str,
     ) -> Result<ApprovalInsertResolution, ApprovalStoreError> {
         let binding = request.binding();
         let action = binding.action();
@@ -64,18 +65,19 @@ impl ApprovalRecordStore for SqlxApprovalRecordStore {
             // caller reconciles the record instead of retrying blind.
             let outcome = sqlx::query(
                 "INSERT INTO tool_approvals (
-                    tenant_id, approval_id, thread_id, turn_id, attempt_id,
-                    lease_generation, descriptor_id, descriptor_version, effect,
-                    action_digest, profile_id, profile_version,
+                    tenant_id, approval_id, requester_subject, thread_id, turn_id,
+                    attempt_id, lease_generation, descriptor_id, descriptor_version,
+                    effect, action_digest, profile_id, profile_version,
                     requested_at_millis, expires_at_millis,
                     status, version
                 ) VALUES (
-                    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, 'requested', 1
+                    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, 'requested', 1
                 )
                 ON CONFLICT (tenant_id, approval_id) DO NOTHING",
             )
             .bind(binding.tenant_id().as_str())
             .bind(request.approval_id().as_uuid())
+            .bind(requester_subject)
             .bind(binding.thread_id().as_uuid())
             .bind(binding.turn_id().as_uuid())
             .bind(binding.attempt_id().as_uuid())
@@ -95,9 +97,9 @@ impl ApprovalRecordStore for SqlxApprovalRecordStore {
                 return Ok(ApprovalInsertResolution::Inserted);
             }
             let existing = sqlx::query(
-                "SELECT thread_id, turn_id, attempt_id, lease_generation,
-                        descriptor_id, descriptor_version, effect, action_digest,
-                        profile_id, profile_version,
+                "SELECT requester_subject, thread_id, turn_id, attempt_id,
+                        lease_generation, descriptor_id, descriptor_version, effect,
+                        action_digest, profile_id, profile_version,
                         requested_at_millis, expires_at_millis,
                         status, decision, version
                  FROM tool_approvals
@@ -113,14 +115,20 @@ impl ApprovalRecordStore for SqlxApprovalRecordStore {
                 // observe again; treat undecidable durable state as unavailable.
                 return Err(ApprovalStoreError::Unavailable);
             };
-            Self::conflict_resolution(&row, request)
+            Self::conflict_resolution(&row, request, requester_subject)
         })
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "ownership dimensions are individually conditional lookup keys"
+    )]
     fn resolve_decision(
         &mut self,
         approval_id: ApprovalId,
         tenant_id: &TenantId,
+        thread_id: crate::domain::ThreadId,
+        requester_subject: &str,
         decision: ApprovalDecision,
         approver: &ApproverId,
         decided_at_millis: u64,
@@ -131,6 +139,7 @@ impl ApprovalRecordStore for SqlxApprovalRecordStore {
                  SET status = $3, decision = $3, approver = $4,
                      decided_at_millis = $5, version = version + 1
                  WHERE tenant_id = $1 AND approval_id = $2
+                   AND requester_subject = $6 AND thread_id = $7
                    AND status = 'requested' AND expires_at_millis > $5
                  RETURNING version",
             )
@@ -139,6 +148,8 @@ impl ApprovalRecordStore for SqlxApprovalRecordStore {
             .bind(decision_code(decision))
             .bind(approver.as_str())
             .bind(millis(decided_at_millis)?)
+            .bind(requester_subject)
+            .bind(thread_id.as_uuid())
             .fetch_optional(&self.pool)
             .await
             .map_err(|_| ApprovalStoreError::Unavailable)?;
@@ -150,10 +161,13 @@ impl ApprovalRecordStore for SqlxApprovalRecordStore {
             }
             let existing = sqlx::query(
                 "SELECT status, decision, version FROM tool_approvals
-                 WHERE tenant_id = $1 AND approval_id = $2",
+                 WHERE tenant_id = $1 AND approval_id = $2
+                   AND requester_subject = $3 AND thread_id = $4",
             )
             .bind(tenant_id.as_str())
             .bind(approval_id.as_uuid())
+            .bind(requester_subject)
+            .bind(thread_id.as_uuid())
             .fetch_optional(&self.pool)
             .await
             .map_err(|_| ApprovalStoreError::Unavailable)?;
@@ -170,11 +184,15 @@ impl ApprovalRecordStore for SqlxApprovalRecordStore {
                 let expired = sqlx::query(
                     "UPDATE tool_approvals
                      SET status = 'expired', version = version + 1
-                     WHERE tenant_id = $1 AND approval_id = $2 AND status = 'requested'
+                     WHERE tenant_id = $1 AND approval_id = $2
+                       AND requester_subject = $3 AND thread_id = $4
+                       AND status = 'requested'
                      RETURNING version",
                 )
                 .bind(tenant_id.as_str())
                 .bind(approval_id.as_uuid())
+                .bind(requester_subject)
+                .bind(thread_id.as_uuid())
                 .fetch_optional(&self.pool)
                 .await
                 .map_err(|_| ApprovalStoreError::Unavailable)?;
@@ -186,7 +204,10 @@ impl ApprovalRecordStore for SqlxApprovalRecordStore {
                     }),
                     // Another contender won a transition between the read and
                     // this write; the canonical row is already terminal.
-                    None => self.reread_terminal(approval_id, tenant_id).await,
+                    None => {
+                        self.reread_terminal(approval_id, tenant_id, requester_subject, thread_id)
+                            .await
+                    }
                 };
             }
             Ok(ApprovalDecisionResolution::ExistingTerminal {
@@ -211,6 +232,7 @@ impl SqlxApprovalRecordStore {
     fn conflict_resolution(
         row: &sqlx::postgres::PgRow,
         request: &ApprovalRequest,
+        requester_subject: &str,
     ) -> Result<ApprovalInsertResolution, ApprovalStoreError> {
         let binding = request.binding();
         let action = binding.action();
@@ -221,8 +243,11 @@ impl SqlxApprovalRecordStore {
         let requested_at_millis = canonical_non_negative(row, "requested_at_millis")?;
         let expires_at_millis = canonical_non_negative(row, "expires_at_millis")?;
         let matches = row
-            .try_get::<uuid::Uuid, _>("thread_id")
-            .is_ok_and(|value| value == binding.thread_id().as_uuid())
+            .try_get::<String, _>("requester_subject")
+            .is_ok_and(|value| value == requester_subject)
+            && row
+                .try_get::<uuid::Uuid, _>("thread_id")
+                .is_ok_and(|value| value == binding.thread_id().as_uuid())
             && row
                 .try_get::<uuid::Uuid, _>("turn_id")
                 .is_ok_and(|value| value == binding.turn_id().as_uuid())
@@ -271,13 +296,18 @@ impl SqlxApprovalRecordStore {
         &self,
         approval_id: ApprovalId,
         tenant_id: &TenantId,
+        requester_subject: &str,
+        thread_id: crate::domain::ThreadId,
     ) -> Result<ApprovalDecisionResolution, ApprovalStoreError> {
         let row = sqlx::query(
             "SELECT status, decision, version FROM tool_approvals
-             WHERE tenant_id = $1 AND approval_id = $2",
+             WHERE tenant_id = $1 AND approval_id = $2
+               AND requester_subject = $3 AND thread_id = $4",
         )
         .bind(tenant_id.as_str())
         .bind(approval_id.as_uuid())
+        .bind(requester_subject)
+        .bind(thread_id.as_uuid())
         .fetch_optional(&self.pool)
         .await
         .map_err(|_| ApprovalStoreError::Unavailable)?;

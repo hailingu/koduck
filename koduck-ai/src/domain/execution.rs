@@ -33,6 +33,12 @@ impl ApprovalId {
         Self(Uuid::new_v4())
     }
 
+    /// Wraps a UUID received from a validated adapter.
+    #[must_use]
+    pub const fn from_uuid(value: Uuid) -> Self {
+        Self(value)
+    }
+
     /// Returns the UUID for persistence and adapter serialization.
     #[must_use]
     pub const fn as_uuid(self) -> Uuid {

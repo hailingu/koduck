@@ -3,6 +3,7 @@
 
 //! Provider-neutral application orchestration and consumer-owned ports.
 
+mod approval_route;
 mod approval_store;
 mod cancellation;
 mod deadline;
@@ -16,6 +17,7 @@ mod terminal;
 mod tool_boundary;
 mod tool_execution;
 
+pub use approval_route::{ApprovalDecisionOutcome, ApprovalDecisionRoute};
 pub use approval_store::{
     ApprovalDecisionResolution, ApprovalInsertResolution, ApprovalRecordStore, ApprovalStoreError,
 };

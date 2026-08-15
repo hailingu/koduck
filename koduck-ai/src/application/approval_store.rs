@@ -102,22 +102,32 @@ pub trait ApprovalRecordStore {
     fn insert_requested(
         &mut self,
         request: &ApprovalRequest,
+        requester_subject: &str,
     ) -> Result<ApprovalInsertResolution, ApprovalStoreError>;
 
     /// Applies one authenticated decision through a conditional transition.
     ///
     /// `approver` is the C-7-validated subject identity; it is a validated
     /// [`ApproverId`] so a durable terminal can never commit with a blank or
-    /// unvalidated approver.
+    /// unvalidated approver. `thread_id` is the canonical Thread ownership dimension and `requester_subject` is the canonical ownership
+    /// dimension: the conditional lookup includes it, so a same-tenant
+    /// principal that does not own the approval observes an indistinguishable
+    /// `NotFound` with zero mutation.
     ///
     /// # Errors
     ///
     /// Returns [`ApprovalStoreError::Unavailable`] when the durable
     /// transition cannot complete within its availability contract.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "ownership dimensions are individually conditional lookup keys"
+    )]
     fn resolve_decision(
         &mut self,
         approval_id: ApprovalId,
         tenant_id: &TenantId,
+        thread_id: crate::domain::ThreadId,
+        requester_subject: &str,
         decision: ApprovalDecision,
         approver: &ApproverId,
         decided_at_millis: u64,

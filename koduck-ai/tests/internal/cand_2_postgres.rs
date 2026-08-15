@@ -46,15 +46,15 @@ fn harness() -> Option<Harness> {
         )
         .expect("connect to disposable PostgreSQL");
     MIGRATION.get_or_init(|| {
-        runtime
-            .block_on(async {
-                sqlx::raw_sql(include_str!(
-                    "../../migrations/0002_cand_2_policy_execution.sql"
-                ))
-                .execute(&pool)
-                .await
-            })
-            .expect("apply production migration");
+        for migration in [
+            include_str!("../../migrations/0001_cand_1_history.sql"),
+            include_str!("../../migrations/0002_cand_2_policy_execution.sql"),
+            include_str!("../../migrations/0003_cand_2_requester_ownership.sql"),
+        ] {
+            runtime
+                .block_on(async { sqlx::raw_sql(migration).execute(&pool).await })
+                .expect("apply production migration");
+        }
     });
     let store = SqlxApprovalRecordStore::new(pool.clone(), runtime.handle().clone());
     Some(Harness {
@@ -148,28 +148,28 @@ fn migration_is_idempotent_and_decisions_are_single_winner() {
         return;
     };
     for _ in 0..2 {
-        harness
-            .runtime
-            .block_on(async {
-                sqlx::raw_sql(include_str!(
-                    "../../migrations/0002_cand_2_policy_execution.sql"
-                ))
-                .execute(&harness.pool)
-                .await
-            })
-            .expect("idempotent migration applies repeatedly");
+        for migration in [
+            include_str!("../../migrations/0001_cand_1_history.sql"),
+            include_str!("../../migrations/0002_cand_2_policy_execution.sql"),
+            include_str!("../../migrations/0003_cand_2_requester_ownership.sql"),
+        ] {
+            harness
+                .runtime
+                .block_on(async { sqlx::raw_sql(migration).execute(&harness.pool).await })
+                .expect("idempotent migration applies repeatedly");
+        }
     }
 
     let approval = requested_approval(1_000, 60_000);
     let tenant = approval.tenant_id().clone();
     assert_eq!(
-        harness.store.insert_requested(&approval),
+        harness.store.insert_requested(&approval, "requester"),
         Ok(ApprovalInsertResolution::Inserted)
     );
     // Lost-acknowledgement replay: the identical immutable record
     // reconciles as already canonical.
     assert_eq!(
-        harness.store.insert_requested(&approval),
+        harness.store.insert_requested(&approval, "requester"),
         Ok(ApprovalInsertResolution::Existing {
             status: ApprovalStatus::Requested,
             decision: None,
@@ -182,6 +182,8 @@ fn migration_is_idempotent_and_decisions_are_single_winner() {
         .resolve_decision(
             approval.approval_id(),
             &tenant,
+            approval.binding().thread_id(),
+            "requester",
             ApprovalDecision::Accepted,
             &approver("approver-a"),
             2_000,
@@ -203,6 +205,8 @@ fn migration_is_idempotent_and_decisions_are_single_winner() {
             .resolve_decision(
                 approval.approval_id(),
                 &tenant,
+                approval.binding().thread_id(),
+                "requester",
                 decision,
                 &approver("approver-b"),
                 3_000,
@@ -225,6 +229,8 @@ fn migration_is_idempotent_and_decisions_are_single_winner() {
         .resolve_decision(
             approval.approval_id(),
             &other_tenant,
+            koduck_ai::domain::ThreadId::new(),
+            "requester",
             ApprovalDecision::Accepted,
             &approver("approver-a"),
             2_000,
@@ -236,6 +242,8 @@ fn migration_is_idempotent_and_decisions_are_single_winner() {
         .resolve_decision(
             koduck_ai::domain::execution::ApprovalId::new(),
             &tenant,
+            koduck_ai::domain::ThreadId::new(),
+            "requester",
             ApprovalDecision::Accepted,
             &approver("approver-a"),
             2_000,
@@ -253,13 +261,13 @@ fn thirty_two_competing_decisions_commit_exactly_one_terminal() {
     let approval = requested_approval(1_000, 60_000);
     let tenant = approval.tenant_id().clone();
     assert_eq!(
-        harness.store.insert_requested(&approval),
+        harness.store.insert_requested(&approval, "requester"),
         Ok(ApprovalInsertResolution::Inserted)
     );
     // Lost-acknowledgement replay: the identical immutable record
     // reconciles as already canonical.
     assert_eq!(
-        harness.store.insert_requested(&approval),
+        harness.store.insert_requested(&approval, "requester"),
         Ok(ApprovalInsertResolution::Existing {
             status: ApprovalStatus::Requested,
             decision: None,
@@ -275,12 +283,15 @@ fn thirty_two_competing_decisions_commit_exactly_one_terminal() {
         let barrier = Arc::clone(&barrier);
         let tenant = tenant.clone();
         let approval_id = approval.approval_id();
+        let thread = approval.binding().thread_id();
         handles.push(std::thread::spawn(move || {
             barrier.wait();
             store
                 .resolve_decision(
                     approval_id,
                     &tenant,
+                    thread,
+                    "requester",
                     ApprovalDecision::Accepted,
                     &approver(&format!("approver-{index}")),
                     2_000,
@@ -324,13 +335,13 @@ fn decision_at_or_after_expiry_commits_no_decision() {
     let approval = requested_approval(1_000, 2_000);
     let tenant = approval.tenant_id().clone();
     assert_eq!(
-        harness.store.insert_requested(&approval),
+        harness.store.insert_requested(&approval, "requester"),
         Ok(ApprovalInsertResolution::Inserted)
     );
     // Lost-acknowledgement replay: the identical immutable record
     // reconciles as already canonical.
     assert_eq!(
-        harness.store.insert_requested(&approval),
+        harness.store.insert_requested(&approval, "requester"),
         Ok(ApprovalInsertResolution::Existing {
             status: ApprovalStatus::Requested,
             decision: None,
@@ -343,6 +354,8 @@ fn decision_at_or_after_expiry_commits_no_decision() {
         .resolve_decision(
             approval.approval_id(),
             &tenant,
+            approval.binding().thread_id(),
+            "requester",
             ApprovalDecision::Accepted,
             &approver("approver-a"),
             2_000,
@@ -361,7 +374,9 @@ fn decision_at_or_after_expiry_commits_no_decision() {
     // expiry transition is not applied to in-window records.
     let timely_approval = requested_approval(1_000, 60_000);
     assert_eq!(
-        harness.store.insert_requested(&timely_approval),
+        harness
+            .store
+            .insert_requested(&timely_approval, "requester"),
         Ok(ApprovalInsertResolution::Inserted)
     );
     let timely = harness
@@ -369,6 +384,8 @@ fn decision_at_or_after_expiry_commits_no_decision() {
         .resolve_decision(
             timely_approval.approval_id(),
             &timely_approval.tenant_id().clone(),
+            timely_approval.binding().thread_id(),
+            "requester",
             ApprovalDecision::Declined,
             &approver("approver-a"),
             1_999,
@@ -396,12 +413,12 @@ fn conflicting_identity_replay_is_a_typed_conflict() {
         .block_on(async {
             sqlx::query(
                 "INSERT INTO tool_approvals (
-                    tenant_id, approval_id, thread_id, turn_id, attempt_id,
+                    tenant_id, approval_id, requester_subject, thread_id, turn_id, attempt_id,
                     lease_generation, descriptor_id, descriptor_version, effect,
                     action_digest, profile_id, profile_version,
                     requested_at_millis, expires_at_millis, status, version
                 ) VALUES (
-                    $1, $2, '00000000-0000-0000-0000-000000000000',
+                    $1, $2, 'requester', '00000000-0000-0000-0000-000000000000',
                     '00000000-0000-0000-0000-000000000000',
                     '00000000-0000-0000-0000-000000000000',
                     1, 'other.tool', 'v9', 'read_data',
@@ -415,7 +432,7 @@ fn conflicting_identity_replay_is_a_typed_conflict() {
         })
         .expect("seed conflicting canonical row");
     assert_eq!(
-        harness.store.insert_requested(&approval),
+        harness.store.insert_requested(&approval, "requester"),
         Err(ApprovalStoreError::IdentityConflict)
     );
 }
@@ -453,7 +470,7 @@ const ILLEGAL_TERMINAL_STATEMENTS: [(&str, &str); 7] = [
     (
         "blank approver",
         "INSERT INTO tool_approvals (
-            tenant_id, approval_id, thread_id, turn_id, attempt_id,
+            tenant_id, approval_id, requester_subject, thread_id, turn_id, attempt_id,
             lease_generation, descriptor_id, descriptor_version, effect,
             action_digest, profile_id, profile_version,
             requested_at_millis, expires_at_millis,
@@ -471,7 +488,7 @@ const ILLEGAL_TERMINAL_STATEMENTS: [(&str, &str); 7] = [
     (
         "whitespace-only approver",
         "INSERT INTO tool_approvals (
-            tenant_id, approval_id, thread_id, turn_id, attempt_id,
+            tenant_id, approval_id, requester_subject, thread_id, turn_id, attempt_id,
             lease_generation, descriptor_id, descriptor_version, effect,
             action_digest, profile_id, profile_version,
             requested_at_millis, expires_at_millis,
@@ -489,7 +506,7 @@ const ILLEGAL_TERMINAL_STATEMENTS: [(&str, &str); 7] = [
     (
         "decided terminal without a decision timestamp",
         "INSERT INTO tool_approvals (
-            tenant_id, approval_id, thread_id, turn_id, attempt_id,
+            tenant_id, approval_id, requester_subject, thread_id, turn_id, attempt_id,
             lease_generation, descriptor_id, descriptor_version, effect,
             action_digest, profile_id, profile_version,
             requested_at_millis, expires_at_millis,
@@ -507,7 +524,7 @@ const ILLEGAL_TERMINAL_STATEMENTS: [(&str, &str); 7] = [
     (
         "decided timestamp at expiry",
         "INSERT INTO tool_approvals (
-            tenant_id, approval_id, thread_id, turn_id, attempt_id,
+            tenant_id, approval_id, requester_subject, thread_id, turn_id, attempt_id,
             lease_generation, descriptor_id, descriptor_version, effect,
             action_digest, profile_id, profile_version,
             requested_at_millis, expires_at_millis,
@@ -525,7 +542,7 @@ const ILLEGAL_TERMINAL_STATEMENTS: [(&str, &str); 7] = [
     (
         "decided timestamp after expiry",
         "INSERT INTO tool_approvals (
-            tenant_id, approval_id, thread_id, turn_id, attempt_id,
+            tenant_id, approval_id, requester_subject, thread_id, turn_id, attempt_id,
             lease_generation, descriptor_id, descriptor_version, effect,
             action_digest, profile_id, profile_version,
             requested_at_millis, expires_at_millis,
@@ -543,7 +560,7 @@ const ILLEGAL_TERMINAL_STATEMENTS: [(&str, &str); 7] = [
     (
         "tab-only approver",
         "INSERT INTO tool_approvals (
-            tenant_id, approval_id, thread_id, turn_id, attempt_id,
+            tenant_id, approval_id, requester_subject, thread_id, turn_id, attempt_id,
             lease_generation, descriptor_id, descriptor_version, effect,
             action_digest, profile_id, profile_version,
             requested_at_millis, expires_at_millis,
@@ -561,7 +578,7 @@ const ILLEGAL_TERMINAL_STATEMENTS: [(&str, &str); 7] = [
     (
         "newline-only approver",
         "INSERT INTO tool_approvals (
-            tenant_id, approval_id, thread_id, turn_id, attempt_id,
+            tenant_id, approval_id, requester_subject, thread_id, turn_id, attempt_id,
             lease_generation, descriptor_id, descriptor_version, effect,
             action_digest, profile_id, profile_version,
             requested_at_millis, expires_at_millis,
@@ -602,13 +619,13 @@ fn schema_rejects_illegal_terminal_tuples() {
     let requested_with_timestamp = harness.runtime.block_on(async {
         sqlx::query(
             "INSERT INTO tool_approvals (
-                tenant_id, approval_id, thread_id, turn_id, attempt_id,
+                tenant_id, approval_id, requester_subject, thread_id, turn_id, attempt_id,
                 lease_generation, descriptor_id, descriptor_version, effect,
                 action_digest, profile_id, profile_version,
                 requested_at_millis, expires_at_millis,
                 status, approver, decided_at_millis, version
             ) VALUES (
-                'schema-check-tenant', $1,
+                'schema-check-tenant', $1, 'requester',
                 '00000000-0000-0000-0000-000000000000',
                 '00000000-0000-0000-0000-000000000000',
                 '00000000-0000-0000-0000-000000000000',
@@ -625,6 +642,43 @@ fn schema_rejects_illegal_terminal_tuples() {
         requested_with_timestamp.is_err(),
         "schema must reject a decision timestamp on a requested record"
     );
+
+    // The requester CHECK uses the same non-whitespace predicate as the
+    // approver column: a whitespace-only requester is unresolvable by any
+    // valid principal, so the schema rejects it even on a pending row.
+    for (description, subject) in [
+        ("space-only requester", " "),
+        ("tab-only requester", "\t"),
+        ("newline-only requester", "\n"),
+    ] {
+        let rejected = harness.runtime.block_on(async {
+            sqlx::query(
+                "INSERT INTO tool_approvals (
+                    tenant_id, approval_id, requester_subject, thread_id, turn_id, attempt_id,
+                    lease_generation, descriptor_id, descriptor_version, effect,
+                    action_digest, profile_id, profile_version,
+                    requested_at_millis, expires_at_millis,
+                    status, version
+                ) VALUES (
+                    'schema-check-tenant', $1, $2,
+                    '00000000-0000-0000-0000-000000000000',
+                    '00000000-0000-0000-0000-000000000000',
+                    '00000000-0000-0000-0000-000000000000',
+                    1, 'fixture.tool', 'v1', 'read_data',
+                    'decoy', 'profile-default', 'v1', 1, 2,
+                    'requested', 1
+                )",
+            )
+            .bind(uuid::Uuid::new_v4())
+            .bind(subject)
+            .execute(&harness.pool)
+            .await
+        });
+        assert!(
+            rejected.is_err(),
+            "schema must reject a whitespace-only requester: {description}"
+        );
+    }
 }
 
 #[test]
@@ -634,7 +688,7 @@ fn insert_replay_after_a_terminal_transition_returns_the_canonical_state() {
     };
     let approval = requested_approval(1_000, 60_000);
     assert_eq!(
-        harness.store.insert_requested(&approval),
+        harness.store.insert_requested(&approval, "requester"),
         Ok(ApprovalInsertResolution::Inserted)
     );
     harness
@@ -642,6 +696,8 @@ fn insert_replay_after_a_terminal_transition_returns_the_canonical_state() {
         .resolve_decision(
             approval.approval_id(),
             approval.tenant_id(),
+            approval.binding().thread_id(),
+            "requester",
             ApprovalDecision::Declined,
             &approver("approver-a"),
             2_000,
@@ -650,7 +706,7 @@ fn insert_replay_after_a_terminal_transition_returns_the_canonical_state() {
     // A lost-acknowledgement replay after another instance resolved the
     // record reports the terminal projection, not requested version 1.
     assert_eq!(
-        harness.store.insert_requested(&approval),
+        harness.store.insert_requested(&approval, "requester"),
         Ok(ApprovalInsertResolution::Existing {
             status: ApprovalStatus::Declined,
             decision: Some(ApprovalDecision::Declined),
@@ -661,7 +717,7 @@ fn insert_replay_after_a_terminal_transition_returns_the_canonical_state() {
     // The same holds after the expiry transition closed another record.
     let expired = requested_approval(1_000, 2_000);
     assert_eq!(
-        harness.store.insert_requested(&expired),
+        harness.store.insert_requested(&expired, "requester"),
         Ok(ApprovalInsertResolution::Inserted)
     );
     harness
@@ -669,17 +725,157 @@ fn insert_replay_after_a_terminal_transition_returns_the_canonical_state() {
         .resolve_decision(
             expired.approval_id(),
             expired.tenant_id(),
+            expired.binding().thread_id(),
+            "requester",
             ApprovalDecision::Accepted,
             &approver("approver-a"),
             2_000,
         )
         .expect("late decision completes");
     assert_eq!(
-        harness.store.insert_requested(&expired),
+        harness.store.insert_requested(&expired, "requester"),
         Ok(ApprovalInsertResolution::Existing {
             status: ApprovalStatus::Expired,
             decision: None,
             version: 2,
         })
     );
+}
+
+/// Version-2 seed for the upgrade regression: one pending D-6 whose Thread
+/// is owned by `subject-a`.
+const VERSION_2_MATCHED_SEED: &str = "INSERT INTO threads (tenant_id, subject_id, thread_id)
+     VALUES ('tenant-upgrade', 'subject-a', '11111111-1111-1111-1111-111111111111');
+     INSERT INTO tool_approvals (tenant_id, approval_id, thread_id, turn_id, attempt_id,
+         lease_generation, descriptor_id, descriptor_version, effect, action_digest,
+         profile_id, profile_version, requested_at_millis, expires_at_millis, status, version)
+     VALUES ('tenant-upgrade', '22222222-2222-2222-2222-222222222222',
+         '11111111-1111-1111-1111-111111111111', '33333333-3333-3333-3333-333333333333',
+         '44444444-4444-4444-4444-444444444444', 1, 'fixture.tool', 'v1', 'external_write',
+         '00', 'profile-default', 'v1', 1000, 301000, 'requested', 1);";
+
+/// Version-2 orphan: one pending D-6 whose Thread has no owner row.
+const VERSION_2_ORPHAN_SEED: &str =
+    "INSERT INTO tool_approvals (tenant_id, approval_id, thread_id, turn_id, attempt_id,
+         lease_generation, descriptor_id, descriptor_version, effect, action_digest,
+         profile_id, profile_version, requested_at_millis, expires_at_millis, status, version)
+     VALUES ('tenant-upgrade', '55555555-5555-5555-5555-555555555555',
+         '66666666-6666-6666-6666-666666666666', '77777777-7777-7777-7777-777777777777',
+         '88888888-8888-8888-8888-888888888888', 1, 'fixture.tool', 'v1', 'external_write',
+         '00', 'profile-default', 'v1', 1000, 301000, 'requested', 1);";
+
+/// Version-2 seed with one pending D-6 whose Thread owner is a whitespace-only
+/// subject that no valid principal can carry.
+const VERSION_2_WHITESPACE_OWNER_SEED: &str =
+    "INSERT INTO threads (tenant_id, subject_id, thread_id)
+     VALUES ('tenant-upgrade', E'\t', '99999999-9999-9999-9999-999999999999');
+     INSERT INTO tool_approvals (tenant_id, approval_id, thread_id, turn_id, attempt_id,
+         lease_generation, descriptor_id, descriptor_version, effect, action_digest,
+         profile_id, profile_version, requested_at_millis, expires_at_millis, status, version)
+     VALUES ('tenant-upgrade', 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+         '99999999-9999-9999-9999-999999999999', 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
+         'cccccccc-cccc-cccc-cccc-cccccccccccc', 1, 'fixture.tool', 'v1', 'external_write',
+         '00', 'profile-default', 'v1', 1000, 301000, 'requested', 1);";
+
+/// Applies the requester-ownership migration inside one upgrade-schema
+/// connection.
+async fn apply_requester_ownership_migration(
+    conn: &mut sqlx::postgres::PgConnection,
+) -> Result<(), sqlx::Error> {
+    sqlx::raw_sql(include_str!(
+        "../../migrations/0003_cand_2_requester_ownership.sql"
+    ))
+    .execute(conn)
+    .await?;
+    Ok(())
+}
+
+#[test]
+fn migration_0003_backfills_the_thread_owner_and_fails_on_orphans() {
+    let Some(harness) = harness() else {
+        return;
+    };
+    harness.runtime.block_on(async {
+        // A dedicated schema replays the version-2 upgrade path without
+        // touching the shared public schema the other harness tests migrated.
+        let mut conn = harness.pool.acquire().await.expect("upgrade connection");
+        let work: Result<(bool, bool, String), sqlx::Error> = async {
+            sqlx::raw_sql(
+                "DROP SCHEMA IF EXISTS cand_2_upgrade CASCADE; CREATE SCHEMA cand_2_upgrade;",
+            )
+            .execute(&mut *conn)
+            .await?;
+            sqlx::raw_sql("SET search_path TO cand_2_upgrade;")
+                .execute(&mut *conn)
+                .await?;
+            for migration in [
+                include_str!("../../migrations/0001_cand_1_history.sql"),
+                include_str!("../../migrations/0002_cand_2_policy_execution.sql"),
+            ] {
+                sqlx::raw_sql(migration).execute(&mut *conn).await?;
+            }
+            sqlx::raw_sql(VERSION_2_MATCHED_SEED)
+                .execute(&mut *conn)
+                .await?;
+            // Only the orphan row violates ownership in this phase, so its
+            // failure is attributable to the orphan alone.
+            sqlx::raw_sql(VERSION_2_ORPHAN_SEED)
+                .execute(&mut *conn)
+                .await?;
+            let orphan_attempt = apply_requester_ownership_migration(&mut conn).await;
+            sqlx::raw_sql(
+                "DELETE FROM tool_approvals WHERE approval_id = '55555555-5555-5555-5555-555555555555';",
+            )
+            .execute(&mut *conn)
+            .await?;
+            // With the orphan resolved, only the whitespace-only Thread owner
+            // violates ownership in this phase.
+            sqlx::raw_sql(VERSION_2_WHITESPACE_OWNER_SEED)
+                .execute(&mut *conn)
+                .await?;
+            let whitespace_attempt = apply_requester_ownership_migration(&mut conn).await;
+            sqlx::raw_sql(
+                "DELETE FROM tool_approvals WHERE approval_id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';",
+            )
+            .execute(&mut *conn)
+            .await?;
+            for _ in 0..2 {
+                apply_requester_ownership_migration(&mut conn).await?;
+            }
+            let (subject,): (String,) =
+                sqlx::query_as("SELECT requester_subject FROM tool_approvals WHERE tenant_id = 'tenant-upgrade'")
+                    .fetch_one(&mut *conn)
+                    .await?;
+            Ok((orphan_attempt.is_err(), whitespace_attempt.is_err(), subject))
+        }
+        .await;
+
+        // The pooled connection keeps its session search_path after the
+        // schema is dropped, so restore it before the connection returns to
+        // the pool — otherwise a later parallel test reusing it would run
+        // unqualified queries against a dropped schema. The unqualified probe
+        // proves the public schema is reachable again.
+        sqlx::raw_sql("SET search_path TO public; DROP SCHEMA IF EXISTS cand_2_upgrade CASCADE;")
+            .execute(&mut *conn)
+            .await
+            .expect("restore the search path and drop the upgrade schema");
+        sqlx::query("SELECT 1 FROM tool_approvals LIMIT 1")
+            .execute(&mut *conn)
+            .await
+            .expect("the restored connection resolves public.tool_approvals");
+
+        let (orphan_failed, whitespace_failed, subject) = work.expect("upgrade regression phases");
+        assert!(
+            orphan_failed,
+            "an orphan pending approval alone must fail the migration"
+        );
+        assert!(
+            whitespace_failed,
+            "a whitespace-only Thread owner alone must fail the migration"
+        );
+        assert_eq!(
+            subject, "subject-a",
+            "the backfill preserves the real Thread owner instead of a placeholder"
+        );
+    });
 }
