@@ -2,11 +2,9 @@
 
 //! C-5 coordination around the isolated one-attempt executor port.
 
-use std::sync::Arc;
-
 use crate::domain::execution::{
     ApprovalDecision, ApprovalError, ApprovalRequest, ExactActionBinding, ExecutionAttempt,
-    ExecutionError, ExecutionStatus, TurnAuthorityCatalog, TurnExecutionAuthority,
+    ExecutionError, ExecutionStatus, TurnExecutionAuthority,
 };
 use crate::domain::{ThreadId, TrustContext};
 
@@ -15,7 +13,11 @@ use super::deadline::{ActionDeadline, MAX_ACTION_DURATION_MILLIS};
 use super::executor_envelope::{
     EffectState, ExecutionFailure, ExecutionResponse, ExecutorError, MAX_EXECUTOR_OUTPUT_BYTES,
 };
+pub(super) use super::preparation::{
+    ExecutionPreparer, ToolExecutionAuthorityRoot, ToolExecutionRuntime,
+};
 use super::terminal::TerminalReservationFailure;
+use super::tool_projection::{ToolProjection, ToolProjectionSink, attempt_version, emit};
 
 /// Final application outcome after lease, bounds, and durable-commit validation.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -254,101 +256,6 @@ pub enum ExecutionPreparationError {
     Rejected(ExecutionError),
 }
 
-/// Runtime-assembly-owned root for every live Turn execution authority.
-///
-/// Exactly one root is injected into runtime handles. T-3 replaces its
-/// process-local catalog with canonical persistence.
-#[derive(Debug, Default)]
-pub(crate) struct ToolExecutionAuthorityRoot {
-    catalog: Arc<TurnAuthorityCatalog>,
-}
-
-impl ToolExecutionAuthorityRoot {
-    /// Creates the authority root owned by runtime assembly.
-    #[must_use]
-    pub(crate) fn new() -> Self {
-        Self::default()
-    }
-}
-
-/// Runtime handle that shares the process-owned authority root across preparers.
-#[derive(Clone, Debug)]
-pub struct ToolExecutionRuntime {
-    /// Shared authority catalog, also read by the interruption boundary.
-    pub(super) catalog: Arc<TurnAuthorityCatalog>,
-}
-
-impl ToolExecutionRuntime {
-    /// Creates a handle borrowing authority from runtime assembly's sole root.
-    #[must_use]
-    pub(crate) fn new(root: &ToolExecutionAuthorityRoot) -> Self {
-        Self {
-            catalog: Arc::clone(&root.catalog),
-        }
-    }
-
-    /// Creates a lease-validating preparer backed by this runtime's shared catalog.
-    #[must_use]
-    pub fn preparer<L>(&self, lease: L) -> ExecutionPreparer<L>
-    where
-        L: LeaseValidator,
-    {
-        ExecutionPreparer {
-            lease,
-            catalog: Arc::clone(&self.catalog),
-            authority: None,
-        }
-    }
-}
-
-/// Lease-validating preparation handle scoped to one runtime-owned Turn authority.
-///
-/// The first successful binding fixes this handle's Turn and profile identity.
-/// Every process handle shares that authority. The process root strongly retains
-/// it until T-3 can bind reclamation to canonical persistence without resurrection.
-pub struct ExecutionPreparer<L> {
-    lease: L,
-    catalog: Arc<TurnAuthorityCatalog>,
-    authority: Option<TurnExecutionAuthority>,
-}
-
-impl<L> ExecutionPreparer<L>
-where
-    L: LeaseValidator,
-{
-    /// Validates the current generation before allocating one D-7 slot.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ExecutionPreparationError::OwnerFenced`] without allocation when
-    /// the binding is stale, [`ExecutionPreparationError::LeaseUnavailable`]
-    /// without allocation when ownership could not be validated, or the
-    /// underlying authority allocation failure.
-    pub fn prepare(
-        &mut self,
-        binding: ExactActionBinding,
-    ) -> Result<(TurnExecutionAuthority, ExecutionAttempt), ExecutionPreparationError> {
-        if binding.approval_requirement().is_none() {
-            return Err(ExecutionPreparationError::Rejected(
-                ExecutionError::PolicyAuthorizationRequired,
-            ));
-        }
-        match self.lease.check_current(&binding) {
-            LeaseCheck::Current => {}
-            LeaseCheck::Fenced => return Err(ExecutionPreparationError::OwnerFenced),
-            LeaseCheck::Unavailable => return Err(ExecutionPreparationError::LeaseUnavailable),
-        }
-        let authority = self
-            .authority
-            .get_or_insert_with(|| self.catalog.authority_for(&binding));
-        let mut handle = authority.new_handle();
-        let attempt = handle
-            .allocate_attempt(binding)
-            .map_err(ExecutionPreparationError::Rejected)?;
-        Ok((handle, attempt))
-    }
-}
-
 /// Trusted C-7 port for the exact approval identity and `ai.tool.approve` scope.
 pub(crate) trait ApprovalAuthorizer {
     /// Reports whether this authenticated principal owns the approval context and scope.
@@ -517,6 +424,38 @@ where
         started_at_millis: u64,
         now: &mut dyn FnMut() -> u64,
     ) -> Result<ToolExecutionOutcome, ExecutionPending> {
+        self.execute_projected(
+            authority,
+            approval,
+            attempt,
+            started_at_millis,
+            now,
+            &mut crate::application::NoToolProjections,
+        )
+    }
+
+    /// Dispatches one exact D-7 result while appending the D-3 running
+    /// projection after the canonical dispatch claim wins (TC-06).
+    ///
+    /// The projection is a durable view published only after its append; it
+    /// never authorizes or redispatches the attempt.
+    /// # Errors
+    ///
+    /// Returns [`ExecutionPending`] when the canonical dispatch claim was rejected
+    /// or no canonical terminal write won. No error variant is a final Tool result.
+    // One ordered lease-check, dispatch-claim, projection, executor, deadline,
+    // and conditional-commit sequence whose ordering encodes TC-07; extracting
+    // a phase would separate the claim from its projection and commit.
+    #[allow(clippy::too_many_lines)]
+    pub fn execute_projected(
+        &mut self,
+        authority: &mut TurnExecutionAuthority,
+        approval: Option<&ApprovalRequest>,
+        attempt: &mut ExecutionAttempt,
+        started_at_millis: u64,
+        now: &mut dyn FnMut() -> u64,
+        projections: &mut dyn ToolProjectionSink,
+    ) -> Result<ToolExecutionOutcome, ExecutionPending> {
         if attempt.status() != ExecutionStatus::Prepared {
             return Err(rejected_start(ExecutionError::AlreadyDispatched));
         }
@@ -527,6 +466,18 @@ where
         if let Err(error) = authority.claim_dispatch(attempt, approval, started_at_millis) {
             return Err(rejected_start(error));
         }
+        // TC-06: the running projection immediately follows the won dispatch
+        // claim, before the post-claim lease check and any executor call, so
+        // publication can never outrun the canonical running transition and a
+        // post-claim fence cannot leave a terminal projection without it.
+        emit(
+            projections,
+            ToolProjection::ToolCall {
+                attempt_id: binding.attempt_id(),
+                status: ExecutionStatus::Running,
+                version: attempt_version(ExecutionStatus::Running),
+            },
+        );
         if let Some(cancelled) = self.post_claim_lease(authority, attempt, &binding)? {
             return Ok(cancelled);
         }
@@ -554,11 +505,33 @@ where
         };
         if let Err(pending) = self.post_dispatch_lease(&binding, effect_state) {
             // The executor already returned, so an external effect may exist.
-            // When ownership is merely undetermined rather than proven fenced,
-            // hold the running attempt's terminal reservation for
-            // reconciliation; otherwise a recovered lease would let the
-            // interruption boundary cancel an already-executed effect
-            // (TC-07/TC-10).
+            // An executor-confirmed `not_started` effect never started, so a
+            // fenced owner may still close its D-7 as cancelled without
+            // delivering any Tool result (ADR-0003 TC-07); `started` or
+            // `unknown` effects stay held for reconciliation as
+            // failed/owner_fenced_after_dispatch. When ownership is merely
+            // undetermined rather than proven fenced, hold the running
+            // attempt's terminal reservation for reconciliation; otherwise a
+            // recovered lease would let the interruption boundary cancel an
+            // already-executed effect (TC-07/TC-10).
+            if matches!(
+                pending,
+                ExecutionPending::ReconciliationRequired {
+                    code: ExecutionFailure::OwnerFencedAfterDispatch,
+                    ..
+                }
+            ) && effect_state == EffectState::NotStarted
+            {
+                return self.commit_terminal(
+                    authority,
+                    attempt,
+                    ToolExecutionOutcome::Cancelled {
+                        effect_state: EffectState::NotStarted,
+                    },
+                    ExecutionStatus::Cancelled,
+                    DispatchPhase::AfterDispatch,
+                );
+            }
             if matches!(
                 pending,
                 ExecutionPending::ReconciliationRequired {

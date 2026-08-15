@@ -12,7 +12,7 @@ use koduck_ai::application::{
     ToolExecutionAuthorityRoot, ToolExecutionDriver, ToolExecutionOutcome, ToolExecutionRuntime,
 };
 use koduck_ai::domain::execution::{
-    ApprovalDecision, ApprovalRequest, AttemptId, ExactActionBinding,
+    ApprovalDecision, ApprovalRequest, AttemptId, ExactActionBinding, ExecutionError,
 };
 use koduck_ai::domain::tool::{
     Action, CapabilityDescriptor, DescriptorState, Effect, PermissionProfile,
@@ -757,5 +757,193 @@ fn dispatch_start_time_is_not_earlier_than_the_approval_decision() {
     assert!(
         coordinator.last_started_at_millis() >= decided_at,
         "the D-7 start time must not precede the approval decision"
+    );
+}
+
+/// AC-9: automatic retry occurs only once after a proven not-started executor
+/// effect, gets fresh authority, and consumes another attempt slot. The legs
+/// consolidate the declared boundary table: a read-only not-started failure
+/// with budget retries on a fresh D-7 that consumes a second slot; a
+/// privileged retry resolves a second distinct D-6; started/unknown failures
+/// never retry; and an initial action that consumes slot 16 allocates and
+/// dispatches no retry, terminating `failed/attempt_limit`.
+// One cohesive AC-9 harness whose four budget/approval/dispatch legs share the
+// scripted fixtures; the ADR acceptance command pins this exact test name.
+#[allow(clippy::too_many_lines)]
+#[test]
+fn pre_effect_retry_requires_fresh_attempt_and_policy() {
+    // Leg 1 — read-only not-started failure with budget available: exactly two
+    // distinct D-7 identities, and the pair consumes two of the 16 slots.
+    let readonly_inputs = inputs(action_for(Effect::ReadData));
+    let mut preparer = new_runtime().preparer(AlwaysCurrentLease);
+    let config = config_for(Effect::ReadData);
+    for _ in 0..14 {
+        let sealed = authorize_clone(&config, binding_from(&readonly_inputs));
+        preparer
+            .prepare(sealed)
+            .expect("a pre-consumption slot is available");
+    }
+    let mut coordinator = ExecutionCoordinator::new(
+        ScriptedExecutor {
+            responses: VecDeque::from([
+                Err(unavailable(EffectState::NotStarted)),
+                Ok(succeeded(b"ok")),
+            ]),
+            seen: Vec::new(),
+        },
+        AlwaysCurrentLease,
+        WinningCommitter { calls: 0 },
+    );
+    let outcome = driver(config_for(Effect::ReadData))
+        .execute(
+            &mut preparer,
+            &mut coordinator,
+            &readonly_inputs,
+            &trust(),
+            &mut |_| (ApprovalDecision::Accepted, 1_000),
+            &mut fixed_clock(1_000),
+        )
+        .expect("the budgeted retry reaches a terminal outcome");
+    assert!(matches!(outcome, ToolExecutionOutcome::Succeeded { .. }));
+    let seen = &coordinator.executor().seen;
+    assert_eq!(seen.len(), 2, "the retry dispatched a second attempt");
+    assert_ne!(seen[0], seen[1], "the retry used a fresh D-7 identity");
+    assert_eq!(
+        coordinator.committer().calls,
+        2,
+        "both attempts committed a terminal"
+    );
+    // The two driver attempts consumed slots 15 and 16: the next allocation on
+    // this Turn authority is rejected with the exact attempt-limit code.
+    let sealed = authorize_clone(&config, binding_from(&readonly_inputs));
+    assert!(
+        matches!(
+            preparer.prepare(sealed),
+            Err(ExecutionPreparationError::Rejected(
+                ExecutionError::AttemptLimit
+            ))
+        ),
+        "the initial action and its retry consumed two attempt slots"
+    );
+
+    // Leg 2 — privileged not-started failure: the retry resolves a second,
+    // distinct accepted D-6 before its fresh D-7 dispatches.
+    let privileged_inputs = inputs(action_for(Effect::ExternalWrite));
+    let mut preparer = new_runtime().preparer(AlwaysCurrentLease);
+    let mut coordinator = ExecutionCoordinator::new(
+        ScriptedExecutor {
+            responses: VecDeque::from([
+                Err(unavailable(EffectState::NotStarted)),
+                Ok(succeeded(b"ok")),
+            ]),
+            seen: Vec::new(),
+        },
+        AlwaysCurrentLease,
+        WinningCommitter { calls: 0 },
+    );
+    let mut observed_d6 = Vec::new();
+    let mut decision = |request: &ApprovalRequest| {
+        observed_d6.push(request.approval_id());
+        (ApprovalDecision::Accepted, 1_000)
+    };
+    let outcome = driver(config_for(Effect::ExternalWrite))
+        .execute(
+            &mut preparer,
+            &mut coordinator,
+            &privileged_inputs,
+            &trust(),
+            &mut decision,
+            &mut fixed_clock(1_000),
+        )
+        .expect("the privileged retry reaches a terminal outcome");
+    assert!(matches!(outcome, ToolExecutionOutcome::Succeeded { .. }));
+    assert_eq!(observed_d6.len(), 2, "each attempt resolved its own D-6");
+    assert_ne!(
+        observed_d6[0], observed_d6[1],
+        "the retry required a fresh accepted D-6"
+    );
+    assert_eq!(coordinator.executor().seen.len(), 2);
+
+    // Leg 3 — started or unknown failures never retry: one D-7, one dispatch.
+    for terminal_effect in [EffectState::Started, EffectState::Unknown] {
+        let inputs = inputs(action_for(Effect::ReadData));
+        let mut preparer = new_runtime().preparer(AlwaysCurrentLease);
+        let mut coordinator = ExecutionCoordinator::new(
+            ScriptedExecutor {
+                responses: VecDeque::from([Err(unavailable(terminal_effect))]),
+                seen: Vec::new(),
+            },
+            AlwaysCurrentLease,
+            WinningCommitter { calls: 0 },
+        );
+        let outcome = driver(config_for(Effect::ReadData))
+            .execute(
+                &mut preparer,
+                &mut coordinator,
+                &inputs,
+                &trust(),
+                &mut |_| (ApprovalDecision::Accepted, 1_000),
+                &mut fixed_clock(1_000),
+            )
+            .expect("a started or unknown failure is terminal");
+        assert!(
+            matches!(outcome, ToolExecutionOutcome::Failed { effect_state, .. } if effect_state == terminal_effect),
+            "a {terminal_effect:?} failure must not retry"
+        );
+        assert_eq!(
+            coordinator.executor().seen.len(),
+            1,
+            "only the proven-pre-effect failure retries"
+        );
+    }
+
+    // Leg 4 — the initial action consumes slot 16: no retry record or dispatch
+    // is created and the action terminates failed/attempt_limit.
+    let inputs = inputs(action_for(Effect::ExternalWrite));
+    let mut preparer = new_runtime().preparer(AlwaysCurrentLease);
+    let config = config_for(Effect::ExternalWrite);
+    for _ in 0..15 {
+        let sealed = authorize_clone(&config, binding_from(&inputs));
+        preparer
+            .prepare(sealed)
+            .expect("a pre-consumption slot is available");
+    }
+    let mut coordinator = ExecutionCoordinator::new(
+        ScriptedExecutor {
+            responses: VecDeque::from([Err(unavailable(EffectState::NotStarted))]),
+            seen: Vec::new(),
+        },
+        AlwaysCurrentLease,
+        WinningCommitter { calls: 0 },
+    );
+    let outcome = driver(config_for(Effect::ExternalWrite))
+        .execute(
+            &mut preparer,
+            &mut coordinator,
+            &inputs,
+            &trust(),
+            &mut |_| (ApprovalDecision::Accepted, 1_000),
+            &mut fixed_clock(1_000),
+        )
+        .expect("the slot-16 action returns a terminal outcome");
+    assert!(
+        matches!(
+            outcome,
+            ToolExecutionOutcome::Failed {
+                code: ExecutionFailure::AttemptLimit,
+                effect_state: EffectState::NotStarted,
+            }
+        ),
+        "after the initial action consumes slot 16 the action is failed/attempt_limit"
+    );
+    assert_eq!(
+        coordinator.executor().seen.len(),
+        1,
+        "no retry dispatch follows the exhausted budget"
+    );
+    assert_eq!(
+        coordinator.committer().calls,
+        1,
+        "no retry terminal was committed"
     );
 }

@@ -9,6 +9,7 @@ use super::execution::{
     ExecutionPending, IsolatedExecutor, LeaseValidator, ToolExecutionOutcome,
 };
 use super::executor_envelope::ExecutionFailure;
+use super::tool_projection::attempt_version;
 
 /// Determines whether an unresolved terminal write reopens the cataloged D-7.
 #[derive(Clone, Copy)]
@@ -60,7 +61,19 @@ where
                             effect_state: outcome.effect_state(),
                         });
                     }
+                    let persisted_version = existing.version();
                     let existing = existing.outcome().clone();
+                    if persisted_version != attempt_version(existing.status()) {
+                        // A replayed or competing-writer terminal whose
+                        // persisted version contradicts the canonical D-7
+                        // transition version is a conflict: projecting it
+                        // would fabricate a canonical version, so
+                        // reconciliation owns the next transition.
+                        return Err(ExecutionPending::ReconciliationRequired {
+                            code: ExecutionFailure::TerminalConflict,
+                            effect_state: existing.effect_state(),
+                        });
+                    }
                     (
                         if authority
                             .mirror_terminal(attempt, existing.status())

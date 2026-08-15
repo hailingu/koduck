@@ -18,6 +18,9 @@ use super::execution::{
 };
 use super::executor_envelope::{EffectState, ExecutionFailure};
 use super::policy::{DenialCode, ToolAuthorizationService, ToolPolicyConfiguration};
+use super::tool_projection::{
+    NoToolProjections, ToolProjection, ToolProjectionSink, attempt_version, emit,
+};
 
 /// Identity and action inputs for one C-5 tool-call execution.
 #[derive(Clone, Debug)]
@@ -126,13 +129,52 @@ impl<C, A> ToolExecutionDriver<C, A> {
         L: LeaseValidator,
         Co: AttemptCommitter,
     {
+        self.execute_projected(
+            preparer,
+            coordinator,
+            inputs,
+            trust,
+            decision_for,
+            now,
+            &mut NoToolProjections,
+        )
+    }
+
+    /// Executes one tool call while appending D-3 projections of every
+    /// canonical D-6/D-7 transition before their publication (TC-06).
+    ///
+    /// The projections are ordered durable views: each approval-status,
+    /// dispatch, and terminal-result projection references its canonical
+    /// identity and version, is appended before it is published, and can never
+    /// authorize or redispatch execution.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "each parameter is one independently validated orchestration input"
+    )]
+    pub(crate) fn execute_projected<E, L, Co>(
+        &mut self,
+        preparer: &mut ExecutionPreparer<L>,
+        coordinator: &mut ExecutionCoordinator<E, L, Co>,
+        inputs: &ToolCallInputs,
+        trust: &TrustContext,
+        decision_for: &mut dyn FnMut(&ApprovalRequest) -> (ApprovalDecision, u64),
+        now: &mut dyn FnMut() -> u64,
+        projections: &mut dyn ToolProjectionSink,
+    ) -> Result<ToolExecutionOutcome, ToolCallError>
+    where
+        C: ToolPolicyConfiguration,
+        A: ApprovalAuthorizer,
+        E: IsolatedExecutor,
+        L: LeaseValidator,
+        Co: AttemptCommitter,
+    {
         if inputs.tenant_id != trust.tenant_id {
             return Err(ToolCallError::TenantMismatch);
         }
         let mut retried = false;
         loop {
             let (mut authority, mut attempt, pre_approval) =
-                match self.authorize_and_prepare(preparer, inputs, trust, now) {
+                match self.authorize_and_prepare(preparer, inputs, trust, now, projections) {
                     Ok((authority, attempt, pre_approval)) => (authority, attempt, pre_approval),
                     Err(ToolCallError::Preparation(ExecutionPreparationError::Rejected(
                         ExecutionError::AttemptLimit,
@@ -161,6 +203,7 @@ impl<C, A> ToolExecutionDriver<C, A> {
                     trust,
                     inputs.thread_id,
                     decision_for,
+                    projections,
                 )?,
             };
             let executed = match plan {
@@ -171,12 +214,13 @@ impl<C, A> ToolExecutionDriver<C, A> {
                     // The dispatch start time never precedes the verified
                     // approval decision, even when the clock reads earlier.
                     let started_at_millis = now().max(earliest_start_millis);
-                    coordinator.execute(
+                    coordinator.execute_projected(
                         &mut authority,
                         approval.as_deref(),
                         &mut attempt,
                         started_at_millis,
                         &mut *now,
+                        projections,
                     )
                 }
                 ApprovalPlan::Cancel => {
@@ -187,6 +231,20 @@ impl<C, A> ToolExecutionDriver<C, A> {
                 Err(pending) => return Err(ToolCallError::Reconciliation(pending)),
                 Ok(outcome) => outcome,
             };
+            // TC-06: the terminal-result projection is a durable view of the
+            // committed D-7 terminal; a failed append suppresses publication
+            // but changes no canonical state, and `emit` reports the failure
+            // as a structured diagnostic.
+            emit(
+                projections,
+                ToolProjection::ToolResult {
+                    attempt_id: attempt.binding().attempt_id(),
+                    status: outcome_status(&outcome),
+                    code: outcome_failure_code(&outcome),
+                    effect_state: outcome.effect_state(),
+                    version: attempt_version(outcome_status(&outcome)),
+                },
+            );
             // Retry only on a committed executor pre-effect failure (TC-08); a
             // cancellation or success never retries even when it reports NotStarted.
             if matches!(
@@ -219,6 +277,7 @@ impl<C, A> ToolExecutionDriver<C, A> {
         inputs: &ToolCallInputs,
         trust: &TrustContext,
         now: &mut dyn FnMut() -> u64,
+        projections: &mut dyn ToolProjectionSink,
     ) -> Result<(TurnExecutionAuthority, ExecutionAttempt, PreApproval), ToolCallError>
     where
         C: ToolPolicyConfiguration,
@@ -276,6 +335,21 @@ impl<C, A> ToolExecutionDriver<C, A> {
         let (authority, attempt) = preparer
             .prepare(sealed)
             .map_err(ToolCallError::Preparation)?;
+        if let PreApproval::Validated(request) = &pre_approval {
+            // TC-06: the requested D-6 is projected as a durable view only
+            // after its bound D-7 preparation succeeded, so a rejected
+            // preparation never leaves an unresolvable pending projection
+            // behind; the view never authorizes anything by existing.
+            emit(
+                projections,
+                ToolProjection::ApprovalStatus {
+                    approval_id: request.approval_id(),
+                    status: request.status(),
+                    decision: request.decision(),
+                    version: request.version(),
+                },
+            );
+        }
         Ok((authority, attempt, pre_approval))
     }
 
@@ -290,6 +364,7 @@ impl<C, A> ToolExecutionDriver<C, A> {
         trust: &TrustContext,
         thread_id: ThreadId,
         decision_for: &mut dyn FnMut(&ApprovalRequest) -> (ApprovalDecision, u64),
+        projections: &mut dyn ToolProjectionSink,
     ) -> Result<ApprovalPlan, ToolCallError>
     where
         A: ApprovalAuthorizer,
@@ -299,19 +374,72 @@ impl<C, A> ToolExecutionDriver<C, A> {
             .approval
             .resolve(&mut request, trust, thread_id, decision, decided_at_millis)
         {
-            Ok(_) => match decision {
-                ApprovalDecision::Accepted => Ok(ApprovalPlan::Dispatch {
-                    approval: Some(Box::new(request)),
-                    earliest_start_millis: decided_at_millis,
-                }),
-                ApprovalDecision::Declined | ApprovalDecision::Cancelled => {
-                    Ok(ApprovalPlan::Cancel)
+            Ok(_) => {
+                // TC-06: the resolved D-6 terminal is projected as a durable
+                // view at its canonical version.
+                emit(
+                    projections,
+                    ToolProjection::ApprovalStatus {
+                        approval_id: request.approval_id(),
+                        status: request.status(),
+                        decision: request.decision(),
+                        version: request.version(),
+                    },
+                );
+                match decision {
+                    ApprovalDecision::Accepted => Ok(ApprovalPlan::Dispatch {
+                        approval: Some(Box::new(request)),
+                        earliest_start_millis: decided_at_millis,
+                    }),
+                    ApprovalDecision::Declined | ApprovalDecision::Cancelled => {
+                        Ok(ApprovalPlan::Cancel)
+                    }
                 }
-            },
-            // A decision arriving after the D-6 expiry also cancels the prepared D-7.
-            Err(ApprovalError::Expired) => Ok(ApprovalPlan::Cancel),
+            }
+            // A decision arriving after the D-6 expiry terminalizes the record
+            // as expired; that canonical mutation is projected before the
+            // prepared D-7 is cancelled, so consumers never observe `requested`
+            // followed only by a cancelled tool result.
+            Err(ApprovalError::Expired) => {
+                emit(
+                    projections,
+                    ToolProjection::ApprovalStatus {
+                        approval_id: request.approval_id(),
+                        status: request.status(),
+                        decision: request.decision(),
+                        version: request.version(),
+                    },
+                );
+                Ok(ApprovalPlan::Cancel)
+            }
             Err(error) => Err(ToolCallError::Approval(error)),
         }
+    }
+}
+
+/// Maps one committed outcome onto its canonical D-7 terminal status.
+fn outcome_status(outcome: &ToolExecutionOutcome) -> crate::domain::execution::ExecutionStatus {
+    match outcome {
+        ToolExecutionOutcome::Succeeded { .. } => {
+            crate::domain::execution::ExecutionStatus::Succeeded
+        }
+        ToolExecutionOutcome::Failed { .. } => crate::domain::execution::ExecutionStatus::Failed,
+        ToolExecutionOutcome::TimedOut { .. } => {
+            crate::domain::execution::ExecutionStatus::TimedOut
+        }
+        ToolExecutionOutcome::Cancelled { .. } => {
+            crate::domain::execution::ExecutionStatus::Cancelled
+        }
+    }
+}
+
+/// Returns the stable failure code of a committed failed outcome.
+fn outcome_failure_code(outcome: &ToolExecutionOutcome) -> Option<ExecutionFailure> {
+    match outcome {
+        ToolExecutionOutcome::Failed { code, .. } => Some(*code),
+        ToolExecutionOutcome::Succeeded { .. }
+        | ToolExecutionOutcome::TimedOut { .. }
+        | ToolExecutionOutcome::Cancelled { .. } => None,
     }
 }
 

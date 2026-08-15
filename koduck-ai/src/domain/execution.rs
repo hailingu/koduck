@@ -444,6 +444,12 @@ impl ApprovalRequest {
         self.version
     }
 
+    /// Returns the canonical decision, or `None` while requested or expired.
+    #[must_use]
+    pub const fn decision(&self) -> Option<ApprovalDecision> {
+        self.decision
+    }
+
     /// Returns the earlier of the Turn deadline and five-minute age limit.
     #[must_use]
     pub const fn expires_at_millis(&self) -> u64 {

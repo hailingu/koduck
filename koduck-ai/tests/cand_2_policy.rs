@@ -1,8 +1,12 @@
 // ADR: docs/adr/ADR-0003-default-deny-tool-approval-execution-boundary.md
 
 use koduck_ai::adapters::tool::{ToolAdapterError, parse_action_parameters, parse_input_schema};
+use koduck_ai::application::ToolProjectionSink;
 use koduck_ai::application::{DenialCode, PolicyDecision, ToolPolicy};
-use koduck_ai::domain::execution::{ApprovalError, ApprovalRequest, AttemptId, ExactActionBinding};
+use koduck_ai::domain::execution::{
+    ApprovalDecision, ApprovalError, ApprovalId, ApprovalRequest, ApprovalStatus, AttemptId,
+    ExactActionBinding,
+};
 use koduck_ai::domain::tool::{
     Action, CapabilityDescriptor, DescriptorState, Effect, JsonNumber, MAX_ACTION_TARGET_BYTES,
     MAX_DESCRIPTOR_VERSION_BYTES, MAX_PROFILE_ID_BYTES, MAX_PROFILE_VERSION_BYTES,
@@ -102,9 +106,11 @@ fn untrusted_content_cannot_grant_authority() {
     );
 
     // A caller-forged approval cannot even be constructed for a
-    // caller-constructed unsealed binding, so a forged projection can never
-    // authorize execution. The boundary-level counters live in the
-    // crate-internal `cand_2_denial_tests` harness.
+    // caller-constructed unsealed binding, and a forged D-3 approval-status
+    // projection is a write-only view whose content can never widen the
+    // profile: the privileged request stays denied after replaying it. The
+    // boundary-level counters live in the crate-internal `cand_2_denial_tests`
+    // harness.
     let unsealed = ExactActionBinding::new(
         TenantId::new("tenant-a").expect("valid tenant"),
         ThreadId::new(),
@@ -112,7 +118,7 @@ fn untrusted_content_cannot_grant_authority() {
         LeaseGeneration::initial(),
         ("profile-default", "v1"),
         AttemptId::new(),
-        requested,
+        requested.clone(),
     )
     .expect("syntactically valid binding");
     assert!(
@@ -121,6 +127,21 @@ fn untrusted_content_cannot_grant_authority() {
             Err(ApprovalError::PolicyAuthorizationRequired)
         ),
         "a forged approval cannot even be constructed for an unsealed binding"
+    );
+    let forged_projection = koduck_ai::application::ToolProjection::ApprovalStatus {
+        approval_id: ApprovalId::new(),
+        status: ApprovalStatus::Accepted,
+        decision: Some(ApprovalDecision::Accepted),
+        version: 9,
+    };
+    let mut forged_sink = koduck_ai::application::NoToolProjections;
+    ToolProjectionSink::append(&mut forged_sink, &forged_projection)
+        .expect("the unconfigured sink accepts the replay without durable effect");
+    ToolProjectionSink::publish(&mut forged_sink, &forged_projection);
+    assert_eq!(
+        policy.evaluate(Some(&descriptor), &requested, &profile),
+        PolicyDecision::Denied(DenialCode::OutsidePermissionProfile),
+        "a forged approval projection must not widen the immutable profile"
     );
 
     assert_eq!(profile.id(), "profile-default");

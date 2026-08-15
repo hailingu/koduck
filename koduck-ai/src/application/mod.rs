@@ -12,10 +12,12 @@ mod execution;
 mod executor_envelope;
 mod policy;
 mod ports;
+mod preparation;
 mod runner;
 mod terminal;
 mod tool_boundary;
 mod tool_execution;
+mod tool_projection;
 
 pub use approval_route::{ApprovalDecisionOutcome, ApprovalDecisionRoute};
 pub use approval_store::{
@@ -29,8 +31,6 @@ pub(crate) use cancellation::{
 pub use cancellation::{CancelAcknowledgement, CancelPermit, CancelledEffectState};
 pub use deadline::ActionDeadline;
 pub use durability::{AppendPolicy, BufferLimitError};
-#[cfg(test)]
-pub(crate) use execution::ToolExecutionAuthorityRoot;
 pub use execution::*;
 pub use executor_envelope::*;
 pub use policy::{
@@ -40,6 +40,9 @@ pub use policy::{
 #[cfg(test)]
 pub(crate) use policy::{ToolAuthorizationService, ToolPolicyConfiguration};
 pub use ports::*;
+#[cfg(test)]
+pub(crate) use preparation::ToolExecutionAuthorityRoot;
+pub use preparation::{ExecutionPreparer, ToolExecutionRuntime};
 pub use runner::TurnRunner;
 pub(crate) use tool_boundary::ToolExecutionRuntimeRoot;
 #[cfg(test)]
@@ -47,3 +50,6 @@ pub(crate) use tool_boundary::{ToolExecutionAssembly, ToolExecutionBoundary};
 #[cfg(test)]
 pub(crate) use tool_execution::ToolExecutionDriver;
 pub use tool_execution::{ToolCallError, ToolCallInputs};
+pub use tool_projection::{
+    NoToolProjections, ToolProjection, ToolProjectionError, ToolProjectionSink,
+};

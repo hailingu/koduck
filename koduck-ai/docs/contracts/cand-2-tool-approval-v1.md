@@ -66,3 +66,42 @@ through the framework-neutral `ApprovalDecisionAdapter` over
   returns the same projection; any conflicting resolution is
   `409 approval-already-resolved`; store unavailability is
   `503 durability-unavailable`.
+
+## Native Tool And MCP Call Translation
+
+Both adapter origins address one configured capability through the same owned
+translation (`ConfiguredCapability`, `translate_native_tool_call`,
+`translate_mcp_tool_call` in `koduck-ai/src/adapters/tool.rs`):
+
+- The effect, target, descriptor ID, and version come only from the trusted
+  C-5 descriptor snapshot; untrusted wire content can never relabel them
+  (ADR-0003 TC-01/TC-03).
+- The serialized parameters and arguments use the duplicate-aware fail-closed
+  JSON translation with the 65,536-byte input bound applied before parsing.
+- An MCP server-declared name that does not address exactly the configured
+  capability is rejected before any owned action exists; the translated value
+  is byte-identical to the native Tool translation of the same call, so the
+  isolated executor observes one envelope format regardless of origin
+  (ADR-0003 TC-11).
+
+## D-3 Projections
+
+C-5 appends ordered durable views of canonical D-6/D-7 state through the
+consumer-owned `ToolProjectionSink` port
+(`koduck-ai/src/application/tool_projection.rs`):
+
+- `ToolProjection::ApprovalStatus` carries the canonical D-6 identity, status,
+  decision, and record version; `ToolProjection::ToolCall` and
+  `ToolProjection::ToolResult` carry the canonical D-7 identity, lifecycle
+  phase, stable failure code, executor effect state, and transition version
+  (`prepared` = 1, `running` = 2, terminal = 3).
+- `append` performs the durable append and `publish` makes the projection
+  visible; publication happens only after the append succeeded, and a failed
+  append suppresses publication without changing canonical state
+  (ADR-0003 TC-06).
+- Projections are write-only views: no API accepts a projection as approval,
+  descriptor, profile, or dispatch authority, and replaying or forging one
+  causes zero additional D-6 records, dispatches, or terminals.
+- The driver emits the approval-status and terminal-result projections; the
+  coordinator emits the running projection immediately after the canonical
+  dispatch claim wins and before any executor call.

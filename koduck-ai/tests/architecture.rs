@@ -85,6 +85,9 @@ fn cand_2_digest_and_turn_budget_are_stable_authorities() {
         .expect("CAND-2 domain execution source is readable");
     let application_execution = fs::read_to_string(crate_root.join("src/application/execution.rs"))
         .expect("CAND-2 application execution source is readable");
+    let application_preparation =
+        fs::read_to_string(crate_root.join("src/application/preparation.rs"))
+            .expect("CAND-2 application preparation source is readable");
 
     assert!(!execution.contains("DefaultHasher"));
     assert!(!execution.contains("OnceLock"));
@@ -146,8 +149,11 @@ fn cand_2_digest_and_turn_budget_are_stable_authorities() {
         !application_execution.contains("pub struct ToolExecutionAuthorityStore"),
         "runtime assembly must own the sole Turn authority store"
     );
-    assert!(application_execution.contains("ToolExecutionAuthorityRoot"));
-    assert!(application_execution.contains("pub(crate) fn new(root: &ToolExecutionAuthorityRoot)"));
+    assert!(application_preparation.contains("ToolExecutionAuthorityRoot"));
+    assert!(
+        application_preparation.contains("pub(crate) fn new(root: &ToolExecutionAuthorityRoot)"),
+        "the runtime handle must be constructible only from runtime assembly's root"
+    );
     assert!(!execution.contains("#[derive(Clone, Debug)]\npub struct TurnExecutionAuthority"));
     assert!(!execution.contains("#[derive(Clone, Debug)]\npub struct ApprovalRequest"));
     assert!(

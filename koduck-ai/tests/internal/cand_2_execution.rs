@@ -83,6 +83,18 @@ impl LeaseValidator for SequencedLease {
 }
 
 fn accepted() -> (ExactActionBinding, ApprovalRequest) {
+    let action = Action::new(
+        "fixture.tool",
+        "v1",
+        Effect::ExternalWrite,
+        "fixture-target",
+        parse_action_parameters("{}").expect("valid parameters"),
+    )
+    .expect("valid action");
+    accepted_for(action)
+}
+
+fn accepted_for(action: Action) -> (ExactActionBinding, ApprovalRequest) {
     let binding = ExactActionBinding::new(
         TenantId::new("tenant-a").expect("valid tenant"),
         ThreadId::new(),
@@ -90,14 +102,7 @@ fn accepted() -> (ExactActionBinding, ApprovalRequest) {
         LeaseGeneration::initial(),
         ("profile-default", "v1"),
         AttemptId::new(),
-        Action::new(
-            "fixture.tool",
-            "v1",
-            Effect::ExternalWrite,
-            "fixture-target",
-            parse_action_parameters("{}").expect("valid parameters"),
-        )
-        .expect("valid action"),
+        action,
     )
     .expect("valid binding");
     let binding = authorize(binding).expect("fixture action is policy-authorized");
@@ -198,6 +203,9 @@ fn resolve(
     )
 }
 
+#[path = "cand_2_execution_transport.rs"]
+mod transport;
+
 fn response(effect_state: EffectState, output: &[u8]) -> ExecutionResponse {
     let mut response = ExecutionResponseBuilder::new(effect_state);
     response
@@ -211,30 +219,6 @@ fn committer(result: Result<(), AttemptCommitError>) -> RecordingCommitter {
         calls: 0,
         result: result.map(|()| AttemptCommitResult::Won),
     }
-}
-
-#[test]
-fn stale_owner_never_commits_tool_result() {
-    let (binding, approval) = accepted();
-    let (mut authority, mut attempt) = prepared(binding);
-    let executor = RecordingExecutor {
-        calls: 0,
-        response: Ok(response(EffectState::Started, b"result")),
-    };
-    let lease = SequencedLease {
-        decisions: VecDeque::from([true, true, false]),
-    };
-    let mut coordinator = ExecutionCoordinator::new(executor, lease, committer(Ok(())));
-
-    assert_eq!(
-        coordinator.execute(&mut authority, Some(&approval), &mut attempt, 2, &mut || 2),
-        Err(ExecutionPending::ReconciliationRequired {
-            code: ExecutionFailure::OwnerFencedAfterDispatch,
-            effect_state: EffectState::Started,
-        })
-    );
-    assert_eq!(coordinator.executor().calls, 1);
-    assert_eq!(attempt.status(), ExecutionStatus::Running);
 }
 
 #[test]
@@ -827,7 +811,7 @@ fn lost_idempotent_commit_returns_the_existing_canonical_terminal() {
             result: Ok(AttemptCommitResult::Existing(Box::new(
                 CanonicalAttemptTerminal::from_persistence(
                     attempt.binding().clone(),
-                    2,
+                    3,
                     existing.clone(),
                 )
                 .expect("valid canonical terminal"),
@@ -851,7 +835,7 @@ fn existing_terminal_that_cannot_update_the_local_mirror_requires_reconciliation
         effect_state: EffectState::Started,
     };
     let canonical =
-        CanonicalAttemptTerminal::from_persistence(attempt.binding().clone(), 2, existing)
+        CanonicalAttemptTerminal::from_persistence(attempt.binding().clone(), 3, existing)
             .expect("bounded canonical terminal");
     let mut coordinator = ExecutionCoordinator::new(
         RecordingExecutor {

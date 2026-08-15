@@ -151,6 +151,10 @@ fn prepare(
     }
 }
 
+// One cohesive AC-4 harness: the single-dispatch, consumed-approval, and
+// twelve-field drift table share the accepted fixture; the ADR acceptance
+// command pins this exact test name.
+#[allow(clippy::too_many_lines)]
 #[test]
 fn exact_approval_authorizes_one_attempt() {
     let attempt_id = AttemptId::new();
@@ -181,6 +185,168 @@ fn exact_approval_authorizes_one_attempt() {
         drifted_authority.claim_dispatch(&mut drifted_attempt, Some(&approval), 2_003),
         Err(ExecutionError::ApprovalMismatch)
     );
+
+    // AC-4 drift table: an accepted D-6 authorizes only its exact binding, so
+    // every individually drifted bound field is a binding mismatch that can
+    // never reuse the approval — each drift requires a fresh policy result and
+    // a new D-6, and a mismatched claim never reaches the executor.
+    let identity = approval.binding();
+    let drifted_action = |action: koduck_ai::domain::tool::Action| {
+        ExactActionBinding::new(
+            identity.tenant_id().clone(),
+            identity.thread_id(),
+            identity.turn_id(),
+            identity.lease_generation(),
+            (identity.profile_id(), identity.profile_version()),
+            identity.attempt_id(),
+            action,
+        )
+        .expect("valid drifted binding")
+    };
+    let drift_with = |tenant: Option<&str>,
+                      thread: Option<ThreadId>,
+                      turn: Option<TurnId>,
+                      lease: Option<LeaseGeneration>,
+                      profile: Option<(&str, &str)>,
+                      attempt: Option<AttemptId>,
+                      action: Option<koduck_ai::domain::tool::Action>| {
+        let action = action.unwrap_or_else(|| identity.action().clone());
+        ExactActionBinding::new(
+            tenant.map_or_else(
+                || identity.tenant_id().clone(),
+                |tenant| TenantId::new(tenant).expect("valid drifted tenant"),
+            ),
+            thread.unwrap_or_else(|| identity.thread_id()),
+            turn.unwrap_or_else(|| identity.turn_id()),
+            lease.unwrap_or_else(|| identity.lease_generation()),
+            profile.unwrap_or_else(|| (identity.profile_id(), identity.profile_version())),
+            attempt.unwrap_or_else(|| identity.attempt_id()),
+            action,
+        )
+        .expect("valid drifted binding")
+    };
+    let fixed_action =
+        |descriptor_id: &str, version: &str, effect: Effect, target: &str, parameters: &str| {
+            koduck_ai::domain::tool::Action::new(
+                descriptor_id,
+                version,
+                effect,
+                target,
+                parse_action_parameters(parameters).expect("valid drifted parameters"),
+            )
+            .expect("valid drifted action")
+        };
+    let drifts = [
+        (
+            "tenant",
+            drift_with(Some("tenant-b"), None, None, None, None, None, None),
+        ),
+        (
+            "thread",
+            drift_with(None, Some(ThreadId::new()), None, None, None, None, None),
+        ),
+        (
+            "turn",
+            drift_with(None, None, Some(TurnId::new()), None, None, None, None),
+        ),
+        (
+            "lease generation",
+            drift_with(
+                None,
+                None,
+                None,
+                Some(LeaseGeneration::from_persisted(2).expect("valid drifted lease")),
+                None,
+                None,
+                None,
+            ),
+        ),
+        (
+            "profile id",
+            drift_with(
+                None,
+                None,
+                None,
+                None,
+                Some(("profile-escalated", "v1")),
+                None,
+                None,
+            ),
+        ),
+        (
+            "profile version",
+            drift_with(
+                None,
+                None,
+                None,
+                None,
+                Some(("profile-default", "v2")),
+                None,
+                None,
+            ),
+        ),
+        (
+            "attempt id",
+            drift_with(None, None, None, None, None, Some(AttemptId::new()), None),
+        ),
+        (
+            "descriptor id",
+            drifted_action(fixed_action(
+                "fixture.other",
+                "v1",
+                Effect::ExternalWrite,
+                "fixture-target",
+                r#"{"value":1}"#,
+            )),
+        ),
+        (
+            "descriptor version",
+            drifted_action(fixed_action(
+                "fixture.tool",
+                "v2",
+                Effect::ExternalWrite,
+                "fixture-target",
+                r#"{"value":1}"#,
+            )),
+        ),
+        (
+            "effect",
+            drifted_action(fixed_action(
+                "fixture.tool",
+                "v1",
+                Effect::ProcessExecute,
+                "fixture-target",
+                r#"{"value":1}"#,
+            )),
+        ),
+        (
+            "target",
+            drifted_action(fixed_action(
+                "fixture.tool",
+                "v1",
+                Effect::ExternalWrite,
+                "other-target",
+                r#"{"value":1}"#,
+            )),
+        ),
+        (
+            "parameters",
+            drifted_action(fixed_action(
+                "fixture.tool",
+                "v1",
+                Effect::ExternalWrite,
+                "fixture-target",
+                r#"{"value":2}"#,
+            )),
+        ),
+    ];
+    for (field, drifted) in drifts {
+        assert_eq!(
+            approval.authorize(&drifted),
+            Err(ApprovalError::BindingMismatch),
+            "a drifted {field} must not reuse the accepted D-6"
+        );
+    }
 }
 
 #[test]

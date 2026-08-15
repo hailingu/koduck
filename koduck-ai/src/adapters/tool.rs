@@ -11,8 +11,8 @@ use serde_json::Value;
 use thiserror::Error;
 
 use crate::domain::tool::{
-    ActionParameters, InputSchema, JsonNumber, JsonValue, JsonValueKind, MAX_ACTION_INPUT_BYTES,
-    ToolValueError,
+    Action, ActionParameters, Effect, InputSchema, JsonNumber, JsonValue, JsonValueKind,
+    MAX_ACTION_INPUT_BYTES, ToolValueError,
 };
 
 const MAX_DESCRIPTOR_SCHEMA_BYTES: usize = 65_536;
@@ -32,6 +32,98 @@ pub enum ToolAdapterError {
     /// Canonical action input exceeds the owned byte limit.
     #[error("tool action input exceeds its owned byte limit")]
     InputTooLarge,
+    /// The translated fields do not form one bounded owned action.
+    #[error("tool call fields do not form a bounded owned action")]
+    InvalidAction,
+    /// An untrusted Tool or MCP declaration addresses a different configured
+    /// capability than the one its adapter was configured for.
+    #[error("tool or MCP declaration does not address the configured capability")]
+    CapabilityMismatch,
+}
+
+/// The configured capability snapshot one adapter may address.
+///
+/// The effect and target are trusted configuration resolved from the C-5
+/// descriptor snapshot, never untrusted wire content: a native Tool call or
+/// an MCP server declaration cannot relabel the effect or target it addresses
+/// (ADR-0003 TC-01/TC-03).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ConfiguredCapability<'a> {
+    descriptor_id: &'a str,
+    descriptor_version: &'a str,
+    effect: Effect,
+    target: &'a str,
+}
+
+impl<'a> ConfiguredCapability<'a> {
+    /// Creates one configured capability snapshot.
+    #[must_use]
+    pub const fn new(
+        descriptor_id: &'a str,
+        descriptor_version: &'a str,
+        effect: Effect,
+        target: &'a str,
+    ) -> Self {
+        Self {
+            descriptor_id,
+            descriptor_version,
+            effect,
+            target,
+        }
+    }
+
+    /// Returns the configured descriptor ID.
+    #[must_use]
+    pub const fn descriptor_id(&self) -> &'a str {
+        self.descriptor_id
+    }
+}
+
+/// Translates one untrusted native Tool call into the owned action.
+///
+/// The serialized parameters use the same fail-closed translation as every
+/// other untrusted Tool value; the effect and target come only from the
+/// configured capability snapshot.
+///
+/// # Errors
+///
+/// Returns [`ToolAdapterError`] for malformed, oversized, or unbounded input.
+pub fn translate_native_tool_call(
+    configured: &ConfiguredCapability<'_>,
+    parameters: &str,
+) -> Result<Action, ToolAdapterError> {
+    let parameters = parse_action_parameters(parameters)?;
+    Action::new(
+        configured.descriptor_id,
+        configured.descriptor_version,
+        configured.effect,
+        configured.target,
+        parameters,
+    )
+    .map_err(|_| ToolAdapterError::InvalidAction)
+}
+
+/// Translates one untrusted MCP tool call into the same owned action.
+///
+/// The server-declared name, schema, and arguments are untrusted: the name
+/// must address exactly the configured capability, and an MCP transport or
+/// server declaration can never alter the configured effect or target, so the
+/// translated value is byte-identical to the native Tool translation of the
+/// same call (ADR-0003 TC-01/TC-11).
+///
+/// # Errors
+///
+/// Returns [`ToolAdapterError`] when the declared name addresses a different
+/// capability or the arguments fail the owned translation.
+pub fn translate_mcp_tool_call(
+    configured: &ConfiguredCapability<'_>,
+    server_declared_name: &str,
+    arguments: &str,
+) -> Result<Action, ToolAdapterError> {
+    if server_declared_name != configured.descriptor_id {
+        return Err(ToolAdapterError::CapabilityMismatch);
+    }
+    translate_native_tool_call(configured, arguments)
 }
 
 /// Parses untrusted JSON parameters into a structurally valid owned value.

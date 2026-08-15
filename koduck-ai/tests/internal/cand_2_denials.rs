@@ -6,6 +6,7 @@
 use std::sync::{Arc, Mutex};
 
 use koduck_ai::adapters::tool::{parse_action_parameters, parse_input_schema};
+use koduck_ai::application::ToolProjectionSink;
 use koduck_ai::application::{
     ActionDeadline, AttemptCommitError, AttemptCommitResult, AttemptCommitter,
     CancelAcknowledgement, CancelPermit, DenialCode, DispatchPermit, EffectState,
@@ -364,8 +365,10 @@ fn untrusted_content_cannot_grant_authority() {
 
     // Fixture 3 — approval projection: a caller cannot forge or replay an
     // accepted D-6. A caller-constructed binding can never carry the sealed
-    // approval requirement, and a policy-denied action never reaches D-6
-    // creation even when the decision callback would accept it.
+    // approval requirement, a forged D-3 projection replayed through the
+    // projection sink is a write-only view with no read path into authority,
+    // and a policy-denied action never reaches D-6 creation even when the
+    // decision callback would accept it.
     let unsealed = ExactActionBinding::new(
         TenantId::new("tenant-a").expect("valid tenant"),
         ThreadId::new(),
@@ -383,6 +386,16 @@ fn untrusted_content_cannot_grant_authority() {
         ),
         "a forged approval cannot even be constructed for an unsealed binding"
     );
+    let forged_projection = koduck_ai::application::ToolProjection::ApprovalStatus {
+        approval_id: koduck_ai::domain::execution::ApprovalId::new(),
+        status: koduck_ai::domain::execution::ApprovalStatus::Accepted,
+        decision: Some(ApprovalDecision::Accepted),
+        version: 9,
+    };
+    let mut forged_sink = koduck_ai::application::NoToolProjections;
+    ToolProjectionSink::append(&mut forged_sink, &forged_projection)
+        .expect("the unconfigured sink accepts the replay without durable effect");
+    ToolProjectionSink::publish(&mut forged_sink, &forged_projection);
     let (result, counters) = drive_denial(
         &[active_descriptor(Effect::ProcessExecute)],
         &profile,
