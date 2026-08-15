@@ -10,6 +10,23 @@ use koduck_ai::domain::{
 use koduck_ai::runtime::build_router;
 use tower::ServiceExt;
 
+/// Turn-only router fixture: no approval transport is configured.
+#[derive(Clone)]
+struct ApprovalsUnavailable;
+
+impl koduck_ai::adapters::http::approvals::ApprovalDecisionTransport for ApprovalsUnavailable {
+    fn decide(
+        &mut self,
+        _trust: &TrustContext,
+        _thread_id: koduck_ai::domain::ThreadId,
+        _approval_id: koduck_ai::domain::execution::ApprovalId,
+        _decision: koduck_ai::domain::execution::ApprovalDecision,
+        _decided_at_millis: u64,
+    ) -> koduck_ai::application::ApprovalDecisionOutcome {
+        koduck_ai::application::ApprovalDecisionOutcome::Unavailable
+    }
+}
+
 #[derive(Clone)]
 struct ReplayFailureAfterTerminal;
 
@@ -46,7 +63,7 @@ impl TurnService for ReplayFailureAfterTerminal {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn replay_failure_after_sse_terminal_does_not_emit_error_event() {
-    let response = build_router(ReplayFailureAfterTerminal)
+    let response = build_router(ReplayFailureAfterTerminal, ApprovalsUnavailable)
         .oneshot(
             Request::post("/api/v1/ai/chat/stream")
                 .header("content-type", "application/json")

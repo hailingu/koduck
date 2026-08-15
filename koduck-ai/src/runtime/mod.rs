@@ -23,13 +23,15 @@ use thiserror::Error;
 use tokio::sync::{mpsc, oneshot};
 use tokio_stream::wrappers::ReceiverStream;
 
-use crate::adapters::history::postgres::{PostgresTurnHistory, SqlxPostgresExecutor};
+use crate::adapters::execution::SqlxApprovalRecordStore;
+use crate::adapters::history::postgres::{PostgresTurnHistory, SqlxPostgresExecutor, unix_time_ms};
 use crate::adapters::http::{
-    HttpAdapter, HttpMethod, HttpRequest, TurnService, invalid_request_response,
+    HttpAdapter, HttpMethod, HttpRequest, TurnService, approvals::ApprovalDecisionAdapter,
+    approvals::ApprovalDecisionTransport, invalid_request_response,
 };
 use crate::adapters::provider::{OpenAiCompatibleProvider, ReqwestOpenAiTransport};
-use crate::application::{AppendPolicy, TurnRunner};
-use crate::domain::{TenantId, TrustContext};
+use crate::application::{AppendPolicy, ApprovalDecisionRoute, TurnRunner};
+use crate::domain::{TenantId, ThreadId, TrustContext};
 
 const BIND_ADDR: &str = "KODUCK_AI_BIND_ADDR";
 const DATABASE_URL: &str = "KODUCK_AI_DATABASE_URL";
@@ -39,6 +41,8 @@ const PROVIDER_API_KEY: &str = "KODUCK_AI_OPENAI_API_KEY";
 const PROVIDER_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 /// Gateway-validated approval-scope header of the trusted context channel.
 const APPROVAL_SCOPES_HEADER: &str = "x-koduck-approval-scopes";
+/// Thread routing context header for the approval-decision route.
+const THREAD_ROUTING_HEADER: &str = "x-koduck-thread-id";
 /// Maximum number of validated scopes one principal may carry.
 const MAX_APPROVAL_SCOPES: usize = 16;
 /// Maximum size of one validated scope token in bytes.
@@ -131,12 +135,23 @@ impl RuntimeConfig {
     }
 }
 
-/// Builds the three owned v1 Axum routes around the framework-neutral adapter.
-pub fn build_router<S>(service: S) -> Router
+/// Builds the four owned v1 Axum routes around the framework-neutral adapters.
+///
+/// The approval-decision router keeps its own state so the turn and approval
+/// transports stay independently generic while one builder owns the complete
+/// public route set.
+pub fn build_router<S, A>(service: S, approvals: A) -> Router
 where
     S: TurnService + Clone + Send + Sync + 'static,
+    A: ApprovalDecisionTransport + Clone + Send + Sync + 'static,
 {
-    let state = Arc::new(service);
+    let turn_state = Arc::new(service);
+    let approvals_router = Router::new()
+        .route(
+            "/api/v1/ai/approvals/{approval_id}/decisions",
+            any(handle_approval_request::<A>),
+        )
+        .with_state(Arc::new(approvals));
     Router::new()
         .route("/api/v1/ai/chat", any(handle_request::<S>))
         .route("/api/v1/ai/chat/stream", any(handle_request::<S>))
@@ -144,7 +159,8 @@ where
             "/api/v1/ai/turns/{turn_id}/interrupt",
             any(handle_request::<S>),
         )
-        .with_state(state)
+        .with_state(turn_state)
+        .merge(approvals_router)
 }
 
 /// Connects production adapters, applies the owned migration, and serves HTTP.
@@ -169,7 +185,27 @@ pub async fn run(config: RuntimeConfig) -> Result<(), RuntimeError> {
         sqlx::raw_sql(include_str!("../../migrations/0001_cand_1_history.sql")).execute(&pool),
     )
     .await?;
+    database_setup_attempt(
+        database_deadline,
+        sqlx::raw_sql(include_str!(
+            "../../migrations/0002_cand_2_policy_execution.sql"
+        ))
+        .execute(&pool),
+    )
+    .await?;
+    database_setup_attempt(
+        database_deadline,
+        sqlx::raw_sql(include_str!(
+            "../../migrations/0003_cand_2_requester_ownership.sql"
+        ))
+        .execute(&pool),
+    )
+    .await?;
     let runtime = tokio::runtime::Handle::current();
+    // Production canonical D-6 assembly: the authenticated decision route
+    // drives the conditional `SQLx` transitions on the same Tokio runtime.
+    let approvals =
+        ApprovalDecisionRoute::new(SqlxApprovalRecordStore::new(pool.clone(), runtime.clone()));
     let history = PostgresTurnHistory::new(SqlxPostgresExecutor::new(pool, runtime.clone()));
     let _reconciliation_worker = history
         .start_reconciliation_worker()
@@ -190,7 +226,7 @@ pub async fn run(config: RuntimeConfig) -> Result<(), RuntimeError> {
     let listener = tokio::net::TcpListener::bind(config.bind_addr())
         .await
         .map_err(RuntimeError::Bind)?;
-    axum::serve(listener, build_router(runner))
+    axum::serve(listener, build_router(runner, approvals))
         .await
         .map_err(RuntimeError::Serve)
 }
@@ -246,6 +282,56 @@ where
     }
     match tokio::task::spawn_blocking(move || HttpAdapter::new((*service).clone()).handle(request))
         .await
+    {
+        Ok(response) => into_axum_response(response),
+        Err(_) => internal_failure(),
+    }
+}
+
+async fn handle_approval_request<A>(
+    State(approvals): State<Arc<A>>,
+    method: Method,
+    uri: Uri,
+    headers: HeaderMap,
+    body: Result<Bytes, BytesRejection>,
+) -> Response
+where
+    A: ApprovalDecisionTransport + Clone + Send + Sync + 'static,
+{
+    let trust = trust_context(&headers);
+    let thread = trust_thread(&headers);
+    let method = if method == Method::POST {
+        HttpMethod::Post
+    } else {
+        HttpMethod::Other
+    };
+    let body = if method == HttpMethod::Other {
+        String::new()
+    } else {
+        match body {
+            Ok(body) => match String::from_utf8(body.to_vec()) {
+                Ok(body) => body,
+                Err(_) if trust.is_none() => String::new(),
+                Err(_) => return into_axum_response(invalid_request_response()),
+            },
+            Err(_) if trust.is_none() => String::new(),
+            Err(_) => return into_axum_response(invalid_request_response()),
+        }
+    };
+    let request = HttpRequest {
+        method,
+        path: uri.path().to_owned(),
+        content_type: header(&headers, "content-type").map(str::to_owned),
+        body,
+        trust,
+    };
+    // The canonical store blocks on its owning runtime, so the synchronous
+    // adapter runs off the async workers like the turn adapter.
+    match tokio::task::spawn_blocking(move || {
+        let mut adapter = ApprovalDecisionAdapter::new((*approvals).clone(), unix_time_ms);
+        adapter.handle(request, thread)
+    })
+    .await
     {
         Ok(response) => into_axum_response(response),
         Err(_) => internal_failure(),
@@ -388,6 +474,21 @@ fn gateway_validated_scopes(raw: &str) -> Option<crate::domain::ApprovalScopes> 
 
 fn header<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
     headers.get(name)?.to_str().ok()
+}
+
+/// Extracts the well-formed Thread routing context for the approval-decision
+/// route (ADR-0003 TC-05).
+///
+/// The header is client-supplied routing context, not authority: the canonical
+/// lookup additionally requires the gateway-validated tenant, the requester
+/// subject, and the approval identity, so an absent, malformed, or wrong
+/// Thread value only fails closed as an indistinguishable `404` and can never
+/// widen what a principal may resolve. The adapter receives only a validated
+/// well-formed Thread identity or none.
+fn trust_thread(headers: &HeaderMap) -> Option<ThreadId> {
+    uuid::Uuid::parse_str(header(headers, THREAD_ROUTING_HEADER)?)
+        .ok()
+        .map(ThreadId::from_uuid)
 }
 
 fn into_axum_response(response: crate::adapters::http::HttpResponse) -> Response {

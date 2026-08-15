@@ -10,6 +10,23 @@ use koduck_ai::domain::{TrustContext, TurnId};
 use koduck_ai::runtime::{RuntimeConfig, build_router};
 use tower::ServiceExt;
 
+/// Turn-only router fixture: no approval transport is configured.
+#[derive(Clone)]
+struct ApprovalsUnavailable;
+
+impl koduck_ai::adapters::http::approvals::ApprovalDecisionTransport for ApprovalsUnavailable {
+    fn decide(
+        &mut self,
+        _trust: &TrustContext,
+        _thread_id: koduck_ai::domain::ThreadId,
+        _approval_id: koduck_ai::domain::execution::ApprovalId,
+        _decision: koduck_ai::domain::execution::ApprovalDecision,
+        _decided_at_millis: u64,
+    ) -> koduck_ai::application::ApprovalDecisionOutcome {
+        koduck_ai::application::ApprovalDecisionOutcome::Unavailable
+    }
+}
+
 fn complete_environment() -> BTreeMap<String, String> {
     BTreeMap::from([
         (
@@ -64,7 +81,7 @@ impl TurnService for PanickingService {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn runtime_failure_problem_has_exact_fields_and_correlation_id() {
-    let response = build_router(PanickingService)
+    let response = build_router(PanickingService, ApprovalsUnavailable)
         .oneshot(
             Request::post("/api/v1/ai/chat")
                 .header("content-type", "application/json")
@@ -99,7 +116,7 @@ async fn runtime_failure_problem_has_exact_fields_and_correlation_id() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn oversized_authenticated_body_uses_owned_invalid_request_problem() {
-    let response = build_router(PanickingService)
+    let response = build_router(PanickingService, ApprovalsUnavailable)
         .oneshot(
             Request::post("/api/v1/ai/chat")
                 .header("content-type", "application/json")
@@ -116,7 +133,7 @@ async fn oversized_authenticated_body_uses_owned_invalid_request_problem() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn unsupported_method_uses_owned_method_not_allowed_problem() {
-    let response = build_router(PanickingService)
+    let response = build_router(PanickingService, ApprovalsUnavailable)
         .oneshot(
             Request::get("/api/v1/ai/chat")
                 .header("x-koduck-tenant-id", "tenant-a")

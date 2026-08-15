@@ -45,16 +45,41 @@ context with no approval scopes; a present but malformed value (empty tokens,
 whitespace or other forbidden characters, oversized tokens, or more than 16
 tokens) invalidates the whole identity the same way.
 
+## Approval Decision Route And Thread Routing Context
+
+The runtime exposes the authenticated ADR-0003 decision route
+`POST /api/v1/ai/approvals/{approval_id}/decisions` (ADR-0003 TC-05). The
+request body is exactly one JSON object containing only
+`decision: accepted | declined | cancelled`. The route requires the
+gateway-validated tenant, subject, and `ai.tool.approve` scope headers above,
+plus one `X-Koduck-Thread-Id` request header carrying the canonical Thread of
+the approval. The Thread header is client-supplied routing context, not
+authority: the durable lookup additionally requires the gateway-validated
+tenant, the authenticated requester subject, and the approval identity, so an
+absent, malformed, or wrong Thread value only fails closed as an
+indistinguishable `404` and can never widen what a principal may resolve. The
+gateway strip-and-reissue rule is not required for this header because it
+carries no identity or scope.
+
+The route is served through the production canonical D-6 assembly:
+`ApprovalDecisionRoute<SqlxApprovalRecordStore>` over the shared PostgreSQL
+pool, with each conditional transition limited by the 2-second attempt
+deadline and mapped to `durability-unavailable` (`503`) on expiration.
+
 ## Startup
 
-The executable connects to PostgreSQL and applies the idempotent CAND-1 schema,
-with each startup operation limited by the 2-second database-attempt deadline,
-constructs exactly one `PostgresTurnHistory<SqlxPostgresExecutor>`, constructs
-the configured OpenAI-compatible transport, binds the listener, and exposes
-only the three owned v1 routes. Startup fails explicitly if configuration,
-PostgreSQL, provider-client construction, listener binding, or HTTP serving
-fails. No process-local, Memory, Multitask, predecessor, or alternate history
-fallback is configured.
+The executable connects to PostgreSQL and applies the idempotent CAND-1
+history schema plus the idempotent ADR-0003 CAND-2 approval schemas
+(`0002_cand_2_policy_execution.sql` and
+`0003_cand_2_requester_ownership.sql`), with each startup operation limited by
+the 2-second database-attempt deadline, constructs exactly one
+`PostgresTurnHistory<SqlxPostgresExecutor>` and one
+`ApprovalDecisionRoute<SqlxApprovalRecordStore>` over the shared pool,
+constructs the configured OpenAI-compatible transport, binds the listener, and
+exposes only the four owned v1 routes. Startup fails explicitly if
+configuration, PostgreSQL, provider-client construction, listener binding, or
+HTTP serving fails. No process-local, Memory, Multitask, predecessor, or
+alternate history fallback is configured.
 
 ## Operational Bounds
 

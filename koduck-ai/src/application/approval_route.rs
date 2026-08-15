@@ -44,6 +44,7 @@ pub enum ApprovalDecisionOutcome {
 /// validated trust context; a principal without the `ai.tool.approve` scope
 /// resolves nothing and cannot distinguish an unknown approval from a
 /// forbidden one, because no store operation runs for it (TC-05).
+#[derive(Clone)]
 pub struct ApprovalDecisionRoute<S> {
     store: S,
 }

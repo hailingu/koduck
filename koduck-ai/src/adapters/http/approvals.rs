@@ -72,11 +72,16 @@ impl<S: ApprovalDecisionTransport> ApprovalDecisionAdapter<S> {
     }
 
     /// Handles one owned approval-decision request.
+    ///
+    /// `trusted_thread` is the Thread routing context the presentation server
+    /// validated as a well-formed Thread identity. An absent context is
+    /// indistinguishable from a mismatched one: the route resolves nothing,
+    /// mutates no record, and exposes no approval existence (ADR-0003 TC-05).
     #[must_use]
     pub fn handle(
         &mut self,
         request: HttpRequest,
-        trusted_thread: crate::domain::ThreadId,
+        trusted_thread: Option<crate::domain::ThreadId>,
     ) -> HttpResponse {
         let Some(trust) = request.trust else {
             return problem(401, "invalid-identity", true);
@@ -85,6 +90,9 @@ impl<S: ApprovalDecisionTransport> ApprovalDecisionAdapter<S> {
             return problem(405, "method-not-allowed", false);
         }
         let Some(approval_id) = approval_decision_id(&request.path) else {
+            return problem(404, "not-found", false);
+        };
+        let Some(trusted_thread) = trusted_thread else {
             return problem(404, "not-found", false);
         };
         if !is_json_content_type(request.content_type.as_deref()) {

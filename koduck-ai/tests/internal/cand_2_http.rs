@@ -214,6 +214,11 @@ fn request(
     }
 }
 
+// One cohesive AC-6 contract harness: every identity, body, ownership, and
+// terminal case shares the seeded canonical double, and the ADR acceptance
+// command pins this exact single test name. Splitting it would duplicate the
+// security-sensitive fixture without creating an independent test boundary.
+#[allow(clippy::too_many_lines)]
 #[test]
 fn approval_decision_v1_contract() {
     let (store, approval) = seeded_store();
@@ -224,7 +229,7 @@ fn approval_decision_v1_contract() {
     let body = r#"{"decision":"accepted"}"#;
 
     let decide = |adapter: &mut ApprovalDecisionAdapter<_>, trust, thread| {
-        adapter.handle(request(trust, approval_id, body), thread)
+        adapter.handle(request(trust, approval_id, body), Some(thread))
     };
 
     // Missing identity is 401 with the owned problem contract.
@@ -251,6 +256,22 @@ fn approval_decision_v1_contract() {
         "404 cases mutate nothing"
     );
 
+    // An absent Thread routing context is indistinguishable from a mismatched
+    // one: the route resolves nothing and mutates no record (TC-05).
+    assert_eq!(
+        adapter
+            .handle(
+                request(
+                    Some(scoped_trust("tenant-a", "requester")),
+                    approval_id,
+                    body
+                ),
+                None
+            )
+            .status,
+        404
+    );
+
     // Malformed bodies are rejected before any decision.
     for body in [
         "{}",
@@ -265,7 +286,7 @@ fn approval_decision_v1_contract() {
                 approval_id,
                 body,
             ),
-            thread,
+            Some(thread),
         );
         assert_eq!(invalid.status, 400, "body {body} must be invalid");
     }
@@ -320,7 +341,7 @@ fn approval_decision_v1_contract() {
             approval_id,
             r#"{"decision":"declined"}"#,
         ),
-        thread,
+        Some(thread),
     );
     assert_eq!(conflict.status, 409);
 
@@ -332,7 +353,7 @@ fn approval_decision_v1_contract() {
             unknown_id,
             body,
         ),
-        thread,
+        Some(thread),
     );
     assert_eq!(unknown.status, 404);
 

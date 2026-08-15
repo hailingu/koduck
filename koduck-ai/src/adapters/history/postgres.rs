@@ -535,7 +535,8 @@ impl<E: PostgresExecutor + Send + 'static> TurnHistory for PostgresTurnHistory<E
     }
 }
 
-fn unix_time_ms() -> u64 {
+/// Wall-clock epoch milliseconds shared by the runtime's synchronous adapters.
+pub(crate) fn unix_time_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
