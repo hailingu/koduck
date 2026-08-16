@@ -105,3 +105,33 @@ consumer-owned `ToolProjectionSink` port
 - The driver emits the approval-status and terminal-result projections; the
   coordinator emits the running projection immediately after the canonical
   dispatch claim wins and before any executor call.
+
+## Authenticated C-5 Interruption
+
+The application boundary `ToolInterruptionRoute`
+(`koduck-ai/src/application/tool_interruption.rs`) drives the guarded C-5
+cancellation path for one authenticated Turn interruption:
+
+- The tenant comes only from the gateway-validated `TrustContext`; the Thread
+  comes only from validated routing context. An absent Thread context, an
+  unknown Turn, and a cross-tenant principal are one indistinguishable
+  `NoLiveAttempt` with zero service calls and zero mutations, so the route
+  cannot be used to probe live-work existence (ADR-0003 TC-05/TC-10).
+- Canonical subject ownership is validated through the consumer-owned
+  `TurnOwnershipValidator` port before the authority catalog is touched: a
+  same-tenant non-owner or an unknown identity is the same indistinguishable
+  `NoLiveAttempt` and neither cancels another subject's work nor leaves an
+  interruption tombstone behind, while a canonical-ownership outage fails
+  closed as `ReconciliationRequired/DurabilityUnavailable` with zero
+  mutations.
+- For authenticated owners, a prepared D-7 and its requested D-6 close as
+  `cancelled/not_started` with zero dispatch; a running D-7 receives exactly
+  one bounded executor cancellation whose acknowledgement determines the
+  terminal — acknowledged state commits `cancelled` with the exact
+  executor-observed effect state, and a missing acknowledgement commits
+  `timed_out/unknown` (ADR-0003 TC-10).
+- The route introduces no new authority-mutation call site: it forwards to the
+  shared `ExecutionInterrupter` over the runtime's process-owned authority
+  catalog, with the cancellation and approval ports supplied by runtime
+  assembly. The production composition lands with the T-3 durable D-7
+  committer that supplies those ports.

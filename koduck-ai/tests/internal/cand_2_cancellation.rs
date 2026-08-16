@@ -34,6 +34,8 @@ mod interruption_seal;
 mod post_claim_lease;
 #[path = "cand_2_cancellation_pre_dispatch.rs"]
 mod pre_dispatch;
+#[path = "cand_2_cancellation_transport.rs"]
+mod transport;
 
 /// Executor that records dispatches and plays one scripted cancellation.
 struct CancellingExecutor {

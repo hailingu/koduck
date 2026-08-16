@@ -17,6 +17,7 @@ mod runner;
 mod terminal;
 mod tool_boundary;
 mod tool_execution;
+mod tool_interruption;
 mod tool_projection;
 
 pub use approval_route::{ApprovalDecisionOutcome, ApprovalDecisionRoute};
@@ -50,6 +51,11 @@ pub(crate) use tool_boundary::{ToolExecutionAssembly, ToolExecutionBoundary};
 #[cfg(test)]
 pub(crate) use tool_execution::ToolExecutionDriver;
 pub use tool_execution::{ToolCallError, ToolCallInputs};
+#[cfg(test)]
+pub(crate) use tool_interruption::{
+    ToolInterruptionOutcome, ToolInterruptionRoute, TurnInterruptionOwnership,
+    TurnOwnershipValidator,
+};
 pub use tool_projection::{
     NoToolProjections, ToolProjection, ToolProjectionError, ToolProjectionSink,
 };

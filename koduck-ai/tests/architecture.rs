@@ -47,6 +47,62 @@ fn cand_2_policy_dependencies_are_inward_and_unbypassable() {
             "CAND-2 contains forbidden direct execution API {forbidden}"
         );
     }
+
+    // AC-1 partial structural guard: both native Tool and MCP translation
+    // entrypoints exist and return the owned action, and the adapter owns no
+    // dispatch path. This proves only declaration and return shape — no
+    // production caller wires these entrypoints into the C-5 boundary yet, so
+    // the declared invocation-to-C-5 delegation equality remains UNOBSERVED
+    // and AC-1 stays open until the T-2 provider wiring lands a deterministic
+    // call-path assertion.
+    let tool_adapter = fs::read_to_string(crate_root.join("src/adapters/tool.rs"))
+        .expect("CAND-2 tool adapter source is readable");
+    let native_entrypoints = ["translate_native_tool_call", "translate_mcp_tool_call"];
+    let delegating = native_entrypoints
+        .iter()
+        .filter(|name| tool_adapter.contains(&format!("pub fn {name}(")))
+        .count();
+    assert_eq!(
+        native_entrypoints.len(),
+        delegating,
+        "every native Tool and MCP translation entrypoint must exist"
+    );
+    assert_eq!(
+        tool_adapter
+            .matches("-> Result<Action, ToolAdapterError>")
+            .count(),
+        native_entrypoints.len(),
+        "every native entrypoint returns exactly the owned action"
+    );
+    for forbidden in [
+        "DispatchPermit",
+        "IsolatedExecutor",
+        ".execute(",
+        "std::process",
+        "tokio::process",
+    ] {
+        assert!(
+            !tool_adapter.contains(forbidden),
+            "the Tool/MCP adapter must not own a dispatch or direct execution path: {forbidden}"
+        );
+    }
+
+    // C-1/C-2 delivery adapters hold no direct filesystem, process, or MCP
+    // execution entrypoint.
+    let mut delivery = String::new();
+    collect_text(&crate_root.join("src/adapters/http"), &mut delivery);
+    collect_text(&crate_root.join("src/adapters/provider"), &mut delivery);
+    for forbidden in [
+        "std::process::Command",
+        "tokio::process::Command",
+        "IsolatedExecutor",
+        "DispatchPermit",
+    ] {
+        assert!(
+            !delivery.contains(forbidden),
+            "C-1/C-2 must hold no direct execution entrypoint: {forbidden}"
+        );
+    }
 }
 
 #[test]
