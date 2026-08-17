@@ -4,50 +4,115 @@
 
 use crate::domain::{Item, TenantId, TerminalOutcome, TrustContext, Turn, TurnId, Usage};
 
+use super::MAX_EXECUTOR_OUTPUT_BYTES;
 use super::ports::{
-    AcceptedTurn, DurabilityFailure, HistoryError, ModelInput, ModelProvider, NewItem,
-    ProviderEvent, TurnCommand, TurnHistory, TurnResult, TurnRunError, TurnStreamEvent,
+    AcceptedTurn, CommittedToolCall, HistoryError, ModelInput, ModelProvider, ModelToolCall,
+    NewItem, NoToolExecution, ProviderEvent, ToolCallExecutor, ToolCallTurnContext, ToolRound,
+    TurnCommand, TurnHistory, TurnResult, TurnRunError, TurnStreamEvent,
 };
-use super::{AppendPolicy, BufferLimitError};
+use super::tool_projection::TurnProjectionSink;
+
+mod failure;
+
+use failure::{
+    accept_appended_provider_item, apply_terminal_outcome, history_failure, post_accept_failure,
+    recover_append_failure, validate_provider_item,
+};
 
 /// Owns provider-neutral lifecycle transitions and durable-before-visible ordering.
+///
+/// `T` is the consumer-owned tool-execution boundary servicing model Tool
+/// calls through C-5; the default [`NoToolExecution`] records every call as a
+/// typed unavailability without executing it (ADR-0003 TC-13).
 #[derive(Clone)]
-pub struct TurnRunner<P, H> {
+pub struct TurnRunner<P, H, T = NoToolExecution> {
     provider: P,
     history: H,
+    tools: T,
 }
 
 struct ExecutionState {
     published: Vec<Item>,
+    /// Leading count of `published` items already sent to the observer.
+    ///
+    /// Tool-projection items are observed at their publish boundary while the
+    /// call is still serviced, so the driving loop resumes observation at
+    /// this watermark instead of re-observing them.
+    observed_len: usize,
     usage: Usage,
     lifecycle: Turn,
     provider_item_count: usize,
     provider_payload_bytes: usize,
+    /// Every completed Tool-call batch carried into continuation requests.
+    tool_rounds: Vec<ToolRound>,
+    /// This stream's serviced calls, batched into `tool_rounds` when the
+    /// stream ends without a terminal; non-empty means the current stream
+    /// still owes a continuation.
+    current_calls: Vec<CommittedToolCall>,
+    /// Assistant text emitted by the current stream, retained with its Tool
+    /// round when the stream requires continuation.
+    current_assistant_content: String,
 }
 
 impl ExecutionState {
     fn started() -> Self {
         Self {
             published: Vec::new(),
+            observed_len: 0,
             usage: Usage::zero(),
             lifecycle: Turn::start(),
             provider_item_count: 0,
             provider_payload_bytes: 0,
+            tool_rounds: Vec::new(),
+            current_calls: Vec::new(),
+            current_assistant_content: String::new(),
         }
     }
 }
 
-impl<P, H> TurnRunner<P, H>
+impl<P, H> TurnRunner<P, H, NoToolExecution>
 where
     P: ModelProvider,
     H: TurnHistory,
 {
     /// Creates a runner from consumer-owned provider and history ports.
+    ///
+    /// Model Tool calls fail closed with a recorded typed unavailability
+    /// until [`Self::with_tool_executor`] assembles a C-5 boundary.
     #[must_use]
     pub const fn new(provider: P, history: H) -> Self {
-        Self { provider, history }
+        Self {
+            provider,
+            history,
+            tools: NoToolExecution,
+        }
     }
+}
 
+impl<P, H, T> TurnRunner<P, H, T>
+where
+    P: ModelProvider,
+    H: TurnHistory,
+    T: ToolCallExecutor,
+{
+    /// Returns a runner whose model Tool calls are serviced through the
+    /// supplied C-5 tool-execution boundary.
+    #[must_use]
+    pub fn with_tool_executor<E: ToolCallExecutor>(self, tools: E) -> TurnRunner<P, H, E> {
+        TurnRunner {
+            provider: self.provider,
+            history: self.history,
+            tools,
+        }
+    }
+}
+
+impl<P, H, T> TurnRunner<P, H, T>
+where
+    P: ModelProvider,
+    H: TurnHistory,
+    T: ToolCallExecutor,
+{
     /// Records an interrupt request through the canonical history boundary.
     ///
     /// # Errors
@@ -132,12 +197,15 @@ where
             turn_id: accepted.turn_id,
             input: command.input,
             history: prior_history,
+            tool_rounds: Vec::new(),
         };
         let mut state = ExecutionState::started();
         match run_accepted(
             &mut self.provider,
             &mut self.history,
+            &mut self.tools,
             &accepted,
+            &command.trust,
             &mut state,
             input,
             observer,
@@ -203,32 +271,62 @@ where
     }
 }
 
-fn run_accepted<P: ModelProvider, H: TurnHistory>(
+#[allow(
+    clippy::too_many_arguments,
+    reason = "each parameter is one independently validated orchestration input"
+)]
+fn run_accepted<P: ModelProvider, H: TurnHistory, T: ToolCallExecutor>(
     provider: &mut P,
     history: &mut H,
+    tools: &mut T,
     accepted: &AcceptedTurn,
+    trust: &crate::domain::TrustContext,
     state: &mut ExecutionState,
     input: ModelInput,
     observer: &mut dyn FnMut(TurnStreamEvent),
     cancelled: &dyn Fn() -> bool,
 ) -> Result<(), TurnRunError> {
-    let mut stream = match provider.stream(input) {
-        Ok(stream) => stream,
-        Err(error) => {
-            append_terminal_or_replay_fenced(
-                history,
-                accepted,
-                state,
-                TerminalOutcome::Failed { code: error.code },
-                observer,
-            )?;
+    let mut input = input;
+    loop {
+        let mut stream = match provider.stream(input.clone()) {
+            Ok(stream) => stream,
+            Err(error) => {
+                append_terminal_or_replay_fenced(
+                    history,
+                    accepted,
+                    state,
+                    TerminalOutcome::Failed { code: error.code },
+                    observer,
+                )?;
+                return Ok(());
+            }
+        };
+        let reached_terminal = drive_stream(
+            history,
+            tools,
+            accepted,
+            trust,
+            state,
+            &mut *stream,
+            observer,
+            cancelled,
+        )?;
+        drop(stream);
+        if reached_terminal {
             return Ok(());
         }
-    };
-    let reached_terminal =
-        drive_stream(history, accepted, state, &mut *stream, observer, cancelled)?;
-    drop(stream);
-    if !reached_terminal {
+        if !state.current_calls.is_empty() {
+            // The provider finished a Tool-call round without a terminal:
+            // batch the round and start the continuation request carrying
+            // every bounded committed result in causal order (ADR-0003
+            // TC-11). Completion is accepted only from a continuation stream.
+            state.tool_rounds.push(ToolRound {
+                assistant_content: std::mem::take(&mut state.current_assistant_content),
+                calls: std::mem::take(&mut state.current_calls),
+            });
+            input.tool_rounds.clone_from(&state.tool_rounds);
+            continue;
+        }
         append_terminal_or_replay_fenced(
             history,
             accepted,
@@ -238,8 +336,8 @@ fn run_accepted<P: ModelProvider, H: TurnHistory>(
             },
             observer,
         )?;
+        return Ok(());
     }
-    Ok(())
 }
 
 fn append_terminal_or_replay_fenced<H: TurnHistory>(
@@ -257,9 +355,15 @@ fn append_terminal_or_replay_fenced<H: TurnHistory>(
     }
 }
 
-fn drive_stream<H: TurnHistory>(
+#[allow(
+    clippy::too_many_arguments,
+    reason = "each parameter is one independently validated orchestration input"
+)]
+fn drive_stream<H: TurnHistory, T: ToolCallExecutor>(
     history: &mut H,
+    tools: &mut T,
     accepted: &AcceptedTurn,
+    trust: &crate::domain::TrustContext,
     state: &mut ExecutionState,
     stream: &mut dyn Iterator<Item = ProviderEvent>,
     observer: &mut dyn FnMut(TurnStreamEvent),
@@ -269,11 +373,13 @@ fn drive_stream<H: TurnHistory>(
         if terminalize_from_control(history, accepted, state, observer, cancelled)? {
             return Ok(true);
         }
-        let published_before = state.published.len();
-        let event_result = handle_event(history, accepted, state, event);
-        for item in &state.published[published_before..] {
+        let event_result = handle_event(history, tools, accepted, trust, state, event, observer);
+        // Observe every item published by the event that was not already
+        // observed live at its publish boundary (e.g. tool projections).
+        for item in &state.published[state.observed_len..] {
             observe_item(observer, accepted, item);
         }
+        state.observed_len = state.published.len();
         if event_terminal_or_recover(history, accepted, state, event_result, observer)? {
             return Ok(true);
         }
@@ -425,24 +531,46 @@ fn observe_item(observer: &mut dyn FnMut(TurnStreamEvent), accepted: &AcceptedTu
     });
 }
 
-fn handle_event<H: TurnHistory>(
+fn handle_event<H: TurnHistory, T: ToolCallExecutor>(
     history: &mut H,
+    tools: &mut T,
     accepted: &AcceptedTurn,
+    trust: &crate::domain::TrustContext,
     state: &mut ExecutionState,
     event: ProviderEvent,
+    observer: &mut dyn FnMut(TurnStreamEvent),
 ) -> Result<bool, TurnRunError> {
     match event {
         ProviderEvent::Delta(content) => {
-            let item = NewItem::AgentMessageDelta { content };
+            let item = NewItem::AgentMessageDelta {
+                content: content.clone(),
+            };
             if enforce_provider_limits(history, accepted, state, &item)? {
                 return Ok(true);
             }
             let durable = history.append(accepted, item)?;
-            accept_appended_provider_item(state, durable, true)
+            let terminal = accept_appended_provider_item(state, durable, true)?;
+            state.current_assistant_content.push_str(&content);
+            Ok(terminal)
         }
-        ProviderEvent::Usage(observed) => {
-            state.usage = observed;
-            let item = NewItem::Usage(observed);
+        ProviderEvent::Usage(counters) => {
+            // Every request of one Turn — including each Tool-call
+            // continuation — reports its own counters; the Turn terminal
+            // carries their checked sum (ADR-0003 TC-11).
+            if let Ok(total) = state.usage.checked_accumulate(&counters) {
+                state.usage = total;
+            } else {
+                append_provider_terminal(
+                    history,
+                    accepted,
+                    state,
+                    TerminalOutcome::Failed {
+                        code: "PROVIDER_USAGE_OVERFLOW".to_owned(),
+                    },
+                )?;
+                return Ok(true);
+            }
+            let item = NewItem::Usage(counters);
             if enforce_provider_limits(history, accepted, state, &item)? {
                 return Ok(true);
             }
@@ -450,6 +578,21 @@ fn handle_event<H: TurnHistory>(
             accept_appended_provider_item(state, durable, false)
         }
         ProviderEvent::Completed => {
+            if !state.current_calls.is_empty() {
+                // A completion on a stream that still owes Tool-call
+                // continuation is a provider protocol violation: the committed
+                // results never reached the model. Fail closed instead of
+                // closing the Turn (ADR-0003 TC-11).
+                append_provider_terminal(
+                    history,
+                    accepted,
+                    state,
+                    TerminalOutcome::Failed {
+                        code: "PROVIDER_PREMATURE_COMPLETION".to_owned(),
+                    },
+                )?;
+                return Ok(true);
+            }
             let item = NewItem::Terminal(TerminalOutcome::Completed { usage: state.usage });
             if enforce_provider_limits(history, accepted, state, &item)? {
                 return Ok(true);
@@ -471,8 +614,126 @@ fn handle_event<H: TurnHistory>(
             append_provider_terminal(history, accepted, state, outcome)?;
             Ok(true)
         }
+        ProviderEvent::ToolCall { name, arguments } => handle_tool_call(
+            history, tools, accepted, trust, state, name, arguments, observer,
+        ),
         ProviderEvent::Pending => Ok(false),
     }
+}
+
+/// Services one assembled model Tool call through the C-5 port and records
+/// its D-3 items with durable-before-publish ordering.
+///
+/// A turn-level port failure owns the turn terminal with its stable code; a
+/// typed denial or unavailability arrives as recorded items instead of
+/// failing the turn (ADR-0003 TC-06/TC-11).
+#[allow(
+    clippy::too_many_arguments,
+    reason = "each parameter is one independently validated orchestration input"
+)]
+fn handle_tool_call<H: TurnHistory, T: ToolCallExecutor>(
+    history: &mut H,
+    tools: &mut T,
+    accepted: &AcceptedTurn,
+    trust: &crate::domain::TrustContext,
+    state: &mut ExecutionState,
+    name: String,
+    arguments: String,
+    observer: &mut dyn FnMut(TurnStreamEvent),
+) -> Result<bool, TurnRunError> {
+    let context = ToolCallTurnContext {
+        tenant_id: accepted.tenant_id.clone(),
+        thread_id: accepted.thread_id,
+        turn_id: accepted.turn_id,
+        lease_generation: accepted.generation,
+    };
+    let call = ModelToolCall { name, arguments };
+    // The runner supplies the durable projection sink, seeded with the
+    // cumulative per-Turn budget counters so every call shares the one
+    // 64-item/1-MiB allowance with the provider items: every approval,
+    // dispatch, denial, and terminal view is preflighted as a complete
+    // sequence, durably appended as it happens — the running view before the
+    // executor dispatch — and published to the live observer at its publish
+    // boundary (ADR-0001 exact buffer contract, ADR-0003 TC-06).
+    let mut projections = TurnProjectionSink::new(
+        &mut *history,
+        accepted,
+        &mut *observer,
+        state.provider_item_count,
+        state.provider_payload_bytes,
+    );
+    let result = tools.execute_tool_call(call.clone(), &context, trust, &mut projections);
+    // Publish anything an implementation durably appended but did not publish,
+    // so no durable projection stays invisible past this call boundary.
+    projections.drain_unpublished();
+    let projections_failed = projections.is_failed();
+    let lifecycle_complete = projections.is_lifecycle_complete();
+    let matches_committed_result = result
+        .as_ref()
+        .is_ok_and(|result| projections.matches_committed_result(result));
+    let (provider_item_count, provider_payload_bytes) = projections.budget();
+    state.provider_item_count = provider_item_count;
+    state.provider_payload_bytes = provider_payload_bytes;
+    // Record the durably appended projections in append order. They were
+    // already observed at their publish boundaries, so the observation
+    // watermark advances past them. The shape is validated by construction
+    // (only approval, dispatch, denial, and terminal views exist); a
+    // defensive guard still refuses anything else (ADR-0003 TC-06).
+    let durable_items = projections.into_durable_items();
+    for durable in &durable_items {
+        if !matches!(
+            durable.payload,
+            crate::domain::ItemPayload::ApprovalStatus { .. }
+                | crate::domain::ItemPayload::ToolCall { .. }
+                | crate::domain::ItemPayload::ToolResult { .. }
+        ) {
+            return Err(history_failure(
+                HistoryError::Unavailable,
+                true,
+                &state.published,
+            ));
+        }
+    }
+    state.published.extend(durable_items);
+    state.observed_len = state.published.len();
+    if projections_failed {
+        // A projection that was rejected or could not be appended durably —
+        // a noncanonical tuple, an out-of-contract sequence exceeding the
+        // cumulative per-Turn budget, or an append outage — is a durability
+        // boundary violation that outranks any executor error: the Turn
+        // terminalizes through the owned limit/recovery path rather than
+        // recording a normal tool-error terminal over incomplete history
+        // (ADR-0001 exact buffer contract, ADR-0003 TC-06).
+        return terminalize_from_limit(history, accepted, state);
+    }
+    let result = match result {
+        Ok(result) => result,
+        Err(error) => {
+            append_provider_terminal(
+                history,
+                accepted,
+                state,
+                TerminalOutcome::Failed {
+                    code: error.stable_code().to_owned(),
+                },
+            )?;
+            return Ok(true);
+        }
+    };
+    if !lifecycle_complete || !matches_committed_result {
+        return terminalize_from_limit(history, accepted, state);
+    }
+    // The committed result crosses the public executor port untrusted:
+    // enforce the same raw output-byte bound the executor boundary already
+    // applies, so an approved at-limit result is never re-measured against an
+    // expanded JSON serialization and rejected here, while an
+    // out-of-contract implementation still fails closed (ADR-0003
+    // TC-09/TC-11).
+    if result.content.len() > MAX_EXECUTOR_OUTPUT_BYTES {
+        return terminalize_from_limit(history, accepted, state);
+    }
+    state.current_calls.push(CommittedToolCall { call, result });
+    Ok(false)
 }
 
 fn enforce_provider_limits<H: TurnHistory>(
@@ -517,75 +778,4 @@ fn terminalize_from_limit<H: TurnHistory>(
         }
         _ => Err(HistoryError::Unavailable.into()),
     }
-}
-
-fn validate_provider_item(
-    state: &mut ExecutionState,
-    item: &NewItem,
-) -> Result<(), BufferLimitError> {
-    let policy = AppendPolicy::cand_1();
-    let next_count = state.provider_item_count.saturating_add(1);
-    let next_payload_bytes = policy
-        .check_item_count(next_count)
-        .and_then(|()| policy.accumulate_payload_bytes(state.provider_payload_bytes, item))?;
-    state.provider_item_count = next_count;
-    state.provider_payload_bytes = next_payload_bytes;
-    Ok(())
-}
-
-fn accept_appended_provider_item(
-    state: &mut ExecutionState,
-    item: Item,
-    publish_nonterminal: bool,
-) -> Result<bool, TurnRunError> {
-    if let crate::domain::ItemPayload::Terminal(actual) = &item.payload {
-        apply_terminal_outcome(state, actual)?;
-        state.published.push(item);
-        return Ok(true);
-    }
-    if publish_nonterminal {
-        state.published.push(item);
-    }
-    Ok(false)
-}
-
-fn apply_terminal_outcome(
-    state: &mut ExecutionState,
-    outcome: &TerminalOutcome,
-) -> Result<(), TurnRunError> {
-    state.lifecycle = match outcome {
-        TerminalOutcome::Completed { .. } => state.lifecycle.complete()?,
-        TerminalOutcome::Failed { .. } => state.lifecycle.fail()?,
-        TerminalOutcome::Interrupted => state.lifecycle.interrupt()?,
-        TerminalOutcome::Cancelled => state.lifecycle.cancel()?,
-    };
-    Ok(())
-}
-
-fn history_failure(error: HistoryError, accepted: bool, published: &[Item]) -> TurnRunError {
-    if error == HistoryError::Unavailable {
-        TurnRunError::Durability(DurabilityFailure {
-            accepted,
-            published: published.to_vec(),
-            source: error,
-        })
-    } else {
-        TurnRunError::History(error)
-    }
-}
-
-fn post_accept_failure(error: TurnRunError, published: &[Item]) -> TurnRunError {
-    match error {
-        TurnRunError::History(history_error) => history_failure(history_error, true, published),
-        other => other,
-    }
-}
-
-fn recover_append_failure(state: &mut ExecutionState, error: HistoryError) -> TurnRunError {
-    if error == HistoryError::Unavailable
-        && let Ok(recovery_pending) = state.lifecycle.recovery_pending()
-    {
-        state.lifecycle = recovery_pending;
-    }
-    history_failure(error, true, &state.published)
 }

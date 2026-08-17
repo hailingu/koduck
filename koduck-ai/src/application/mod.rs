@@ -15,10 +15,10 @@ mod ports;
 mod preparation;
 mod runner;
 mod terminal;
-mod tool_boundary;
+pub(crate) mod tool_boundary;
 mod tool_execution;
 mod tool_interruption;
-mod tool_projection;
+pub(crate) mod tool_projection;
 
 pub use approval_route::{ApprovalDecisionOutcome, ApprovalDecisionRoute};
 pub use approval_store::{
@@ -57,5 +57,5 @@ pub(crate) use tool_interruption::{
     TurnOwnershipValidator,
 };
 pub use tool_projection::{
-    NoToolProjections, ToolProjection, ToolProjectionError, ToolProjectionSink,
+    NoToolProjections, ToolProjection, ToolProjectionError, ToolProjectionSink, output_digest,
 };

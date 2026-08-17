@@ -19,6 +19,7 @@ use super::payload_codec::{encode_payload, row_to_item};
 use super::settle_commit_attempt;
 use super::{LeaseKey, LeaseTiming, PostgresExecutor, ReconcileOutcome, RecoveryOutcome};
 
+mod projection_batch;
 /// Production `PostgreSQL` executor using one `SQLx` pool and its owning Tokio runtime.
 #[derive(Clone)]
 pub struct SqlxPostgresExecutor {
@@ -347,6 +348,14 @@ impl SqlxPostgresExecutor {
         Ok(item)
     }
 
+    async fn append_tool_projection_async(
+        &self,
+        turn: &AcceptedTurn,
+        items: Vec<Item>,
+    ) -> Result<Vec<Item>, HistoryError> {
+        projection_batch::append(&self.pool, turn, items).await
+    }
+
     async fn replay_async(
         &self,
         tenant_id: &TenantId,
@@ -668,6 +677,23 @@ impl PostgresExecutor for SqlxPostgresExecutor {
                 turn,
                 operation_item.item_id.as_uuid(),
             ),
+        ))
+    }
+
+    fn append_tool_projection(
+        &self,
+        turn: &AcceptedTurn,
+        items: Vec<NewItem>,
+    ) -> Result<Vec<Item>, HistoryError> {
+        let items = items
+            .into_iter()
+            .map(|item| Item::new(1, item.into_payload()))
+            .collect::<Vec<_>>();
+        let reconciliation_items = items.clone();
+        self.runtime.block_on(settle_commit_attempt(
+            AppendPolicy::cand_1().deadline(),
+            self.append_tool_projection_async(turn, items),
+            commit_reconciliation::appended_projection(&self.pool, turn, reconciliation_items),
         ))
     }
 

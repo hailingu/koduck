@@ -5,14 +5,18 @@
 use std::thread;
 use std::time::Duration;
 
-use serde_json::Value;
 use thiserror::Error;
 use tokio::runtime::Handle;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TryRecvError;
 
-use crate::application::{ModelInput, ModelProvider, ProviderError, ProviderEvent, ProviderStream};
-use crate::domain::{ItemPayload, Usage};
+use crate::application::{ModelInput, ModelProvider, ProviderError, ProviderStream};
+
+mod messages;
+mod stream_state;
+
+use messages::provider_messages;
+use stream_state::StreamState;
 
 const MAX_SERIALIZED_ITEM_PAYLOAD_BYTES: usize = 1_048_576;
 // Keep transport buffering bounded without applying the Item payload contract
@@ -291,37 +295,6 @@ async fn send_frame(
         .map_err(|_| ())
 }
 
-fn provider_messages(input: &ModelInput) -> Vec<serde_json::Value> {
-    let mut messages = Vec::new();
-    let mut assistant = String::new();
-    for item in &input.history {
-        match &item.payload {
-            ItemPayload::UserMessage { content } => {
-                flush_assistant(&mut messages, &mut assistant);
-                messages.push(serde_json::json!({ "role": "user", "content": content }));
-            }
-            ItemPayload::AgentMessageDelta { content } => assistant.push_str(content),
-            ItemPayload::Terminal(_) => flush_assistant(&mut messages, &mut assistant),
-            ItemPayload::Usage(_) => {}
-        }
-    }
-    flush_assistant(&mut messages, &mut assistant);
-    messages.push(serde_json::json!({
-        "role": "user",
-        "content": input.input,
-    }));
-    messages
-}
-
-fn flush_assistant(messages: &mut Vec<serde_json::Value>, assistant: &mut String) {
-    if !assistant.is_empty() {
-        messages.push(serde_json::json!({
-            "role": "assistant",
-            "content": std::mem::take(assistant),
-        }));
-    }
-}
-
 fn transport_error(code: &str) -> OpenAiTransportError {
     OpenAiTransportError {
         code: code.to_owned(),
@@ -351,86 +324,9 @@ where
             .transport
             .chat_completion_frames(&input)
             .map_err(|error| ProviderError { code: error.code })?;
-        let mut terminated = false;
-        let events = std::iter::from_fn(move || {
-            if terminated {
-                return None;
-            }
-            let frame = frames.next()?;
-            match frame {
-                Ok(OpenAiFrame::Pending) => Some(ProviderEvent::Pending),
-                Ok(OpenAiFrame::Data(frame)) => Some(parse_owned_frame(&frame, &mut terminated)),
-                Err(error) => {
-                    terminated = true;
-                    Some(ProviderEvent::Error { code: error.code })
-                }
-            }
-        });
+        let mut state = StreamState::default();
+        let events = std::iter::from_fn(move || state.next_event(&mut frames));
         Ok(Box::new(events))
-    }
-}
-
-fn parse_owned_frame(frame: &str, terminated: &mut bool) -> ProviderEvent {
-    match parse_frame(frame) {
-        Ok(Some(event)) => event,
-        Ok(None) => ProviderEvent::Pending,
-        Err(error) => {
-            *terminated = true;
-            ProviderEvent::Error { code: error.code }
-        }
-    }
-}
-
-fn parse_frame(frame: &str) -> Result<Option<ProviderEvent>, ProviderError> {
-    let data = frame
-        .strip_prefix("data: ")
-        .ok_or_else(|| protocol_error("INVALID_FRAME"))?;
-    if data == "[DONE]" {
-        return Ok(Some(ProviderEvent::Completed));
-    }
-    let document: Value =
-        serde_json::from_str(data).map_err(|_| protocol_error("INVALID_FRAME"))?;
-    if let Some(error) = document.get("error").filter(|error| !error.is_null()) {
-        let code = error
-            .get("code")
-            .and_then(Value::as_str)
-            .ok_or_else(|| protocol_error("INVALID_ERROR_FRAME"))?;
-        return Ok(Some(ProviderEvent::Error {
-            code: code.to_owned(),
-        }));
-    }
-    if let Some(usage_value) = document.get("usage").filter(|usage| !usage.is_null()) {
-        let input_tokens = usage_value
-            .get("prompt_tokens")
-            .and_then(Value::as_u64)
-            .ok_or_else(|| protocol_error("INVALID_USAGE_FRAME"))?;
-        let output_tokens = usage_value
-            .get("completion_tokens")
-            .and_then(Value::as_u64)
-            .ok_or_else(|| protocol_error("INVALID_USAGE_FRAME"))?;
-        let total_tokens = usage_value
-            .get("total_tokens")
-            .and_then(Value::as_u64)
-            .ok_or_else(|| protocol_error("INVALID_USAGE_FRAME"))?;
-        let usage = Usage::new(input_tokens, output_tokens)
-            .map_err(|_| protocol_error("INVALID_USAGE_FRAME"))?;
-        if usage.total_tokens != total_tokens {
-            return Err(protocol_error("INVALID_USAGE_FRAME"));
-        }
-        return Ok(Some(ProviderEvent::Usage(usage)));
-    }
-    match document.pointer("/choices/0/delta/content") {
-        Some(Value::String(content)) if !content.is_empty() => {
-            Ok(Some(ProviderEvent::Delta(content.clone())))
-        }
-        None | Some(Value::Null | Value::String(_)) => Ok(None),
-        Some(_) => Err(protocol_error("INVALID_DELTA_FRAME")),
-    }
-}
-
-fn protocol_error(code: &str) -> ProviderError {
-    ProviderError {
-        code: code.to_owned(),
     }
 }
 
@@ -463,6 +359,7 @@ mod tests {
             turn_id: TurnId::new(),
             input: "hello".to_owned(),
             history: Vec::new(),
+            tool_rounds: Vec::new(),
         }
     }
 
@@ -568,6 +465,7 @@ mod tests {
                     },
                 ),
             ],
+            tool_rounds: Vec::new(),
         };
 
         assert_eq!(
@@ -577,6 +475,85 @@ mod tests {
                 serde_json::json!({ "role": "assistant", "content": "AB" }),
                 serde_json::json!({ "role": "user", "content": "second" }),
             ]
+        );
+    }
+
+    #[test]
+    fn continuation_request_preserves_causal_round_order() {
+        // Round 2 was raised on round 1's committed result; the continuation
+        // serializes alternating assistant-call/result groups rather than
+        // rewriting both calls as concurrent (ADR-0003 TC-11).
+        let mut input = test_input();
+        input.tool_rounds = vec![
+            crate::application::ToolRound {
+                assistant_content: "I will inspect it.".to_owned(),
+                calls: vec![crate::application::CommittedToolCall {
+                    call: crate::application::ModelToolCall {
+                        name: "fixture.tool".to_owned(),
+                        arguments: r#"{"value":1}"#.to_owned(),
+                    },
+                    result: crate::application::ModelToolResult {
+                        content: "ok-output".to_owned(),
+                        is_error: false,
+                    },
+                }],
+            },
+            crate::application::ToolRound {
+                assistant_content: String::new(),
+                calls: vec![crate::application::CommittedToolCall {
+                    call: crate::application::ModelToolCall {
+                        name: "other.tool".to_owned(),
+                        arguments: "{}".to_owned(),
+                    },
+                    result: crate::application::ModelToolResult {
+                        content: "TOOL_EXECUTION_UNAVAILABLE".to_owned(),
+                        is_error: true,
+                    },
+                }],
+            },
+        ];
+
+        assert_eq!(
+            provider_messages(&input),
+            vec![
+                serde_json::json!({ "role": "user", "content": "hello" }),
+                serde_json::json!({
+                    "role": "assistant",
+                    "content": "I will inspect it.",
+                    "tool_calls": [
+                        {
+                            "id": "call_0",
+                            "type": "function",
+                            "function": {
+                                "name": "fixture.tool",
+                                "arguments": r#"{"value":1}"#,
+                            },
+                        },
+                    ],
+                }),
+                serde_json::json!({
+                    "role": "tool",
+                    "tool_call_id": "call_0",
+                    "content": "ok-output",
+                }),
+                serde_json::json!({
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "type": "function",
+                            "function": { "name": "other.tool", "arguments": "{}" },
+                        },
+                    ],
+                }),
+                serde_json::json!({
+                    "role": "tool",
+                    "tool_call_id": "call_1",
+                    "content": "TOOL_EXECUTION_UNAVAILABLE",
+                }),
+            ],
+            "each round serializes as its own assistant-call/result group in causal order"
         );
     }
 }

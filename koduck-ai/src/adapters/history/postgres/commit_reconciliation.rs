@@ -74,6 +74,59 @@ pub(super) async fn appended_item(
     row.as_ref().map(row_to_item).transpose()
 }
 
+/// Reconstructs a complete D-3 projection only when every preallocated Item
+/// identity from the atomic batch is durably present in its original order.
+pub(super) async fn appended_projection(
+    pool: &PgPool,
+    turn: &AcceptedTurn,
+    planned: Vec<Item>,
+) -> Result<Option<Vec<Item>>, HistoryError> {
+    let Some(operation) = planned.first() else {
+        return Err(HistoryError::Unavailable);
+    };
+    let mut transaction = pool.begin().await.map_err(unavailable)?;
+    lock_operation(&mut transaction, operation.item_id.as_uuid()).await?;
+    let mut durable = Vec::with_capacity(planned.len());
+    let mut missing = 0_usize;
+    for expected in &planned {
+        let row = sqlx::query(
+            "SELECT item_id, sequence, item_type, payload FROM turn_items \
+             WHERE tenant_id = $1 AND thread_id = $2 AND turn_id = $3 \
+             AND item_id = $4",
+        )
+        .bind(turn.tenant_id.as_str())
+        .bind(turn.thread_id.as_uuid())
+        .bind(turn.turn_id.as_uuid())
+        .bind(expected.item_id.as_uuid())
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(unavailable)?;
+        let Some(row) = row else {
+            missing = missing.saturating_add(1);
+            continue;
+        };
+        let item = row_to_item(&row)?;
+        if item.item_id != expected.item_id || item.payload != expected.payload {
+            return Err(HistoryError::Unavailable);
+        }
+        durable.push(item);
+    }
+    if missing == planned.len() {
+        return Ok(None);
+    }
+    if missing != 0
+        || durable.windows(2).any(|pair| {
+            pair[0]
+                .sequence
+                .checked_add(1)
+                .is_none_or(|next| pair[1].sequence != next)
+        })
+    {
+        return Err(HistoryError::Unavailable);
+    }
+    Ok(Some(durable))
+}
+
 /// Adds one decoded history item without exceeding the aggregate context budget.
 pub(super) fn push_bounded_history(
     history: &mut Vec<Item>,

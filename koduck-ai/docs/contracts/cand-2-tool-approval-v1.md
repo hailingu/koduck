@@ -90,8 +90,9 @@ C-5 appends ordered durable views of canonical D-6/D-7 state through the
 consumer-owned `ToolProjectionSink` port
 (`koduck-ai/src/application/tool_projection.rs`):
 
-- `ToolProjection::ApprovalStatus` carries the canonical D-6 identity, status,
-  decision, and record version; `ToolProjection::ToolCall` and
+- `ToolProjection::ApprovalStatus` carries the canonical D-6 identity and its
+  exact bound D-7 identity, plus status, decision, and record version;
+  `ToolProjection::ToolCall` and
   `ToolProjection::ToolResult` carry the canonical D-7 identity, lifecycle
   phase, stable failure code, executor effect state, and transition version
   (`prepared` = 1, `running` = 2, terminal = 3).
@@ -135,3 +136,79 @@ cancellation path for one authenticated Turn interruption:
   catalog, with the cancellation and approval ports supplied by runtime
   assembly. The production composition lands with the T-3 durable D-7
   committer that supplies those ports.
+
+## Provider Tool-Call Translation And Runner Servicing
+
+The OpenAI-compatible adapter assembles streamed `tool_calls` fragments into
+complete owned calls: fragments merge by `index`, a repeated name for one
+index, a missing index, a non-object function fragment, or a
+`finish_reason: "tool_calls"` frame with no assembled call fails closed with
+`INVALID_TOOL_CALL_FRAME`, and the assembled calls emit in index order as
+`ProviderEvent::ToolCall { name, arguments }` before `[DONE]` (ADR-0003
+TC-02/TC-11). Assembly is bounded incrementally before any allocation grows:
+one call's cumulative arguments never exceed the canonical 65,536-byte
+serialized action input (`TOOL_CALL_ARGUMENTS_TOO_LARGE`), and a 33rd
+assembled call fails closed (`TOO_MANY_TOOL_CALLS`) because the 64-item
+per-Turn provider buffer could never record it. A `[DONE]` frame arriving
+while assembled fragments remain unflushed (no `finish_reason: "tool_calls"`)
+fails closed as `INVALID_TOOL_CALL_FRAME` instead of dropping the requested
+action.
+
+A Tool-call round's stream end is not a Turn completion: after servicing, the
+runner starts a continuation request whose `ModelInput.tool_rounds` carries
+every bounded committed result — the C-5 driver's return proves the
+current-generation durable commit before the result reaches the model
+(TC-11) — and the adapter serializes each round as its own assistant
+`tool_calls` message followed by its `tool` result messages, so alternating
+assistant-call/result groups preserve the causal order of a call raised on an
+earlier round's result; synthesized call identities are unique across the
+whole request. Usage counters from the initial request and every continuation
+are summed with checked overflow into the completed Turn terminal (a counter
+overflow fails closed as `PROVIDER_USAGE_OVERFLOW`). A `Completed` event on a
+stream that still owes a continuation is a provider protocol violation and
+fails the Turn closed as `PROVIDER_PREMATURE_COMPLETION`.
+
+The runner services each event through the consumer-owned `ToolCallExecutor`
+port and owns the durable append-before-publish ordering. The port returns
+only the bounded committed `ModelToolResult`; every D-3 view
+(`approval_status`, `tool_call`, `tool_result`) streams through the
+runner-supplied `TurnProjectionSink`, whose `append` performs the durable
+append and whose `publish` is the visibility step (ADR-0003 TC-06). The sink
+is seeded with the runner's cumulative per-Turn provider counters and
+synchronizes them back when the call returns, so one Turn's projections share
+the single 64-item/1-MiB provider buffer allowance with every provider item
+(ADR-0001). Before persisting, the sink validates each projection's canonical
+tuple — the status/decision/version shape, the exact `prepared` = 1 /
+`running` = 2 / terminal = 3 transition versions, and the canonical Tool
+value validators for the descriptor, version, and target fields — and tracks
+the call's lifecycle stage bound to the open canonical D-6/D-7 identity, so a
+resolution or terminal view that references a different record is rejected.
+Each projection's complete item sequence is preflighted atomically against
+the cumulative budget before any part of it is appended, and a projection
+that opens a lifecycle reserves worst-case capacity for its guaranteed
+remainder before that first append: a running view is never appended without
+capacity for its terminal view, and a requested approval never without
+capacity for its resolution, dispatch, and terminal views, so no orphan
+running or approval view can be left durable; reservations are released as
+the guaranteed projections land. `publish` forwards each successfully
+appended item to the live observer immediately — the SSE `item.created` event
+for a requested approval or running transition is visible throughout the
+approval wait or executor call, not after the port returns. A rejected or
+failed append fails the sink closed, so no later append resumes the
+incomplete lifecycle, and the Turn terminalizes as a durability boundary
+violation that takes precedence over any executor error; any other turn-level
+port failure owns the turn terminal with its stable code. A `TurnRunner`
+without an assembled boundary records every call as a typed
+`tool_execution_unavailable` result without executing it (TC-13).
+
+The production runtime assembles `BoundaryToolCallExecutor`
+(`koduck-ai/src/runtime/tool_executor.rs`) over the process's sole C-5
+authority root and the empty descriptor snapshot: an unresolved name denies as
+`descriptor_missing`, a resolved capability without a bound profile denies as
+`outside_permission_profile` — both with zero D-6/D-7 and zero dispatch — and
+the empty inventory makes every production call take the denial path
+(TC-02/TC-13). The approval decision provider fails closed (`cancelled`); an
+interactive decision bridge requires its own accepted capability record. The
+foreground-lease validator reports the servicing runner's bound generation as
+current for its synchronous window, and the terminal committer is the
+process-local authority catalog until T-3 lands the durable D-7 store.

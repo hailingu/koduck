@@ -473,6 +473,9 @@ where
         emit(
             projections,
             ToolProjection::ToolCall {
+                descriptor_id: binding.action().descriptor_id().to_owned(),
+                descriptor_version: binding.action().descriptor_version().to_owned(),
+                target: binding.action().target().to_owned(),
                 attempt_id: binding.attempt_id(),
                 status: ExecutionStatus::Running,
                 version: attempt_version(ExecutionStatus::Running),

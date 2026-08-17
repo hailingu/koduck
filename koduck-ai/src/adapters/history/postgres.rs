@@ -215,6 +215,34 @@ pub trait PostgresExecutor: Clone {
     /// Returns [`HistoryError`] when ownership is stale, terminal, or storage fails.
     fn append(&self, turn: &AcceptedTurn, item: NewItem) -> Result<Item, HistoryError>;
 
+    /// Atomically appends the complete D-3 sequence for one Tool projection.
+    ///
+    /// Implementations MUST commit every item in sequence order or none. The
+    /// default rejects multi-item sequences rather than risking a partial
+    /// durable projection in adapters that have not implemented a transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`HistoryError`] when the sequence cannot be committed as one
+    /// operation under the expected lease generation.
+    fn append_tool_projection(
+        &self,
+        turn: &AcceptedTurn,
+        items: Vec<NewItem>,
+    ) -> Result<Vec<Item>, HistoryError> {
+        if items.len() != 1 {
+            return Err(HistoryError::Unavailable);
+        }
+        self.append(
+            turn,
+            items
+                .into_iter()
+                .next()
+                .expect("one checked projection item exists"),
+        )
+        .map(|item| vec![item])
+    }
+
     /// Reads one tenant-scoped Turn in increasing sequence order.
     ///
     /// # Errors
@@ -511,6 +539,14 @@ impl<E: PostgresExecutor + Send + 'static> TurnHistory for PostgresTurnHistory<E
 
     fn append(&mut self, turn: &AcceptedTurn, item: NewItem) -> Result<Item, HistoryError> {
         self.executor.append(turn, item)
+    }
+
+    fn append_tool_projection(
+        &mut self,
+        turn: &AcceptedTurn,
+        items: Vec<NewItem>,
+    ) -> Result<Vec<Item>, HistoryError> {
+        self.executor.append_tool_projection(turn, items)
     }
 
     fn append_provider_terminal(

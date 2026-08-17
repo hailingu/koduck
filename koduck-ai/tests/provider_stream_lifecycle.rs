@@ -184,6 +184,7 @@ fn model_input() -> ModelInput {
         turn_id: TurnId::new(),
         input: "hello".to_owned(),
         history: Vec::new(),
+        tool_rounds: Vec::new(),
     }
 }
 

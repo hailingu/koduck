@@ -233,6 +233,26 @@ impl Usage {
             total_tokens: 0,
         }
     }
+
+    /// Returns the combined counters of two requests with checked overflow.
+    ///
+    /// Each continuation request of one Turn reports its own counters, so the
+    /// Turn terminal must carry their sum (ADR-0003 TC-11).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DomainValueError::UsageOverflow`] when any counter sum
+    /// overflows.
+    pub fn checked_accumulate(&self, other: &Self) -> Result<Self, DomainValueError> {
+        Self::new(
+            self.input_tokens
+                .checked_add(other.input_tokens)
+                .ok_or(DomainValueError::UsageOverflow)?,
+            self.output_tokens
+                .checked_add(other.output_tokens)
+                .ok_or(DomainValueError::UsageOverflow)?,
+        )
+    }
 }
 
 /// The durable reason a turn stopped producing output.
@@ -257,8 +277,76 @@ pub enum ItemPayload {
     AgentMessageDelta { content: String },
     /// Provider token accounting observed before completion.
     Usage(Usage),
+    /// Append-only D-3 view of one canonical D-6 approval status (ADR-0003
+    /// TC-06). Carries canonical identity and version; never authority.
+    ApprovalStatus {
+        /// Canonical D-6 identity.
+        approval_id: execution::ApprovalId,
+        /// Exact D-7 identity bound by the canonical D-6 record.
+        attempt_id: execution::AttemptId,
+        /// Canonical status at this version.
+        status: execution::ApprovalStatus,
+        /// Canonical decision, or `None` while requested or expired.
+        decision: Option<execution::ApprovalDecision>,
+        /// Canonical D-6 record version.
+        version: u64,
+    },
+    /// Append-only D-3 view of one model-originated Tool call (ADR-0003
+    /// TC-06). A projection of the requested action and its canonical D-7
+    /// dispatch transition; never authority.
+    ToolCall {
+        /// Descriptor identity the call addressed.
+        descriptor_id: String,
+        /// Descriptor version the call addressed.
+        descriptor_version: String,
+        /// Exact target the call addressed.
+        target: String,
+        /// Canonical D-7 identity of the dispatch view, or `None` when
+        /// policy denied before any D-7 existed.
+        attempt_id: Option<execution::AttemptId>,
+        /// Canonical D-7 lifecycle phase of the dispatch view, or `None`
+        /// for a pre-D-7 denial record.
+        status: Option<execution::ExecutionStatus>,
+        /// Canonical D-7 transition version of the dispatch view, or `None`
+        /// for a pre-D-7 denial record.
+        version: Option<u64>,
+    },
+    /// Append-only D-3 view of one tool-execution terminal (ADR-0003
+    /// TC-06). Carries canonical identity, transition version, and bounded
+    /// metadata only.
+    ToolResult {
+        /// Canonical D-7 identity, or `None` when policy denied before any
+        /// D-7 existed.
+        attempt_id: Option<execution::AttemptId>,
+        /// Canonical D-7 lifecycle status of the terminal.
+        status: execution::ExecutionStatus,
+        /// Stable failure or denial code, or `None` for a success, timeout,
+        /// or cancellation.
+        code: Option<String>,
+        /// Executor-observed effect-state evidence.
+        effect_state: Option<ToolEffectState>,
+        /// Serialized size of the bounded executor output.
+        output_bytes: u64,
+        /// SHA-256 digest of a successful model-bound output, or `None` for
+        /// failure, timeout, cancellation, and pre-D-7 denial records.
+        output_digest: Option<String>,
+        /// Canonical D-7 terminal transition version, or `None` for a
+        /// pre-D-7 denial record.
+        version: Option<u64>,
+    },
     /// Exactly one terminal outcome for the turn.
     Terminal(TerminalOutcome),
+}
+
+/// Executor-observed effect-state evidence mirrored into D-3 views.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ToolEffectState {
+    /// The executor proved the effect never started.
+    NotStarted,
+    /// The executor confirmed the effect started.
+    Started,
+    /// The executor could not determine whether the effect started.
+    Unknown,
 }
 
 /// A durably sequenced Thread/Turn history item.

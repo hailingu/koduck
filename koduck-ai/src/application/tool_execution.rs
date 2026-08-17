@@ -66,6 +66,21 @@ pub enum ToolCallError {
     Reconciliation(ExecutionPending),
 }
 
+impl ToolCallError {
+    /// Returns the stable turn-level code for this failure.
+    #[must_use]
+    pub const fn stable_code(&self) -> &'static str {
+        match self {
+            Self::TenantMismatch => "TOOL_TENANT_MISMATCH",
+            Self::InvalidBinding(_) => "TOOL_BINDING_INVALID",
+            Self::Denied(_) => "TOOL_POLICY_DENIED",
+            Self::Preparation(_) => "TOOL_PREPARATION_FAILED",
+            Self::Approval(_) => "TOOL_APPROVAL_FAILED",
+            Self::Reconciliation(_) => "TOOL_RECONCILIATION_REQUIRED",
+        }
+    }
+}
+
 /// C-5 orchestrator that drives authorize, prepare, approve, and execute with
 /// exactly one proven-pre-effect retry.
 ///
@@ -180,6 +195,15 @@ impl<C, A> ToolExecutionDriver<C, A> {
                         ExecutionError::AttemptLimit,
                     ))) if retried => {
                         // AC-9: a retry that exhausts the 16-slot budget is failed/attempt_limit.
+                        emit(
+                            projections,
+                            ToolProjection::Denied {
+                                descriptor_id: inputs.action.descriptor_id().to_owned(),
+                                descriptor_version: inputs.action.descriptor_version().to_owned(),
+                                target: inputs.action.target().to_owned(),
+                                code: ExecutionFailure::AttemptLimit.stable_code().to_owned(),
+                            },
+                        );
                         return Ok(ToolExecutionOutcome::Failed {
                             code: ExecutionFailure::AttemptLimit,
                             effect_state: EffectState::NotStarted,
@@ -242,6 +266,8 @@ impl<C, A> ToolExecutionDriver<C, A> {
                     status: outcome_status(&outcome),
                     code: outcome_failure_code(&outcome),
                     effect_state: outcome.effect_state(),
+                    output_bytes: outcome_output_bytes(&outcome),
+                    output_digest: outcome_output_digest(&outcome),
                     version: attempt_version(outcome_status(&outcome)),
                 },
             );
@@ -344,6 +370,7 @@ impl<C, A> ToolExecutionDriver<C, A> {
                 projections,
                 ToolProjection::ApprovalStatus {
                     approval_id: request.approval_id(),
+                    attempt_id: request.binding().attempt_id(),
                     status: request.status(),
                     decision: request.decision(),
                     version: request.version(),
@@ -381,6 +408,7 @@ impl<C, A> ToolExecutionDriver<C, A> {
                     projections,
                     ToolProjection::ApprovalStatus {
                         approval_id: request.approval_id(),
+                        attempt_id: request.binding().attempt_id(),
                         status: request.status(),
                         decision: request.decision(),
                         version: request.version(),
@@ -405,6 +433,7 @@ impl<C, A> ToolExecutionDriver<C, A> {
                     projections,
                     ToolProjection::ApprovalStatus {
                         approval_id: request.approval_id(),
+                        attempt_id: request.binding().attempt_id(),
                         status: request.status(),
                         decision: request.decision(),
                         version: request.version(),
@@ -430,6 +459,28 @@ fn outcome_status(outcome: &ToolExecutionOutcome) -> crate::domain::execution::E
         ToolExecutionOutcome::Cancelled { .. } => {
             crate::domain::execution::ExecutionStatus::Cancelled
         }
+    }
+}
+
+/// Returns the serialized size of a committed successful outcome's output.
+fn outcome_output_bytes(outcome: &ToolExecutionOutcome) -> u64 {
+    match outcome {
+        ToolExecutionOutcome::Succeeded { output, .. } => output.len() as u64,
+        ToolExecutionOutcome::Failed { .. }
+        | ToolExecutionOutcome::TimedOut { .. }
+        | ToolExecutionOutcome::Cancelled { .. } => 0,
+    }
+}
+
+/// Returns the durable continuation-binding digest for a successful output.
+fn outcome_output_digest(outcome: &ToolExecutionOutcome) -> Option<String> {
+    match outcome {
+        ToolExecutionOutcome::Succeeded { output, .. } => {
+            Some(crate::application::output_digest(output))
+        }
+        ToolExecutionOutcome::Failed { .. }
+        | ToolExecutionOutcome::TimedOut { .. }
+        | ToolExecutionOutcome::Cancelled { .. } => None,
     }
 }
 

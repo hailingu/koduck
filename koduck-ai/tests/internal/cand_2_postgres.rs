@@ -50,6 +50,7 @@ fn harness() -> Option<Harness> {
             include_str!("../../migrations/0001_cand_1_history.sql"),
             include_str!("../../migrations/0002_cand_2_policy_execution.sql"),
             include_str!("../../migrations/0003_cand_2_requester_ownership.sql"),
+            include_str!("../../migrations/0004_cand_2_tool_projections.sql"),
         ] {
             runtime
                 .block_on(async { sqlx::raw_sql(migration).execute(&pool).await })
@@ -152,6 +153,7 @@ fn migration_is_idempotent_and_decisions_are_single_winner() {
             include_str!("../../migrations/0001_cand_1_history.sql"),
             include_str!("../../migrations/0002_cand_2_policy_execution.sql"),
             include_str!("../../migrations/0003_cand_2_requester_ownership.sql"),
+            include_str!("../../migrations/0004_cand_2_tool_projections.sql"),
         ] {
             harness
                 .runtime

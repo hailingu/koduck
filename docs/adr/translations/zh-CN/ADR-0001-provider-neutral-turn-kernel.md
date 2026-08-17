@@ -17,7 +17,7 @@
 - **所需审批人**：@linhai
 - **记录范围**：Project
 - **审批人 [Conditionally Required — Decision Status 为或曾为 `Accepted`]**：@linhai
-- **审批时间 [Conditionally Required — Decision Status 为或曾为 `Accepted`]**：2026-08-12T16:25:02+08:00
+- **审批时间 [Conditionally Required — Decision Status 为或曾为 `Accepted`]**：2026-08-17T08:57:39Z
 - **审批证据 [Conditionally Required — Decision Status 为或曾为 `Accepted`]**：Approve
 - **拒绝执行人 [Conditionally Required — Decision Status 为 `Rejected`]**：N/A — Decision Status 为 `Accepted`
 - **拒绝时间 [Conditionally Required — Decision Status 为 `Rejected`]**：N/A — Decision Status 为 `Accepted`
@@ -289,7 +289,8 @@ started ──> completed
 进入 `failed`；已认证 Client Stop 进入 `interrupted`；Platform/Dependency Stop
 或被 Fence 的 Owner 丢失进入 `cancelled`。Turn 接受后 History Append 失败，
 Live Owner 进入 `recovery-pending`、停止消费 Provider，并只暴露持久化前缀和
-Transport Diagnostic `durability-unavailable`。History 恢复后，由一次 Conditional
+Transport Diagnostic `durability-unavailable`——即下文 Wire Contract 定义的
+带内 SSE `error` Event 或同步 `503` Problem。History 恢复后，由一次 Conditional
 Terminal Append 将其关闭为 `failed`；如果 Owner 已过期并被 Fence，则由
 Reconciliation 关闭为 `cancelled`。
 
@@ -323,13 +324,20 @@ REST/SSE v1 权威 Wire Contract 为：
   `total_tokens`，且 `total_tokens = input_tokens + output_tokens`。
 - `POST /api/v1/ai/chat/stream` 接受同一 JSON，返回 `200` 与
   `Content-Type: text/event-stream`。Event Name 为 `turn.started`、
-  `item.created`，以及恰好一个 `turn.completed`、`turn.failed`、
-  `turn.interrupted` 或 `turn.cancelled`。每个 Event JSON 包含一致的
+  `item.created`、恰好一个 `turn.completed`、`turn.failed`、
+  `turn.interrupted` 或 `turn.cancelled`，以及 Transport Diagnostic
+  `error`。每个 `turn.*` 或 `item.created` Event JSON 包含一致的
   `thread_id`、`turn_id` 和严格递增正整数 `sequence`。`turn.started` Data 恰好
   包含 `thread_id`、`turn_id`、`sequence`、`status: started`；`item.created`
   另外恰好包含 `item_id`、`type: agent_message_delta`、非空 `content`；Terminal
   Data 恰好包含 `thread_id`、`turn_id`、`sequence` 和匹配的 `status`，且仅
-  `turn.completed` 额外包含上述精确 `usage` Object。
+  `turn.completed` 额外包含上述精确 `usage` Object。`turn.started` 之后发生的、
+  使 Durable Terminal Append 无法完成的失败，改为最多发出一个 `error` Event，
+  其 Data 为下文定义的精确 Problem Body（中途持久化故障的 Code 为
+  `durability-unavailable`），随后在不发出 Terminal Event 的情况下关闭 Stream；
+  该 Turn 随后由有界 Recovery 或 Fencing Reconciliation 关闭为 `failed` 或
+  `cancelled`。`error` Event 不携带 `thread_id`、`turn_id` 或 `sequence`，且
+  Terminal Event 发布后绝不再发出 `error` Event。
 - `POST /api/v1/ai/turns/{turn_id}/interrupt` 在调用者 Trust Context 拥有 Active
   Turn 时返回 `202`，Body 恰好包含 `turn_id` 与
   `status: interrupt-requested`，无其他 Field；Request 无 Body。Stream 后续发出唯一持久化
@@ -337,7 +345,8 @@ REST/SSE v1 权威 Wire Contract 为：
   Turn 返回 `409` 与 Error Code `turn-already-terminal`。
 - 缺失或无效 Identity 返回 `401`、`WWW-Authenticate: Bearer`，并用
   `application/problem+json` 返回 `invalid-identity`。无效 JSON/Input 返回
-  `400`；初始或中途持久化失败返回 `503` 与 `durability-unavailable`。每个 Error
+  `400`；初始或中途持久化失败返回 `503` 与 `durability-unavailable`；在已开始
+  的 SSE Stream 上，该诊断改为以带内 `error` Event 投递，而非 HTTP Status。每个 Error
   Body 恰好包含 `type: about:blank`、`title`、数值 `status`、稳定 `code` 和 UUID
   `correlation_id`；`title` 是把 Code 从 Kebab Case 转成单词并把首字母大写。
   初始 Transaction 失败时，错误响应不得暴露 Accepted Turn。
@@ -404,7 +413,7 @@ N/A — 所提设计不超出或豁免仓库工程规则。实施期间发现的
 | CT-5 | 同步 Interrupted/Cancelled 分别映射为 `409 turn-interrupted` 与 `409 turn-cancelled`。 | AC-15 |
 | CT-6 | Resume 在同一 Thread 创建新 Turn，不修改此前 Terminal History。 | AC-6 |
 | CT-7 | 已认证 Interrupt 仅在 `started` Turn 仍有未 Fenced、未过期 Live Owner 时赢得 Terminal Arbitration；Interrupt Transaction 锁定 Ownership、Append 唯一 Durable `interrupted` Item，并在返回 Accepted 前提交 Terminal Status。已脱离 Stream 的 `recovery-pending` 与 Expired Turn 拒绝 Interrupt。Unknown/Non-owned 仍不可区分，Cancellation 保持独立。 | AC-7；`postgres_subject_ownership::production_postgres_contract` |
-| CT-8 | 初始或中途 Durability Outage（包括 Accepted Control-state Read Outage）不发布未提交状态，并返回 `durability-unavailable`。 | AC-8；`control_read_outage_enters_failed_recovery_handoff` |
+| CT-8 | 初始或中途 Durability Outage（包括 Accepted Control-state Read Outage）不发布未提交状态，并返回 `durability-unavailable`；SSE Stream 开始后，该诊断以最多一个带内 `error` Event 投递，Data 为精确 Problem Body，Stream 随后在不发出 Terminal Event 的情况下关闭，且 Terminal Event 发布后绝不再发出 `error` Event。 | AC-8；`control_read_outage_enters_failed_recovery_handoff`；`runtime_wiring::mid_turn_failure_is_reported_inside_an_started_sse_stream`；`sse_terminal_consistency::replay_failure_after_sse_terminal_does_not_emit_error_event` |
 | CT-9 | Unpublished Data 上限为 64 Items/1 MiB，所有 PostgreSQL Attempt 上限为 2 秒。 | AC-9、AC-16 |
 | CT-10 | Lease Renewal/Expiry/Skew/Fencing/Reconciliation 最多生成一个 Durable Orphan Terminal。 | AC-10、AC-11 |
 | CT-11 | Renewal 与 Recovery 共享 256-Worker Admission Bound；失败 Turn 把 Renewal Permit 直接移动到 Recovery，不释放 Reservation，使满载交接保持原子性。 | AC-16；`append_outage_confirms_admission_handoff_before_recovery`；`renewal_recovery_handoff_retains_permit_reservation` |
@@ -436,7 +445,7 @@ N/A — 所提设计不超出或豁免仓库工程规则。实施期间发现的
 | AC-5 | T-2 | SSE Route 符合自有 Event Contract，且 Durable Append 前不发布 Event。 | 有效 Trust Context；Provider 发出两个 Delta 和 Completion；记录自有 v1 Fixture Hash。 | 运行 `cargo test -p koduck-ai --test cand_1_contract sse_v1_contract_and_append_before_publish -- --exact`。 | Exit Code 0；Status `200`；Content Type 为 `text/event-stream`；Event 为一个 `turn.started`、两个有序 `item.created` 与恰好一个 `turn.completed`；全部 ID 一致且 Sequence 严格递增；每个 Publish Observation 都有同一 Item/Terminal Identity 且序号更低的成功 Append Observation。 | Command Output、Fixture Hash 和 Append/Publish Trace。 | Pass | `46f2a39` 上 Exit 0；SSE Fixture 与 Append-before-publish Trace 通过。Commit `a7258bc` 进一步证明 SSE Terminal 发出后发生 Replay Failure 时，不会追加相互矛盾的 `event: error`。 |
 | AC-6 | T-2 | Resume 在同一 Thread 创建新 Turn，且不修改或静默截断此前 Terminal History。 | 已存在一个 Completed Turn 及其不可变 Replay Hash；越界 Fixture 包含 4097 个 Prior Items 或超过 1 MiB 规范序列化 Payload。 | 运行 `cargo test -p koduck-ai --test cand_1_contract` 与 PostgreSQL History Unit Test。 | Exit Code 0；预算内 Resume 使用同一 Thread 的新 Turn ID，并恰好一次提供有序 Durable History；越界 History 不创建新 Turn/Provider Call，返回自有 `400 invalid-request`；Prior Replay 不变。 | Command Output、前后 Replay Hash、Bounded-query Inspection 与 Response Assertion。 | Pass | Local Contract/PostgreSQL History Regression 通过；生产 Query 最多流式读取 4097 个有序 Row，拒绝第 4097 个 Item 或第 1,048,577 个序列化 Byte，且不构造越界 Provider Request。 |
 | AC-7 | T-2 | Interrupt Contract 精确，且已认证 Client Stop 与 Platform/Dependency Cancellation 可区分。 | 一个 Owner Live SSE Turn、一个 Recovery-pending Turn、一个 Expired Started Turn、一个未知 UUID、一个非 Owner Turn、一个已终态 Turn，以及两个 Provider-terminal Competitor。 | 运行 Owned Contract 与生产 PostgreSQL Contract Test。 | Exit Code 0；仅在 Interrupt Transaction 已为未 Fenced/未过期的 `started` Owner Append 恰好一个 Durable `interrupted` Terminal 后返回 202；两个 Provider-terminal Competitor 均收到 `AlreadyTerminal`；Recovery-pending/Expired Started 拒绝 Interrupt；Unknown/Non-owned 仍不可区分；Dependency Cancellation 保持独立。 | Command Output、Normalized Response Hash、PostgreSQL Replay 和 Race Result。 | Pass | Local Contract/Arbitration Test 通过；生产 PostgreSQL 证明 Interrupt Terminal 在 Completion/Failure 并发者均失败前已经 Durable，并拒绝 Recovery-pending/Expired-started Fixture；Provider Request Establishment 仍可 Interrupt。 |
-| AC-8 | T-3 | 初始 History Failure 不暴露 Accepted Turn；后续 Durability Outage 只暴露 Durable Prefix 与 `durability-unavailable`，并保留 Failed-recovery Ownership。 | Fault Adapter 在 Case A 让初始 Acceptance 失败；在 Case B 的一个 Durable Delta 后让下一次 Append 失败；在 Case C 让 Accepted Control-state Read 失败。 | 运行 `cargo test -p koduck-ai --test cand_1_durability`。 | Exit Code 0；Case A 的 Accepted Turn Record 和 Provider Call 均为 0；Case B/C 不发布未提交 Payload、停止 Provider Consumption、发出 `durability-unavailable`、进入 Recovery-pending，并通过 Liveness Handoff 调度 Failed Recovery。 | Command Output、Adapter Trace 和 Replay Fixture。 | Pass | Local Durability Regression 证明初始失败零副作用、Append Failure 只暴露 Durable Prefix、Accepted Control-read Failure Fail Closed，且两种 Accepted Outage 均保留 Liveness Recovery Reservation。 |
+| AC-8 | T-3 | 初始 History Failure 不暴露 Accepted Turn；后续 Durability Outage 只暴露 Durable Prefix 与 `durability-unavailable`，并保留 Failed-recovery Ownership。 | Fault Adapter 在 Case A 让初始 Acceptance 失败；在 Case B 的一个 Durable Delta 后让下一次 Append 失败；在 Case C 让 Accepted Control-state Read 失败。 | 运行 `cargo test -p koduck-ai --test cand_1_durability`。 | Exit Code 0；Case A 的 Accepted Turn Record 和 Provider Call 均为 0；Case B/C 不发布未提交 Payload、停止 Provider Consumption、发出 `durability-unavailable`（在 SSE Route 上为恰好一个携带该 Problem Body 的带内 `error` Event，且无 Terminal Event）、进入 Recovery-pending，并通过 Liveness Handoff 调度 Failed Recovery。 | Command Output、Adapter Trace 和 Replay Fixture。 | Pass | Local Durability Regression 证明初始失败零副作用、Append Failure 只暴露 Durable Prefix、Accepted Control-read Failure Fail Closed，且两种 Accepted Outage 均保留 Liveness Recovery Reservation。 |
 | AC-9 | T-3 | Append、Commit-reconciliation 与 Unpublished Buffer Limit 精确且 Fail Closed。 | Virtual Clock；分别测试 2.001 秒 Append、卡死的稳定 Identity Reconciliation、65 Items、Payload Size 1,048,577 Bytes。 | 运行 `cargo test -p koduck-ai --test cand_1_durability append_deadline_and_buffer_caps -- --exact` 与 `cargo test -p koduck-ai adapters::history::postgres::tests`。 | Exit Code 0；每个 Database Attempt 在 2 秒停止；Operation 与 Reconciliation 最多等待 4 秒；对账仍不确定时返回 `Unavailable`；每个 Buffer-limit Case 都停止 Provider Consumption、发布 0 个超限 Item、发出 `durability-unavailable`，且保留 Case 前 Durable Prefix。 | Command Output 和每个 Case 的 Trace。 | Pass | Local Regression 证明 Operation 与独立 Reconciliation 均受 Database Deadline 限制，包括卡死的 Reconciliation；现有 2.001 秒、Item 65 与 Byte 1,048,577 Case 均停止消费、映射到 `durability-unavailable` 且不发布超限 Item。Commit `a7b6faa` 证明 JSON Escape 与 Payload Object Overhead 均计入 Serialized 1-MiB Boundary。 |
 | AC-10 | T-3 | Process Crash 对账 Fence 过期 Generation，并 Append 一个孤儿 `cancelled` Terminal。 | Virtual Clock；最后续租 t=0；Heartbeat 5 秒、Lease 20 秒、Clock-skew Margin 2 秒；Owner Process 在一个 Durable Delta 后立即终止。 | 运行 `cargo test -p koduck-ai --test cand_1_liveness process_crash_fences_and_cancels_once -- --exact`。 | Exit Code 0；t=22 秒前对账被拒绝；t=22 秒时 Fence Generation；Delta 后恰有一个 Durable `cancelled` Terminal；Fencing 后每个 Old-generation Append 返回 `FENCED`。 | Command Output 和 Lease/Append Trace。 | Pass | `46f2a39` 上 Exit 0；21.999 秒过早，22.000 秒 Cancelled 一次并 Fence。Commit `a7b6faa` 进一步证明 Request Shutdown 不会同步等待卡死的 Renewal Worker。 |
 | AC-11 | T-3 | 并发 Reconciler 与延迟 Store Recovery 不能重复或覆盖 Orphan Terminal。 | 32 个 Reconciler 在 Store 不可用时争抢同一过期 Thread/Turn/Generation，随后 Store 恢复。 | 运行 `cargo test -p koduck-ai --test cand_1_liveness concurrent_reconcilers_are_idempotent -- --exact`。 | Exit Code 0；恢复后恰有一个 Conditional Write 成功；Durable History 恰有一个 `cancelled` Terminal；31 个 Reconciler 收到 `ALREADY_TERMINAL` 或 `FENCED`；Late `completed` Append 被拒绝。 | Command Output、Race Summary 和 Replay Hash。 | Pass | `46f2a39` 上 Exit 0；恢复后 1 个成功、31 个 Terminal/Fenced，Late Completion 被拒绝。 |
@@ -545,3 +554,6 @@ N/A — 所提设计不超出或豁免仓库工程规则。实施期间发现的
 | 2026-08-12 | `2026-08-12T16:25:02+08:00` 的使审批失效 PR #2 Review Thread `3764738232` 修订为此前无界的稳定 Identity Reconciliation Attempt 增加边界。保留旧审批：Approver `@linhai`、Approval Time `2026-08-12T15:55:49+08:00`、Approval Evidence `Approve`、无 Approval Context Revision；Decision Status 重置为 `Proposed`，Implementation Status 重置为 `Not Started`，等待重新审批。 | @codex |
 | 2026-08-12 | 仓库 Owner `@linhai` 明确 ADR/Review 冲突并精确回复 `Approve`，重新批准 Bounded Commit-reconciliation 修订；记录 Approval Time `2026-08-12T16:25:02+08:00`，Decision Status 恢复 `Accepted`，修订后检查通过后 Implementation Status 恢复 `Complete`。获批行为把 Write 与稳定 Identity Reconciliation 限制为两个各自独立的 2 秒 PostgreSQL Attempt；若对账仍不确定则返回 `Unavailable`。由于尚无不可变 Revision 表示本次获批修订，因此不记录 Approval Context Revision。 | @linhai |
 | 2026-08-12 | 记录 PR #2 Review Thread `3764738232` 的 Implementation Commit `8de786d`。路由 Format、严格 All-target/All-feature Clippy 与完整 All-target/All-feature Suite 全部通过，共 102 项测试，包含先红后绿的 Stalled-reconciliation Deadline Regression。本次纯证据更新不改变已批准 Decision、Behavior 或 Scope。 | @codex |
+| 2026-08-17 | `2026-08-17T08:25:37Z` 的使审批失效契约调和：SSE Wire Contract 现在枚举实现本已针对 Stream 开始后失败发出的带内 `error` Transport Diagnostic Event，消除 Event Name 枚举与耐久性条款要求的 `durability-unavailable` 诊断之间的矛盾；CT-8 与 AC-8 现在约束该 Event 的精确 Problem Body 形状、不携带 `thread_id`/`turn_id`/`sequence`、无 Terminal Event 关闭 Stream，以及 Terminal Event 发布后禁止再发 `error` Event（`runtime_wiring::mid_turn_failure_is_reported_inside_an_started_sse_stream`；`sse_terminal_consistency::replay_failure_after_sse_terminal_does_not_emit_error_event`）。Source 行为未变。保留旧审批：Approver `@linhai`、Approval Time `2026-08-12T16:25:02+08:00`、Approval Evidence `Approve`、无 Approval Context Revision；Decision Status 重置为 `Proposed`，Implementation Status 重置为 `Not Started`，等待重新审批。 | @kimi |
+| 2026-08-17 | 仓库 Owner 在活跃任务中自我声明 `@linhai`、明确 ADR-0001 并精确回复 `Approve`，重新批准 SSE `error` Event 的 Wire Contract 调和；记录 Approval Time `2026-08-17T08:57:39Z`，Decision Status 恢复 `Accepted`。由于尚无不可变 Revision 表示本次获批内容，因此不记录 Approval Context Revision。修订后验收检查重新执行通过后，Implementation Status 方可恢复。 | @linhai |
+| 2026-08-17 | 重新审批后重新执行修订的验收检查：`cargo test -p koduck-ai --test cand_1_durability`（9 通过，AC-8/AC-9）、`cargo test -p koduck-ai --test runtime_wiring mid_turn_failure_is_reported_inside_an_started_sse_stream -- --exact`（1 通过）、`cargo test -p koduck-ai --test sse_terminal_consistency replay_failure_after_sse_terminal_does_not_emit_error_event -- --exact`（1 通过）、`cargo test -p koduck-ai --test cand_1_contract`（10 通过，覆盖 AC-4/AC-5/AC-6/AC-13/AC-15）；路由 `cargo fmt --all --check`、严格 All-target/All-feature Clippy 与完整 All-target/All-feature Suite 全部通过、0 失败。Implementation Status 恢复 `Complete`；本次纯证据更新不改变已批准 Decision、Behavior 或 Scope。 | @kimi |

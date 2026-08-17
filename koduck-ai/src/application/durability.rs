@@ -75,6 +75,20 @@ impl AppendPolicy {
         }
     }
 
+    /// Validates one projected cumulative payload total against the approved
+    /// cap, including capacity reserved for a guaranteed remainder.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BufferLimitError::PayloadBytes`] when the total exceeds 1 MiB.
+    pub(crate) fn check_payload_bytes(self, payload_bytes: usize) -> Result<(), BufferLimitError> {
+        if payload_bytes > self.max_payload_bytes {
+            Err(BufferLimitError::PayloadBytes)
+        } else {
+            Ok(())
+        }
+    }
+
     /// Checks whether one append completed inside the exact deadline.
     ///
     /// # Errors
@@ -123,10 +137,82 @@ fn payload_bytes(item: &NewItem) -> usize {
             "{\"code\":".len() + json_string_bytes(code) + "}".len()
         }
         NewItem::Terminal(TerminalOutcome::Interrupted | TerminalOutcome::Cancelled) => "{}".len(),
+        NewItem::ApprovalStatus {
+            approval_id,
+            attempt_id,
+            status,
+            decision,
+            version,
+        } => {
+            "{\"approval_id\":".len()
+                + approval_id.as_uuid().to_string().len()
+                + 2
+                + ",\"attempt_id\":".len()
+                + attempt_id.as_uuid().to_string().len()
+                + 2
+                + ",\"status\":".len()
+                + json_string_bytes(status.as_str())
+                + ",\"decision\":".len()
+                + decision.map_or(4, |decision| json_string_bytes(decision.as_str()))
+                + ",\"version\":".len()
+                + decimal_bytes(*version)
+                + "}".len()
+        }
+        NewItem::ToolCall {
+            descriptor_id,
+            descriptor_version,
+            target,
+            attempt_id,
+            status,
+            version,
+        } => {
+            "{\"descriptor_id\":".len()
+                + json_string_bytes(descriptor_id)
+                + ",\"descriptor_version\":".len()
+                + json_string_bytes(descriptor_version)
+                + ",\"target\":".len()
+                + json_string_bytes(target)
+                + ",\"attempt_id\":".len()
+                + attempt_id.map_or(4, |id| id.as_uuid().to_string().len() + 2)
+                + ",\"status\":".len()
+                + status.map_or(4, |status| status.as_str().len() + 2)
+                + ",\"version\":".len()
+                + version.map_or(4, decimal_bytes)
+                + "}".len()
+        }
+        NewItem::ToolResult {
+            attempt_id,
+            status,
+            code,
+            output_bytes,
+            output_digest,
+            effect_state,
+            version,
+        } => {
+            "{\"attempt_id\":".len()
+                + attempt_id.map_or(4, |id| id.as_uuid().to_string().len() + 2)
+                + ",\"status\":".len()
+                + json_string_bytes(status.as_str())
+                + ",\"code\":".len()
+                + code.as_deref().map_or(4, json_string_bytes)
+                + ",\"output_bytes\":".len()
+                + decimal_bytes(*output_bytes)
+                + ",\"output_digest\":".len()
+                + output_digest.as_deref().map_or(4, json_string_bytes)
+                + ",\"effect_state\":".len()
+                + effect_state.map_or(4, decimal_effect_state_bytes)
+                + ",\"version\":".len()
+                + version.map_or(4, decimal_bytes)
+                + "}".len()
+        }
     }
 }
 
-fn json_string_bytes(value: &str) -> usize {
+/// Returns the exact serialized size of one string as a JSON value, including
+/// its surrounding quotes and every escape sequence the canonical encoder
+/// emits. Shared by the unpublished-buffer preflight and the model-bound
+/// Tool-result boundary check so both account against the encoded size.
+pub(crate) fn json_string_bytes(value: &str) -> usize {
     value.chars().fold(2_usize, |size, character| {
         size.saturating_add(match character {
             '"' | '\\' | '\u{0008}' | '\t' | '\n' | '\u{000c}' | '\r' => 2,
@@ -148,4 +234,12 @@ fn usage_payload_bytes(usage: crate::domain::Usage) -> usize {
 
 fn decimal_bytes(value: u64) -> usize {
     value.to_string().len()
+}
+
+fn decimal_effect_state_bytes(state: crate::domain::ToolEffectState) -> usize {
+    match state {
+        crate::domain::ToolEffectState::NotStarted => "not_started".len() + 2,
+        crate::domain::ToolEffectState::Started => "started".len() + 2,
+        crate::domain::ToolEffectState::Unknown => "unknown".len() + 2,
+    }
 }

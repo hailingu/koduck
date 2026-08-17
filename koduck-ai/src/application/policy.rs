@@ -33,6 +33,23 @@ pub enum DenialCode {
     InvalidInput,
 }
 
+impl DenialCode {
+    /// Returns the stable D-3 denial code for this typed denial.
+    #[must_use]
+    pub const fn stable_code(self) -> &'static str {
+        match self {
+            Self::DescriptorMissing => "descriptor_missing",
+            Self::DescriptorStale => "descriptor_stale",
+            Self::DescriptorDisabled => "descriptor_disabled",
+            Self::DescriptorIncompatible => "descriptor_incompatible",
+            Self::DescriptorConflicting => "descriptor_conflicting",
+            Self::UnknownEffect => "unknown_effect",
+            Self::OutsidePermissionProfile => "outside_permission_profile",
+            Self::InvalidInput => "invalid_input",
+        }
+    }
+}
+
 /// The only three policy outcomes before canonical execution preparation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PolicyDecision {
@@ -110,6 +127,30 @@ impl ToolConfigurationSnapshot {
         }
         self.descriptors.push(descriptor);
         Ok(())
+    }
+
+    /// Returns the configured descriptor a model-declared name addresses.
+    ///
+    /// A model Tool call declares only a name; the first configured
+    /// descriptor with that identifier is the capability it addresses, and an
+    /// unregistered name resolves to `None` so default-deny policy applies
+    /// (TC-02).
+    #[must_use]
+    pub fn descriptor_by_name(&self, name: &str) -> Option<&CapabilityDescriptor> {
+        self.descriptors
+            .iter()
+            .find(|existing| existing.id() == name)
+    }
+
+    /// Returns the runtime-bound Permission Profile, when one is registered.
+    ///
+    /// A Turn resolves exactly one immutable profile (ADR-0003 TC-03); with
+    /// the empty production inventory no profile is registered and every
+    /// resolved call denies as out-of-profile. Profile selection beyond one
+    /// bound profile requires a later accepted capability record.
+    #[must_use]
+    pub fn first_profile(&self) -> Option<&PermissionProfile> {
+        self.profiles.first()
     }
 
     /// Registers one validated Permission Profile snapshot.

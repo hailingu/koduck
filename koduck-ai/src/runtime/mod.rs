@@ -2,6 +2,8 @@
 
 //! Production runtime configuration and executable assembly.
 
+pub(crate) mod tool_executor;
+
 use std::collections::BTreeMap;
 use std::convert::Infallible;
 use std::fmt;
@@ -171,9 +173,9 @@ where
 /// listener binding, or HTTP serving fails.
 pub async fn run(config: RuntimeConfig) -> Result<(), RuntimeError> {
     // Assembled at startup and held for the process lifetime: the state owns
-    // the process's sole C-5 Turn authority root; T-2 wires its shared handles
-    // into the transport consumers.
-    let _runtime_state = RuntimeState::assemble();
+    // the process's sole C-5 Turn authority root and the empty-inventory
+    // tool-call executor backing the runner's Tool-call servicing.
+    let runtime_state = RuntimeState::assemble();
     let database_deadline = AppendPolicy::cand_1().deadline();
     let pool = database_setup_attempt(
         database_deadline,
@@ -201,6 +203,14 @@ pub async fn run(config: RuntimeConfig) -> Result<(), RuntimeError> {
         .execute(&pool),
     )
     .await?;
+    database_setup_attempt(
+        database_deadline,
+        sqlx::raw_sql(include_str!(
+            "../../migrations/0004_cand_2_tool_projections.sql"
+        ))
+        .execute(&pool),
+    )
+    .await?;
     let runtime = tokio::runtime::Handle::current();
     // Production canonical D-6 assembly: the authenticated decision route
     // drives the conditional `SQLx` transitions on the same Tokio runtime.
@@ -222,7 +232,8 @@ pub async fn run(config: RuntimeConfig) -> Result<(), RuntimeError> {
         config.provider_api_key(),
     );
     let provider = OpenAiCompatibleProvider::new(transport);
-    let runner = TurnRunner::new(provider, history);
+    let runner =
+        TurnRunner::new(provider, history).with_tool_executor(runtime_state.tool_call_executor());
     let listener = tokio::net::TcpListener::bind(config.bind_addr())
         .await
         .map_err(RuntimeError::Bind)?;
@@ -417,12 +428,21 @@ impl RuntimeState {
     }
 
     /// Distributes one shared handle to the held C-5 Turn authority root.
-    #[cfg_attr(
-        not(test),
-        allow(dead_code, reason = "T-2 runtime execution wiring is not complete")
-    )]
+    #[cfg(test)]
     pub(crate) fn tool_execution_root(&self) -> crate::application::ToolExecutionRuntimeRoot {
         self.tool_execution_root.clone()
+    }
+
+    /// Returns the production tool-call executor over this state's sole C-5
+    /// authority root and the empty production descriptor snapshot: every
+    /// model Tool call resolves against the empty inventory and is recorded
+    /// as a typed denial with zero D-6/D-7 and zero dispatch (ADR-0003
+    /// TC-02/TC-13).
+    pub(crate) fn tool_call_executor(&self) -> tool_executor::BoundaryToolCallExecutor {
+        tool_executor::BoundaryToolCallExecutor::new(
+            &self.tool_execution_root,
+            crate::application::ToolConfigurationSnapshot::empty(),
+        )
     }
 }
 

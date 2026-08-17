@@ -22,6 +22,18 @@ fn domain_and_application_dependencies_are_inward() {
 }
 
 #[test]
+fn provider_transport_root_stays_within_the_production_file_limit() {
+    let crate_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let provider_root = fs::read_to_string(crate_root.join("src/adapters/provider/mod.rs"))
+        .expect("provider transport root source is readable");
+
+    assert!(
+        provider_root.lines().count() <= 800,
+        "the provider transport root must remain within the 800-line production-file limit"
+    );
+}
+
+#[test]
 fn cand_2_policy_dependencies_are_inward_and_unbypassable() {
     let crate_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let mut violations = Vec::new();
@@ -48,13 +60,11 @@ fn cand_2_policy_dependencies_are_inward_and_unbypassable() {
         );
     }
 
-    // AC-1 partial structural guard: both native Tool and MCP translation
-    // entrypoints exist and return the owned action, and the adapter owns no
-    // dispatch path. This proves only declaration and return shape — no
-    // production caller wires these entrypoints into the C-5 boundary yet, so
-    // the declared invocation-to-C-5 delegation equality remains UNOBSERVED
-    // and AC-1 stays open until the T-2 provider wiring lands a deterministic
-    // call-path assertion.
+    // AC-1 structural guard: both native Tool and MCP translation entrypoints
+    // exist, return the owned action, and the adapter owns no dispatch path.
+    // The production runner currently receives only provider-native Tool
+    // calls; the MCP entrypoint is separately pinned to the same translation
+    // function, rather than being misrepresented as a runtime ingress.
     let tool_adapter = fs::read_to_string(crate_root.join("src/adapters/tool.rs"))
         .expect("CAND-2 tool adapter source is readable");
     let native_entrypoints = ["translate_native_tool_call", "translate_mcp_tool_call"];
@@ -86,6 +96,27 @@ fn cand_2_policy_dependencies_are_inward_and_unbypassable() {
             "the Tool/MCP adapter must not own a dispatch or direct execution path: {forbidden}"
         );
     }
+
+    // AC-1 call-path assertion: the production runtime executor invokes the
+    // provider-native entrypoint and feeds the translated action into the C-5
+    // boundary (TC-01). MCP has no production ingress in this slice.
+    let runtime_executor = fs::read_to_string(crate_root.join("src/runtime/tool_executor.rs"))
+        .expect("CAND-2 runtime tool executor source is readable");
+    assert!(
+        runtime_executor.contains("translate_native_tool_call("),
+        "the production runtime executor invokes the provider-native Tool translation"
+    );
+    assert!(
+        runtime_executor.contains(".execute_projected(") && runtime_executor.contains(".boundary("),
+        "the runtime executor dispatches the translated action through the C-5 boundary"
+    );
+    assert!(
+        tool_adapter.contains(
+            "translate_native_tool_call(
+            &ConfiguredCapability::new("
+        ) || tool_adapter.matches("translate_native_tool_call(").count() >= 2,
+        "the MCP entrypoint delegates to the native translation"
+    );
 
     // C-1/C-2 delivery adapters hold no direct filesystem, process, or MCP
     // execution entrypoint.
@@ -132,6 +163,22 @@ fn cand_2_has_no_direct_or_legacy_execution_fallback() {
             "production graph contains forbidden direct or legacy path {forbidden}"
         );
     }
+}
+
+#[test]
+fn projection_append_diagnostics_do_not_log_untrusted_projection_contents() {
+    let crate_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let projection = fs::read_to_string(crate_root.join("src/application/tool_projection.rs"))
+        .expect("tool projection source is readable");
+
+    assert!(
+        projection.contains("projection_kind(&projection)"),
+        "append diagnostics must report only a bounded projection kind"
+    );
+    assert!(
+        !projection.contains("projection={projection:?}"),
+        "append diagnostics must not log untrusted projection fields"
+    );
 }
 
 #[test]
@@ -419,7 +466,6 @@ fn production_runtime_wires_reviewed_failure_and_streaming_guards() {
         sqlx.contains("tokio::time::timeout") && sqlx.contains("AppendPolicy::cand_1().deadline()"),
         "production append must enforce the approved two-second deadline"
     );
-
     let provider = fs::read_to_string(crate_root.join("src/adapters/provider/mod.rs"))
         .expect("provider adapter source is readable");
     assert!(
@@ -487,8 +533,8 @@ fn production_io_and_background_work_are_bounded() {
     assert!(runtime.contains("async fn database_setup_attempt"));
     assert_eq!(
         runtime.matches("database_deadline,").count(),
-        4,
-        "all four PostgreSQL startup operations (pool connect plus the three idempotent migrations) must use the shared bounded helper"
+        5,
+        "all five PostgreSQL startup operations (pool connect plus the four idempotent migrations) must use the shared bounded helper"
     );
 }
 
@@ -635,14 +681,39 @@ fn postgres_claims_use_the_production_executor_instead_of_source_inspection() {
         integration.contains("KODUCK_AI_TEST_DATABASE_URL")
             && integration.contains("SqlxPostgresExecutor")
             && integration.contains("0001_cand_1_history.sql")
+            && integration.contains("0004_cand_2_tool_projections.sql")
             && integration.contains("production_postgres_contract"),
         "PostgreSQL claims must run the production migration and SQLx executor"
+    );
+    assert!(
+        integration.contains("verify_tool_projection_batch"),
+        "the production PostgreSQL harness must exercise D-3 batch commit, replay, and rollback"
     );
     assert!(
         !integration
             .contains("include_str!(\"../src/adapters/history/postgres/sqlx_executor.rs\")")
             && !integration.contains("executor.contains("),
         "source-string assertions cannot establish PostgreSQL behavior"
+    );
+}
+
+#[test]
+fn projection_discriminator_migration_does_not_rebuild_the_constraint_on_every_startup() {
+    let crate_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let migration =
+        fs::read_to_string(crate_root.join("migrations/0004_cand_2_tool_projections.sql"))
+            .expect("projection migration is readable");
+
+    assert!(
+        migration.contains("pg_constraint")
+            && migration.contains("pg_get_constraintdef")
+            && migration.contains("pg_advisory_xact_lock"),
+        "runtime reapplies migrations at every startup, so the projection migration must serialize startup upgrades and inspect the installed discriminator constraint before replacing it"
+    );
+    assert_eq!(
+        migration.matches("pg_get_constraintdef(oid) LIKE").count(),
+        3,
+        "the existing constraint must be checked for every newly supported projection type"
     );
 }
 

@@ -443,12 +443,14 @@ struct RecordingProjections {
 
 impl ToolProjectionSink for RecordingProjections {
     fn append(&mut self, projection: &ToolProjection) -> Result<(), ToolProjectionError> {
-        self.events.push((ProjectionPhase::Append, *projection));
+        self.events
+            .push((ProjectionPhase::Append, projection.clone()));
         Ok(())
     }
 
     fn publish(&mut self, projection: &ToolProjection) {
-        self.events.push((ProjectionPhase::Publish, *projection));
+        self.events
+            .push((ProjectionPhase::Publish, projection.clone()));
     }
 }
 
@@ -547,30 +549,35 @@ fn projections_append_before_publish() {
         .events
         .iter()
         .filter(|(phase, _)| *phase == ProjectionPhase::Append)
-        .map(|(_, projection)| *projection)
+        .map(|(_, projection)| projection.clone())
         .collect();
-    let approval_id = match appended[0] {
-        ToolProjection::ApprovalStatus { approval_id, .. } => approval_id,
+    let approval_id = match appended.first() {
+        Some(ToolProjection::ApprovalStatus { approval_id, .. }) => *approval_id,
         other => panic!("the first projection is the requested D-6 view: {other:?}"),
     };
-    let attempt_id = match appended[2] {
-        ToolProjection::ToolCall { attempt_id, .. } => attempt_id,
+    let attempt_id = match appended.get(2) {
+        Some(ToolProjection::ToolCall { attempt_id, .. }) => *attempt_id,
         other => panic!("the third projection is the running D-7 view: {other:?}"),
     };
     let expected = vec![
         ToolProjection::ApprovalStatus {
             approval_id,
+            attempt_id,
             status: ApprovalStatus::Requested,
             decision: None,
             version: 1,
         },
         ToolProjection::ApprovalStatus {
             approval_id,
+            attempt_id,
             status: ApprovalStatus::Accepted,
             decision: Some(ApprovalDecision::Accepted),
             version: 2,
         },
         ToolProjection::ToolCall {
+            descriptor_id: "fixture.tool".to_owned(),
+            descriptor_version: "v1".to_owned(),
+            target: "fixture-target".to_owned(),
             attempt_id,
             status: koduck_ai::domain::execution::ExecutionStatus::Running,
             version: 2,
@@ -580,6 +587,8 @@ fn projections_append_before_publish() {
             status: koduck_ai::domain::execution::ExecutionStatus::Succeeded,
             code: None,
             effect_state: EffectState::Started,
+            output_bytes: 2,
+            output_digest: Some(koduck_ai::application::output_digest(b"ok")),
             version: 3,
         },
     ];
@@ -667,6 +676,7 @@ fn projections_append_before_publish() {
     }
     let forged = ToolProjection::ApprovalStatus {
         approval_id: ApprovalId::new(),
+        attempt_id: AttemptId::new(),
         status: ApprovalStatus::Accepted,
         decision: Some(ApprovalDecision::Accepted),
         version: 9,
@@ -757,7 +767,7 @@ fn appended_projections(projections: &RecordingProjections) -> Vec<ToolProjectio
         .events
         .iter()
         .filter(|(phase, _)| *phase == ProjectionPhase::Append)
-        .map(|(_, projection)| *projection)
+        .map(|(_, projection)| projection.clone())
         .collect()
 }
 
@@ -915,12 +925,14 @@ fn late_approval_decision_projects_the_expired_terminal() {
         vec![
             ToolProjection::ApprovalStatus {
                 approval_id,
+                attempt_id,
                 status: ApprovalStatus::Requested,
                 decision: None,
                 version: 1,
             },
             ToolProjection::ApprovalStatus {
                 approval_id,
+                attempt_id,
                 status: ApprovalStatus::Expired,
                 decision: None,
                 version: 2,
@@ -930,6 +942,8 @@ fn late_approval_decision_projects_the_expired_terminal() {
                 status: ExecutionStatus::Cancelled,
                 code: None,
                 effect_state: EffectState::NotStarted,
+                output_bytes: 0,
+                output_digest: None,
                 version: 3,
             },
         ],
@@ -990,17 +1004,22 @@ fn running_projection_survives_a_post_claim_fence() {
         vec![
             ToolProjection::ApprovalStatus {
                 approval_id,
+                attempt_id,
                 status: ApprovalStatus::Requested,
                 decision: None,
                 version: 1,
             },
             ToolProjection::ApprovalStatus {
                 approval_id,
+                attempt_id,
                 status: ApprovalStatus::Accepted,
                 decision: Some(ApprovalDecision::Accepted),
                 version: 2,
             },
             ToolProjection::ToolCall {
+                descriptor_id: "fixture.tool".to_owned(),
+                descriptor_version: "v1".to_owned(),
+                target: "fixture-target".to_owned(),
                 attempt_id,
                 status: ExecutionStatus::Running,
                 version: 2,
@@ -1010,6 +1029,8 @@ fn running_projection_survives_a_post_claim_fence() {
                 status: ExecutionStatus::Cancelled,
                 code: None,
                 effect_state: EffectState::NotStarted,
+                output_bytes: 0,
+                output_digest: None,
                 version: 3,
             },
         ],
@@ -1061,6 +1082,8 @@ fn replayed_terminal_must_carry_the_canonical_transition_version() {
             status: ExecutionStatus::Succeeded,
             code: None,
             effect_state: EffectState::Started,
+            output_bytes: 2,
+            output_digest: Some(koduck_ai::application::output_digest(b"ok")),
             version: 3,
         },
         "the replayed terminal projects at the canonical transition version"

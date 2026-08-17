@@ -92,6 +92,7 @@ impl ToolExecutionRuntimeRoot {
     not(test),
     allow(dead_code, reason = "T-2 runtime execution wiring is not complete")
 )]
+#[derive(Clone)]
 pub(crate) struct ToolExecutionAssembly {
     configuration: ToolConfigurationSnapshot,
     runtime: ToolExecutionRuntime,
@@ -203,6 +204,31 @@ where
             trust,
             decision_for,
             now,
+        )
+    }
+
+    /// Executes one call while appending D-3 projections of every canonical
+    /// D-6/D-7 transition before their publication (TC-06).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ToolCallError`] under the same conditions as [`Self::execute`].
+    pub(crate) fn execute_projected(
+        &mut self,
+        inputs: &ToolCallInputs,
+        trust: &TrustContext,
+        decision_for: &mut dyn FnMut(&ApprovalRequest) -> (ApprovalDecision, u64),
+        now: &mut dyn FnMut() -> u64,
+        projections: &mut dyn super::tool_projection::ToolProjectionSink,
+    ) -> Result<ToolExecutionOutcome, ToolCallError> {
+        self.driver.execute_projected(
+            &mut self.preparer,
+            &mut self.coordinator,
+            inputs,
+            trust,
+            decision_for,
+            now,
+            projections,
         )
     }
 }

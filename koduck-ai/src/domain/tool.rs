@@ -7,7 +7,8 @@ use std::fmt::Write as _;
 
 use thiserror::Error;
 
-const MAX_DESCRIPTOR_ID_BYTES: usize = 128;
+/// Maximum byte size for the stable descriptor identifier carried by an owned action.
+pub const MAX_DESCRIPTOR_ID_BYTES: usize = 128;
 /// Maximum byte size for the stable descriptor version carried by an owned action.
 pub const MAX_DESCRIPTOR_VERSION_BYTES: usize = 128;
 /// Maximum byte size for one owned Tool action target identifier.
@@ -549,6 +550,23 @@ impl PermissionProfile {
             target.to_owned(),
         ))
     }
+
+    /// Returns the first exact target this profile permits for the descriptor
+    /// version and effect, when the capability is in-profile at all.
+    #[must_use]
+    pub fn allowed_target(
+        &self,
+        descriptor_id: &str,
+        version: &str,
+        effect: Effect,
+    ) -> Option<String> {
+        self.allowed
+            .iter()
+            .find(|(id, entry_version, entry_effect, _)| {
+                id == descriptor_id && entry_version == version && *entry_effect == effect
+            })
+            .map(|(_, _, _, target)| target.clone())
+    }
 }
 
 /// Builder for one immutable Permission Profile.
@@ -596,7 +614,7 @@ impl PermissionProfileBuilder {
     }
 }
 
-fn validate_descriptor_id(value: &str) -> Result<(), ToolValueError> {
+pub(crate) fn validate_descriptor_id(value: &str) -> Result<(), ToolValueError> {
     if value.is_empty()
         || value.len() > MAX_DESCRIPTOR_ID_BYTES
         || !value.is_ascii()
@@ -610,7 +628,7 @@ fn validate_descriptor_id(value: &str) -> Result<(), ToolValueError> {
     }
 }
 
-fn validate_descriptor_version(value: &str) -> Result<(), ToolValueError> {
+pub(crate) fn validate_descriptor_version(value: &str) -> Result<(), ToolValueError> {
     if value.is_empty()
         || value.len() > MAX_DESCRIPTOR_VERSION_BYTES
         || !value.is_ascii()
@@ -624,7 +642,7 @@ fn validate_descriptor_version(value: &str) -> Result<(), ToolValueError> {
     }
 }
 
-fn validate_action_target(value: &str) -> Result<(), ToolValueError> {
+pub(crate) fn validate_action_target(value: &str) -> Result<(), ToolValueError> {
     if value.trim().is_empty()
         || value.len() > MAX_ACTION_TARGET_BYTES
         || !value.is_ascii()

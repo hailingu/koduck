@@ -12,8 +12,8 @@ use thiserror::Error;
 use uuid::Uuid;
 
 use crate::application::{
-    HistoryError, ModelProvider, TurnCommand, TurnHistory, TurnResult, TurnRunError, TurnRunner,
-    TurnStreamEvent,
+    HistoryError, ModelProvider, ToolCallExecutor, TurnCommand, TurnHistory, TurnResult,
+    TurnRunError, TurnRunner, TurnStreamEvent,
 };
 use crate::domain::{TrustContext, TurnId};
 
@@ -142,10 +142,11 @@ pub trait TurnService {
     fn interrupt(&mut self, trust: &TrustContext, turn_id: TurnId) -> Result<(), ServiceError>;
 }
 
-impl<P, H> TurnService for TurnRunner<P, H>
+impl<P, H, T> TurnService for TurnRunner<P, H, T>
 where
     P: ModelProvider,
     H: TurnHistory,
+    T: ToolCallExecutor,
 {
     fn execute(&mut self, command: TurnCommand) -> Result<TurnResult, ServiceError> {
         TurnRunner::execute(self, command).map_err(|error| map_turn_run_error(&error))

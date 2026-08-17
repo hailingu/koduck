@@ -48,6 +48,28 @@ pub enum ExecutionFailure {
     AttemptNotRunning,
 }
 
+impl ExecutionFailure {
+    /// Returns the stable D-3 terminal code for this failure.
+    #[must_use]
+    pub const fn stable_code(self) -> &'static str {
+        match self {
+            Self::ExecutorUnavailable => "executor_unavailable",
+            Self::OwnerFencedBeforeDispatch => "owner_fenced_before_dispatch",
+            Self::OwnerFencedAfterDispatch => "owner_fenced_after_dispatch",
+            Self::OutputLimitExceeded => "output_limit_exceeded",
+            Self::ApprovalMismatch => "approval_mismatch",
+            Self::ApprovalAlreadyConsumed => "approval_already_consumed",
+            Self::InterruptionRequested => "interruption_requested",
+            Self::DurabilityUnavailable => "durability_unavailable",
+            Self::TerminalConflict => "terminal_conflict",
+            Self::ConcurrentAttempt => "concurrent_attempt",
+            Self::LeaseUnavailable => "lease_unavailable",
+            Self::AttemptLimit => "attempt_limit",
+            Self::AttemptNotRunning => "attempt_not_running",
+        }
+    }
+}
+
 /// Executor failure paired with truthful external-effect evidence.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ExecutorError {

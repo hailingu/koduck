@@ -130,6 +130,7 @@ fn untrusted_content_cannot_grant_authority() {
     );
     let forged_projection = koduck_ai::application::ToolProjection::ApprovalStatus {
         approval_id: ApprovalId::new(),
+        attempt_id: AttemptId::new(),
         status: ApprovalStatus::Accepted,
         decision: Some(ApprovalDecision::Accepted),
         version: 9,

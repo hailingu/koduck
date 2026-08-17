@@ -10,6 +10,7 @@ use koduck_ai::application::{
     ExecutionResponse, ExecutionResponseBuilder, ExecutorError, IsolatedExecutor, LeaseCheck,
     LeaseValidator, ToolAuthorizationService, ToolCallError, ToolCallInputs,
     ToolExecutionAuthorityRoot, ToolExecutionDriver, ToolExecutionOutcome, ToolExecutionRuntime,
+    ToolProjection, ToolProjectionError, ToolProjectionSink,
 };
 use koduck_ai::domain::execution::{
     ApprovalDecision, ApprovalRequest, AttemptId, ExactActionBinding, ExecutionError,
@@ -74,6 +75,21 @@ impl IsolatedExecutor for ScriptedExecutor {
 
 struct WinningCommitter {
     calls: usize,
+}
+
+/// Captures the C-5 driver's durable views without granting them authority.
+#[derive(Default)]
+struct ProjectionRecorder {
+    appended: Vec<ToolProjection>,
+}
+
+impl ToolProjectionSink for ProjectionRecorder {
+    fn append(&mut self, projection: &ToolProjection) -> Result<(), ToolProjectionError> {
+        self.appended.push(projection.clone());
+        Ok(())
+    }
+
+    fn publish(&mut self, _projection: &ToolProjection) {}
 }
 
 impl AttemptCommitter for WinningCommitter {
@@ -486,14 +502,16 @@ fn retry_does_not_retry_when_budget_exhausted() {
         AlwaysCurrentLease,
         WinningCommitter { calls: 0 },
     );
+    let mut projections = ProjectionRecorder::default();
     let outcome = driver(config_for(Effect::ExternalWrite))
-        .execute(
+        .execute_projected(
             &mut preparer,
             &mut coordinator,
             &inputs,
             &trust(),
             &mut |_| (ApprovalDecision::Accepted, 1_000),
             &mut fixed_clock(1_000),
+            &mut projections,
         )
         .expect("the budget-exhausted retry returns a terminal outcome");
 
@@ -517,6 +535,10 @@ fn retry_does_not_retry_when_budget_exhausted() {
         1,
         "only the initial D-7 terminal was committed"
     );
+    assert!(matches!(
+        projections.appended.last(),
+        Some(ToolProjection::Denied { code, .. }) if code == "attempt_limit"
+    ));
 }
 
 #[test]

@@ -6,7 +6,10 @@ use koduck_ai::adapters::history::postgres::{
     LeaseTiming, PostgresExecutor, RecoveryOutcome, SqlxPostgresExecutor,
 };
 use koduck_ai::application::{AcceptedTurn, HistoryError, NewItem, TurnCommand};
-use koduck_ai::domain::{ItemPayload, TenantId, TerminalOutcome, TrustContext, Usage};
+use koduck_ai::domain::execution::{AttemptId, ExecutionStatus};
+use koduck_ai::domain::{
+    ItemPayload, TenantId, TerminalOutcome, ToolEffectState, TrustContext, Usage,
+};
 use sqlx::postgres::{PgPool, PgPoolOptions};
 use tokio::runtime::Runtime;
 use uuid::Uuid;
@@ -33,6 +36,14 @@ fn production_postgres_contract() {
             sqlx::raw_sql(include_str!("../migrations/0001_cand_1_history.sql")).execute(&pool),
         )
         .expect("apply production migration");
+    runtime
+        .block_on(
+            sqlx::raw_sql(include_str!(
+                "../migrations/0004_cand_2_tool_projections.sql"
+            ))
+            .execute(&pool),
+        )
+        .expect("apply production projection migration");
     let executor = SqlxPostgresExecutor::new(pool.clone(), runtime.handle().clone());
 
     let tenant = TenantId::new(format!("ci-{}", Uuid::new_v4())).expect("unique tenant");
@@ -42,9 +53,85 @@ fn production_postgres_contract() {
     verify_interrupt_terminal_arbitration(&executor, &tenant, &owner, &accepted);
     verify_recovery_pending_interrupt_is_rejected(&runtime, &pool, &executor, &tenant, &owner);
     verify_expired_started_interrupt_is_rejected(&runtime, &pool, &executor, &tenant, &owner);
+    verify_tool_projection_batch(&executor, &tenant, &owner);
     verify_stale_generation_fencing(&runtime, &pool, &executor, &tenant, owner);
 
     runtime.block_on(pool.close());
+}
+
+fn verify_tool_projection_batch(
+    executor: &SqlxPostgresExecutor,
+    tenant: &TenantId,
+    owner: &TrustContext,
+) {
+    let command = TurnCommand::new(owner.clone(), None, "projection batch")
+        .expect("valid projection command");
+    let accepted = executor
+        .accept_initial(&command)
+        .expect("accept projection fixture");
+    let attempt_id = AttemptId::new();
+    let appended = executor
+        .append_tool_projection(
+            &accepted,
+            vec![
+                NewItem::ToolCall {
+                    descriptor_id: "fixture.tool".to_owned(),
+                    descriptor_version: "v1".to_owned(),
+                    target: "fixture-target".to_owned(),
+                    attempt_id: Some(attempt_id),
+                    status: Some(ExecutionStatus::Running),
+                    version: Some(2),
+                },
+                NewItem::ToolResult {
+                    attempt_id: Some(attempt_id),
+                    status: ExecutionStatus::Succeeded,
+                    code: None,
+                    effect_state: Some(ToolEffectState::Started),
+                    output_bytes: 2,
+                    output_digest: Some(koduck_ai::application::output_digest(b"ok")),
+                    version: Some(3),
+                },
+            ],
+        )
+        .expect("production projection batch commits");
+    assert_eq!(appended.len(), 2);
+    assert_eq!(appended[0].sequence + 1, appended[1].sequence);
+    let replay = executor
+        .replay(tenant, accepted.turn_id)
+        .expect("production projection replay");
+    assert_eq!(&replay[1..], appended.as_slice());
+
+    let rejected_command = TurnCommand::new(owner.clone(), None, "projection rollback")
+        .expect("valid rollback command");
+    let rejected = executor
+        .accept_initial(&rejected_command)
+        .expect("accept rollback fixture");
+    assert_eq!(
+        executor.append_tool_projection(
+            &rejected,
+            vec![
+                NewItem::ToolCall {
+                    descriptor_id: "fixture.tool".to_owned(),
+                    descriptor_version: "v1".to_owned(),
+                    target: "fixture-target".to_owned(),
+                    attempt_id: Some(AttemptId::new()),
+                    status: Some(ExecutionStatus::Running),
+                    version: Some(2),
+                },
+                NewItem::Terminal(TerminalOutcome::Cancelled),
+            ],
+        ),
+        Err(HistoryError::Unavailable),
+        "a rejected D-3 batch rolls back every earlier item"
+    );
+    assert_eq!(
+        executor
+            .replay(tenant, rejected.turn_id)
+            .expect("replay rollback fixture")
+            .len(),
+        1,
+        "the rejected transaction left only the initial user item"
+    );
 }
 
 fn verify_expired_started_interrupt_is_rejected(

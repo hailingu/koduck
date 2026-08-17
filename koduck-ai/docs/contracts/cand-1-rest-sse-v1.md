@@ -33,8 +33,17 @@ their sum. Only durably appended items are returned.
 `POST /api/v1/ai/chat/stream` accepts the same request and returns
 `200 text/event-stream`. It emits one `turn.started`, zero or more ordered
 `item.created`, and exactly one terminal event named `turn.completed`,
-`turn.failed`, `turn.interrupted`, or `turn.cancelled`. Every event carries
-matching Thread and Turn IDs and a positive strictly increasing sequence.
+`turn.failed`, `turn.interrupted`, or `turn.cancelled`. Every `turn.*` and
+`item.created` event carries matching Thread and Turn IDs and a positive
+strictly increasing sequence.
+
+A failure after `turn.started` that prevents a durable terminal append instead
+emits at most one `error` event whose data is the exact problem body defined
+under Problems — a mid-turn durability outage carries code
+`durability-unavailable` — and closes the stream without a terminal event; the
+Turn is closed later as `failed` or `cancelled` by bounded recovery or fenced
+reconciliation. The `error` event carries no Thread/Turn ID or sequence, and
+no `error` event is emitted once a terminal event has been published.
 
 `turn.started` data contains exactly `thread_id`, `turn_id`, `sequence`, and
 `status: started`. `item.created` additionally contains exactly `item_id`,
@@ -59,7 +68,9 @@ Invalid JSON or input returns `400`. Resuming a Thread whose ordered provider
 context exceeds 4096 Items or 1 MiB of canonical serialized Item payload also
 returns `400` with code `invalid-request`; prior durable history is not
 truncated or mutated. Initial or mid-turn durability failure
-returns `503` with code `durability-unavailable`. Every problem body contains
+returns `503` with code `durability-unavailable`; on an already-started SSE
+stream the same diagnostic is delivered in-band as the `error` event instead
+of an HTTP status. Every problem body contains
 exactly `type: about:blank`, kebab-code-derived `title`, numeric `status`, stable
 `code`, and UUID `correlation_id`. Failed initial acceptance exposes no Turn.
 For synchronous chat, an interrupted Turn returns `409 turn-interrupted`, a

@@ -35,3 +35,6 @@ mod cand_2_postgres_tests;
 #[cfg(test)]
 #[path = "../tests/internal/cand_2_retry.rs"]
 mod cand_2_retry_tests;
+#[cfg(test)]
+#[path = "../tests/internal/cand_2_runtime_assembly.rs"]
+mod cand_2_runtime_assembly_tests;
