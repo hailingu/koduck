@@ -16,6 +16,33 @@ pub enum EffectState {
     Unknown,
 }
 
+impl EffectState {
+    /// Returns the canonical wire name carried by durable D-7 rows and audit
+    /// records.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::NotStarted => "not_started",
+            Self::Started => "started",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    /// Returns the effect state whose canonical wire name is `code`.
+    ///
+    /// An unknown durable code yields `None` and must be treated as
+    /// undecidable durable state.
+    #[must_use]
+    pub fn from_code(code: &str) -> Option<Self> {
+        match code {
+            "not_started" => Some(Self::NotStarted),
+            "started" => Some(Self::Started),
+            "unknown" => Some(Self::Unknown),
+            _ => None,
+        }
+    }
+}
+
 /// A stable failure emitted by the C-5 execution boundary.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ExecutionFailure {
@@ -66,6 +93,32 @@ impl ExecutionFailure {
             Self::LeaseUnavailable => "lease_unavailable",
             Self::AttemptLimit => "attempt_limit",
             Self::AttemptNotRunning => "attempt_not_running",
+        }
+    }
+
+    /// Returns the failure whose stable D-3 terminal code is `code`.
+    ///
+    /// The mapping is the inverse of [`ExecutionFailure::stable_code`], so a
+    /// durable terminal can be reconstructed only from a code this boundary
+    /// itself emitted; an unknown durable code yields `None` and must be
+    /// treated as undecidable durable state.
+    #[must_use]
+    pub fn from_stable_code(code: &str) -> Option<Self> {
+        match code {
+            "executor_unavailable" => Some(Self::ExecutorUnavailable),
+            "owner_fenced_before_dispatch" => Some(Self::OwnerFencedBeforeDispatch),
+            "owner_fenced_after_dispatch" => Some(Self::OwnerFencedAfterDispatch),
+            "output_limit_exceeded" => Some(Self::OutputLimitExceeded),
+            "approval_mismatch" => Some(Self::ApprovalMismatch),
+            "approval_already_consumed" => Some(Self::ApprovalAlreadyConsumed),
+            "interruption_requested" => Some(Self::InterruptionRequested),
+            "durability_unavailable" => Some(Self::DurabilityUnavailable),
+            "terminal_conflict" => Some(Self::TerminalConflict),
+            "concurrent_attempt" => Some(Self::ConcurrentAttempt),
+            "lease_unavailable" => Some(Self::LeaseUnavailable),
+            "attempt_limit" => Some(Self::AttemptLimit),
+            "attempt_not_running" => Some(Self::AttemptNotRunning),
+            _ => None,
         }
     }
 }

@@ -25,7 +25,7 @@ pub(super) async fn append(
     )
     .await?;
     let ownership = sqlx::query(
-        "SELECT t.status, t.next_sequence, t.interrupt_requested, l.fenced FROM turns t \
+        "SELECT t.status, t.next_sequence, t.interrupt_requested, t.interrupting, l.fenced FROM turns t \
          JOIN turn_leases l USING (tenant_id, thread_id, turn_id) \
          WHERE t.tenant_id = $1 AND t.thread_id = $2 AND t.turn_id = $3 \
          AND l.generation = $4 FOR UPDATE",
@@ -43,10 +43,11 @@ pub(super) async fn append(
     let interrupted: bool = ownership
         .try_get("interrupt_requested")
         .map_err(unavailable)?;
+    let interrupting: bool = ownership.try_get("interrupting").map_err(unavailable)?;
     if is_terminal_status(&status) {
         return Err(HistoryError::AlreadyTerminal);
     }
-    if fenced || status != "started" || interrupted {
+    if fenced || status != "started" || interrupted || interrupting {
         return Err(HistoryError::Fenced);
     }
     let first_sequence: i64 = ownership.try_get("next_sequence").map_err(unavailable)?;
@@ -112,15 +113,9 @@ mod tests {
             .connect(&database_url)
             .await
             .expect("connect to disposable PostgreSQL");
-        for migration in [
-            include_str!("../../../../../migrations/0001_cand_1_history.sql"),
-            include_str!("../../../../../migrations/0004_cand_2_tool_projections.sql"),
-        ] {
-            sqlx::raw_sql(migration)
-                .execute(&pool)
-                .await
-                .expect("apply projection persistence migration");
-        }
+        // The shared process-wide guard keeps this harness's DDL from racing
+        // the parallel env-gated harnesses in the same test binary.
+        crate::test_migrations::ensure(&pool).await;
         let tenant =
             TenantId::new(format!("projection-{}", Uuid::new_v4())).expect("unique tenant");
         let trust = TrustContext::new(tenant, "projection-owner").expect("valid trust context");

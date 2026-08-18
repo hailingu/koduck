@@ -113,17 +113,21 @@ where
     H: TurnHistory,
     T: ToolCallExecutor,
 {
-    /// Records an interrupt request through the canonical history boundary.
+    /// Cancels live Tool work and records the canonical interrupt terminal.
     ///
     /// # Errors
     ///
-    /// Returns [`TurnRunError::History`] when the turn is unknown, non-owned,
+    /// Returns [`TurnRunError::Tool`] when a live D-7 cannot be terminalized,
+    /// and [`TurnRunError::History`] when the Turn is unknown, non-owned,
     /// already terminal, fenced, or the durable store is unavailable.
     pub fn request_interrupt(
         &mut self,
         trust: &TrustContext,
         turn_id: TurnId,
     ) -> Result<(), TurnRunError> {
+        if let Some(thread_id) = self.history.interruption_thread(trust, turn_id)? {
+            self.tools.request_interrupt(trust, thread_id, turn_id)?;
+        }
         self.history.request_interrupt(trust, turn_id)?;
         Ok(())
     }

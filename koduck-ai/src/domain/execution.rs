@@ -241,6 +241,17 @@ impl ExactActionBinding {
         self.action_digest
     }
 
+    /// Returns the stable audit digest for a policy terminal before D-7
+    /// allocation.
+    ///
+    /// Unlike [`Self::action_digest`], this correlation value deliberately
+    /// excludes the generated attempt identity: policy denial can occur before
+    /// any D-7 exists and must not be tied to a fabricated one.
+    #[must_use]
+    pub fn pre_attempt_audit_digest(&self) -> ActionDigest {
+        self.calculate_digest_without_attempt()
+    }
+
     /// Returns the owned action for policy evaluation and adapter serialization.
     #[must_use]
     pub const fn action(&self) -> &Action {
@@ -269,6 +280,20 @@ impl ExactActionBinding {
     }
 
     fn calculate_digest(&self) -> ActionDigest {
+        let mut hasher = self.digest_hasher();
+        update_digest_field(
+            &mut hasher,
+            "attempt_id",
+            &self.attempt_id.as_uuid().to_string(),
+        );
+        ActionDigest(hasher.finalize().into())
+    }
+
+    fn calculate_digest_without_attempt(&self) -> ActionDigest {
+        ActionDigest(self.digest_hasher().finalize().into())
+    }
+
+    fn digest_hasher(&self) -> Sha256 {
         let mut hasher = Sha256::new();
         hasher.update(ACTION_DIGEST_DOMAIN);
         update_digest_field(&mut hasher, "descriptor_id", self.action.descriptor_id());
@@ -288,12 +313,7 @@ impl ExactActionBinding {
             "lease_generation",
             &self.lease_generation.get().to_string(),
         );
-        update_digest_field(
-            &mut hasher,
-            "attempt_id",
-            &self.attempt_id.as_uuid().to_string(),
-        );
-        ActionDigest(hasher.finalize().into())
+        hasher
     }
 }
 

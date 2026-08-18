@@ -28,6 +28,8 @@ use koduck_ai::domain::{LeaseGeneration, TenantId, ThreadId, TurnId};
 mod blocking_dispatch;
 #[path = "cand_2_cancellation_disabled_executor.rs"]
 mod disabled_executor;
+#[path = "cand_2_cancellation_interrupt_barrier.rs"]
+mod interrupt_barrier;
 #[path = "cand_2_cancellation_interruption_seal.rs"]
 mod interruption_seal;
 #[path = "cand_2_cancellation_post_claim_lease.rs"]
@@ -36,6 +38,8 @@ mod post_claim_lease;
 mod pre_dispatch;
 #[path = "cand_2_cancellation_transport.rs"]
 mod transport;
+#[path = "cand_2_cancellation_turn_terminal.rs"]
+mod turn_terminal;
 
 /// Executor that records dispatches and plays one scripted cancellation.
 struct CancellingExecutor {
@@ -270,6 +274,21 @@ impl Harness {
             tenant: TenantId::new("tenant-a").expect("valid tenant"),
             thread: ThreadId::new(),
             turn: TurnId::new(),
+        }
+    }
+
+    /// Binds a harness to the production runtime's already-issued C-5 root.
+    fn with_runtime(
+        runtime: ToolExecutionRuntime,
+        tenant: TenantId,
+        thread: ThreadId,
+        turn: TurnId,
+    ) -> Self {
+        Self {
+            runtime,
+            tenant,
+            thread,
+            turn,
         }
     }
 

@@ -3,6 +3,7 @@
 
 //! External protocol and infrastructure adapters around application-owned ports.
 
+pub mod audit;
 pub mod execution;
 pub mod history;
 pub mod http;

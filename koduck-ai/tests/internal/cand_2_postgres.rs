@@ -21,15 +21,14 @@ use koduck_ai::domain::{LeaseGeneration, TenantId};
 use sqlx::postgres::{PgPool, PgPoolOptions};
 use uuid::Uuid;
 
+#[path = "cand_2_postgres_attempts.rs"]
+mod attempts;
+
 struct Harness {
     runtime: tokio::runtime::Runtime,
     pool: PgPool,
     store: SqlxApprovalRecordStore,
 }
-
-// Applied once per process: concurrent CREATE TABLE IF NOT EXISTS from
-// parallel test sessions can itself race in PostgreSQL.
-static MIGRATION: std::sync::OnceLock<()> = std::sync::OnceLock::new();
 
 fn harness() -> Option<Harness> {
     let database_url = std::env::var("KODUCK_AI_TEST_DATABASE_URL").ok()?;
@@ -45,18 +44,10 @@ fn harness() -> Option<Harness> {
                 .connect(&database_url),
         )
         .expect("connect to disposable PostgreSQL");
-    MIGRATION.get_or_init(|| {
-        for migration in [
-            include_str!("../../migrations/0001_cand_1_history.sql"),
-            include_str!("../../migrations/0002_cand_2_policy_execution.sql"),
-            include_str!("../../migrations/0003_cand_2_requester_ownership.sql"),
-            include_str!("../../migrations/0004_cand_2_tool_projections.sql"),
-        ] {
-            runtime
-                .block_on(async { sqlx::raw_sql(migration).execute(&pool).await })
-                .expect("apply production migration");
-        }
-    });
+    // The shared process-wide guard serializes this DDL against every other
+    // env-gated harness in the same test binary (parallel CREATE TABLE IF NOT
+    // EXISTS races in the PostgreSQL catalog).
+    runtime.block_on(crate::test_migrations::ensure(&pool));
     let store = SqlxApprovalRecordStore::new(pool.clone(), runtime.handle().clone());
     Some(Harness {
         runtime,
@@ -154,6 +145,8 @@ fn migration_is_idempotent_and_decisions_are_single_winner() {
             include_str!("../../migrations/0002_cand_2_policy_execution.sql"),
             include_str!("../../migrations/0003_cand_2_requester_ownership.sql"),
             include_str!("../../migrations/0004_cand_2_tool_projections.sql"),
+            include_str!("../../migrations/0005_cand_2_execution_attempts.sql"),
+            include_str!("../../migrations/0006_cand_2_interrupt_barrier.sql"),
         ] {
             harness
                 .runtime

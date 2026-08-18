@@ -25,7 +25,9 @@ use thiserror::Error;
 use tokio::sync::{mpsc, oneshot};
 use tokio_stream::wrappers::ReceiverStream;
 
-use crate::adapters::execution::SqlxApprovalRecordStore;
+use crate::adapters::execution::{
+    SqlxApprovalRecordStore, SqlxExecutionAttemptStore, SqlxTurnLeaseValidator,
+};
 use crate::adapters::history::postgres::{PostgresTurnHistory, SqlxPostgresExecutor, unix_time_ms};
 use crate::adapters::http::{
     HttpAdapter, HttpMethod, HttpRequest, TurnService, approvals::ApprovalDecisionAdapter,
@@ -211,11 +213,34 @@ pub async fn run(config: RuntimeConfig) -> Result<(), RuntimeError> {
         .execute(&pool),
     )
     .await?;
+    database_setup_attempt(
+        database_deadline,
+        sqlx::raw_sql(include_str!(
+            "../../migrations/0005_cand_2_execution_attempts.sql"
+        ))
+        .execute(&pool),
+    )
+    .await?;
+    database_setup_attempt(
+        database_deadline,
+        sqlx::raw_sql(include_str!(
+            "../../migrations/0006_cand_2_interrupt_barrier.sql"
+        ))
+        .execute(&pool),
+    )
+    .await?;
     let runtime = tokio::runtime::Handle::current();
     // Production canonical D-6 assembly: the authenticated decision route
     // drives the conditional `SQLx` transitions on the same Tokio runtime.
     let approvals =
         ApprovalDecisionRoute::new(SqlxApprovalRecordStore::new(pool.clone(), runtime.clone()));
+    // Production canonical D-7 assembly: the runner's C-5 boundary commits
+    // every terminal through the durable conditional `SQLx` transitions
+    // (ADR-0003 TC-12), so the process-local arbitration catalog is no longer
+    // the terminal authority. Authenticated interruption validates the durable
+    // C-6 lease before any D-7 mutation (ADR-0003 TC-07).
+    let attempts = SqlxExecutionAttemptStore::new(pool.clone(), runtime.clone());
+    let interruption_lease = SqlxTurnLeaseValidator::new(pool.clone(), runtime.clone());
     let history = PostgresTurnHistory::new(SqlxPostgresExecutor::new(pool, runtime.clone()));
     let _reconciliation_worker = history
         .start_reconciliation_worker()
@@ -232,8 +257,8 @@ pub async fn run(config: RuntimeConfig) -> Result<(), RuntimeError> {
         config.provider_api_key(),
     );
     let provider = OpenAiCompatibleProvider::new(transport);
-    let runner =
-        TurnRunner::new(provider, history).with_tool_executor(runtime_state.tool_call_executor());
+    let runner = TurnRunner::new(provider, history)
+        .with_tool_executor(runtime_state.tool_call_executor(attempts, interruption_lease));
     let listener = tokio::net::TcpListener::bind(config.bind_addr())
         .await
         .map_err(RuntimeError::Bind)?;
@@ -434,14 +459,31 @@ impl RuntimeState {
     }
 
     /// Returns the production tool-call executor over this state's sole C-5
-    /// authority root and the empty production descriptor snapshot: every
-    /// model Tool call resolves against the empty inventory and is recorded
-    /// as a typed denial with zero D-6/D-7 and zero dispatch (ADR-0003
-    /// TC-02/TC-13).
-    pub(crate) fn tool_call_executor(&self) -> tool_executor::BoundaryToolCallExecutor {
+    /// authority root, the empty production descriptor snapshot, the injected
+    /// conditional terminal committer, and the injected durable
+    /// interruption-lease validator: every model Tool call resolves against
+    /// the empty inventory and is recorded as a typed denial with zero
+    /// D-6/D-7 and zero dispatch, a configured capability commits its
+    /// terminals through the durable store, and an authenticated interruption
+    /// cancels D-7 work only for the current durable lease generation
+    /// (ADR-0003 TC-02/TC-07/TC-12/TC-13).
+    pub(crate) fn tool_call_executor<C, L>(
+        &self,
+        committer: C,
+        interruption_lease: L,
+    ) -> tool_executor::BoundaryToolCallExecutor<C, L>
+    where
+        C: crate::application::AttemptCommitter
+            + crate::application::ExecutionAttemptInterruptionGuard
+            + crate::application::ExecutionAttemptLiveness
+            + Clone,
+        L: crate::application::LeaseValidator + Clone + 'static,
+    {
         tool_executor::BoundaryToolCallExecutor::new(
             &self.tool_execution_root,
             crate::application::ToolConfigurationSnapshot::empty(),
+            committer,
+            interruption_lease,
         )
     }
 }
@@ -610,118 +652,5 @@ fn required<'a>(
 }
 
 #[cfg(test)]
-mod tests {
-    use std::time::Duration;
-
-    use axum::http::{HeaderMap, HeaderName, HeaderValue};
-
-    use super::{RuntimeError, database_setup_attempt, trust_context};
-
-    #[tokio::test]
-    async fn database_setup_attempt_maps_deadline_expiration() {
-        let result = database_setup_attempt(Duration::from_millis(1), async {
-            tokio::time::sleep(Duration::from_secs(1)).await;
-            Ok::<_, sqlx::Error>(())
-        })
-        .await;
-
-        assert!(matches!(result, Err(RuntimeError::DatabaseTimeout)));
-    }
-
-    fn identity_headers() -> HeaderMap {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            HeaderName::from_static("x-koduck-tenant-id"),
-            HeaderValue::from_static("tenant-a"),
-        );
-        headers.insert(
-            HeaderName::from_static("x-koduck-subject-id"),
-            HeaderValue::from_static("subject-a"),
-        );
-        headers
-    }
-
-    fn with_scope_header(mut headers: HeaderMap, scopes: &str) -> HeaderMap {
-        headers.insert(
-            HeaderName::from_static("x-koduck-approval-scopes"),
-            HeaderValue::from_str(scopes).expect("test scope header is valid header text"),
-        );
-        headers
-    }
-
-    fn with_scope_header_bytes(mut headers: HeaderMap, scopes: &[u8]) -> HeaderMap {
-        headers.insert(
-            HeaderName::from_static("x-koduck-approval-scopes"),
-            HeaderValue::from_bytes(scopes).expect("test scope header is valid header bytes"),
-        );
-        headers
-    }
-
-    #[test]
-    fn trust_context_seals_gateway_validated_approval_scopes() {
-        let headers = with_scope_header(identity_headers(), "ai.tool.approve,audit.read");
-        let trust = trust_context(&headers).expect("gateway-validated identity is accepted");
-        assert!(trust.has_approval_scope("ai.tool.approve"));
-        assert!(trust.has_approval_scope("audit.read"));
-        assert!(!trust.has_approval_scope("ai.tool.execute"));
-    }
-
-    #[test]
-    fn trust_context_without_scope_header_carries_no_approval_scope() {
-        let headers = identity_headers();
-        let trust = trust_context(&headers).expect("identity without scopes is accepted");
-        assert!(!trust.has_approval_scope("ai.tool.approve"));
-    }
-
-    #[test]
-    fn trust_context_rejects_malformed_gateway_scope_header() {
-        let oversize_token = format!("{}.{}", "a".repeat(128), "b");
-        let too_many_scopes = vec!["scope.n"; 17].join(",");
-        for malformed in [
-            String::new(),
-            ",ai.tool.approve".to_owned(),
-            "ai.tool.approve,".to_owned(),
-            "ai.tool approve".to_owned(),
-            " ai.tool.approve".to_owned(),
-            "ai.tool.approve ".to_owned(),
-            "ai.tool.approve ,audit.read".to_owned(),
-            "\tai.tool.approve".to_owned(),
-            oversize_token,
-            too_many_scopes,
-        ] {
-            let headers = with_scope_header(identity_headers(), &malformed);
-            assert!(
-                trust_context(&headers).is_none(),
-                "malformed gateway scope header must invalidate identity: {malformed:?}"
-            );
-        }
-        // Obs-text bytes survive header parsing as valid UTF-8 but are not
-        // valid scope tokens, so the validator must still reject them.
-        let headers = with_scope_header_bytes(identity_headers(), "范围.工具".as_bytes());
-        assert!(trust_context(&headers).is_none());
-    }
-
-    #[test]
-    fn trust_context_scope_header_is_tenant_independent() {
-        // The sealed scopes attach only to the gateway-validated identity; a
-        // different tenant header still produces that tenant's context.
-        let mut headers = with_scope_header(identity_headers(), "ai.tool.approve");
-        headers.insert(
-            HeaderName::from_static("x-koduck-tenant-id"),
-            HeaderValue::from_static("tenant-b"),
-        );
-        let trust = trust_context(&headers).expect("identity is accepted");
-        assert_eq!(trust.tenant_id.as_str(), "tenant-b");
-        assert!(trust.has_approval_scope("ai.tool.approve"));
-    }
-
-    #[test]
-    fn trust_context_rejects_invalid_tenant_even_with_valid_scopes() {
-        let mut headers = with_scope_header(identity_headers(), "ai.tool.approve");
-        headers.insert(
-            HeaderName::from_static("x-koduck-tenant-id"),
-            HeaderValue::from_static("  "),
-        );
-        assert!(trust_context(&headers).is_none());
-    }
-}
+#[path = "../../tests/internal/runtime_mod.rs"]
+mod tests;

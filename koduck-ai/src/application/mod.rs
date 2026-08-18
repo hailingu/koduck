@@ -5,6 +5,8 @@
 
 mod approval_route;
 mod approval_store;
+pub(crate) mod attempt_store;
+mod audit;
 mod cancellation;
 mod deadline;
 mod durability;
@@ -24,12 +26,20 @@ pub use approval_route::{ApprovalDecisionOutcome, ApprovalDecisionRoute};
 pub use approval_store::{
     ApprovalDecisionResolution, ApprovalInsertResolution, ApprovalRecordStore, ApprovalStoreError,
 };
-#[cfg(test)]
-pub(crate) use cancellation::{
-    AttemptCancellationService, ExecutionInterrupter, InterruptionOutcome,
-    PendingApprovalCancellation, PendingApprovalCanceller,
+pub use attempt_store::{
+    AttemptInsertResolution, AttemptStoreError, AttemptTerminalResolution, DispatchClaimResolution,
+    DurableAttemptTerminal, ExecutionAttemptInterruptionGuard, ExecutionAttemptLiveness,
+    ExecutionAttemptStore,
 };
+pub use audit::{
+    MAX_AUDIT_RECORD_BYTES, NoToolAudits, PolicyDenialContext, ToolAuditError, ToolAuditRecord,
+    ToolAuditRecordTooLarge, ToolAuditSink,
+};
+pub(crate) use cancellation::InterruptionOutcome;
+#[cfg(test)]
+pub(crate) use cancellation::{AttemptCancellationService, ExecutionInterrupter};
 pub use cancellation::{CancelAcknowledgement, CancelPermit, CancelledEffectState};
+pub(crate) use cancellation::{PendingApprovalCancellation, PendingApprovalCanceller};
 pub use deadline::ActionDeadline;
 pub use durability::{AppendPolicy, BufferLimitError};
 pub use execution::*;

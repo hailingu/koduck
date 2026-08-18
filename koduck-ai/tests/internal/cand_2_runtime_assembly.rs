@@ -4,13 +4,114 @@
 
 use koduck_ai::adapters::tool::parse_input_schema;
 use koduck_ai::application::{
-    ModelToolCall, NewItem, ToolCallExecutor, ToolCallTurnContext, ToolConfigurationSnapshot,
-    ToolExecutionRuntimeRoot,
+    AttemptCommitResult, AttemptCommitter, AttemptStoreError, ExecutionAttemptInterruptionGuard,
+    ExecutionAttemptLiveness, LeaseCheck, LeaseValidator, ModelToolCall, NewItem, ToolCallExecutor,
+    ToolCallTurnContext, ToolConfigurationSnapshot, ToolExecutionOutcome, ToolExecutionRuntimeRoot,
 };
+use koduck_ai::domain::execution::ExactActionBinding;
 use koduck_ai::domain::tool::{CapabilityDescriptor, DescriptorState, Effect, PermissionProfile};
 use koduck_ai::domain::{LeaseGeneration, TenantId, ThreadId, TrustContext, TurnId};
 use koduck_ai::runtime::RuntimeState;
 use koduck_ai::runtime::tool_executor::BoundaryToolCallExecutor;
+
+/// Interruption-lease double for the assembly harness: these legs exercise
+/// Tool-call servicing only and never interrupt, so the current-generation
+/// answer is never consulted.
+#[derive(Clone, Copy)]
+struct UnusedInterruptionLease;
+
+impl LeaseValidator for UnusedInterruptionLease {
+    fn check_current(&mut self, _binding: &ExactActionBinding) -> LeaseCheck {
+        LeaseCheck::Current
+    }
+}
+
+/// Counting committer double: always wins the conditional commit locally, so
+/// the assembly harness observes the C-5 path without durable storage. The
+/// commit counter is shared because the executor clones its committer for
+/// each serviced call.
+#[derive(Clone, Default)]
+struct RecordingCommitter {
+    commits: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl RecordingCommitter {
+    fn commits(&self) -> usize {
+        self.commits.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+impl AttemptCommitter for RecordingCommitter {
+    fn commit_outcome(
+        &mut self,
+        _binding: &ExactActionBinding,
+        _outcome: &ToolExecutionOutcome,
+    ) -> Result<AttemptCommitResult, koduck_ai::application::AttemptCommitError> {
+        self.commits
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(AttemptCommitResult::Won)
+    }
+}
+
+impl ExecutionAttemptLiveness for RecordingCommitter {
+    fn has_live_attempt(
+        &mut self,
+        _tenant_id: &TenantId,
+        _thread_id: ThreadId,
+        _turn_id: TurnId,
+    ) -> Result<bool, AttemptStoreError> {
+        Ok(false)
+    }
+}
+
+impl ExecutionAttemptInterruptionGuard for RecordingCommitter {
+    fn begin_interruption(
+        &mut self,
+        _tenant_id: &TenantId,
+        _thread_id: ThreadId,
+        _turn_id: TurnId,
+    ) -> Result<(), AttemptStoreError> {
+        Ok(())
+    }
+}
+
+/// Committer fixture for a D-7 owned by another process. The local runtime
+/// catalog is intentionally empty, so the interruption path must not infer
+/// that the durable Turn has no live execution work.
+#[derive(Clone, Copy, Default)]
+struct RemoteLiveCommitter;
+
+impl AttemptCommitter for RemoteLiveCommitter {
+    fn commit_outcome(
+        &mut self,
+        _binding: &ExactActionBinding,
+        _outcome: &ToolExecutionOutcome,
+    ) -> Result<AttemptCommitResult, koduck_ai::application::AttemptCommitError> {
+        unreachable!("a remote attempt cannot be terminalized through the local catalog")
+    }
+}
+
+impl ExecutionAttemptLiveness for RemoteLiveCommitter {
+    fn has_live_attempt(
+        &mut self,
+        _tenant_id: &TenantId,
+        _thread_id: ThreadId,
+        _turn_id: TurnId,
+    ) -> Result<bool, AttemptStoreError> {
+        Ok(true)
+    }
+}
+
+impl ExecutionAttemptInterruptionGuard for RemoteLiveCommitter {
+    fn begin_interruption(
+        &mut self,
+        _tenant_id: &TenantId,
+        _thread_id: ThreadId,
+        _turn_id: TurnId,
+    ) -> Result<(), AttemptStoreError> {
+        Ok(())
+    }
+}
 
 fn context() -> ToolCallTurnContext {
     ToolCallTurnContext {
@@ -68,7 +169,8 @@ fn tool_result_of(items: &[NewItem]) -> (&Option<koduck_ai::domain::execution::A
 
 #[test]
 fn runtime_assembly_denies_every_tool_call_through_the_empty_inventory() {
-    let mut executor = RuntimeState::assemble().tool_call_executor();
+    let mut executor = RuntimeState::assemble()
+        .tool_call_executor(RecordingCommitter::default(), UnusedInterruptionLease);
 
     let mut projections = RecordingProjections::default();
     let result = executor
@@ -89,8 +191,30 @@ fn runtime_assembly_denies_every_tool_call_through_the_empty_inventory() {
 }
 
 #[test]
+fn interruption_with_remote_live_attempt_requires_reconciliation() {
+    let root = ToolExecutionRuntimeRoot::issue();
+    let mut executor = BoundaryToolCallExecutor::new(
+        &root,
+        ToolConfigurationSnapshot::empty(),
+        RemoteLiveCommitter,
+        UnusedInterruptionLease,
+    );
+
+    let result = executor.request_interrupt(&trust(), ThreadId::new(), TurnId::new());
+
+    assert!(
+        matches!(
+            result,
+            Err(koduck_ai::application::ToolCallError::Reconciliation(_))
+        ),
+        "a process-local NoLiveAttempt must not authorize an interrupted Turn terminal"
+    );
+}
+
+#[test]
 fn runtime_assembly_normalizes_an_invalid_tool_name_before_recording_denial() {
-    let mut executor = RuntimeState::assemble().tool_call_executor();
+    let mut executor = RuntimeState::assemble()
+        .tool_call_executor(RecordingCommitter::default(), UnusedInterruptionLease);
     let mut projections = RecordingProjections::default();
 
     let result = executor
@@ -142,7 +266,9 @@ fn runtime_assembly_records_the_full_c5_path_for_a_configured_capability() {
         )
         .expect("profile registers");
     let root = ToolExecutionRuntimeRoot::issue();
-    let mut executor = BoundaryToolCallExecutor::new(&root, snapshot);
+    let committer = RecordingCommitter::default();
+    let mut executor =
+        BoundaryToolCallExecutor::new(&root, snapshot, committer.clone(), UnusedInterruptionLease);
 
     let mut projections = RecordingProjections::default();
     let result = executor
@@ -163,6 +289,14 @@ fn runtime_assembly_records_the_full_c5_path_for_a_configured_capability() {
         "the recorded terminal carries its canonical D-7 identity"
     );
     assert_eq!(code, "executor_unavailable");
+    // The executor-unavailable failure carries effect state `not_started`,
+    // so TC-08 permits exactly one automatic pre-effect retry: the initial
+    // attempt and its fresh retry each commit one terminal.
+    assert_eq!(
+        committer.commits(),
+        2,
+        "the resolved C-5 path commits one terminal per attempt through the injected committer"
+    );
 }
 
 #[test]
@@ -197,7 +331,9 @@ fn policy_denials_are_recorded_tool_results_not_turn_terminals() {
         )
         .expect("profile registers");
     let root = ToolExecutionRuntimeRoot::issue();
-    let mut executor = BoundaryToolCallExecutor::new(&root, snapshot);
+    let committer = RecordingCommitter::default();
+    let mut executor =
+        BoundaryToolCallExecutor::new(&root, snapshot, committer.clone(), UnusedInterruptionLease);
 
     let mut projections = RecordingProjections::default();
     let result = executor
@@ -215,4 +351,9 @@ fn policy_denials_are_recorded_tool_results_not_turn_terminals() {
     assert_eq!(code, "descriptor_disabled");
     assert!(result.is_error);
     assert_eq!(result.content, "descriptor_disabled");
+    assert_eq!(
+        committer.commits(),
+        0,
+        "a policy denial commits no terminal"
+    );
 }

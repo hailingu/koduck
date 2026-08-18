@@ -182,6 +182,23 @@ pub trait PostgresExecutor: Clone {
     /// Returns [`HistoryError`] when the Turn is not active and owned or storage fails.
     fn request_interrupt(&self, trust: &TrustContext, turn_id: TurnId) -> Result<(), HistoryError>;
 
+    /// Resolves the owned Thread for a paired C-5 interruption.
+    ///
+    /// Adapters without a colocated C-5 boundary may return `None`; the
+    /// production `SQLx` adapter returns the authenticated Turn's Thread.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`HistoryError`] when resolving the authenticated ownership
+    /// context cannot complete.
+    fn interruption_thread(
+        &self,
+        _trust: &TrustContext,
+        _turn_id: TurnId,
+    ) -> Result<Option<ThreadId>, HistoryError> {
+        Ok(None)
+    }
+
     /// Reads the persisted interrupt flag for the expected generation.
     ///
     /// # Errors
@@ -519,6 +536,14 @@ impl<E: PostgresExecutor + Send + 'static> TurnHistory for PostgresTurnHistory<E
         turn_id: TurnId,
     ) -> Result<(), HistoryError> {
         self.executor.request_interrupt(trust, turn_id)
+    }
+
+    fn interruption_thread(
+        &self,
+        trust: &TrustContext,
+        turn_id: TurnId,
+    ) -> Result<Option<ThreadId>, HistoryError> {
+        self.executor.interruption_thread(trust, turn_id)
     }
 
     fn interruption_requested(&self, turn: &AcceptedTurn) -> Result<bool, HistoryError> {

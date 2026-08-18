@@ -4,7 +4,7 @@
 
 use std::time::Duration;
 
-use sqlx::{PgPool, Row};
+use sqlx::{PgConnection, PgPool, Row};
 use tokio::runtime::Handle;
 use tokio_stream::StreamExt;
 use uuid::Uuid;
@@ -19,6 +19,7 @@ use super::payload_codec::{encode_payload, row_to_item};
 use super::settle_commit_attempt;
 use super::{LeaseKey, LeaseTiming, PostgresExecutor, ReconcileOutcome, RecoveryOutcome};
 
+mod interruption_ownership;
 mod projection_batch;
 /// Production `PostgreSQL` executor using one `SQLx` pool and its owning Tokio runtime.
 #[derive(Clone)]
@@ -52,68 +53,6 @@ impl SqlxPostgresExecutor {
                 .await
                 .map_err(|_| HistoryError::Unavailable)?
         })
-    }
-
-    async fn request_interrupt_async(
-        &self,
-        trust: &TrustContext,
-        turn_id: TurnId,
-    ) -> Result<(), HistoryError> {
-        let mut transaction = self.pool.begin().await.map_err(unavailable)?;
-        let ownership = sqlx::query(
-            "SELECT t.thread_id, t.status, t.next_sequence, l.fenced, \
-             l.expires_at + INTERVAL '2 seconds' > CURRENT_TIMESTAMP AS within_window \
-             FROM turns t JOIN threads h USING (tenant_id, thread_id) \
-             JOIN turn_leases l USING (tenant_id, thread_id, turn_id) \
-             WHERE t.tenant_id = $1 AND h.subject_id = $2 AND t.turn_id = $3 FOR UPDATE",
-        )
-        .bind(trust.tenant_id.as_str())
-        .bind(trust.subject_id.as_str())
-        .bind(turn_id.as_uuid())
-        .fetch_optional(&mut *transaction)
-        .await
-        .map_err(unavailable)?;
-        let Some(ownership) = ownership else {
-            return Err(HistoryError::NotFound);
-        };
-        let status: String = ownership.try_get("status").map_err(unavailable)?;
-        if is_terminal_status(&status) {
-            return Err(HistoryError::AlreadyTerminal);
-        }
-        let fenced: bool = ownership.try_get("fenced").map_err(unavailable)?;
-        let within_window: bool = ownership.try_get("within_window").map_err(unavailable)?;
-        if status != "started" || fenced || !within_window {
-            return Err(HistoryError::Fenced);
-        }
-        let thread_id: Uuid = ownership.try_get("thread_id").map_err(unavailable)?;
-        let sequence: i64 = ownership.try_get("next_sequence").map_err(unavailable)?;
-        let item = Item::new(
-            u64::try_from(sequence).map_err(|_| HistoryError::Unavailable)?,
-            ItemPayload::Terminal(TerminalOutcome::Interrupted),
-        );
-        insert_item(
-            &mut transaction,
-            &trust.tenant_id,
-            ThreadId::from_uuid(thread_id),
-            turn_id,
-            &item,
-        )
-        .await?;
-        sqlx::query(
-            "UPDATE turns SET interrupt_requested = TRUE, status = 'interrupted', \
-             next_sequence = next_sequence + 1 \
-             WHERE tenant_id = $1 AND thread_id = $2 AND turn_id = $3 \
-             AND next_sequence = $4 AND status = 'started'",
-        )
-        .bind(trust.tenant_id.as_str())
-        .bind(thread_id)
-        .bind(turn_id.as_uuid())
-        .bind(sequence)
-        .execute(&mut *transaction)
-        .await
-        .map_err(unavailable)?;
-        transaction.commit().await.map_err(unavailable)?;
-        Ok(())
     }
 
     async fn interruption_requested_async(
@@ -273,7 +212,7 @@ impl SqlxPostgresExecutor {
         let mut transaction = self.pool.begin().await.map_err(unavailable)?;
         commit_reconciliation::lock_operation(&mut transaction, item.item_id.as_uuid()).await?;
         let ownership = sqlx::query(
-            "SELECT t.status, t.next_sequence, t.interrupt_requested, l.fenced FROM turns t \
+            "SELECT t.status, t.next_sequence, t.interrupt_requested, t.interrupting, l.fenced FROM turns t \
              JOIN turn_leases l USING (tenant_id, thread_id, turn_id) \
              WHERE t.tenant_id = $1 AND t.thread_id = $2 AND t.turn_id = $3 \
              AND l.generation = $4 FOR UPDATE",
@@ -297,6 +236,10 @@ impl SqlxPostgresExecutor {
         let interrupt_requested: bool = ownership
             .try_get("interrupt_requested")
             .map_err(unavailable)?;
+        let interrupting: bool = ownership.try_get("interrupting").map_err(unavailable)?;
+        if interrupting {
+            return Err(HistoryError::Fenced);
+        }
         let new_item = if interrupt_requested {
             NewItem::Terminal(TerminalOutcome::Interrupted)
         } else {
@@ -383,7 +326,7 @@ impl SqlxPostgresExecutor {
     ) -> Result<RecoveryOutcome, HistoryError> {
         let mut transaction = self.pool.begin().await.map_err(unavailable)?;
         let ownership = sqlx::query(
-            "SELECT t.status, t.next_sequence, t.interrupt_requested, l.fenced, \
+            "SELECT t.status, t.next_sequence, t.interrupt_requested, t.interrupting, l.fenced, \
              (EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - l.renewed_at)) * 1000)::BIGINT \
              <= $5 AS within_window FROM turns t \
              JOIN turn_leases l USING (tenant_id, thread_id, turn_id) \
@@ -411,6 +354,10 @@ impl SqlxPostgresExecutor {
         let interrupt_requested: bool = ownership
             .try_get("interrupt_requested")
             .map_err(unavailable)?;
+        let interrupting: bool = ownership.try_get("interrupting").map_err(unavailable)?;
+        if interrupting {
+            return Err(HistoryError::Fenced);
+        }
         if status == "started" && !interrupt_requested {
             sqlx::query(
                 "UPDATE turns SET status = 'recovery-pending' \
@@ -502,7 +449,7 @@ impl SqlxPostgresExecutor {
     ) -> Result<ReconcileOutcome, HistoryError> {
         let mut transaction = self.pool.begin().await.map_err(unavailable)?;
         let ownership = sqlx::query(
-            "SELECT t.status, t.next_sequence, t.interrupt_requested, l.fenced, \
+            "SELECT t.status, t.next_sequence, t.interrupt_requested, t.interrupting, l.fenced, \
              (EXTRACT(EPOCH FROM l.renewed_at) * 1000)::BIGINT AS renewed_ms \
              FROM turns t JOIN turn_leases l USING (tenant_id, thread_id, turn_id) \
              WHERE t.tenant_id = $1 AND t.thread_id = $2 AND t.turn_id = $3 \
@@ -532,8 +479,18 @@ impl SqlxPostgresExecutor {
         let interrupt_requested: bool = ownership
             .try_get("interrupt_requested")
             .map_err(unavailable)?;
+        let interrupting: bool = ownership.try_get("interrupting").map_err(unavailable)?;
         let sequence: i64 = ownership.try_get("next_sequence").map_err(unavailable)?;
-        let (terminal, terminal_status, outcome) = if interrupt_requested {
+        // The interrupting flag is the durable pre-terminal barrier. If the
+        // requesting process dies or loses its lease after committing that
+        // barrier but before it writes the Turn terminal, expiry recovery
+        // must finish the same authenticated interruption rather than leave
+        // the Turn permanently fenced.
+        // Every expiry terminal fences this lease permanently. Close any D-7
+        // still owned by the Turn before doing so, because no later reconciler
+        // can reach an active attempt beneath a terminal Turn.
+        close_active_attempts(&mut transaction, key, now_ms).await?;
+        let (terminal, terminal_status, outcome) = if interrupt_requested || interrupting {
             (
                 TerminalOutcome::Interrupted,
                 "interrupted",
@@ -633,9 +590,47 @@ impl SqlxPostgresExecutor {
     }
 }
 
+async fn close_active_attempts(
+    connection: &mut PgConnection,
+    key: &LeaseKey,
+    terminal_at_millis: u64,
+) -> Result<(), HistoryError> {
+    sqlx::query(
+        "UPDATE tool_execution_attempts
+         SET status = CASE
+                 WHEN status = 'prepared' THEN 'cancelled'
+                 ELSE 'timed_out'
+             END,
+             effect_state = CASE
+                 WHEN status = 'prepared' THEN 'not_started'
+                 ELSE 'unknown'
+             END,
+             terminal_at_millis = $4,
+             version = 3
+         WHERE tenant_id = $1 AND thread_id = $2 AND turn_id = $3
+           AND status IN ('prepared', 'running')",
+    )
+    .bind(key.tenant_id.as_str())
+    .bind(key.thread_id.as_uuid())
+    .bind(key.turn_id.as_uuid())
+    .bind(milliseconds_i64(terminal_at_millis)?)
+    .execute(connection)
+    .await
+    .map_err(unavailable)?;
+    Ok(())
+}
+
 impl PostgresExecutor for SqlxPostgresExecutor {
     fn request_interrupt(&self, trust: &TrustContext, turn_id: TurnId) -> Result<(), HistoryError> {
-        self.wait(self.request_interrupt_async(trust, turn_id))
+        self.wait(interruption_ownership::request(&self.pool, trust, turn_id))
+    }
+
+    fn interruption_thread(
+        &self,
+        trust: &TrustContext,
+        turn_id: TurnId,
+    ) -> Result<Option<ThreadId>, HistoryError> {
+        self.wait(interruption_ownership::resolve(&self.pool, trust, turn_id))
     }
 
     fn interruption_requested(&self, turn: &AcceptedTurn) -> Result<bool, HistoryError> {

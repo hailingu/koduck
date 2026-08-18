@@ -110,6 +110,12 @@ fn cand_2_policy_dependencies_are_inward_and_unbypassable() {
         runtime_executor.contains(".execute_projected(") && runtime_executor.contains(".boundary("),
         "the runtime executor dispatches the translated action through the C-5 boundary"
     );
+    let runner = fs::read_to_string(crate_root.join("src/application/runner.rs"))
+        .expect("turn runner source is readable");
+    assert!(
+        runner.contains("self.tools.request_interrupt("),
+        "the production interruption path must also route live Tool attempts through C-5"
+    );
     assert!(
         tool_adapter.contains(
             "translate_native_tool_call(
@@ -533,8 +539,8 @@ fn production_io_and_background_work_are_bounded() {
     assert!(runtime.contains("async fn database_setup_attempt"));
     assert_eq!(
         runtime.matches("database_deadline,").count(),
-        5,
-        "all five PostgreSQL startup operations (pool connect plus the four idempotent migrations) must use the shared bounded helper"
+        7,
+        "all seven PostgreSQL startup operations (pool connect plus the six idempotent migrations) must use the shared bounded helper"
     );
 }
 

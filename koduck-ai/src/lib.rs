@@ -12,6 +12,10 @@ pub mod runtime;
 extern crate self as koduck_ai;
 
 #[cfg(test)]
+#[path = "../tests/internal/test_migrations.rs"]
+pub(crate) mod test_migrations;
+
+#[cfg(test)]
 #[path = "../tests/internal/cand_2_approval.rs"]
 mod cand_2_approval_tests;
 #[cfg(test)]

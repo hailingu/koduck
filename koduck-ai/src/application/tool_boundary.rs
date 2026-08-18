@@ -7,10 +7,11 @@ use std::sync::{Arc, Mutex};
 use crate::domain::execution::{ApprovalDecision, ApprovalRequest, ExactActionBinding};
 use crate::domain::{ThreadId, TrustContext};
 
+use super::cancellation::{ExecutionInterrupter, InterruptionOutcome, PendingApprovalCanceller};
 use super::execution::{
     ApprovalAuthorizer, ApprovalDecisionService, AttemptCommitter, ExecutionCoordinator,
-    ExecutionPreparer, IsolatedExecutor, LeaseCheck, LeaseValidator, ToolExecutionAuthorityRoot,
-    ToolExecutionOutcome, ToolExecutionRuntime,
+    ExecutionPending, ExecutionPreparer, IsolatedExecutor, LeaseCheck, LeaseValidator,
+    ToolExecutionAuthorityRoot, ToolExecutionOutcome, ToolExecutionRuntime,
 };
 use super::policy::{TOOL_APPROVAL_SCOPE, ToolAuthorizationService, ToolConfigurationSnapshot};
 use super::tool_execution::{ToolCallError, ToolCallInputs, ToolExecutionDriver};
@@ -80,6 +81,12 @@ impl ToolExecutionRuntimeRoot {
             runtime: ToolExecutionRuntime::new(&ToolExecutionAuthorityRoot::new()),
         }
     }
+
+    /// Returns the shared runtime only for crate-internal composition tests.
+    #[cfg(test)]
+    pub(crate) fn runtime(&self) -> ToolExecutionRuntime {
+        self.runtime.clone()
+    }
 }
 
 /// Runtime assembly whose boundaries share one explicitly injected C-5 Turn
@@ -88,20 +95,12 @@ impl ToolExecutionRuntimeRoot {
 /// Every boundary derived from one assembly — and every assembly bound to the
 /// same injected [`ToolExecutionRuntimeRoot`] — shares one authority catalog,
 /// so one Turn has exactly one 16-slot attempt budget and one running D-7.
-#[cfg_attr(
-    not(test),
-    allow(dead_code, reason = "T-2 runtime execution wiring is not complete")
-)]
 #[derive(Clone)]
 pub(crate) struct ToolExecutionAssembly {
     configuration: ToolConfigurationSnapshot,
     runtime: ToolExecutionRuntime,
 }
 
-#[cfg_attr(
-    not(test),
-    allow(dead_code, reason = "T-2 runtime execution wiring is not complete")
-)]
 impl ToolExecutionAssembly {
     /// Creates one assembly bound to the explicitly injected authority root.
     ///
@@ -144,6 +143,50 @@ impl ToolExecutionAssembly {
                 .preparer(SharedLeaseValidator(Arc::clone(&shared_lease.0))),
             coordinator: ExecutionCoordinator::new(executor, shared_lease, committer),
         }
+    }
+
+    /// Cancels every live D-7 for an authenticated Turn through the shared
+    /// runtime authority catalog.
+    ///
+    /// The interruption coordinator is assembled from the same executor,
+    /// lease validator, and conditional terminal committer as normal dispatch,
+    /// so cancellation cannot bypass C-5 ownership or durable-terminal rules.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ExecutionPending`] when a live D-7 needs reconciliation.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the C-5 cancellation ports and authenticated ownership dimensions are explicit"
+    )]
+    pub(crate) fn interrupt<E, L, C, A>(
+        &self,
+        executor: E,
+        lease: L,
+        committer: C,
+        approvals: &mut A,
+        trust: &TrustContext,
+        thread_id: ThreadId,
+        turn_id: crate::domain::TurnId,
+        now: &mut dyn FnMut() -> u64,
+    ) -> Result<InterruptionOutcome, ExecutionPending>
+    where
+        E: IsolatedExecutor,
+        L: LeaseValidator + 'static,
+        C: AttemptCommitter,
+        A: PendingApprovalCanceller,
+    {
+        let shared_lease = SharedLeaseValidator(Arc::new(Mutex::new(lease)));
+        let mut coordinator = ExecutionCoordinator::new(executor, shared_lease, committer);
+        ExecutionInterrupter::interrupt(
+            &self.runtime.interrupter(),
+            &mut coordinator,
+            approvals,
+            &trust.tenant_id,
+            thread_id,
+            turn_id,
+            now,
+        )
     }
 }
 

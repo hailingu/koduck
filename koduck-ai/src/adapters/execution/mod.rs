@@ -2,8 +2,12 @@
 
 //! Production executor adapter kept fail-closed until a capability is approved.
 
+pub mod attempts;
+pub mod lease;
 pub mod postgres;
 
+pub use attempts::SqlxExecutionAttemptStore;
+pub use lease::SqlxTurnLeaseValidator;
 pub use postgres::SqlxApprovalRecordStore;
 
 use crate::application::{

@@ -59,9 +59,32 @@ fn emit_projection(sink: &mut dyn ToolProjectionSink, projection: &ToolProjectio
 #[derive(Clone, Default)]
 struct RecordingToolExecutor {
     calls: Arc<Mutex<Vec<String>>>,
+    interruptions: Arc<Mutex<Vec<(ThreadId, TurnId)>>>,
+}
+
+impl RecordingToolExecutor {
+    fn interruptions(&self) -> Vec<(ThreadId, TurnId)> {
+        self.interruptions
+            .lock()
+            .expect("executor interruptions lock")
+            .clone()
+    }
 }
 
 impl ToolCallExecutor for RecordingToolExecutor {
+    fn request_interrupt(
+        &mut self,
+        _trust: &TrustContext,
+        thread_id: ThreadId,
+        turn_id: TurnId,
+    ) -> Result<(), ToolCallError> {
+        self.interruptions
+            .lock()
+            .expect("executor interruptions lock")
+            .push((thread_id, turn_id));
+        Ok(())
+    }
+
     fn execute_tool_call(
         &mut self,
         call: koduck_ai::application::ModelToolCall,
@@ -369,6 +392,8 @@ impl ToolCallExecutor for MismatchedFailureSummaryToolExecutor {
 #[derive(Default)]
 struct MemoryHistoryState {
     items: BTreeMap<TurnId, Vec<Item>>,
+    interruption_thread: Option<ThreadId>,
+    requested_interrupts: Vec<TurnId>,
 }
 
 #[derive(Clone, Default)]
@@ -376,13 +401,46 @@ struct MemoryHistory {
     state: Arc<Mutex<MemoryHistoryState>>,
 }
 
+impl MemoryHistory {
+    fn with_interruption_thread(thread_id: ThreadId) -> Self {
+        let history = Self::default();
+        history
+            .state
+            .lock()
+            .expect("history lock")
+            .interruption_thread = Some(thread_id);
+        history
+    }
+
+    fn requested_interrupts(&self) -> Vec<TurnId> {
+        self.state
+            .lock()
+            .expect("history lock")
+            .requested_interrupts
+            .clone()
+    }
+}
+
 impl TurnHistory for MemoryHistory {
     fn request_interrupt(
         &mut self,
         _trust: &TrustContext,
-        _turn_id: TurnId,
+        turn_id: TurnId,
     ) -> Result<(), HistoryError> {
+        self.state
+            .lock()
+            .expect("history lock")
+            .requested_interrupts
+            .push(turn_id);
         Ok(())
+    }
+
+    fn interruption_thread(
+        &self,
+        _trust: &TrustContext,
+        _turn_id: TurnId,
+    ) -> Result<Option<ThreadId>, HistoryError> {
+        Ok(self.state.lock().expect("history lock").interruption_thread)
     }
 
     fn interruption_requested(&self, _turn: &AcceptedTurn) -> Result<bool, HistoryError> {
@@ -501,6 +559,23 @@ fn payload_kinds(items: &[Item]) -> Vec<&'static str> {
             }
         })
         .collect()
+}
+
+#[test]
+fn authenticated_interrupt_cancels_live_tool_work_before_terminalizing_the_turn() {
+    let thread_id = ThreadId::new();
+    let turn_id = TurnId::new();
+    let history = MemoryHistory::with_interruption_thread(thread_id);
+    let executor = RecordingToolExecutor::default();
+    let mut runner = TurnRunner::new(ScriptedProvider::default(), history.clone())
+        .with_tool_executor(executor.clone());
+
+    runner
+        .request_interrupt(&command().trust, turn_id)
+        .expect("the authenticated interruption is accepted");
+
+    assert_eq!(executor.interruptions(), vec![(thread_id, turn_id)]);
+    assert_eq!(history.requested_interrupts(), vec![turn_id]);
 }
 
 #[test]

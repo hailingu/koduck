@@ -350,6 +350,25 @@ pub trait ToolCallExecutor {
         trust: &TrustContext,
         projections: &mut dyn ToolProjectionSink,
     ) -> Result<ModelToolResult, super::ToolCallError>;
+
+    /// Cancels live C-5 work for one authenticated Turn interruption.
+    ///
+    /// The default is deliberately a no-op because configurations without a
+    /// live C-5 boundary have no process-owned execution work to cancel. The
+    /// production boundary overrides it to close catalogued D-7 attempts.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ToolCallError`] when live execution work cannot reach a
+    /// canonical terminal and requires reconciliation.
+    fn request_interrupt(
+        &mut self,
+        _trust: &TrustContext,
+        _thread_id: ThreadId,
+        _turn_id: TurnId,
+    ) -> Result<(), super::ToolCallError> {
+        Ok(())
+    }
 }
 
 /// Explicit unconfigured tool-execution boundary.
@@ -464,6 +483,25 @@ pub trait TurnHistory {
         trust: &TrustContext,
         turn_id: TurnId,
     ) -> Result<(), HistoryError>;
+
+    /// Resolves the authenticated Turn's Thread for a paired C-5 interruption.
+    ///
+    /// History adapters that do not host a C-5 execution boundary return
+    /// `None`, preserving their canonical history-only interruption behavior.
+    /// Production adapters return the tenant- and subject-owned Thread so the
+    /// runner can cancel live D-7 work before recording the Turn terminal.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`HistoryError`] when the authenticated ownership lookup cannot
+    /// complete.
+    fn interruption_thread(
+        &self,
+        _trust: &TrustContext,
+        _turn_id: TurnId,
+    ) -> Result<Option<ThreadId>, HistoryError> {
+        Ok(None)
+    }
 
     /// Reports whether the accepted turn has a durable interrupt request.
     ///
@@ -633,6 +671,9 @@ pub enum TurnRunError {
     /// Canonical history rejected an operation.
     #[error(transparent)]
     History(#[from] HistoryError),
+    /// Live C-5 work could not be terminalized for an authenticated interrupt.
+    #[error(transparent)]
+    Tool(#[from] super::ToolCallError),
     /// Internal lifecycle code attempted an invalid state transition.
     #[error(transparent)]
     Transition(#[from] TurnTransitionError),
