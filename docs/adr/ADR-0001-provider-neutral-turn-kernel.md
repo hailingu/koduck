@@ -23,7 +23,7 @@
 - **Blocker And Evidence [Conditionally Required — Implementation Status is `Blocked`]**: N/A — Implementation Status is `Complete`
 - **Blocker Owner [Conditionally Required — Implementation Status is `Blocked`]**: N/A — Implementation Status is `Complete`
 - **Blocker Exit Or Recheck Criterion [Conditionally Required — Implementation Status is `Blocked`]**: N/A — Implementation Status is `Complete`
-- **Related [Optional]**: [Chinese translation](translations/zh-CN/ADR-0001-provider-neutral-turn-kernel.md); [Koduck Trello card 4WI4sszw](https://trello.com/c/4WI4sszw/2-%E8%B0%83%E7%A0%94-adr-%E6%98%8E%E7%A1%AE-ai-%E6%9C%8D%E5%8A%A1%E9%87%8D%E6%9E%84%E8%BE%B9%E7%95%8C%E4%B8%8E-codex-%E5%AF%B9%E9%BD%90%E7%9B%AE%E6%A0%87)
+- **Related [Optional]**: [Koduck Trello card 4WI4sszw](https://trello.com/c/4WI4sszw/2-%E8%B0%83%E7%A0%94-adr-%E6%98%8E%E7%A1%AE-ai-%E6%9C%8D%E5%8A%A1%E9%87%8D%E6%9E%84%E8%BE%B9%E7%95%8C%E4%B8%8E-codex-%E5%AF%B9%E9%BD%90%E7%9B%AE%E6%A0%87)
 - **Architecture Source [Conditionally Required — product demand]**: `docs/architecture/ADD-0001-ai-service-codex-alignment.md` — CAND-1
 - **Supersedes [Conditionally Required — this ADR replaces another]**: None
 - **Superseded By [Conditionally Required — this ADR is replaced]**: None
@@ -580,10 +580,9 @@ implementation completion. When triggered:
 - [ ] Move this file to
       `archive/ADR-0001-provider-neutral-turn-kernel.md` under this project ADR
       root (`docs/adr/archive/`).
-- [ ] Keep the non-authoritative Chinese translation at
-      `docs/adr/translations/zh-CN/ADR-0001-provider-neutral-turn-kernel.md`,
-      update its authoritative-English backlink to this record's archived path,
-      and update this record's translation link for its new directory depth.
+- [ ] N/A — the non-authoritative Chinese translation was removed on
+      2026-08-18 by repository-owner direction; no translation backlink or
+      translation-link maintenance applies.
 - [ ] Update every code marker that cites this file's pre-archive path to the new
       archive path, or remove the marker if the governed code was deleted.
 - [ ] If Decision Status is `Superseded`, set the replacement record's
@@ -636,3 +635,4 @@ implementation completion. When triggered:
 | 2026-08-17 | Approval-invalidating contract reconciliation at `2026-08-17T08:25:37Z`: the SSE wire contract now enumerates the in-band `error` transport-diagnostic event that the implementation already emits for post-start failures, resolving the contradiction between the event-name enumeration and the durability clause's required `durability-unavailable` diagnostic; CT-8 and AC-8 now bind the event's exact problem-body shape, the absence of `thread_id`/`turn_id`/`sequence`, stream close without a terminal, and the prohibition of an `error` event after a published terminal (`runtime_wiring::mid_turn_failure_is_reported_inside_an_started_sse_stream`; `sse_terminal_consistency::replay_failure_after_sse_terminal_does_not_emit_error_event`). No source behavior changed. Preserved prior approval: Approver `@linhai`, Approval Time `2026-08-12T16:25:02+08:00`, Approval Evidence `Approve`, no Approval Context Revision. Reset Decision Status to `Proposed` and Implementation Status to `Not Started` pending reapproval. | @kimi |
 | 2026-08-17 | Reapproved the SSE `error`-event wire-contract reconciliation after repository owner `@linhai` self-declared `@linhai` in the active task, identified ADR-0001, and supplied exact `Approve`; recorded Approval Time `2026-08-17T08:57:39Z` and returned Decision Status to `Accepted`. No Approval Context Revision is recorded because the approved content is not yet represented by an immutable commit. Implementation Status is restored only after the revised acceptance checks are re-executed. | @linhai |
 | 2026-08-17 | Re-executed the revised acceptance checks after reapproval: `cargo test -p koduck-ai --test cand_1_durability` (9 passed, AC-8/AC-9), `cargo test -p koduck-ai --test runtime_wiring mid_turn_failure_is_reported_inside_an_started_sse_stream -- --exact` (1 passed), `cargo test -p koduck-ai --test sse_terminal_consistency replay_failure_after_sse_terminal_does_not_emit_error_event -- --exact` (1 passed), and `cargo test -p koduck-ai --test cand_1_contract` (10 passed, AC-4/AC-5/AC-6/AC-13/AC-15 surface); routed `cargo fmt --all --check`, strict all-target/all-feature Clippy, and the complete all-target/all-feature suite pass with 0 failures. Implementation Status is restored to `Complete`; this evidence-only update does not change the approved decision, behavior, or scope. | @kimi |
+| 2026-08-18 | Removed the non-authoritative Chinese translation at `docs/adr/translations/zh-CN/ADR-0001-provider-neutral-turn-kernel.md` by repository-owner direction in the active task, ending its per-change synchronization; the authoritative English record is unchanged and remains the sole decision identity. The Related translation link and the Archival checklist's translation-maintenance item were updated in the same change; historical affected-paths evidence and prior change-log entries remain accurate point-in-time records. | @zcode |
