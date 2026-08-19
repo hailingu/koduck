@@ -8,6 +8,7 @@ mod approval_store;
 pub(crate) mod attempt_store;
 mod audit;
 mod cancellation;
+mod canonical_dispatch;
 mod deadline;
 mod durability;
 mod execution;
@@ -28,8 +29,8 @@ pub use approval_store::{
 };
 pub use attempt_store::{
     AttemptInsertResolution, AttemptStoreError, AttemptTerminalResolution, DispatchClaimResolution,
-    DurableAttemptTerminal, ExecutionAttemptInterruptionGuard, ExecutionAttemptLiveness,
-    ExecutionAttemptStore,
+    DurableAttemptTerminal, DurableAttemptTransitions, ExecutionAttemptInterruptionGuard,
+    ExecutionAttemptLiveness, ExecutionAttemptStore, PreparedCloseResolution,
 };
 pub use audit::{
     MAX_AUDIT_RECORD_BYTES, NoToolAudits, PolicyDenialContext, ToolAuditError, ToolAuditRecord,

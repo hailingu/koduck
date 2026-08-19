@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex};
 use crate::domain::execution::{ApprovalDecision, ApprovalRequest, ExactActionBinding};
 use crate::domain::{ThreadId, TrustContext};
 
+use super::attempt_store::DurableAttemptTransitions;
 use super::cancellation::{ExecutionInterrupter, InterruptionOutcome, PendingApprovalCanceller};
 use super::execution::{
     ApprovalAuthorizer, ApprovalDecisionService, AttemptCommitter, ExecutionCoordinator,
@@ -121,6 +122,12 @@ impl ToolExecutionAssembly {
     /// Creates one port-specific boundary sharing this assembly's injected
     /// authority root, crate-owned sealing service, and scope-checked
     /// approval service.
+    ///
+    /// The supplied committer object is also the durable canonical D-7
+    /// authority: every derived boundary records its prepared D-7s and claims
+    /// the single durable running slot through the same store that commits
+    /// its terminals, so no composition can dispatch around the durable
+    /// transitions (TC-12).
     pub(crate) fn boundary<E, L, C>(
         &self,
         executor: E,
@@ -130,7 +137,7 @@ impl ToolExecutionAssembly {
     where
         E: IsolatedExecutor,
         L: LeaseValidator + 'static,
-        C: AttemptCommitter,
+        C: AttemptCommitter + DurableAttemptTransitions,
     {
         let shared_lease = SharedLeaseValidator(Arc::new(Mutex::new(lease)));
         ToolExecutionBoundary {
@@ -173,7 +180,7 @@ impl ToolExecutionAssembly {
     where
         E: IsolatedExecutor,
         L: LeaseValidator + 'static,
-        C: AttemptCommitter,
+        C: AttemptCommitter + DurableAttemptTransitions,
         A: PendingApprovalCanceller,
     {
         let shared_lease = SharedLeaseValidator(Arc::new(Mutex::new(lease)));
@@ -215,7 +222,7 @@ pub(crate) struct ToolExecutionBoundary<E, C> {
 impl<E, C> ToolExecutionBoundary<E, C>
 where
     E: IsolatedExecutor,
-    C: AttemptCommitter,
+    C: AttemptCommitter + DurableAttemptTransitions,
 {
     /// Executes one tool call with the approved retry, bounds, and fencing
     /// contract of ADR-0003.

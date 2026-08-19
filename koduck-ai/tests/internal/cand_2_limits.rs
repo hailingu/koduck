@@ -5,6 +5,7 @@
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
+use crate::test_support::process_local_durable_claims;
 use koduck_ai::adapters::tool::{ToolAdapterError, parse_action_parameters, parse_input_schema};
 use koduck_ai::application::{
     ActionDeadline, AttemptCommitError, AttemptCommitResult, AttemptCommitter,
@@ -306,7 +307,9 @@ fn approval_call(
             *capture_expiry = request.expires_at_millis();
             (ApprovalDecision::Accepted, decided_at)
         };
-        let mut now = sequenced_clock(vec![T0, decided_at, decided_at, decided_at]);
+        // The prepared D-7 record reads the clock between the D-6 creation and
+        // the dispatch start (TC-12 durable preparation evidence).
+        let mut now = sequenced_clock(vec![T0, T0, decided_at, decided_at, decided_at]);
         tool_boundary.execute(&call, &approver(), &mut decision, &mut now)
     };
     (
@@ -407,7 +410,10 @@ fn approval_window_uses_the_earlier_exact_deadline() {
 }
 
 fn executor_deadline_is_exactly_thirty_seconds() {
-    // Completion at started + 29.999s succeeds.
+    // Completion at started + 29.999s succeeds. The read sequence of the
+    // approval-free leg is the durable preparation record, the dispatch plan,
+    // the dispatch start, and the deadline check — all at T0 — followed by
+    // the post-executor response read at T0 + N ms.
     let (mut tool_boundary, dispatches) = boundary(
         config(Effect::ReadData),
         vec![Script::Ok(b"ok", EffectState::Started)],
@@ -418,7 +424,7 @@ fn executor_deadline_is_exactly_thirty_seconds() {
             &call,
             &trust(),
             &mut |_| (ApprovalDecision::Accepted, T0),
-            &mut sequenced_clock(vec![T0, T0, T0, T0 + 29_999]),
+            &mut sequenced_clock(vec![T0, T0, T0, T0, T0 + 29_999]),
         )
         .expect("an at-limit duration still commits");
     assert_eq!(
@@ -441,7 +447,7 @@ fn executor_deadline_is_exactly_thirty_seconds() {
             &call,
             &trust(),
             &mut |_| (ApprovalDecision::Accepted, T0),
-            &mut sequenced_clock(vec![T0, T0, T0, T0 + 30_000]),
+            &mut sequenced_clock(vec![T0, T0, T0, T0, T0 + 30_000]),
         )
         .expect("a deadline crossing still reaches one terminal");
     assert_eq!(
@@ -1063,6 +1069,9 @@ fn poisoned_lease_validator_fails_closed() {
         "a poisoned lease must never dispatch"
     );
 }
+
+process_local_durable_claims!(CountingCommitter);
+process_local_durable_claims!(AlwaysConflictCommitter);
 
 #[test]
 fn exact_policy_and_execution_limits() {

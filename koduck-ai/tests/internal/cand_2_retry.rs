@@ -2,6 +2,7 @@
 
 use std::collections::VecDeque;
 
+use crate::test_support::process_local_durable_claims;
 use koduck_ai::adapters::tool::{parse_action_parameters, parse_input_schema};
 use koduck_ai::application::{
     ActionDeadline, ApprovalAuthorizer, ApprovalDecisionService, AttemptCommitError,
@@ -261,6 +262,46 @@ fn binding_from(inputs: &ToolCallInputs) -> ExactActionBinding {
         inputs.action.clone(),
     )
     .expect("valid binding")
+}
+
+process_local_durable_claims!(ConflictCommitter);
+
+/// Winning close double whose durable transitions count every canonical
+/// terminal close — a dispatched terminal or a prepared-only cancellation —
+/// so the retry legs can assert exactly-once closing (ADR-0003 TC-12).
+impl koduck_ai::application::DurableAttemptTransitions for WinningCommitter {
+    fn insert_prepared(
+        &mut self,
+        _binding: &koduck_ai::domain::execution::ExactActionBinding,
+        _prepared_at_millis: u64,
+    ) -> Result<
+        koduck_ai::application::AttemptInsertResolution,
+        koduck_ai::application::AttemptStoreError,
+    > {
+        Ok(koduck_ai::application::AttemptInsertResolution::Inserted)
+    }
+
+    fn claim_running(
+        &mut self,
+        _binding: &koduck_ai::domain::execution::ExactActionBinding,
+        _started_at_millis: u64,
+    ) -> Result<
+        koduck_ai::application::DispatchClaimResolution,
+        koduck_ai::application::AttemptStoreError,
+    > {
+        Ok(koduck_ai::application::DispatchClaimResolution::Claimed { version: 2 })
+    }
+
+    fn cancel_prepared_attempt(
+        &mut self,
+        _binding: &koduck_ai::domain::execution::ExactActionBinding,
+    ) -> Result<
+        koduck_ai::application::PreparedCloseResolution,
+        koduck_ai::application::AttemptStoreError,
+    > {
+        self.calls += 1;
+        Ok(koduck_ai::application::PreparedCloseResolution::Won { version: 3 })
+    }
 }
 
 #[test]
@@ -711,15 +752,17 @@ fn retry_reads_a_fresh_clock_for_each_d6_and_dispatch() {
         AlwaysCurrentLease,
         WinningCommitter { calls: 0 },
     );
-    // Each D-6 receives a later creation time, while the dispatch and response
-    // reads remain inside their respective 30-second action budgets.
+    // Each D-6 receives a later creation time, each preparation record reads
+    // the clock between the creation and the dispatch start, and the dispatch
+    // and response reads remain inside their respective 30-second action
+    // budgets.
     let mut clock_reads = VecDeque::from([
-        1_000, 101_000, 301_000, 301_001, 401_000, 501_000, 600_000, 600_001,
+        1_000, 2_000, 101_000, 301_000, 301_001, 401_000, 402_000, 501_000, 600_000, 600_001,
     ]);
     let mut clock = || {
-        clock_reads
-            .pop_front()
-            .expect("fixture supplies every creation, dispatch, and response clock read")
+        clock_reads.pop_front().expect(
+            "fixture supplies every creation, preparation, dispatch, and response clock read",
+        )
     };
     let mut observed_expires_at = Vec::new();
     let mut decision = |request: &ApprovalRequest| {

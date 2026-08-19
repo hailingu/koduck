@@ -5,6 +5,7 @@
 
 use std::sync::{Arc, Mutex};
 
+use crate::test_support::process_local_durable_claims;
 use koduck_ai::adapters::tool::{parse_action_parameters, parse_input_schema};
 use koduck_ai::application::ToolProjectionSink;
 use koduck_ai::application::{
@@ -226,6 +227,8 @@ fn expect_denied(
         "{case} must return the exact typed denial {expected:?}: {result:?}"
     );
 }
+
+process_local_durable_claims!(CountingDenialCommitter);
 
 #[test]
 fn invalid_descriptors_fail_closed() {

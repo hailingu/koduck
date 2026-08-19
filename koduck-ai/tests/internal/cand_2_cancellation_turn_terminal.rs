@@ -12,8 +12,9 @@ use std::sync::{Arc, Mutex, mpsc};
 use koduck_ai::application::{
     AcceptedTurn, AttemptCommitError, AttemptCommitResult, AttemptCommitter,
     AttemptInsertResolution, AttemptStoreError, AttemptTerminalResolution,
-    CanonicalAttemptTerminal, DurableAttemptTerminal, ExecutionAttemptInterruptionGuard,
-    ExecutionAttemptLiveness, ExecutionAttemptStore, HistoryError, ModelInput, ModelProvider,
+    CanonicalAttemptTerminal, DispatchClaimResolution, DurableAttemptTerminal,
+    DurableAttemptTransitions, ExecutionAttemptInterruptionGuard, ExecutionAttemptLiveness,
+    ExecutionAttemptStore, HistoryError, ModelInput, ModelProvider, PreparedCloseResolution,
     ProviderError, ProviderStream, ToolExecutionOutcome, TurnCommand, TurnHistory, TurnRunner,
 };
 use koduck_ai::domain::execution::ExactActionBinding;
@@ -87,6 +88,33 @@ impl AttemptCommitter for PausingLivenessStore {
     }
 }
 
+impl DurableAttemptTransitions for PausingLivenessStore {
+    fn insert_prepared(
+        &mut self,
+        binding: &ExactActionBinding,
+        prepared_at_millis: u64,
+    ) -> Result<AttemptInsertResolution, AttemptStoreError> {
+        // The durable leg drives the real canonical transitions, so the
+        // wrapper delegates instead of fabricating process-local answers.
+        ExecutionAttemptStore::insert_prepared(&mut self.inner, binding, prepared_at_millis)
+    }
+
+    fn claim_running(
+        &mut self,
+        binding: &ExactActionBinding,
+        started_at_millis: u64,
+    ) -> Result<DispatchClaimResolution, AttemptStoreError> {
+        ExecutionAttemptStore::claim_running(&mut self.inner, binding, started_at_millis)
+    }
+
+    fn cancel_prepared_attempt(
+        &mut self,
+        binding: &ExactActionBinding,
+    ) -> Result<PreparedCloseResolution, AttemptStoreError> {
+        ExecutionAttemptStore::cancel_prepared_attempt(&mut self.inner, binding)
+    }
+}
+
 impl ExecutionAttemptLiveness for PausingLivenessStore {
     fn has_live_attempt(
         &mut self,
@@ -148,7 +176,7 @@ fn interruption_leaves_one_durable_turn_terminal_and_replay() {
     // the same C-5 authority root used by the production runner executor.
     let mut seeded = durable.clone();
     assert_eq!(
-        seeded.insert_prepared(&binding, 1_000),
+        ExecutionAttemptStore::insert_prepared(&mut seeded, &binding, 1_000),
         Ok(AttemptInsertResolution::Inserted),
     );
     // The production runner composes the authenticated history lookup, C-5
@@ -228,7 +256,7 @@ fn interruption_barrier_prevents_a_remote_dispatch_after_no_live_lookup() {
     // This prepared -> running transition is started strictly after the
     // runner's liveness read. It must be rejected by the durable interruption
     // barrier instead of becoming external work alongside an Interrupted Turn.
-    let remote_insert = durable.insert_prepared(&binding, 1_000);
+    let remote_insert = ExecutionAttemptStore::insert_prepared(&mut durable, &binding, 1_000);
     release_tx.send(()).expect("release runner");
     let interrupted = interrupt.join().expect("runner thread completes");
 
@@ -286,7 +314,7 @@ fn terminal_commit_rechecks_the_durable_lease_after_fencing() {
     let (_authority, attempt) = harness.prepared();
     let binding = attempt.binding().clone();
     assert_eq!(
-        durable.insert_prepared(&binding, 1_000),
+        ExecutionAttemptStore::insert_prepared(&mut durable, &binding, 1_000),
         Ok(AttemptInsertResolution::Inserted),
     );
 
@@ -352,7 +380,7 @@ fn dispatch_claim_rechecks_the_durable_lease_after_fencing() {
     let (_authority, attempt) = harness.prepared();
     let binding = attempt.binding().clone();
     assert_eq!(
-        durable.insert_prepared(&binding, 1_000),
+        ExecutionAttemptStore::insert_prepared(&mut durable, &binding, 1_000),
         Ok(AttemptInsertResolution::Inserted),
     );
 
@@ -370,7 +398,7 @@ fn dispatch_claim_rechecks_the_durable_lease_after_fencing() {
     });
 
     assert_eq!(
-        durable.claim_running(&binding, 2_000),
+        ExecutionAttemptStore::claim_running(&mut durable, &binding, 2_000),
         Ok(koduck_ai::application::DispatchClaimResolution::Fenced),
         "a fenced generation must not obtain durable dispatch authority",
     );
@@ -398,11 +426,11 @@ fn committed_terminal_replays_even_after_lease_is_fenced() {
     let (_authority, attempt) = harness.running(1_000);
     let binding = attempt.binding().clone();
     assert_eq!(
-        durable.insert_prepared(&binding, 1_000),
+        ExecutionAttemptStore::insert_prepared(&mut durable, &binding, 1_000),
         Ok(AttemptInsertResolution::Inserted),
     );
     assert_eq!(
-        durable.claim_running(&binding, 2_000),
+        ExecutionAttemptStore::claim_running(&mut durable, &binding, 2_000),
         Ok(koduck_ai::application::DispatchClaimResolution::Claimed { version: 2 })
     );
     let terminal = DurableAttemptTerminal::from_outcome(&ToolExecutionOutcome::Succeeded {
@@ -461,7 +489,7 @@ fn stale_owner_interruption_mutates_nothing(stale: StaleLease) {
     let binding: ExactActionBinding = attempt.binding().clone();
     let mut seeded = durable.clone();
     assert_eq!(
-        seeded.insert_prepared(&binding, 1_000),
+        ExecutionAttemptStore::insert_prepared(&mut seeded, &binding, 1_000),
         Ok(AttemptInsertResolution::Inserted),
     );
 

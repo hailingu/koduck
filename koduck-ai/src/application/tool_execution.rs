@@ -11,6 +11,7 @@ use crate::domain::execution::{
 use crate::domain::tool::Action;
 use crate::domain::{LeaseGeneration, TenantId, ThreadId, TrustContext, TurnId};
 
+use super::attempt_store::DurableAttemptTransitions;
 use super::execution::{
     ApprovalAuthorizer, ApprovalDecisionService, AttemptCommitter, ExecutionCoordinator,
     ExecutionPending, ExecutionPreparationError, ExecutionPreparer, IsolatedExecutor,
@@ -114,8 +115,9 @@ impl<C, A> ToolExecutionDriver<C, A> {
     ///
     /// `decision_for` supplies the C-7 approval decision and the actual decision
     /// time for each approval-required D-6, so the D-6 expiry check uses the real
-    /// approval time. `now` is a controlled clock re-read when each D-6 is created
-    /// and when each dispatch starts, and the dispatch start time is clamped to
+    /// approval time. `now` is a controlled clock re-read when each D-6 is
+    /// created, when each prepared D-7 is durably recorded, and when each
+    /// dispatch starts, and the dispatch start time is clamped to
     /// never precede the verified decision time, so a delayed approval cannot
     /// produce a D-7 start time earlier than the approval, nor a retry D-6 window
     /// computed from the original call time. The same clock is re-read by the
@@ -142,7 +144,7 @@ impl<C, A> ToolExecutionDriver<C, A> {
         A: ApprovalAuthorizer,
         E: IsolatedExecutor,
         L: LeaseValidator,
-        Co: AttemptCommitter,
+        Co: AttemptCommitter + DurableAttemptTransitions,
     {
         self.execute_projected(
             preparer,
@@ -181,7 +183,7 @@ impl<C, A> ToolExecutionDriver<C, A> {
         A: ApprovalAuthorizer,
         E: IsolatedExecutor,
         L: LeaseValidator,
-        Co: AttemptCommitter,
+        Co: AttemptCommitter + DurableAttemptTransitions,
     {
         if inputs.tenant_id != trust.tenant_id {
             return Err(ToolCallError::TenantMismatch);
@@ -189,25 +191,12 @@ impl<C, A> ToolExecutionDriver<C, A> {
         let mut retried = false;
         loop {
             let (mut authority, mut attempt, pre_approval) =
-                match self.authorize_and_prepare(preparer, inputs, trust, now, projections) {
+                match self.authorize_and_prepare(preparer, inputs, trust, now) {
                     Ok((authority, attempt, pre_approval)) => (authority, attempt, pre_approval),
                     Err(ToolCallError::Preparation(ExecutionPreparationError::Rejected(
                         ExecutionError::AttemptLimit,
                     ))) if retried => {
-                        // AC-9: a retry that exhausts the 16-slot budget is failed/attempt_limit.
-                        emit(
-                            projections,
-                            ToolProjection::Denied {
-                                descriptor_id: inputs.action.descriptor_id().to_owned(),
-                                descriptor_version: inputs.action.descriptor_version().to_owned(),
-                                target: inputs.action.target().to_owned(),
-                                code: ExecutionFailure::AttemptLimit.stable_code().to_owned(),
-                            },
-                        );
-                        return Ok(ToolExecutionOutcome::Failed {
-                            code: ExecutionFailure::AttemptLimit,
-                            effect_state: EffectState::NotStarted,
-                        });
+                        return Ok(exhausted_retry_attempt_limit(inputs, projections));
                     }
                     Err(error) => {
                         // A retry-time preparation failure (e.g., the owner was fenced)
@@ -216,6 +205,31 @@ impl<C, A> ToolExecutionDriver<C, A> {
                         return Err(error);
                     }
                 };
+            // TC-12: the canonical prepared D-7 exists durably before any
+            // approval resolution, dispatch, or cancellation binds to it, so
+            // every later conditional transition targets the durable row and
+            // a failed durable preparation fails the call closed.
+            if let Err(pending) =
+                coordinator.record_prepared_attempt(&mut authority, &mut attempt, now())
+            {
+                if retried
+                    && matches!(
+                        &pending,
+                        ExecutionPending::DispatchRejected {
+                            code: ExecutionFailure::AttemptLimit
+                        }
+                    )
+                {
+                    return Ok(exhausted_retry_attempt_limit(inputs, projections));
+                }
+                return Err(map_preparation_record_error(pending));
+            }
+            if let PreApproval::Validated(request) = &pre_approval {
+                // TC-06: publish the requested D-6 view only after its bound
+                // D-7 exists canonically, so a durable preparation failure
+                // cannot leave projection consumers an unresolvable request.
+                emit_requested_approval(request, projections);
+            }
             let plan = match pre_approval {
                 PreApproval::NotRequired => ApprovalPlan::Dispatch {
                     approval: None,
@@ -303,7 +317,6 @@ impl<C, A> ToolExecutionDriver<C, A> {
         inputs: &ToolCallInputs,
         trust: &TrustContext,
         now: &mut dyn FnMut() -> u64,
-        projections: &mut dyn ToolProjectionSink,
     ) -> Result<(TurnExecutionAuthority, ExecutionAttempt, PreApproval), ToolCallError>
     where
         C: ToolPolicyConfiguration,
@@ -361,22 +374,6 @@ impl<C, A> ToolExecutionDriver<C, A> {
         let (authority, attempt) = preparer
             .prepare(sealed)
             .map_err(ToolCallError::Preparation)?;
-        if let PreApproval::Validated(request) = &pre_approval {
-            // TC-06: the requested D-6 is projected as a durable view only
-            // after its bound D-7 preparation succeeded, so a rejected
-            // preparation never leaves an unresolvable pending projection
-            // behind; the view never authorizes anything by existing.
-            emit(
-                projections,
-                ToolProjection::ApprovalStatus {
-                    approval_id: request.approval_id(),
-                    attempt_id: request.binding().attempt_id(),
-                    status: request.status(),
-                    decision: request.decision(),
-                    version: request.version(),
-                },
-            );
-        }
         Ok((authority, attempt, pre_approval))
     }
 
@@ -443,6 +440,57 @@ impl<C, A> ToolExecutionDriver<C, A> {
             }
             Err(error) => Err(ToolCallError::Approval(error)),
         }
+    }
+}
+
+/// Appends and publishes the requested canonical D-6 projection.
+fn emit_requested_approval(request: &ApprovalRequest, projections: &mut dyn ToolProjectionSink) {
+    emit(
+        projections,
+        ToolProjection::ApprovalStatus {
+            approval_id: request.approval_id(),
+            attempt_id: request.binding().attempt_id(),
+            status: request.status(),
+            decision: request.decision(),
+            version: request.version(),
+        },
+    );
+}
+
+/// Produces the terminal model result for a retry rejected by the exact attempt cap.
+fn exhausted_retry_attempt_limit(
+    inputs: &ToolCallInputs,
+    projections: &mut dyn ToolProjectionSink,
+) -> ToolExecutionOutcome {
+    // AC-9: a retry that exhausts the 16-slot budget is failed/attempt_limit.
+    emit(
+        projections,
+        ToolProjection::Denied {
+            descriptor_id: inputs.action.descriptor_id().to_owned(),
+            descriptor_version: inputs.action.descriptor_version().to_owned(),
+            target: inputs.action.target().to_owned(),
+            code: ExecutionFailure::AttemptLimit.stable_code().to_owned(),
+        },
+    );
+    ToolExecutionOutcome::Failed {
+        code: ExecutionFailure::AttemptLimit,
+        effect_state: EffectState::NotStarted,
+    }
+}
+
+/// Converts a failed durable preparation into its caller-visible C-5 outcome.
+fn map_preparation_record_error(pending: ExecutionPending) -> ToolCallError {
+    if matches!(
+        pending,
+        ExecutionPending::DispatchRejected {
+            code: ExecutionFailure::AttemptLimit
+        }
+    ) {
+        ToolCallError::Preparation(ExecutionPreparationError::Rejected(
+            ExecutionError::AttemptLimit,
+        ))
+    } else {
+        ToolCallError::Reconciliation(pending)
     }
 }
 

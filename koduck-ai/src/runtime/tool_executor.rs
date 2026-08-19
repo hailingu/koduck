@@ -8,10 +8,11 @@ use crate::adapters::tool::{ConfiguredCapability, translate_native_tool_call};
 use crate::application::tool_boundary::{ToolExecutionAssembly, ToolExecutionRuntimeRoot};
 use crate::application::tool_projection::emit;
 use crate::application::{
-    AttemptCommitter, DenialCode, EffectState, ExecutionAttemptInterruptionGuard,
-    ExecutionAttemptLiveness, ExecutionFailure, ExecutionPending, LeaseCheck, LeaseValidator,
-    PendingApprovalCancellation, PendingApprovalCanceller, ToolCallError, ToolCallInputs,
-    ToolConfigurationSnapshot, ToolExecutionOutcome, ToolProjection, ToolProjectionSink,
+    AttemptCommitter, DenialCode, DurableAttemptTransitions, EffectState,
+    ExecutionAttemptInterruptionGuard, ExecutionAttemptLiveness, ExecutionFailure,
+    ExecutionPending, LeaseCheck, LeaseValidator, PendingApprovalCancellation,
+    PendingApprovalCanceller, ToolCallError, ToolCallInputs, ToolConfigurationSnapshot,
+    ToolExecutionOutcome, ToolProjection, ToolProjectionSink,
 };
 use crate::domain::execution::{ApprovalDecision, ApprovalRequest, ExactActionBinding};
 use crate::domain::{ThreadId, TrustContext, TurnId};
@@ -77,7 +78,11 @@ impl PendingApprovalCanceller for UnavailablePendingApprovalCanceller {
 #[derive(Clone)]
 pub(crate) struct BoundaryToolCallExecutor<C, L>
 where
-    C: AttemptCommitter + ExecutionAttemptInterruptionGuard + ExecutionAttemptLiveness + Clone,
+    C: AttemptCommitter
+        + DurableAttemptTransitions
+        + ExecutionAttemptInterruptionGuard
+        + ExecutionAttemptLiveness
+        + Clone,
     L: LeaseValidator + Clone,
 {
     configuration: ToolConfigurationSnapshot,
@@ -88,7 +93,11 @@ where
 
 impl<C, L> BoundaryToolCallExecutor<C, L>
 where
-    C: AttemptCommitter + ExecutionAttemptInterruptionGuard + ExecutionAttemptLiveness + Clone,
+    C: AttemptCommitter
+        + DurableAttemptTransitions
+        + ExecutionAttemptInterruptionGuard
+        + ExecutionAttemptLiveness
+        + Clone,
     L: LeaseValidator + Clone,
 {
     /// Creates the executor over the injected authority root, snapshot,
@@ -135,7 +144,11 @@ where
 
 impl<C, L> crate::application::ToolCallExecutor for BoundaryToolCallExecutor<C, L>
 where
-    C: AttemptCommitter + ExecutionAttemptInterruptionGuard + ExecutionAttemptLiveness + Clone,
+    C: AttemptCommitter
+        + DurableAttemptTransitions
+        + ExecutionAttemptInterruptionGuard
+        + ExecutionAttemptLiveness
+        + Clone,
     L: LeaseValidator + Clone + 'static,
 {
     fn request_interrupt(

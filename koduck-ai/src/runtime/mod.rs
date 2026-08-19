@@ -474,6 +474,7 @@ impl RuntimeState {
     ) -> tool_executor::BoundaryToolCallExecutor<C, L>
     where
         C: crate::application::AttemptCommitter
+            + crate::application::DurableAttemptTransitions
             + crate::application::ExecutionAttemptInterruptionGuard
             + crate::application::ExecutionAttemptLiveness
             + Clone,

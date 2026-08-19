@@ -8,6 +8,7 @@ use crate::domain::execution::{
 };
 use crate::domain::{ThreadId, TrustContext};
 
+use super::attempt_store::DurableAttemptTransitions;
 use super::cancellation::{CancelAcknowledgement, CancelPermit};
 use super::deadline::{ActionDeadline, MAX_ACTION_DURATION_MILLIS};
 use super::executor_envelope::{
@@ -372,7 +373,7 @@ impl<E, L, C> ExecutionCoordinator<E, L, C>
 where
     E: IsolatedExecutor,
     L: LeaseValidator,
-    C: AttemptCommitter,
+    C: AttemptCommitter + DurableAttemptTransitions,
 {
     /// Creates a coordinator around the only executor and lease ports.
     #[must_use]
@@ -466,10 +467,21 @@ where
         if let Err(error) = authority.claim_dispatch(attempt, approval, started_at_millis) {
             return Err(rejected_start(error));
         }
-        // TC-06: the running projection immediately follows the won dispatch
-        // claim, before the post-claim lease check and any executor call, so
-        // publication can never outrun the canonical running transition and a
-        // post-claim fence cannot leave a terminal projection without it.
+        // TC-12: only the won durable running claim permits an executor
+        // dispatch, so the one-running-per-Turn and single-dispatch
+        // guarantees hold across processes; a fenced or concurrent durable
+        // slot closes this never-dispatched attempt or defers to
+        // reconciliation with zero executor calls.
+        if let Some(cancelled) =
+            self.claim_canonical_dispatch(authority, attempt, started_at_millis)?
+        {
+            return Ok(cancelled);
+        }
+        // TC-06: the running projection immediately follows the won canonical
+        // dispatch claim, before the post-claim lease check and any executor
+        // call, so publication can never outrun the canonical running
+        // transition and a post-claim fence cannot leave a terminal projection
+        // without it.
         emit(
             projections,
             ToolProjection::ToolCall {

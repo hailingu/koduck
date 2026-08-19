@@ -11,11 +11,15 @@ use tokio::runtime::Handle;
 use crate::application::{
     AppendPolicy, AttemptCommitError, AttemptCommitResult, AttemptCommitter,
     AttemptInsertResolution, AttemptStoreError, AttemptTerminalResolution,
-    CanonicalAttemptTerminal, DispatchClaimResolution, DurableAttemptTerminal, EffectState,
-    ExecutionAttemptInterruptionGuard, ExecutionAttemptLiveness, ExecutionAttemptStore,
-    ExecutionFailure, ToolExecutionOutcome,
+    CanonicalAttemptTerminal, DispatchClaimResolution, DurableAttemptTerminal,
+    DurableAttemptTransitions, EffectState, ExecutionAttemptInterruptionGuard,
+    ExecutionAttemptLiveness, ExecutionAttemptStore, ExecutionFailure, PreparedCloseResolution,
+    ToolExecutionOutcome,
 };
 use crate::domain::execution::{ExactActionBinding, ExecutionStatus};
+
+use super::prepared_close;
+use super::prepared_insert;
 use crate::domain::{TenantId, ThreadId, TurnId};
 
 /// Production D-7 store using one `SQLx` pool and its owning Tokio runtime.
@@ -59,89 +63,11 @@ impl ExecutionAttemptStore for SqlxExecutionAttemptStore {
         binding: &ExactActionBinding,
         prepared_at_millis: u64,
     ) -> Result<AttemptInsertResolution, AttemptStoreError> {
-        let action = binding.action();
-        self.wait(async {
-            // The CTE holds the authenticated Turn and its lease through the
-            // allocation. That serializes every prepared insert with the
-            // interruption barrier and makes both the current-generation and
-            // 16-attempt checks atomic with the D-7 write (TC-07/TC-09).
-            let outcome = sqlx::query(
-                "WITH locked_owner AS (
-                     SELECT t.status, t.interrupting, l.generation, l.fenced, l.expires_at
-                     FROM turns t JOIN turn_leases l
-                       ON l.tenant_id = t.tenant_id
-                      AND l.thread_id = t.thread_id
-                      AND l.turn_id = t.turn_id
-                     WHERE t.tenant_id = $1 AND t.thread_id = $3 AND t.turn_id = $4
-                     FOR UPDATE OF t, l
-                 ),
-                 available_slot AS (
-                     SELECT 1 FROM locked_owner
-                     WHERE status = 'started' AND NOT interrupting
-                       AND generation = $5 AND NOT fenced
-                       AND expires_at + INTERVAL '2 seconds' > CURRENT_TIMESTAMP
-                       AND (
-                           SELECT COUNT(*) FROM tool_execution_attempts
-                           WHERE tenant_id = $1 AND thread_id = $3 AND turn_id = $4
-                       ) < 16
-                 )
-                 INSERT INTO tool_execution_attempts (
-                    tenant_id, attempt_id, thread_id, turn_id, lease_generation,
-                    descriptor_id, descriptor_version, effect, action_digest,
-                    profile_id, profile_version, prepared_at_millis,
-                    status, version
-                ) SELECT
-                    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'prepared', 1
-                  FROM available_slot
-                ON CONFLICT (tenant_id, attempt_id) DO NOTHING",
-            )
-            .bind(binding.tenant_id().as_str())
-            .bind(binding.attempt_id().as_uuid())
-            .bind(binding.thread_id().as_uuid())
-            .bind(binding.turn_id().as_uuid())
-            .bind(millis(binding.lease_generation().get())?)
-            .bind(action.descriptor_id())
-            .bind(action.descriptor_version())
-            .bind(effect_code(action.effect()))
-            .bind(hex_digest(binding.action_digest().as_bytes()))
-            .bind(binding.profile_id())
-            .bind(binding.profile_version())
-            .bind(millis(prepared_at_millis)?)
-            .execute(&self.pool)
-            .await
-            .map_err(|_| AttemptStoreError::Unavailable)?;
-            if outcome.rows_affected() == 1 {
-                return Ok(AttemptInsertResolution::Inserted);
-            }
-            // A lost acknowledgement may replay after the Turn was
-            // interrupted or fenced. Re-read the immutable canonical row
-            // before treating a no-insert result as a rejected allocation.
-            let existing = sqlx::query(
-                "SELECT thread_id, turn_id, lease_generation, descriptor_id,
-                        descriptor_version, effect, action_digest, profile_id,
-                        profile_version, prepared_at_millis, status, version
-                 FROM tool_execution_attempts
-                 WHERE tenant_id = $1 AND attempt_id = $2",
-            )
-            .bind(binding.tenant_id().as_str())
-            .bind(binding.attempt_id().as_uuid())
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(|_| AttemptStoreError::Unavailable)?;
-            let Some(row) = existing else {
-                // The owner was no longer current, the interruption barrier
-                // was set, or the attempt budget was exhausted. Each case
-                // fails closed without creating a prepared D-7.
-                return Err(AttemptStoreError::Unavailable);
-            };
-            if !immutable_fields_match(&row, binding, Some(prepared_at_millis)) {
-                return Err(AttemptStoreError::IdentityConflict);
-            }
-            Ok(AttemptInsertResolution::Existing {
-                status: row_status(&row)?,
-                version: row_version(&row)?,
-            })
-        })
+        self.wait(prepared_insert::insert_prepared_row(
+            &self.pool,
+            binding,
+            prepared_at_millis,
+        ))
     }
 
     fn claim_running(
@@ -188,6 +114,18 @@ impl ExecutionAttemptStore for SqlxExecutionAttemptStore {
             }
             resolve_terminal_loss(&self.pool, binding).await
         })
+    }
+    fn cancel_prepared_attempt(
+        &mut self,
+        binding: &ExactActionBinding,
+    ) -> Result<PreparedCloseResolution, AttemptStoreError> {
+        // The prepared-only conditional close and its loser classification
+        // live in the sibling prepared_close module (TC-10/TC-12).
+        self.wait(prepared_close::close_prepared_row(
+            &self.pool,
+            binding,
+            crate::adapters::history::postgres::unix_time_ms(),
+        ))
     }
 }
 
@@ -263,6 +201,34 @@ impl ExecutionAttemptInterruptionGuard for SqlxExecutionAttemptStore {
     }
 }
 
+impl DurableAttemptTransitions for SqlxExecutionAttemptStore {
+    fn insert_prepared(
+        &mut self,
+        binding: &ExactActionBinding,
+        prepared_at_millis: u64,
+    ) -> Result<AttemptInsertResolution, AttemptStoreError> {
+        // The coordinator-side narrow port delegates to the same conditional
+        // durable write the full store port exposes, so the C-5 boundary and
+        // direct canonical callers cannot diverge (ADR-0003 TC-12).
+        ExecutionAttemptStore::insert_prepared(self, binding, prepared_at_millis)
+    }
+
+    fn claim_running(
+        &mut self,
+        binding: &ExactActionBinding,
+        started_at_millis: u64,
+    ) -> Result<DispatchClaimResolution, AttemptStoreError> {
+        ExecutionAttemptStore::claim_running(self, binding, started_at_millis)
+    }
+
+    fn cancel_prepared_attempt(
+        &mut self,
+        binding: &ExactActionBinding,
+    ) -> Result<PreparedCloseResolution, AttemptStoreError> {
+        ExecutionAttemptStore::cancel_prepared_attempt(self, binding)
+    }
+}
+
 impl AttemptCommitter for SqlxExecutionAttemptStore {
     fn commit_outcome(
         &mut self,
@@ -278,7 +244,8 @@ impl AttemptCommitter for SqlxExecutionAttemptStore {
             // A won terminal at any other version is durable-state drift, and
             // a missing canonical row leaves the durable state undecidable:
             // the caller cannot reconcile either through this port.
-            Ok(AttemptTerminalResolution::Won { .. } | AttemptTerminalResolution::NotFound) => {
+            Ok(AttemptTerminalResolution::Won { .. } | AttemptTerminalResolution::NotFound)
+            | Err(AttemptStoreError::Unavailable | AttemptStoreError::AttemptLimit) => {
                 Err(AttemptCommitError::Unavailable)
             }
             Ok(AttemptTerminalResolution::ExistingTerminal(canonical)) => {
@@ -290,7 +257,6 @@ impl AttemptCommitter for SqlxExecutionAttemptStore {
             Ok(AttemptTerminalResolution::Conflict) | Err(AttemptStoreError::IdentityConflict) => {
                 Err(AttemptCommitError::Conflict)
             }
-            Err(AttemptStoreError::Unavailable) => Err(AttemptCommitError::Unavailable),
         }
     }
 }
@@ -402,14 +368,85 @@ async fn resolve_claim_loss(
         | ExecutionStatus::Failed
         | ExecutionStatus::TimedOut
         | ExecutionStatus::Cancelled => Ok(DispatchClaimResolution::Existing { status, version }),
-        ExecutionStatus::Prepared => {
-            if bound_lease_is_not_current(pool, binding).await? {
+        ExecutionStatus::Prepared => match turn_claim_state(pool, binding).await? {
+            TurnClaimState::Interrupted => Ok(DispatchClaimResolution::Interrupted),
+            TurnClaimState::Inactive => Ok(DispatchClaimResolution::Fenced),
+            TurnClaimState::Active if bound_lease_is_not_current(pool, binding).await? => {
                 Ok(DispatchClaimResolution::Fenced)
-            } else {
+            }
+            TurnClaimState::Active if another_attempt_is_running(pool, binding).await? => {
                 Ok(DispatchClaimResolution::Concurrent)
             }
-        }
+            // The winner update did not commit, but neither a durable
+            // interruption nor a concurrent running owner explains its loss.
+            // Do not fabricate a typed rejection from a stale loser read.
+            TurnClaimState::Active => Err(AttemptStoreError::Unavailable),
+        },
     }
+}
+
+/// Durable Turn state relevant to a lost conditional dispatch claim.
+enum TurnClaimState {
+    /// The Turn remains active and has no durable interruption barrier.
+    Active,
+    /// An authenticated interruption sealed the active Turn.
+    Interrupted,
+    /// The Turn is absent or no longer dispatchable.
+    Inactive,
+}
+
+/// Reads the Turn barrier after a prepared claim loses.
+async fn turn_claim_state(
+    pool: &PgPool,
+    binding: &ExactActionBinding,
+) -> Result<TurnClaimState, AttemptStoreError> {
+    let row = sqlx::query(
+        "SELECT status, interrupting FROM turns \
+         WHERE tenant_id = $1 AND thread_id = $2 AND turn_id = $3",
+    )
+    .bind(binding.tenant_id().as_str())
+    .bind(binding.thread_id().as_uuid())
+    .bind(binding.turn_id().as_uuid())
+    .fetch_optional(pool)
+    .await
+    .map_err(|_| AttemptStoreError::Unavailable)?;
+    let Some(row) = row else {
+        return Ok(TurnClaimState::Inactive);
+    };
+    let status = row
+        .try_get::<String, _>("status")
+        .map_err(|_| AttemptStoreError::Unavailable)?;
+    let interrupting = row
+        .try_get::<bool, _>("interrupting")
+        .map_err(|_| AttemptStoreError::Unavailable)?;
+    if status != "started" {
+        Ok(TurnClaimState::Inactive)
+    } else if interrupting {
+        Ok(TurnClaimState::Interrupted)
+    } else {
+        Ok(TurnClaimState::Active)
+    }
+}
+
+/// Reports whether another canonical D-7 owns this Turn's running slot.
+async fn another_attempt_is_running(
+    pool: &PgPool,
+    binding: &ExactActionBinding,
+) -> Result<bool, AttemptStoreError> {
+    sqlx::query_scalar(
+        "SELECT EXISTS ( \
+             SELECT 1 FROM tool_execution_attempts \
+             WHERE tenant_id = $1 AND thread_id = $2 AND turn_id = $3 \
+               AND status = 'running' AND attempt_id <> $4 \
+         )",
+    )
+    .bind(binding.tenant_id().as_str())
+    .bind(binding.thread_id().as_uuid())
+    .bind(binding.turn_id().as_uuid())
+    .bind(binding.attempt_id().as_uuid())
+    .fetch_one(pool)
+    .await
+    .map_err(|_| AttemptStoreError::Unavailable)
 }
 
 async fn commit_terminal_winner(
@@ -527,7 +564,7 @@ async fn resolve_terminal_loss(
 ///
 /// A missing lease leaves D-7 ownership unproven and therefore fails closed,
 /// the same way a mismatched, fenced, or expired lease does.
-async fn bound_lease_is_not_current(
+pub(super) async fn bound_lease_is_not_current(
     pool: &PgPool,
     binding: &ExactActionBinding,
 ) -> Result<bool, AttemptStoreError> {
@@ -550,7 +587,7 @@ async fn bound_lease_is_not_current(
 }
 
 /// Verifies the immutable binding fields against one canonical row.
-fn immutable_fields_match(
+pub(super) fn immutable_fields_match(
     row: &sqlx::postgres::PgRow,
     binding: &ExactActionBinding,
     expected_prepared_at: Option<u64>,
@@ -625,14 +662,16 @@ fn canonical_non_negative(
     u64::try_from(value).map_err(|_| AttemptStoreError::Unavailable)
 }
 
-fn row_status(row: &sqlx::postgres::PgRow) -> Result<ExecutionStatus, AttemptStoreError> {
+pub(super) fn row_status(
+    row: &sqlx::postgres::PgRow,
+) -> Result<ExecutionStatus, AttemptStoreError> {
     let status = row
         .try_get::<String, _>("status")
         .map_err(|_| AttemptStoreError::Unavailable)?;
     status_from_code(&status).ok_or(AttemptStoreError::Unavailable)
 }
 
-fn row_version(row: &sqlx::postgres::PgRow) -> Result<u64, AttemptStoreError> {
+pub(super) fn row_version(row: &sqlx::postgres::PgRow) -> Result<u64, AttemptStoreError> {
     let version = row
         .try_get::<i64, _>("version")
         .map_err(|_| AttemptStoreError::Unavailable)?;
@@ -648,7 +687,7 @@ fn row_version(row: &sqlx::postgres::PgRow) -> Result<u64, AttemptStoreError> {
 ///
 /// Returns [`AttemptStoreError::Unavailable`] when the timestamp exceeds the
 /// durable column domain.
-fn millis(value: u64) -> Result<i64, AttemptStoreError> {
+pub(super) fn millis(value: u64) -> Result<i64, AttemptStoreError> {
     i64::try_from(value).map_err(|_| AttemptStoreError::Unavailable)
 }
 
@@ -668,7 +707,7 @@ fn status_from_code(code: &str) -> Option<ExecutionStatus> {
     }
 }
 
-fn effect_code(effect: crate::domain::tool::Effect) -> &'static str {
+pub(super) fn effect_code(effect: crate::domain::tool::Effect) -> &'static str {
     match effect {
         crate::domain::tool::Effect::ReadData => "read_data",
         crate::domain::tool::Effect::ExternalWrite => "external_write",
@@ -680,7 +719,7 @@ fn effect_code(effect: crate::domain::tool::Effect) -> &'static str {
     }
 }
 
-fn hex_digest(bytes: &[u8; 32]) -> String {
+pub(super) fn hex_digest(bytes: &[u8; 32]) -> String {
     let mut text = String::with_capacity(64);
     for byte in bytes {
         use std::fmt::Write as _;

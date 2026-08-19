@@ -16,6 +16,13 @@ pub enum AttemptStoreError {
     /// The durable store did not complete within its availability contract.
     #[error("execution attempt store unavailable")]
     Unavailable,
+    /// The canonical Turn already contains its sixteen permitted D-7 attempts.
+    ///
+    /// This is a normal bounded rejection, not a storage outage: a fresh
+    /// process-local authority must report the same stable attempt-limit
+    /// outcome as an authority that observed all prior allocations locally.
+    #[error("execution attempt limit reached")]
+    AttemptLimit,
     /// The canonical identity exists with different immutable fields.
     ///
     /// A replay whose binding no longer matches the committed record can
@@ -71,6 +78,9 @@ pub enum DispatchClaimResolution {
     /// Another D-7 owns this Turn's single running slot, so this prepared
     /// attempt cannot claim a dispatch.
     Concurrent,
+    /// An authenticated interruption sealed the Turn before this durable
+    /// claim could win, so no D-7 dispatch may begin.
+    Interrupted,
     /// The bound lease is missing, fenced, superseded, or expired, so this
     /// caller cannot obtain durable dispatch authority.
     Fenced,
@@ -206,6 +216,34 @@ pub enum AttemptTerminalResolution {
     NotFound,
 }
 
+/// The outcome of one durable prepared-only cancellation close.
+///
+/// The close is a compare-and-set from `prepared`: it may cancel only a row
+/// that no other claimant has claimed, so a racing owner that already claimed
+/// or terminalized this exact identity keeps its canonical state untouched
+/// (ADR-0003 TC-10/TC-12).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PreparedCloseResolution {
+    /// This caller's conditional `prepared -> cancelled` close won and is now
+    /// canonical at version 3 with `not_started` effect evidence.
+    Won {
+        /// The canonical record version after the transition.
+        version: u64,
+    },
+    /// The canonical row progressed past `prepared` — claimed or terminalized
+    /// by another owner — so no cancellation may rewrite it; reconciliation
+    /// owns the next transition.
+    Progressed {
+        /// The canonical status at read time.
+        status: ExecutionStatus,
+        /// The canonical record version at read time.
+        version: u64,
+    },
+    /// The bound lease is missing, fenced, superseded, or expired; no D-7
+    /// state changed.
+    Fenced,
+}
+
 /// Consumer-owned boundary for durable canonical D-7 records.
 ///
 /// The store is the only cross-instance authority for D-7 state: the insert,
@@ -226,7 +264,9 @@ pub trait ExecutionAttemptStore {
     /// # Errors
     ///
     /// Returns [`AttemptStoreError::Unavailable`] when the durable write
-    /// cannot complete within its availability contract, or
+    /// cannot complete within its availability contract,
+    /// [`AttemptStoreError::AttemptLimit`] when the Turn already has sixteen
+    /// attempts, or
     /// [`AttemptStoreError::IdentityConflict`] when the identity exists with
     /// different immutable fields.
     fn insert_prepared(
@@ -243,8 +283,9 @@ pub trait ExecutionAttemptStore {
     /// can never claim another canonical D-7. The durable boundary keeps at
     /// most one running D-7 per Turn, so a claim for a Turn whose slot is
     /// owned by another attempt reports
-    /// [`DispatchClaimResolution::Concurrent`] with no state change. A missing,
-    /// fenced, superseded, or expired bound lease reports
+    /// [`DispatchClaimResolution::Concurrent`] with no state change. A durable
+    /// interruption barrier reports [`DispatchClaimResolution::Interrupted`].
+    /// A missing, fenced, superseded, or expired bound lease reports
     /// [`DispatchClaimResolution::Fenced`] instead of authorizing dispatch.
     ///
     /// # Errors
@@ -281,6 +322,93 @@ pub trait ExecutionAttemptStore {
         terminal: &DurableAttemptTerminal,
         terminal_at_millis: u64,
     ) -> Result<AttemptTerminalResolution, AttemptStoreError>;
+
+    /// Cancels one still-prepared D-7 through a prepared-only conditional
+    /// close.
+    ///
+    /// Unlike [`ExecutionAttemptStore::commit_terminal`], whose cancellation
+    /// source may be `prepared` or `running`, this transition wins only while
+    /// the canonical row is still `prepared`: a racing claimant that already
+    /// claimed this exact identity observes
+    /// [`PreparedCloseResolution::Progressed`] with its canonical state
+    /// unchanged, so an actively dispatched row is never rewritten to
+    /// `cancelled/not_started` without an executor cancellation
+    /// (ADR-0003 TC-10/TC-12).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AttemptStoreError::Unavailable`] when the durable transition
+    /// cannot complete within its availability contract, or
+    /// [`AttemptStoreError::IdentityConflict`] when the identity exists with
+    /// different immutable fields.
+    fn cancel_prepared_attempt(
+        &mut self,
+        binding: &ExactActionBinding,
+    ) -> Result<PreparedCloseResolution, AttemptStoreError>;
+}
+
+/// Narrow coordinator-side port for the durable canonical D-7 transitions
+/// that gate preparation and dispatch (ADR-0003 TC-12).
+///
+/// The C-5 driver records each prepared D-7 through this port's idempotent
+/// durable insert before any approval resolution, dispatch, or cancellation,
+/// and the coordinator claims the Turn's single running slot through this
+/// port's conditional dispatch claim before any D-3 running projection or
+/// executor call. The process-local Turn authority remains the
+/// fast local arbitration and the interruption catalog; this port is the only
+/// cross-instance authority, so the one-running-per-Turn and
+/// single-dispatch-per-attempt guarantees hold across processes. Production
+/// supplies the same durable store object that backs terminal commits.
+pub trait DurableAttemptTransitions {
+    /// Durably inserts one newly prepared D-7, idempotently.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AttemptStoreError::Unavailable`] when the durable write
+    /// cannot complete within its availability contract — including when the
+    /// canonical owner is no longer current or the interruption barrier is
+    /// set —, [`AttemptStoreError::AttemptLimit`] when the Turn's 16-attempt
+    /// budget is exhausted, or
+    /// [`AttemptStoreError::IdentityConflict`] when the identity exists with
+    /// different immutable fields.
+    fn insert_prepared(
+        &mut self,
+        binding: &ExactActionBinding,
+        prepared_at_millis: u64,
+    ) -> Result<AttemptInsertResolution, AttemptStoreError>;
+
+    /// Claims the Turn's only durable running slot for one prepared D-7.
+    ///
+    /// Exactly one contender receives [`DispatchClaimResolution::Claimed`];
+    /// every other contender observes the canonical state or a typed
+    /// rejection, so no D-7 dispatches twice across instances.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AttemptStoreError::Unavailable`] when the durable
+    /// transition cannot complete within its availability contract, or
+    /// [`AttemptStoreError::IdentityConflict`] when the identity exists with
+    /// different immutable fields.
+    fn claim_running(
+        &mut self,
+        binding: &ExactActionBinding,
+        started_at_millis: u64,
+    ) -> Result<DispatchClaimResolution, AttemptStoreError>;
+
+    /// Cancels one still-prepared D-7 through the prepared-only conditional
+    /// close of the sibling store contract: a racing claimant that already
+    /// progressed the row keeps its canonical state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AttemptStoreError::Unavailable`] when the durable transition
+    /// cannot complete within its availability contract, or
+    /// [`AttemptStoreError::IdentityConflict`] when the identity exists with
+    /// different immutable fields.
+    fn cancel_prepared_attempt(
+        &mut self,
+        binding: &ExactActionBinding,
+    ) -> Result<PreparedCloseResolution, AttemptStoreError>;
 }
 
 /// Consumer-owned lookup of live canonical D-7 work for one authenticated Turn.

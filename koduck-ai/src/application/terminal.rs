@@ -4,6 +4,7 @@
 
 use crate::domain::execution::{ExecutionAttempt, ExecutionStatus, TurnExecutionAuthority};
 
+use super::attempt_store::DurableAttemptTransitions;
 use super::execution::{
     AttemptCommitError, AttemptCommitResult, AttemptCommitter, DispatchPhase, ExecutionCoordinator,
     ExecutionPending, IsolatedExecutor, LeaseValidator, ToolExecutionOutcome,
@@ -24,7 +25,7 @@ impl<E, L, C> ExecutionCoordinator<E, L, C>
 where
     E: IsolatedExecutor,
     L: LeaseValidator,
-    C: AttemptCommitter,
+    C: AttemptCommitter + DurableAttemptTransitions,
 {
     /// Commits a terminal whose D-7 reservation has already been claimed.
     ///

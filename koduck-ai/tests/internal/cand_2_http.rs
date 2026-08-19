@@ -10,12 +10,14 @@ use koduck_ai::adapters::tool::{parse_action_parameters, parse_input_schema};
 use koduck_ai::application::{
     ActionDeadline, ApprovalAuthorizer, ApprovalDecisionResolution, ApprovalInsertResolution,
     ApprovalRecordStore, ApprovalStoreError, AttemptCommitError, AttemptCommitResult,
-    AttemptCommitter, CancelAcknowledgement, CancelPermit, CanonicalAttemptTerminal,
-    DispatchPermit, EffectState, ExecutionCoordinator, ExecutionFailure, ExecutionPending,
-    ExecutionPreparationError, ExecutionResponse, ExecutionResponseBuilder, ExecutorError,
-    IsolatedExecutor, LeaseCheck, LeaseValidator, ToolAuthorizationService, ToolCallError,
-    ToolCallInputs, ToolExecutionDriver, ToolExecutionOutcome, ToolExecutionRuntime,
-    ToolPolicyConfiguration, ToolProjection, ToolProjectionError, ToolProjectionSink,
+    AttemptCommitter, AttemptInsertResolution, AttemptStoreError, CancelAcknowledgement,
+    CancelPermit, CanonicalAttemptTerminal, DispatchClaimResolution, DispatchPermit,
+    DurableAttemptTransitions, EffectState, ExecutionCoordinator, ExecutionFailure,
+    ExecutionPending, ExecutionPreparationError, ExecutionResponse, ExecutionResponseBuilder,
+    ExecutorError, IsolatedExecutor, LeaseCheck, LeaseValidator, PreparedCloseResolution,
+    ToolAuthorizationService, ToolCallError, ToolCallInputs, ToolExecutionDriver,
+    ToolExecutionOutcome, ToolExecutionRuntime, ToolPolicyConfiguration, ToolProjection,
+    ToolProjectionError, ToolProjectionSink,
 };
 use koduck_ai::domain::execution::{
     ApprovalDecision, ApprovalId, ApprovalRequest, ApprovalStatus, AttemptId, ExactActionBinding,
@@ -27,6 +29,9 @@ use koduck_ai::domain::tool::{
 use koduck_ai::domain::{
     ApprovalScopes, LeaseGeneration, TenantId, ThreadId, TrustContext, TurnId,
 };
+
+#[path = "cand_2_http_durable_claims.rs"]
+mod durable_claims;
 
 /// In-memory canonical D-6 double with the same conditional semantics.
 struct MemoryApprovals {
@@ -416,6 +421,45 @@ impl AttemptCommitter for WinningCommitter {
         Ok(AttemptCommitResult::Won)
     }
 }
+
+/// Durable committer that fails before any prepared D-7 row exists.
+struct UnavailablePreparedCommitter;
+
+impl AttemptCommitter for UnavailablePreparedCommitter {
+    fn commit_outcome(
+        &mut self,
+        _binding: &koduck_ai::domain::execution::ExactActionBinding,
+        _outcome: &ToolExecutionOutcome,
+    ) -> Result<AttemptCommitResult, AttemptCommitError> {
+        unreachable!("a failed prepared insert cannot commit a terminal")
+    }
+}
+
+impl DurableAttemptTransitions for UnavailablePreparedCommitter {
+    fn insert_prepared(
+        &mut self,
+        _binding: &koduck_ai::domain::execution::ExactActionBinding,
+        _prepared_at_millis: u64,
+    ) -> Result<AttemptInsertResolution, AttemptStoreError> {
+        Err(AttemptStoreError::Unavailable)
+    }
+
+    fn claim_running(
+        &mut self,
+        _binding: &koduck_ai::domain::execution::ExactActionBinding,
+        _started_at_millis: u64,
+    ) -> Result<DispatchClaimResolution, AttemptStoreError> {
+        unreachable!("a failed prepared insert cannot claim dispatch")
+    }
+
+    fn cancel_prepared_attempt(
+        &mut self,
+        _binding: &koduck_ai::domain::execution::ExactActionBinding,
+    ) -> Result<PreparedCloseResolution, AttemptStoreError> {
+        unreachable!("a failed prepared insert cannot be cancelled")
+    }
+}
+
 struct AllowApprovals;
 impl ApprovalAuthorizer for AllowApprovals {
     fn can_resolve_tool_approval(
@@ -874,6 +918,52 @@ fn requested_approval_is_projected_only_after_preparation_succeeds() {
     assert!(
         projections.events.is_empty(),
         "a rejected preparation leaves no unresolvable pending approval projection"
+    );
+}
+
+#[test]
+fn unavailable_durable_preparation_publishes_no_requested_approval() {
+    // The regression is the new durable preparation gate being added after
+    // local preparation: a failed canonical insert must leave no D-6 request
+    // visible to projection consumers, because no durable D-7 can accept it.
+    let fixture = driver_fixture();
+    let mut projections = RecordingProjections::default();
+    let mut preparer =
+        ToolExecutionRuntime::new(&koduck_ai::application::ToolExecutionAuthorityRoot::new())
+            .preparer(CurrentLease);
+    let mut coordinator = ExecutionCoordinator::new(
+        OneShotExecutor { calls: 0 },
+        CurrentLease,
+        UnavailablePreparedCommitter,
+    );
+    let mut decision = |_request: &ApprovalRequest| (ApprovalDecision::Accepted, 2_000);
+
+    let result = ToolExecutionDriver::new(
+        ToolAuthorizationService::new(fixture.configuration),
+        koduck_ai::application::ApprovalDecisionService::new(AllowApprovals),
+    )
+    .execute_projected(
+        &mut preparer,
+        &mut coordinator,
+        &fixture.inputs,
+        &fixture.trust,
+        &mut decision,
+        &mut || 1_000,
+        &mut projections,
+    );
+
+    assert!(matches!(
+        result,
+        Err(ToolCallError::Reconciliation(
+            ExecutionPending::ReconciliationRequired {
+                code: ExecutionFailure::DurabilityUnavailable,
+                ..
+            }
+        ))
+    ));
+    assert!(
+        projections.events.is_empty(),
+        "a failed durable prepared insert must not publish a requested approval"
     );
 }
 

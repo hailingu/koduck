@@ -21,8 +21,18 @@ use koduck_ai::domain::{LeaseGeneration, TenantId};
 use sqlx::postgres::{PgPool, PgPoolOptions};
 use uuid::Uuid;
 
+#[path = "cand_2_postgres_attempt_limits.rs"]
+mod attempt_limits;
 #[path = "cand_2_postgres_attempts.rs"]
 mod attempts;
+#[path = "cand_2_postgres_prepared_close.rs"]
+mod prepared_close;
+
+#[path = "cand_2_postgres_interruption_claim.rs"]
+mod interruption_claim;
+
+#[path = "cand_2_postgres_production_path.rs"]
+mod production_path;
 
 struct Harness {
     runtime: tokio::runtime::Runtime,

@@ -17,6 +17,7 @@ use koduck_ai::domain::{ItemPayload, TenantId, TerminalOutcome, TrustContext, Us
 use koduck_ai::runtime::tool_executor::BoundaryToolCallExecutor;
 
 use super::*;
+use crate::test_support::process_local_durable_claims;
 
 /// Current C-6 answer for the process-local C-5 catalog exercised below.
 #[derive(Clone, Copy)]
@@ -65,6 +66,8 @@ impl ExecutionAttemptInterruptionGuard for LocalCloseWithRemoteLive {
         Ok(())
     }
 }
+
+process_local_durable_claims!(LocalCloseWithRemoteLive);
 
 #[test]
 fn local_close_with_remote_live_attempt_requires_reconciliation() {
@@ -190,11 +193,11 @@ fn expired_interruption_barrier_closes_a_running_attempt_before_turn_terminal() 
         .expect("initial acceptance");
     let binding = sealed_binding(tenant.clone(), accepted.thread_id, accepted.turn_id);
     assert_eq!(
-        durable.insert_prepared(&binding, 1_000),
+        ExecutionAttemptStore::insert_prepared(&mut durable, &binding, 1_000),
         Ok(AttemptInsertResolution::Inserted)
     );
     assert_eq!(
-        durable.claim_running(&binding, 2_000),
+        ExecutionAttemptStore::claim_running(&mut durable, &binding, 2_000),
         Ok(DispatchClaimResolution::Claimed { version: 2 })
     );
     durable
@@ -271,11 +274,11 @@ fn expired_ordinary_lease_closes_a_running_attempt_before_cancelled_turn_termina
         .expect("initial acceptance");
     let binding = sealed_binding(tenant.clone(), accepted.thread_id, accepted.turn_id);
     assert_eq!(
-        durable.insert_prepared(&binding, 1_000),
+        ExecutionAttemptStore::insert_prepared(&mut durable, &binding, 1_000),
         Ok(AttemptInsertResolution::Inserted)
     );
     assert_eq!(
-        durable.claim_running(&binding, 2_000),
+        ExecutionAttemptStore::claim_running(&mut durable, &binding, 2_000),
         Ok(DispatchClaimResolution::Claimed { version: 2 })
     );
     runtime.block_on(async {

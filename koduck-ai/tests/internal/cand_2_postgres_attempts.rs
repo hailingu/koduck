@@ -31,7 +31,7 @@ type IllegalTuple<'a> = (
     i64,
 );
 
-fn prepared_binding(effect: Effect) -> ExactActionBinding {
+pub(super) fn prepared_binding(effect: Effect) -> ExactActionBinding {
     ExactActionBinding::new(
         TenantId::new(format!("ci-{}", Uuid::new_v4())).expect("valid tenant"),
         koduck_ai::domain::ThreadId::new(),
@@ -52,25 +52,32 @@ fn prepared_binding(effect: Effect) -> ExactActionBinding {
     .expect("valid binding")
 }
 
-fn attempt_store(
+pub(super) fn attempt_store(
     pool: sqlx::PgPool,
     runtime: &tokio::runtime::Runtime,
 ) -> SqlxExecutionAttemptStore {
     SqlxExecutionAttemptStore::new(pool, runtime.handle().clone())
 }
 
-/// Creates the canonical C-6 ownership rows required by a durable D-7 claim
-/// or terminal transition. D-7 rows intentionally have no foreign key to the
-/// lease table, so persistence tests must seed ownership explicitly rather
-/// than depending on the old missing-lease fail-open behavior.
-fn seed_current_lease(harness: &super::Harness, binding: &ExactActionBinding) {
+/// Creates the canonical C-6 ownership rows required by a durable D-7
+/// preparation, claim, or terminal transition. D-7 rows intentionally have no
+/// foreign key to the lease table, so persistence tests must seed ownership
+/// explicitly rather than depending on the old missing-lease fail-open
+/// behavior.
+pub(super) fn seed_owner_rows(
+    harness: &super::Harness,
+    tenant_id: &TenantId,
+    thread_id: koduck_ai::domain::ThreadId,
+    turn_id: koduck_ai::domain::TurnId,
+    lease_generation: LeaseGeneration,
+) {
     harness.runtime.block_on(async {
         sqlx::query(
             "INSERT INTO threads (tenant_id, subject_id, thread_id) \
              VALUES ($1, 'd7-attempt-fixture', $2) ON CONFLICT DO NOTHING",
         )
-        .bind(binding.tenant_id().as_str())
-        .bind(binding.thread_id().as_uuid())
+        .bind(tenant_id.as_str())
+        .bind(thread_id.as_uuid())
         .execute(&harness.pool)
         .await
         .expect("fixture thread exists");
@@ -78,9 +85,9 @@ fn seed_current_lease(harness: &super::Harness, binding: &ExactActionBinding) {
             "INSERT INTO turns (tenant_id, thread_id, turn_id, status, next_sequence) \
              VALUES ($1, $2, $3, 'started', 1) ON CONFLICT DO NOTHING",
         )
-        .bind(binding.tenant_id().as_str())
-        .bind(binding.thread_id().as_uuid())
-        .bind(binding.turn_id().as_uuid())
+        .bind(tenant_id.as_str())
+        .bind(thread_id.as_uuid())
+        .bind(turn_id.as_uuid())
         .execute(&harness.pool)
         .await
         .expect("fixture turn exists");
@@ -91,18 +98,29 @@ fn seed_current_lease(harness: &super::Harness, binding: &ExactActionBinding) {
                      CURRENT_TIMESTAMP + INTERVAL '1 hour', FALSE) \
              ON CONFLICT DO NOTHING",
         )
-        .bind(binding.tenant_id().as_str())
-        .bind(binding.thread_id().as_uuid())
-        .bind(binding.turn_id().as_uuid())
-        .bind(i64::try_from(binding.lease_generation().get()).expect("lease fits i64"))
+        .bind(tenant_id.as_str())
+        .bind(thread_id.as_uuid())
+        .bind(turn_id.as_uuid())
+        .bind(i64::try_from(lease_generation.get()).expect("lease fits i64"))
         .execute(&harness.pool)
         .await
         .expect("fixture current lease exists");
     });
 }
 
+/// Seeds the canonical C-6 ownership rows for one binding's exact identity.
+fn seed_current_lease(harness: &super::Harness, binding: &ExactActionBinding) {
+    seed_owner_rows(
+        harness,
+        binding.tenant_id(),
+        binding.thread_id(),
+        binding.turn_id(),
+        binding.lease_generation(),
+    );
+}
+
 /// Seeds authenticated ownership before inserting the canonical prepared D-7.
-fn insert_prepared(
+pub(super) fn insert_prepared(
     harness: &super::Harness,
     store: &mut SqlxExecutionAttemptStore,
     binding: &ExactActionBinding,
@@ -635,6 +653,42 @@ fn prepared_insert_is_idempotent_and_identity_typed() {
 }
 
 #[test]
+fn prepared_insert_replay_survives_a_later_owner_fence() {
+    // A committed insert whose acknowledgement was lost remains readable for
+    // reconciliation even when the C-6 owner is later fenced: the replay is a
+    // read of the immutable canonical row, not a new allocation.
+    let Some(harness) = harness() else {
+        return;
+    };
+    let mut store = attempt_store(harness.pool.clone(), &harness.runtime);
+    let binding = prepared_binding(Effect::ReadData);
+    assert_eq!(
+        insert_prepared(&harness, &mut store, &binding, 1_000),
+        Ok(AttemptInsertResolution::Inserted),
+    );
+    harness.runtime.block_on(async {
+        sqlx::query(
+            "UPDATE turn_leases SET fenced = TRUE \
+             WHERE tenant_id = $1 AND thread_id = $2 AND turn_id = $3",
+        )
+        .bind(binding.tenant_id().as_str())
+        .bind(binding.thread_id().as_uuid())
+        .bind(binding.turn_id().as_uuid())
+        .execute(&harness.pool)
+        .await
+        .expect("fixture lease is fenced");
+    });
+    assert_eq!(
+        store.insert_prepared(&binding, 1_000),
+        Ok(AttemptInsertResolution::Existing {
+            status: ExecutionStatus::Prepared,
+            version: 1,
+        }),
+        "a fenced owner must not hide a previously committed attempt"
+    );
+}
+
+#[test]
 fn prepared_insert_requires_a_current_lease() {
     let Some(harness) = harness() else {
         return;
@@ -689,7 +743,7 @@ fn prepared_insert_rejects_the_seventeenth_attempt_for_one_turn() {
     .expect("valid seventeenth D-7 binding");
     assert_eq!(
         store.insert_prepared(&seventeenth, 1_000),
-        Err(AttemptStoreError::Unavailable),
+        Err(AttemptStoreError::AttemptLimit),
     );
 }
 

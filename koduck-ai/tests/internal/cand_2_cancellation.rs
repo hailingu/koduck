@@ -28,6 +28,10 @@ use koduck_ai::domain::{LeaseGeneration, TenantId, ThreadId, TurnId};
 mod blocking_dispatch;
 #[path = "cand_2_cancellation_disabled_executor.rs"]
 mod disabled_executor;
+#[path = "cand_2_cancellation_durable_claims.rs"]
+mod durable_claims;
+#[path = "cand_2_cancellation_durable_evidence.rs"]
+mod durable_evidence;
 #[path = "cand_2_cancellation_interrupt_barrier.rs"]
 mod interrupt_barrier;
 #[path = "cand_2_cancellation_interruption_seal.rs"]

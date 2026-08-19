@@ -20,6 +20,7 @@ use crate::domain::execution::{
 };
 use crate::domain::{TenantId, ThreadId, TurnId};
 
+use super::attempt_store::DurableAttemptTransitions;
 use super::deadline::{ActionDeadline, MAX_ACTION_DURATION_MILLIS};
 use super::execution::{
     AttemptCommitter, DispatchPhase, ExecutionCoordinator, ExecutionPending, IsolatedExecutor,
@@ -274,7 +275,7 @@ impl<E, L, C> AttemptCancellationService for ExecutionCoordinator<E, L, C>
 where
     E: IsolatedExecutor,
     L: LeaseValidator,
-    C: AttemptCommitter,
+    C: AttemptCommitter + DurableAttemptTransitions,
 {
     fn cancel_prepared(
         &mut self,
@@ -298,47 +299,125 @@ impl<E, L, C> ExecutionCoordinator<E, L, C>
 where
     E: IsolatedExecutor,
     L: LeaseValidator,
-    C: AttemptCommitter,
+    C: AttemptCommitter + DurableAttemptTransitions,
 {
-    /// Commits a cancelled terminal for one prepared D-7 without executor dispatch.
+    /// Closes one prepared D-7 as `cancelled/not_started` without executor
+    /// dispatch, through the durable prepared-only conditional close.
     ///
-    /// Used when a requested D-6 is declined, cancelled, or expired: the prepared
-    /// D-7 must close to `cancelled/not_started` rather than remain prepared or
-    /// dispatch against a non-accepted approval.
+    /// Used when a requested D-6 is declined, cancelled, or expired, and by a
+    /// concurrent durable-claim loser closing its never-dispatched attempt:
+    /// the close is a compare-and-set from `prepared`, so a racing claimant
+    /// that already claimed this exact identity keeps its canonical state and
+    /// this side defers to reconciliation instead of rewriting a dispatched
+    /// row (ADR-0003 TC-10/TC-12).
     ///
     /// # Errors
     ///
-    /// Returns [`ExecutionPending`] when the conditional durable write did not win.
+    /// Returns [`ExecutionPending`] when the conditional durable close did
+    /// not win. A locally prepared attempt has no dispatch claim and releases
+    /// its unresolved reservation; a locally running durable-claim loser
+    /// retains it for reconciliation because a lease failure cannot prove the
+    /// canonical effect never began.
     pub(crate) fn cancel_prepared_attempt(
         &mut self,
         authority: &mut TurnExecutionAuthority,
         attempt: &mut ExecutionAttempt,
     ) -> Result<ToolExecutionOutcome, ExecutionPending> {
+        use super::attempt_store::{AttemptStoreError, PreparedCloseResolution};
+        use super::canonical_dispatch::{
+            reconciliation_required, reconciliation_required_with_effect,
+        };
         let binding = attempt.binding().clone();
+        let was_running = attempt.status() == ExecutionStatus::Running;
         match self.lease.check_current(&binding) {
             LeaseCheck::Current => {}
             LeaseCheck::Fenced => {
-                return Err(ExecutionPending::ReconciliationRequired {
-                    code: ExecutionFailure::OwnerFencedBeforeDispatch,
-                    effect_state: EffectState::NotStarted,
-                });
+                if was_running && authority.reserve_terminal(attempt).is_err() {
+                    return Err(reconciliation_required_with_effect(
+                        ExecutionFailure::TerminalConflict,
+                        EffectState::Unknown,
+                    ));
+                }
+                return Err(reconciliation_required_with_effect(
+                    ExecutionFailure::OwnerFencedBeforeDispatch,
+                    if was_running {
+                        EffectState::Unknown
+                    } else {
+                        EffectState::NotStarted
+                    },
+                ));
             }
             LeaseCheck::Unavailable => {
-                return Err(ExecutionPending::ReconciliationRequired {
-                    code: ExecutionFailure::LeaseUnavailable,
-                    effect_state: EffectState::NotStarted,
-                });
+                if was_running && authority.reserve_terminal(attempt).is_err() {
+                    return Err(reconciliation_required_with_effect(
+                        ExecutionFailure::TerminalConflict,
+                        EffectState::Unknown,
+                    ));
+                }
+                return Err(reconciliation_required_with_effect(
+                    ExecutionFailure::LeaseUnavailable,
+                    if was_running {
+                        EffectState::Unknown
+                    } else {
+                        EffectState::NotStarted
+                    },
+                ));
             }
         }
-        self.commit_terminal(
-            authority,
-            attempt,
-            ToolExecutionOutcome::Cancelled {
-                effect_state: EffectState::NotStarted,
-            },
-            ExecutionStatus::Cancelled,
-            DispatchPhase::BeforeDispatch,
-        )
+        if authority.reserve_terminal(attempt).is_err() {
+            return Err(reconciliation_required(ExecutionFailure::TerminalConflict));
+        }
+        match self.committer.cancel_prepared_attempt(&binding) {
+            Ok(PreparedCloseResolution::Won { .. }) => {
+                if authority
+                    .mirror_terminal(attempt, ExecutionStatus::Cancelled)
+                    .is_err()
+                {
+                    return Err(reconciliation_required(ExecutionFailure::TerminalConflict));
+                }
+                Ok(ToolExecutionOutcome::Cancelled {
+                    effect_state: EffectState::NotStarted,
+                })
+            }
+            // A local prepared attempt has never passed a dispatch claim, so
+            // it may release a failed close. A local running attempt reached
+            // this path only after its process-local claim lost durable
+            // authority; retain its reservation so interruption cannot send a
+            // cancellation for work this coordinator never dispatched.
+            outcome => {
+                if !was_running {
+                    authority.release_terminal_reservation(attempt);
+                }
+                let (code, effect_state) = match outcome {
+                    Ok(PreparedCloseResolution::Progressed { .. }) => {
+                        (ExecutionFailure::TerminalConflict, EffectState::Unknown)
+                    }
+                    Err(AttemptStoreError::IdentityConflict) => {
+                        (ExecutionFailure::TerminalConflict, EffectState::NotStarted)
+                    }
+                    Ok(PreparedCloseResolution::Fenced) => (
+                        ExecutionFailure::OwnerFencedBeforeDispatch,
+                        if was_running {
+                            EffectState::Unknown
+                        } else {
+                            EffectState::NotStarted
+                        },
+                    ),
+                    // A close acknowledgement can be lost after another
+                    // owner claimed and dispatched this exact D-7, even when
+                    // this local mirror remains prepared.
+                    Err(AttemptStoreError::Unavailable) => (
+                        ExecutionFailure::DurabilityUnavailable,
+                        EffectState::Unknown,
+                    ),
+                    Err(AttemptStoreError::AttemptLimit) => {
+                        (ExecutionFailure::AttemptLimit, EffectState::NotStarted)
+                    }
+                    Ok(PreparedCloseResolution::Won { .. }) => unreachable!("handled above"),
+                };
+                Err(reconciliation_required_with_effect(code, effect_state))
+            }
+        }
     }
 
     /// Sends exactly one bounded cancellation for a running D-7 and commits the

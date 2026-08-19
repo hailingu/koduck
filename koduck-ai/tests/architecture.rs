@@ -220,8 +220,36 @@ fn cand_2_digest_and_turn_budget_are_stable_authorities() {
     );
     assert_eq!(
         count_identifier_tokens(&production, "mirror_terminal"),
-        3,
-        "mirror_terminal must have exactly one definition and two conditional-commit call sites"
+        6,
+        "mirror_terminal must have exactly one definition, two conditional-commit call sites, identity-conflict and attempt-limit orphan closes, and one prepared-only close"
+    );
+    // The durable preparation and dispatch-claim transitions are the
+    // cross-instance half of TC-12: each identifier covers exactly its code
+    // occurrences — two port declarations (full store and narrow coordinator
+    // port), two adapter implementations with one delegation call between
+    // them, and its single C-5 call site (driver record / coordinator claim)
+    // — so a second production call site cannot hide and documentation
+    // edits cannot shift the count.
+    assert_eq!(
+        count_identifier_tokens(&production, "insert_prepared"),
+        6,
+        "insert_prepared must have two port declarations, two adapter implementations with one delegation call, and one C-5 driver call site"
+    );
+    assert_eq!(
+        count_identifier_tokens(&production, "claim_running"),
+        6,
+        "claim_running must have two port declarations, two adapter implementations with one delegation call, and one coordinator call site"
+    );
+    // The prepared-only cancellation close is the TC-10/TC-12 guard against
+    // rewriting a row another claimant started: two port declarations, two
+    // adapter implementations with one delegation call, one coordinator
+    // method definition with two internal call sites (the concurrent-claim
+    // close and the declined-D-6/interruption close), and one driver call
+    // site.
+    assert_eq!(
+        count_identifier_tokens(&production, "cancel_prepared_attempt"),
+        10,
+        "cancel_prepared_attempt must keep its single prepared-only conditional close definition and its three call sites"
     );
     assert!(!execution.contains("pub fn authority_for_binding"));
     assert!(

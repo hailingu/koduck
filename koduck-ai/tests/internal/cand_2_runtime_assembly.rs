@@ -2,6 +2,7 @@
 
 //! Runtime-assembly harness for the runner's C-5 tool-call executor.
 
+use crate::test_support::process_local_durable_claims;
 use koduck_ai::adapters::tool::parse_input_schema;
 use koduck_ai::application::{
     AttemptCommitResult, AttemptCommitter, AttemptStoreError, ExecutionAttemptInterruptionGuard,
@@ -166,6 +167,9 @@ fn tool_result_of(items: &[NewItem]) -> (&Option<koduck_ai::domain::execution::A
     };
     (attempt_id, code.as_deref().unwrap_or("succeeded"))
 }
+
+process_local_durable_claims!(RecordingCommitter);
+process_local_durable_claims!(RemoteLiveCommitter);
 
 #[test]
 fn runtime_assembly_denies_every_tool_call_through_the_empty_inventory() {

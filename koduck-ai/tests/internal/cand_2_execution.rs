@@ -2,6 +2,7 @@
 
 use std::collections::VecDeque;
 
+use crate::test_support::process_local_durable_claims;
 use koduck_ai::adapters::execution::DisabledExecutor;
 use koduck_ai::adapters::tool::{parse_action_parameters, parse_input_schema};
 use koduck_ai::application::{
@@ -22,7 +23,7 @@ use koduck_ai::domain::tool::{
 };
 use koduck_ai::domain::{LeaseGeneration, TenantId, ThreadId, TrustContext, TurnId};
 
-struct RecordingExecutor {
+pub(super) struct RecordingExecutor {
     calls: usize,
     response: Result<ExecutionResponse, ExecutorError>,
 }
@@ -64,7 +65,7 @@ impl AttemptCommitter for RecordingCommitter {
     }
 }
 
-struct SequencedLease {
+pub(super) struct SequencedLease {
     decisions: VecDeque<bool>,
 }
 
@@ -203,10 +204,12 @@ fn resolve(
     )
 }
 
+#[path = "cand_2_execution_durable_gates.rs"]
+mod durable_gates;
 #[path = "cand_2_execution_transport.rs"]
 mod transport;
 
-fn response(effect_state: EffectState, output: &[u8]) -> ExecutionResponse {
+pub(super) fn response(effect_state: EffectState, output: &[u8]) -> ExecutionResponse {
     let mut response = ExecutionResponseBuilder::new(effect_state);
     response
         .push_chunk(output)
@@ -220,6 +223,8 @@ fn committer(result: Result<(), AttemptCommitError>) -> RecordingCommitter {
         result: result.map(|()| AttemptCommitResult::Won),
     }
 }
+
+process_local_durable_claims!(RecordingCommitter);
 
 #[test]
 fn fencing_before_dispatch_makes_no_executor_call() {
