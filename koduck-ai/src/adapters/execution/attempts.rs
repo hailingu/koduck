@@ -101,18 +101,26 @@ impl ExecutionAttemptStore for SqlxExecutionAttemptStore {
             _ => vec!["running"],
         };
         self.wait(async {
-            if let Some(version) = commit_terminal_winner(
+            match commit_terminal_winner(
                 &self.pool,
                 binding,
                 terminal,
                 terminal_at_millis,
                 &allowed_sources,
             )
-            .await?
+            .await
             {
-                return Ok(AttemptTerminalResolution::Won { version });
+                Ok(Some(version)) => Ok(AttemptTerminalResolution::Won { version }),
+                // A lost write and an ambiguous write — the statement may
+                // have committed while its acknowledgement was lost to a
+                // timeout or connection failure — both reconcile through the
+                // canonical re-read: a committed terminal surfaces as
+                // ExistingTerminal so the driver still emits its correlated
+                // audit record, while a confirmed-absent row stays NotFound
+                // (mapped to the undecidable unavailability the committer
+                // contract defines) (ADR-0003 TC-12/TC-14).
+                Ok(None) | Err(_) => resolve_terminal_loss(&self.pool, binding).await,
             }
-            resolve_terminal_loss(&self.pool, binding).await
         })
     }
     fn cancel_prepared_attempt(

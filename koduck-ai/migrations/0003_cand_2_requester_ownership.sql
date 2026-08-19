@@ -33,8 +33,24 @@ BEGIN
     END IF;
 END $$;
 
-ALTER TABLE tool_approvals
-    DROP CONSTRAINT IF EXISTS tool_approvals_requester_subject_nonblank;
-ALTER TABLE tool_approvals
-    ADD CONSTRAINT tool_approvals_requester_subject_nonblank
-    CHECK (requester_subject ~ '[^[:space:]]');
+-- Re-adding a CHECK takes a strong table lock and revalidates every row, so
+-- a replica restart on a populated or busy database must not rebuild it: the
+-- constraint is only (re)created when the existing definition is absent or
+-- differs, mirroring the guarded DDL of migration 0004.
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conrelid = 'tool_approvals'::regclass
+          AND conname = 'tool_approvals_requester_subject_nonblank'
+          AND pg_get_constraintdef(oid) LIKE '%[^[:space:]]%'
+    ) THEN
+        RETURN;
+    END IF;
+    ALTER TABLE tool_approvals
+        DROP CONSTRAINT IF EXISTS tool_approvals_requester_subject_nonblank;
+    ALTER TABLE tool_approvals
+        ADD CONSTRAINT tool_approvals_requester_subject_nonblank
+        CHECK (requester_subject ~ '[^[:space:]]');
+END $$;
