@@ -425,6 +425,7 @@ fn interrupting_a_prepared_attempt_dispatches_nothing() {
     assert_eq!(
         harness.interrupter().interrupt(
             &mut coordinator,
+            &mut koduck_ai::application::NoToolAudits,
             &mut NoPendingApprovals,
             &harness.tenant,
             harness.thread,
@@ -444,6 +445,7 @@ fn interrupting_a_prepared_attempt_dispatches_nothing() {
     assert_eq!(
         harness.interrupter().interrupt(
             &mut coordinator,
+            &mut koduck_ai::application::NoToolAudits,
             &mut NoPendingApprovals,
             &harness.tenant,
             harness.thread,
@@ -465,6 +467,7 @@ fn interruption_closes_the_requested_approval_for_its_exact_prepared_attempt() {
     assert_eq!(
         harness.interrupter().interrupt(
             &mut coordinator,
+            &mut koduck_ai::application::NoToolAudits,
             &mut approvals,
             &harness.tenant,
             harness.thread,
@@ -490,6 +493,7 @@ fn interruption_cancels_prepared_d7_after_its_d6_was_accepted() {
     assert_eq!(
         harness.interrupter().interrupt(
             &mut coordinator,
+            &mut koduck_ai::application::NoToolAudits,
             &mut AlreadyAcceptedApproval,
             &harness.tenant,
             harness.thread,
@@ -515,7 +519,7 @@ fn interruption_closes_every_prepared_attempt_for_the_turn() {
 
     assert!(matches!(
         harness.interrupter().interrupt(
-            &mut coordinator,
+            &mut coordinator, &mut koduck_ai::application::NoToolAudits,
             &mut NoPendingApprovals,
             &harness.tenant,
             harness.thread,
@@ -557,6 +561,7 @@ fn mid_loop_cancellation_failure_returns_partial_close_results() {
 
     let result = harness.interrupter().interrupt(
         &mut coordinator,
+        &mut koduck_ai::application::NoToolAudits,
         &mut NoPendingApprovals,
         &harness.tenant,
         harness.thread,
@@ -614,6 +619,7 @@ fn interruption_seal_blocks_racing_dispatch_and_closes_prepared_d7() {
     assert_eq!(
         harness.interrupter().interrupt(
             &mut coordinator,
+            &mut koduck_ai::application::NoToolAudits,
             &mut NoPendingApprovals,
             &harness.tenant,
             harness.thread,
@@ -639,6 +645,7 @@ fn interrupting_an_unknown_turn_reports_no_live_attempt() {
     assert_eq!(
         harness.interrupter().interrupt(
             &mut coordinator,
+            &mut koduck_ai::application::NoToolAudits,
             &mut NoPendingApprovals,
             &TenantId::new("tenant-b").expect("valid tenant"),
             harness.thread,
@@ -662,6 +669,7 @@ fn acknowledged_not_started_cancellation_commits_cancelled() {
     assert_eq!(
         harness.interrupter().interrupt(
             &mut coordinator,
+            &mut koduck_ai::application::NoToolAudits,
             &mut NoPendingApprovals,
             &harness.tenant,
             harness.thread,
@@ -692,6 +700,7 @@ fn running_cancellation_claims_terminal_before_executor_cancel() {
     assert_eq!(
         harness.interrupter().interrupt(
             &mut coordinator,
+            &mut koduck_ai::application::NoToolAudits,
             &mut NoPendingApprovals,
             &harness.tenant,
             harness.thread,
@@ -728,6 +737,7 @@ fn terminal_commit_in_flight_requires_reconciliation_not_no_live_attempt() {
     assert_eq!(
         harness.interrupter().interrupt(
             &mut coordinator,
+            &mut koduck_ai::application::NoToolAudits,
             &mut NoPendingApprovals,
             &harness.tenant,
             harness.thread,
@@ -759,6 +769,7 @@ fn in_flight_terminal_prevents_partial_interruption_of_other_live_attempts() {
     assert_eq!(
         harness.interrupter().interrupt(
             &mut coordinator,
+            &mut koduck_ai::application::NoToolAudits,
             &mut NoPendingApprovals,
             &harness.tenant,
             harness.thread,
@@ -793,6 +804,7 @@ fn post_cancel_fence_keeps_the_running_attempt_reserved_for_reconciliation() {
     assert_eq!(
         harness.interrupter().interrupt(
             &mut first_cancellation,
+            &mut koduck_ai::application::NoToolAudits,
             &mut NoPendingApprovals,
             &harness.tenant,
             harness.thread,
@@ -816,6 +828,7 @@ fn post_cancel_fence_keeps_the_running_attempt_reserved_for_reconciliation() {
     assert_eq!(
         harness.interrupter().interrupt(
             &mut later_interrupter,
+            &mut koduck_ai::application::NoToolAudits,
             &mut NoPendingApprovals,
             &harness.tenant,
             harness.thread,
@@ -867,6 +880,7 @@ fn post_dispatch_durability_failure_keeps_the_running_attempt_reserved_against_i
     assert_eq!(
         harness.interrupter().interrupt(
             &mut later,
+            &mut koduck_ai::application::NoToolAudits,
             &mut NoPendingApprovals,
             &harness.tenant,
             harness.thread,
@@ -893,6 +907,7 @@ fn acknowledged_started_cancellation_reports_the_started_effect() {
     assert_eq!(
         harness.interrupter().interrupt(
             &mut coordinator,
+            &mut koduck_ai::application::NoToolAudits,
             &mut NoPendingApprovals,
             &harness.tenant,
             harness.thread,
@@ -948,6 +963,7 @@ fn unacknowledged_cancellation_times_out_with_unknown_effect() {
     assert_eq!(
         harness.interrupter().interrupt(
             &mut coordinator,
+            &mut koduck_ai::application::NoToolAudits,
             &mut NoPendingApprovals,
             &harness.tenant,
             harness.thread,
@@ -1028,6 +1044,7 @@ fn fenced_owner_interruption_requires_reconciliation() {
     assert_eq!(
         harness.interrupter().interrupt(
             &mut coordinator,
+            &mut koduck_ai::application::NoToolAudits,
             &mut NoPendingApprovals,
             &harness.tenant,
             harness.thread,
@@ -1066,6 +1083,7 @@ fn fenced_owner_cannot_commit_a_prepared_attempt_cancellation() {
     assert_eq!(
         harness.interrupter().interrupt(
             &mut coordinator,
+            &mut koduck_ai::application::NoToolAudits,
             &mut NoPendingApprovals,
             &harness.tenant,
             harness.thread,
@@ -1156,6 +1174,7 @@ fn cancelled_attempt_rejects_late_result_delivery() {
     assert_eq!(
         harness.interrupter().interrupt(
             &mut coordinator,
+            &mut koduck_ai::application::NoToolAudits,
             &mut NoPendingApprovals,
             &harness.tenant,
             harness.thread,

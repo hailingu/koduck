@@ -25,6 +25,7 @@ use thiserror::Error;
 use tokio::sync::{mpsc, oneshot};
 use tokio_stream::wrappers::ReceiverStream;
 
+use crate::adapters::audit::{SerializingToolAuditTrail, SqlxToolAuditSink};
 use crate::adapters::execution::{
     SqlxApprovalRecordStore, SqlxExecutionAttemptStore, SqlxTurnLeaseValidator,
 };
@@ -229,6 +230,11 @@ pub async fn run(config: RuntimeConfig) -> Result<(), RuntimeError> {
         .execute(&pool),
     )
     .await?;
+    database_setup_attempt(
+        database_deadline,
+        sqlx::raw_sql(include_str!("../../migrations/0007_cand_2_tool_audit.sql")).execute(&pool),
+    )
+    .await?;
     let runtime = tokio::runtime::Handle::current();
     // Production canonical D-6 assembly: the authenticated decision route
     // drives the conditional `SQLx` transitions on the same Tokio runtime.
@@ -241,6 +247,11 @@ pub async fn run(config: RuntimeConfig) -> Result<(), RuntimeError> {
     // C-6 lease before any D-7 mutation (ADR-0003 TC-07).
     let attempts = SqlxExecutionAttemptStore::new(pool.clone(), runtime.clone());
     let interruption_lease = SqlxTurnLeaseValidator::new(pool.clone(), runtime.clone());
+    // Production C-5 audit trail: every policy, approval, and execution
+    // terminal emits one bounded, correlated record durably appended to the
+    // canonical trail (ADR-0003 TC-14).
+    let audit_trail =
+        SerializingToolAuditTrail::new(SqlxToolAuditSink::new(pool.clone(), runtime.clone()));
     let history = PostgresTurnHistory::new(SqlxPostgresExecutor::new(pool, runtime.clone()));
     let _reconciliation_worker = history
         .start_reconciliation_worker()
@@ -257,8 +268,9 @@ pub async fn run(config: RuntimeConfig) -> Result<(), RuntimeError> {
         config.provider_api_key(),
     );
     let provider = OpenAiCompatibleProvider::new(transport);
-    let runner = TurnRunner::new(provider, history)
-        .with_tool_executor(runtime_state.tool_call_executor(attempts, interruption_lease));
+    let runner = TurnRunner::new(provider, history).with_tool_executor(
+        runtime_state.tool_call_executor(attempts, interruption_lease, audit_trail),
+    );
     let listener = tokio::net::TcpListener::bind(config.bind_addr())
         .await
         .map_err(RuntimeError::Bind)?;
@@ -460,18 +472,21 @@ impl RuntimeState {
 
     /// Returns the production tool-call executor over this state's sole C-5
     /// authority root, the empty production descriptor snapshot, the injected
-    /// conditional terminal committer, and the injected durable
-    /// interruption-lease validator: every model Tool call resolves against
-    /// the empty inventory and is recorded as a typed denial with zero
-    /// D-6/D-7 and zero dispatch, a configured capability commits its
-    /// terminals through the durable store, and an authenticated interruption
-    /// cancels D-7 work only for the current durable lease generation
-    /// (ADR-0003 TC-02/TC-07/TC-12/TC-13).
-    pub(crate) fn tool_call_executor<C, L>(
+    /// conditional terminal committer, the injected durable
+    /// interruption-lease validator, and the injected audit trail: every
+    /// model Tool call resolves against the empty inventory and is recorded
+    /// as a typed denial with zero D-6/D-7 and zero dispatch, a configured
+    /// capability commits its terminals through the durable store, an
+    /// authenticated interruption cancels D-7 work only for the current
+    /// durable lease generation, and every terminal emits one correlated,
+    /// bounded audit record through the trail
+    /// (ADR-0003 TC-02/TC-07/TC-12/TC-13/TC-14).
+    pub(crate) fn tool_call_executor<C, L, A>(
         &self,
         committer: C,
         interruption_lease: L,
-    ) -> tool_executor::BoundaryToolCallExecutor<C, L>
+        audits: A,
+    ) -> tool_executor::BoundaryToolCallExecutor<C, L, A>
     where
         C: crate::application::AttemptCommitter
             + crate::application::DurableAttemptTransitions
@@ -479,12 +494,14 @@ impl RuntimeState {
             + crate::application::ExecutionAttemptLiveness
             + Clone,
         L: crate::application::LeaseValidator + Clone + 'static,
+        A: crate::application::ToolAuditTrail + Clone + 'static,
     {
         tool_executor::BoundaryToolCallExecutor::new(
             &self.tool_execution_root,
             crate::application::ToolConfigurationSnapshot::empty(),
             committer,
             interruption_lease,
+            audits,
         )
     }
 }

@@ -83,6 +83,7 @@ fn local_close_with_remote_live_attempt_requires_reconciliation() {
         ToolConfigurationSnapshot::empty(),
         LocalCloseWithRemoteLive,
         CurrentLease,
+        koduck_ai::application::NoToolAudits,
     );
 
     let result = executor.request_interrupt(&trust, thread_id, turn_id);

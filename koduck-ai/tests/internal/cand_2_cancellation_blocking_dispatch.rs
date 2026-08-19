@@ -27,6 +27,7 @@ fn sealed_interruption_rejects_claim_dispatch_before_executor_call() {
         let mut approvals = NoPendingApprovals;
         interrupter.interrupt(
             &mut blocking_cancellation,
+            &mut koduck_ai::application::NoToolAudits,
             &mut approvals,
             &tenant,
             thread_id,
@@ -130,6 +131,7 @@ fn interruption_reaches_cancellation_while_dispatch_is_blocked() {
         )));
         let result = interrupter.interrupt(
             &mut cancellations,
+            &mut koduck_ai::application::NoToolAudits,
             &mut approvals,
             &tenant,
             thread_id,

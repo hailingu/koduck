@@ -11,6 +11,7 @@ fn interruption_seals_existing_turn_against_late_attempt_allocation() {
     assert!(matches!(
         harness.interrupter().interrupt(
             &mut coordinator,
+            &mut koduck_ai::application::NoToolAudits,
             &mut NoPendingApprovals,
             &harness.tenant,
             harness.thread,
@@ -41,6 +42,7 @@ fn interruption_seals_unknown_turn_against_future_attempt_allocation() {
     assert_eq!(
         harness.interrupter().interrupt(
             &mut coordinator,
+            &mut koduck_ai::application::NoToolAudits,
             &mut NoPendingApprovals,
             &harness.tenant,
             harness.thread,

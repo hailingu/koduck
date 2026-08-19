@@ -23,6 +23,9 @@ pub(crate) mod test_migrations;
 #[path = "../tests/internal/cand_2_approval.rs"]
 mod cand_2_approval_tests;
 #[cfg(test)]
+#[path = "../tests/internal/cand_2_audit_emission.rs"]
+mod cand_2_audit_emission_tests;
+#[cfg(test)]
 #[path = "../tests/internal/cand_2_cancellation.rs"]
 mod cand_2_cancellation_tests;
 #[cfg(test)]

@@ -60,6 +60,7 @@ fn post_claim_lease_unavailability_holds_the_attempt_for_reconciliation() {
     )));
     let outcome = harness.interrupter().interrupt(
         &mut cancellations,
+        &mut koduck_ai::application::NoToolAudits,
         &mut NoPendingApprovals,
         &harness.tenant,
         harness.thread,
@@ -145,6 +146,7 @@ fn post_dispatch_lease_unavailability_holds_the_executed_attempt_for_reconciliat
     )));
     let outcome = harness.interrupter().interrupt(
         &mut cancellations,
+        &mut koduck_ai::application::NoToolAudits,
         &mut NoPendingApprovals,
         &harness.tenant,
         harness.thread,

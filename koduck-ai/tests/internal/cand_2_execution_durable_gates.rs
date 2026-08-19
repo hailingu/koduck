@@ -231,6 +231,7 @@ fn progressed_prepared_replay_stays_reserved_for_interruption_reconciliation() {
     assert_eq!(
         root.runtime().interrupter().interrupt(
             &mut cancellation,
+            &mut koduck_ai::application::NoToolAudits,
             &mut approvals,
             &tenant,
             thread_id,
@@ -349,6 +350,7 @@ fn identity_conflicted_preparation_leaves_no_orphan_live_attempt() {
     let mut approvals = NoApprovalsNeeded;
     let outcome = root.runtime().interrupter().interrupt(
         &mut coordinator,
+        &mut koduck_ai::application::NoToolAudits,
         &mut approvals,
         &tenant,
         thread_id,
@@ -431,6 +433,7 @@ fn concurrent_claim_with_a_progressed_close_defers_to_reconciliation() {
     assert_eq!(
         root.runtime().interrupter().interrupt(
             &mut cancellation,
+            &mut koduck_ai::application::NoToolAudits,
             &mut approvals,
             &tenant,
             inputs.thread_id,
@@ -493,6 +496,7 @@ fn concurrent_claim_fenced_before_prepared_close_retains_unknown_reconciliation(
     assert_eq!(
         root.runtime().interrupter().interrupt(
             &mut cancellation,
+            &mut koduck_ai::application::NoToolAudits,
             &mut approvals,
             &tenant,
             thread_id,
@@ -615,6 +619,7 @@ fn durable_attempt_limit_leaves_no_orphan_local_attempt() {
     assert_eq!(
         root.runtime().interrupter().interrupt(
             &mut cancellation,
+            &mut koduck_ai::application::NoToolAudits,
             &mut approvals,
             &tenant,
             thread_id,

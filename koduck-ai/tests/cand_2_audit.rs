@@ -341,3 +341,79 @@ fn pre_attempt_policy_denial_keeps_unresolved_metadata_absent() {
         );
     }
 }
+
+#[test]
+fn maximum_tenant_identity_still_emits_within_the_bound() {
+    // `TenantId` accepts any non-blank length, so the raw tenant pseudonym is
+    // the only audit field that could push a serialized record past the
+    // TC-14 byte bound and silently drop the terminal's correlated evidence.
+    // A far-over-bound identity therefore still emits one bounded record: the
+    // tenant is retained as a bounded, deterministic form (ADR-0003 TC-14).
+    let oversized = TenantId::new("t".repeat(100_000)).expect("a non-blank tenant is valid");
+    let denial = ToolAuditRecord::policy_denial(
+        &PolicyDenialContext::new(
+            oversized.clone(),
+            koduck_ai::domain::ThreadId::new(),
+            koduck_ai::domain::TurnId::new(),
+            LeaseGeneration::initial(),
+        ),
+        DenialCode::DescriptorMissing,
+        1_755_000_000_000,
+    );
+    let binding = ExactActionBinding::new(
+        oversized,
+        koduck_ai::domain::ThreadId::new(),
+        koduck_ai::domain::TurnId::new(),
+        LeaseGeneration::initial(),
+        ("profile-default", "v1"),
+        AttemptId::new(),
+        Action::new(
+            "fixture.tool",
+            "v1",
+            Effect::ReadData,
+            "fixture-target",
+            parse_action_parameters(r#"{"value":1}"#).expect("valid parameters"),
+        )
+        .expect("valid action"),
+    )
+    .expect("valid binding");
+    let terminal = ToolAuditRecord::execution_terminal(
+        &binding,
+        &ToolExecutionOutcome::Failed {
+            code: ExecutionFailure::AttemptLimit,
+            effect_state: EffectState::NotStarted,
+        },
+        1_755_000_000_000,
+    );
+
+    let mut retained_forms = Vec::new();
+    for record in [&denial, &terminal] {
+        let serialized = serialize_audit_record(record)
+            .expect("an oversized valid identity still serializes within the bound");
+        assert!(
+            serialized.len() <= MAX_AUDIT_RECORD_BYTES,
+            "the retained tenant keeps the record at most 16,384 bytes ({} bytes)",
+            serialized.len()
+        );
+        let value: serde_json::Value =
+            serde_json::from_str(&serialized).expect("audit record is valid JSON");
+        let retained = value["tenant_id"].as_str().expect("tenant is retained");
+        assert!(
+            retained.len() <= 193,
+            "an over-bound tenant is retained as the at-most-128-byte prefix plus digest form"
+        );
+        assert!(
+            retained.starts_with(&"t".repeat(64)),
+            "the retained form still begins with the tenant's own prefix"
+        );
+        assert!(
+            !retained.contains(&"t".repeat(1_000)),
+            "the raw over-bound identity is not retained verbatim"
+        );
+        retained_forms.push(retained.to_owned());
+    }
+    assert_eq!(
+        retained_forms[0], retained_forms[1],
+        "the retained form is deterministic across terminal classes"
+    );
+}

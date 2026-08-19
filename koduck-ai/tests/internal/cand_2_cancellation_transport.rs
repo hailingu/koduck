@@ -75,6 +75,7 @@ fn authenticated_interruption_closes_live_work_through_the_route() {
         ToolInterruptionRoute::new(&harness.runtime).interrupt(
             &mut FixtureOwnership::for_harness(&harness),
             &mut prepared_coordinator,
+            &mut koduck_ai::application::NoToolAudits,
             &mut approvals,
             &authenticated("tenant-a"),
             Some(harness.thread),
@@ -107,6 +108,7 @@ fn authenticated_interruption_closes_live_work_through_the_route() {
         ToolInterruptionRoute::new(&harness.runtime).interrupt(
             &mut FixtureOwnership::for_harness(&harness),
             &mut running_coordinator,
+            &mut koduck_ai::application::NoToolAudits,
             &mut NoPendingApprovals,
             &authenticated("tenant-a"),
             Some(harness.thread),
@@ -135,6 +137,7 @@ fn authenticated_interruption_closes_live_work_through_the_route() {
         ToolInterruptionRoute::new(&harness.runtime).interrupt(
             &mut FixtureOwnership::for_harness(&harness),
             &mut unacknowledged_coordinator,
+            &mut koduck_ai::application::NoToolAudits,
             &mut NoPendingApprovals,
             &authenticated("tenant-a"),
             Some(harness.thread),
@@ -163,6 +166,7 @@ fn unrouted_or_cross_tenant_interruption_is_an_indistinguishable_no_op() {
         ToolInterruptionRoute::new(&harness.runtime).interrupt(
             &mut FixtureOwnership::for_harness(&harness),
             &mut no_op_coordinator,
+            &mut koduck_ai::application::NoToolAudits,
             &mut approvals,
             &authenticated("tenant-a"),
             None,
@@ -177,6 +181,7 @@ fn unrouted_or_cross_tenant_interruption_is_an_indistinguishable_no_op() {
         ToolInterruptionRoute::new(&harness.runtime).interrupt(
             &mut FixtureOwnership::for_harness(&harness),
             &mut no_op_coordinator,
+            &mut koduck_ai::application::NoToolAudits,
             &mut approvals,
             &authenticated("tenant-b"),
             Some(harness.thread),
@@ -199,6 +204,7 @@ fn unrouted_or_cross_tenant_interruption_is_an_indistinguishable_no_op() {
         ToolInterruptionRoute::new(&harness.runtime).interrupt(
             &mut FixtureOwnership::for_harness(&harness),
             &mut no_op_coordinator,
+            &mut koduck_ai::application::NoToolAudits,
             &mut approvals,
             &authenticated("tenant-a"),
             Some(harness.thread),
@@ -236,6 +242,7 @@ fn non_owner_and_unknown_interruptions_leave_no_mutation_or_tombstone() {
         ToolInterruptionRoute::new(&harness.runtime).interrupt(
             &mut FixtureOwnership::for_harness(&harness),
             &mut coordinator,
+            &mut koduck_ai::application::NoToolAudits,
             &mut approvals,
             &authenticated_as("tenant-a", "subject-b"),
             Some(harness.thread),
@@ -251,6 +258,7 @@ fn non_owner_and_unknown_interruptions_leave_no_mutation_or_tombstone() {
         ToolInterruptionRoute::new(&harness.runtime).interrupt(
             &mut FixtureOwnership::for_harness(&harness),
             &mut coordinator,
+            &mut koduck_ai::application::NoToolAudits,
             &mut approvals,
             &authenticated("tenant-a"),
             Some(harness.thread),
@@ -268,6 +276,7 @@ fn non_owner_and_unknown_interruptions_leave_no_mutation_or_tombstone() {
         ToolInterruptionRoute::new(&harness.runtime).interrupt(
             &mut unavailable,
             &mut coordinator,
+            &mut koduck_ai::application::NoToolAudits,
             &mut approvals,
             &authenticated("tenant-a"),
             Some(harness.thread),
@@ -305,6 +314,7 @@ fn non_owner_and_unknown_interruptions_leave_no_mutation_or_tombstone() {
         ToolInterruptionRoute::new(&harness.runtime).interrupt(
             &mut FixtureOwnership::for_harness(&harness),
             &mut coordinator,
+            &mut koduck_ai::application::NoToolAudits,
             &mut approvals,
             &authenticated("tenant-a"),
             Some(harness.thread),

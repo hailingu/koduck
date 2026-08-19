@@ -173,8 +173,11 @@ process_local_durable_claims!(RemoteLiveCommitter);
 
 #[test]
 fn runtime_assembly_denies_every_tool_call_through_the_empty_inventory() {
-    let mut executor = RuntimeState::assemble()
-        .tool_call_executor(RecordingCommitter::default(), UnusedInterruptionLease);
+    let mut executor = RuntimeState::assemble().tool_call_executor(
+        RecordingCommitter::default(),
+        UnusedInterruptionLease,
+        koduck_ai::application::NoToolAudits,
+    );
 
     let mut projections = RecordingProjections::default();
     let result = executor
@@ -202,6 +205,7 @@ fn interruption_with_remote_live_attempt_requires_reconciliation() {
         ToolConfigurationSnapshot::empty(),
         RemoteLiveCommitter,
         UnusedInterruptionLease,
+        koduck_ai::application::NoToolAudits,
     );
 
     let result = executor.request_interrupt(&trust(), ThreadId::new(), TurnId::new());
@@ -217,8 +221,11 @@ fn interruption_with_remote_live_attempt_requires_reconciliation() {
 
 #[test]
 fn runtime_assembly_normalizes_an_invalid_tool_name_before_recording_denial() {
-    let mut executor = RuntimeState::assemble()
-        .tool_call_executor(RecordingCommitter::default(), UnusedInterruptionLease);
+    let mut executor = RuntimeState::assemble().tool_call_executor(
+        RecordingCommitter::default(),
+        UnusedInterruptionLease,
+        koduck_ai::application::NoToolAudits,
+    );
     let mut projections = RecordingProjections::default();
 
     let result = executor
@@ -271,8 +278,13 @@ fn runtime_assembly_records_the_full_c5_path_for_a_configured_capability() {
         .expect("profile registers");
     let root = ToolExecutionRuntimeRoot::issue();
     let committer = RecordingCommitter::default();
-    let mut executor =
-        BoundaryToolCallExecutor::new(&root, snapshot, committer.clone(), UnusedInterruptionLease);
+    let mut executor = BoundaryToolCallExecutor::new(
+        &root,
+        snapshot,
+        committer.clone(),
+        UnusedInterruptionLease,
+        koduck_ai::application::NoToolAudits,
+    );
 
     let mut projections = RecordingProjections::default();
     let result = executor
@@ -336,8 +348,13 @@ fn policy_denials_are_recorded_tool_results_not_turn_terminals() {
         .expect("profile registers");
     let root = ToolExecutionRuntimeRoot::issue();
     let committer = RecordingCommitter::default();
-    let mut executor =
-        BoundaryToolCallExecutor::new(&root, snapshot, committer.clone(), UnusedInterruptionLease);
+    let mut executor = BoundaryToolCallExecutor::new(
+        &root,
+        snapshot,
+        committer.clone(),
+        UnusedInterruptionLease,
+        koduck_ai::application::NoToolAudits,
+    );
 
     let mut projections = RecordingProjections::default();
     let result = executor

@@ -20,6 +20,7 @@ mod runner;
 mod terminal;
 pub(crate) mod tool_boundary;
 mod tool_execution;
+mod tool_execution_terminal;
 mod tool_interruption;
 pub(crate) mod tool_projection;
 
@@ -32,9 +33,10 @@ pub use attempt_store::{
     DurableAttemptTerminal, DurableAttemptTransitions, ExecutionAttemptInterruptionGuard,
     ExecutionAttemptLiveness, ExecutionAttemptStore, PreparedCloseResolution,
 };
+pub(crate) use audit::record_audit;
 pub use audit::{
-    MAX_AUDIT_RECORD_BYTES, NoToolAudits, PolicyDenialContext, ToolAuditError, ToolAuditRecord,
-    ToolAuditRecordTooLarge, ToolAuditSink,
+    MAX_AUDIT_RECORD_BYTES, NoToolAudits, PolicyDenialContext, ToolAuditEmitError, ToolAuditError,
+    ToolAuditRecord, ToolAuditRecordTooLarge, ToolAuditSink, ToolAuditTrail,
 };
 pub(crate) use cancellation::InterruptionOutcome;
 #[cfg(test)]

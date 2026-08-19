@@ -21,6 +21,7 @@ use crate::domain::execution::{
 use crate::domain::{TenantId, ThreadId, TurnId};
 
 use super::attempt_store::DurableAttemptTransitions;
+use super::audit::{ToolAuditRecord, ToolAuditTrail, record_audit};
 use super::deadline::{ActionDeadline, MAX_ACTION_DURATION_MILLIS};
 use super::execution::{
     AttemptCommitter, DispatchPhase, ExecutionCoordinator, ExecutionPending, IsolatedExecutor,
@@ -183,9 +184,14 @@ impl ExecutionInterrupter {
         allow(dead_code, reason = "T-2 runtime interruption wiring is not complete")
     )]
     #[allow(clippy::collapsible_if)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the cancellation ports, audit trail, and authenticated Turn dimensions are explicit"
+    )]
     pub(crate) fn interrupt(
         &self,
         cancellations: &mut dyn AttemptCancellationService,
+        audits: &mut dyn ToolAuditTrail,
         approvals: &mut dyn PendingApprovalCanceller,
         tenant: &TenantId,
         thread: ThreadId,
@@ -244,7 +250,15 @@ impl ExecutionInterrupter {
                 _ => unreachable!("live attempt lookup filters terminal states"),
             };
             match outcome {
-                Ok(value) => closed.push(value),
+                Ok(value) => {
+                    // Every D-7 terminal an interruption commits emits its
+                    // correlated audit record (TC-14).
+                    record_audit(
+                        audits,
+                        &ToolAuditRecord::execution_terminal(attempt.binding(), &value, now()),
+                    );
+                    closed.push(value);
+                }
                 Err(pending) => return partial_or_error(closed, pending),
             }
         }

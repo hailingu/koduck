@@ -308,8 +308,11 @@ fn approval_call(
             (ApprovalDecision::Accepted, decided_at)
         };
         // The prepared D-7 record reads the clock between the D-6 creation and
-        // the dispatch start (TC-12 durable preparation evidence).
-        let mut now = sequenced_clock(vec![T0, T0, decided_at, decided_at, decided_at]);
+        // the dispatch start, and each audit terminal — the D-6 resolution and
+        // the D-7 terminal — reads the clock at its own emission (TC-12/TC-14).
+        let mut now = sequenced_clock(vec![
+            T0, T0, T0, decided_at, decided_at, decided_at, decided_at,
+        ]);
         tool_boundary.execute(&call, &approver(), &mut decision, &mut now)
     };
     (
@@ -413,7 +416,8 @@ fn executor_deadline_is_exactly_thirty_seconds() {
     // Completion at started + 29.999s succeeds. The read sequence of the
     // approval-free leg is the durable preparation record, the dispatch plan,
     // the dispatch start, and the deadline check — all at T0 — followed by
-    // the post-executor response read at T0 + N ms.
+    // the post-executor response read and the terminal audit's own
+    // observation-time read at T0 + N ms.
     let (mut tool_boundary, dispatches) = boundary(
         config(Effect::ReadData),
         vec![Script::Ok(b"ok", EffectState::Started)],
@@ -424,7 +428,7 @@ fn executor_deadline_is_exactly_thirty_seconds() {
             &call,
             &trust(),
             &mut |_| (ApprovalDecision::Accepted, T0),
-            &mut sequenced_clock(vec![T0, T0, T0, T0, T0 + 29_999]),
+            &mut sequenced_clock(vec![T0, T0, T0, T0, T0 + 29_999, T0 + 29_999]),
         )
         .expect("an at-limit duration still commits");
     assert_eq!(
@@ -447,7 +451,7 @@ fn executor_deadline_is_exactly_thirty_seconds() {
             &call,
             &trust(),
             &mut |_| (ApprovalDecision::Accepted, T0),
-            &mut sequenced_clock(vec![T0, T0, T0, T0, T0 + 30_000]),
+            &mut sequenced_clock(vec![T0, T0, T0, T0, T0 + 30_000, T0 + 30_000]),
         )
         .expect("a deadline crossing still reaches one terminal");
     assert_eq!(

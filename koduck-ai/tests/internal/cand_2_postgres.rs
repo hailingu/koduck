@@ -25,6 +25,8 @@ use uuid::Uuid;
 mod attempt_limits;
 #[path = "cand_2_postgres_attempts.rs"]
 mod attempts;
+#[path = "cand_2_postgres_audit.rs"]
+mod audit;
 #[path = "cand_2_postgres_prepared_close.rs"]
 mod prepared_close;
 

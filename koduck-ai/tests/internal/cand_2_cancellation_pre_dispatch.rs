@@ -27,6 +27,7 @@ fn failed_pre_dispatch_timeout_commit_cannot_trigger_executor_cancellation() {
     assert_eq!(
         harness.interrupter().interrupt(
             &mut later,
+            &mut koduck_ai::application::NoToolAudits,
             &mut NoPendingApprovals,
             &harness.tenant,
             harness.thread,

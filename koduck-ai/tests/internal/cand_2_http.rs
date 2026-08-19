@@ -583,6 +583,7 @@ fn projections_append_before_publish() {
         &mut decision,
         &mut || 1_000,
         &mut projections,
+        &mut koduck_ai::application::NoToolAudits,
     )
     .expect("the approval-required call completes");
     assert!(matches!(outcome, ToolExecutionOutcome::Succeeded { .. }));
@@ -904,6 +905,7 @@ fn requested_approval_is_projected_only_after_preparation_succeeds() {
         &mut decision,
         &mut || 1_000,
         &mut projections,
+        &mut koduck_ai::application::NoToolAudits,
     );
 
     assert!(
@@ -950,6 +952,7 @@ fn unavailable_durable_preparation_publishes_no_requested_approval() {
         &mut decision,
         &mut || 1_000,
         &mut projections,
+        &mut koduck_ai::application::NoToolAudits,
     );
 
     assert!(matches!(
@@ -995,6 +998,7 @@ fn late_approval_decision_projects_the_expired_terminal() {
         &mut decision,
         &mut || 1_000,
         &mut projections,
+        &mut koduck_ai::application::NoToolAudits,
     )
     .expect("a late decision still reaches a terminal outcome");
     assert!(
@@ -1074,6 +1078,7 @@ fn running_projection_survives_a_post_claim_fence() {
         &mut decision,
         &mut || 1_000,
         &mut projections,
+        &mut koduck_ai::application::NoToolAudits,
     )
     .expect("a post-claim fence closes the attempt as cancelled");
     assert!(
@@ -1155,6 +1160,7 @@ fn replayed_terminal_must_carry_the_canonical_transition_version() {
         &mut decision,
         &mut || 1_000,
         &mut projections,
+        &mut koduck_ai::application::NoToolAudits,
     )
     .expect("a consistent replayed terminal is returned");
     assert!(matches!(outcome, ToolExecutionOutcome::Succeeded { .. }));
@@ -1205,6 +1211,7 @@ fn replayed_terminal_must_carry_the_canonical_transition_version() {
         &mut decision,
         &mut || 1_000,
         &mut projections,
+        &mut koduck_ai::application::NoToolAudits,
     );
     assert!(
         matches!(
@@ -1246,6 +1253,7 @@ fn unavailable_projection_append_suppresses_publish_without_changing_the_outcome
         &mut decision,
         &mut || 1_000,
         &mut projections,
+        &mut koduck_ai::application::NoToolAudits,
     )
     .expect("a failed projection append never blocks the canonical outcome");
 

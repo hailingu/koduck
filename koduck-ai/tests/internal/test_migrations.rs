@@ -31,6 +31,7 @@ pub(crate) async fn ensure(pool: &PgPool) {
                 include_str!("../../migrations/0004_cand_2_tool_projections.sql"),
                 include_str!("../../migrations/0005_cand_2_execution_attempts.sql"),
                 include_str!("../../migrations/0006_cand_2_interrupt_barrier.sql"),
+                include_str!("../../migrations/0007_cand_2_tool_audit.sql"),
             ] {
                 sqlx::raw_sql(migration)
                     .execute(pool)

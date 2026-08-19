@@ -553,6 +553,7 @@ fn retry_does_not_retry_when_budget_exhausted() {
             &mut |_| (ApprovalDecision::Accepted, 1_000),
             &mut fixed_clock(1_000),
             &mut projections,
+            &mut koduck_ai::application::NoToolAudits,
         )
         .expect("the budget-exhausted retry returns a terminal outcome");
 
@@ -753,11 +754,13 @@ fn retry_reads_a_fresh_clock_for_each_d6_and_dispatch() {
         WinningCommitter { calls: 0 },
     );
     // Each D-6 receives a later creation time, each preparation record reads
-    // the clock between the creation and the dispatch start, and the dispatch
-    // and response reads remain inside their respective 30-second action
-    // budgets.
+    // the clock between the creation and the dispatch start, each audit
+    // terminal — the D-6 resolution and the D-7 terminal — reads the clock at
+    // its own emission, and the dispatch and response reads remain inside
+    // their respective 30-second action budgets.
     let mut clock_reads = VecDeque::from([
-        1_000, 2_000, 101_000, 301_000, 301_001, 401_000, 402_000, 501_000, 600_000, 600_001,
+        1_000, 2_000, 3_000, 101_000, 301_000, 301_001, 301_002, 401_000, 402_000, 403_000,
+        501_000, 600_000, 600_001, 600_002,
     ]);
     let mut clock = || {
         clock_reads.pop_front().expect(

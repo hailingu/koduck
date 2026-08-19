@@ -4,6 +4,7 @@
 
 use crate::domain::{ThreadId, TrustContext, TurnId};
 
+use super::audit::ToolAuditTrail;
 use super::cancellation::{
     AttemptCancellationService, ExecutionInterrupter, InterruptionOutcome, PendingApprovalCanceller,
 };
@@ -140,6 +141,7 @@ impl ToolInterruptionRoute {
         &self,
         ownership: &mut dyn TurnOwnershipValidator,
         cancellations: &mut dyn AttemptCancellationService,
+        audits: &mut dyn ToolAuditTrail,
         approvals: &mut dyn PendingApprovalCanceller,
         trust: &TrustContext,
         thread: Option<ThreadId>,
@@ -163,6 +165,7 @@ impl ToolInterruptionRoute {
         }
         match self.interrupter.interrupt(
             cancellations,
+            audits,
             approvals,
             &trust.tenant_id,
             thread,

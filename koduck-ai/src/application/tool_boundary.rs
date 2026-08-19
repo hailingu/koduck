@@ -8,6 +8,7 @@ use crate::domain::execution::{ApprovalDecision, ApprovalRequest, ExactActionBin
 use crate::domain::{ThreadId, TrustContext};
 
 use super::attempt_store::DurableAttemptTransitions;
+use super::audit::ToolAuditTrail;
 use super::cancellation::{ExecutionInterrupter, InterruptionOutcome, PendingApprovalCanceller};
 use super::execution::{
     ApprovalAuthorizer, ApprovalDecisionService, AttemptCommitter, ExecutionCoordinator,
@@ -166,11 +167,12 @@ impl ToolExecutionAssembly {
         clippy::too_many_arguments,
         reason = "the C-5 cancellation ports and authenticated ownership dimensions are explicit"
     )]
-    pub(crate) fn interrupt<E, L, C, A>(
+    pub(crate) fn interrupt<E, L, C, P, A>(
         &self,
         executor: E,
         lease: L,
         committer: C,
+        audits: &mut P,
         approvals: &mut A,
         trust: &TrustContext,
         thread_id: ThreadId,
@@ -181,6 +183,7 @@ impl ToolExecutionAssembly {
         E: IsolatedExecutor,
         L: LeaseValidator + 'static,
         C: AttemptCommitter + DurableAttemptTransitions,
+        P: ToolAuditTrail,
         A: PendingApprovalCanceller,
     {
         let shared_lease = SharedLeaseValidator(Arc::new(Mutex::new(lease)));
@@ -188,6 +191,7 @@ impl ToolExecutionAssembly {
         ExecutionInterrupter::interrupt(
             &self.runtime.interrupter(),
             &mut coordinator,
+            audits,
             approvals,
             &trust.tenant_id,
             thread_id,
@@ -247,6 +251,8 @@ where
         decision_for: &mut dyn FnMut(&ApprovalRequest) -> (ApprovalDecision, u64),
         now: &mut dyn FnMut() -> u64,
     ) -> Result<ToolExecutionOutcome, ToolCallError> {
+        // Convenience wrapper for callers that configure no audit sink; the
+        // projected path carries the audit emission (ADR-0003 TC-14).
         self.driver.execute(
             &mut self.preparer,
             &mut self.coordinator,
@@ -270,6 +276,7 @@ where
         decision_for: &mut dyn FnMut(&ApprovalRequest) -> (ApprovalDecision, u64),
         now: &mut dyn FnMut() -> u64,
         projections: &mut dyn super::tool_projection::ToolProjectionSink,
+        audits: &mut dyn super::audit::ToolAuditTrail,
     ) -> Result<ToolExecutionOutcome, ToolCallError> {
         self.driver.execute_projected(
             &mut self.preparer,
@@ -279,6 +286,7 @@ where
             decision_for,
             now,
             projections,
+            audits,
         )
     }
 }

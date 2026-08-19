@@ -187,6 +187,7 @@ fn interruption_leaves_one_durable_turn_terminal_and_replay() {
         runtime_state.tool_call_executor(
             durable.clone(),
             SqlxTurnLeaseValidator::new(pool, runtime.handle().clone()),
+            koduck_ai::application::NoToolAudits,
         ),
     );
     runner
@@ -245,6 +246,7 @@ fn interruption_barrier_prevents_a_remote_dispatch_after_no_live_lookup() {
         runtime_state.tool_call_executor(
             pausing_store,
             SqlxTurnLeaseValidator::new(pool, runtime.handle().clone()),
+            koduck_ai::application::NoToolAudits,
         ),
     );
 
@@ -521,6 +523,7 @@ fn stale_owner_interruption_mutates_nothing(stale: StaleLease) {
         runtime_state.tool_call_executor(
             durable.clone(),
             SqlxTurnLeaseValidator::new(pool.clone(), runtime.handle().clone()),
+            koduck_ai::application::NoToolAudits,
         ),
     );
     assert!(

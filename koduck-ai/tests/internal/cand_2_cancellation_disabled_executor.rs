@@ -16,6 +16,7 @@ fn disabled_executor_does_not_report_timeout_before_the_deadline() {
     assert_eq!(
         harness.interrupter().interrupt(
             &mut coordinator,
+            &mut koduck_ai::application::NoToolAudits,
             &mut NoPendingApprovals,
             &harness.tenant,
             harness.thread,
@@ -31,6 +32,7 @@ fn disabled_executor_does_not_report_timeout_before_the_deadline() {
     assert_eq!(
         harness.interrupter().interrupt(
             &mut coordinator,
+            &mut koduck_ai::application::NoToolAudits,
             &mut NoPendingApprovals,
             &harness.tenant,
             harness.thread,

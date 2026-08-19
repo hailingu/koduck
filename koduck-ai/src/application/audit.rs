@@ -12,12 +12,44 @@ use crate::domain::execution::{
 use crate::domain::{LeaseGeneration, TenantId, ThreadId, TurnId};
 
 use super::ToolExecutionOutcome;
-use super::executor_envelope::EffectState;
+use super::executor_envelope::{EffectState, ExecutionFailure};
 use super::policy::DenialCode;
 use super::tool_projection::output_digest;
 
 /// Maximum serialized size of one audit record (ADR-0003 TC-14).
 pub const MAX_AUDIT_RECORD_BYTES: usize = 16_384;
+
+/// Maximum raw tenant bytes retained verbatim in an audit record.
+///
+/// Every other record field is domain-bounded (descriptor and profile
+/// identities at 128 bytes, fixed UUIDs, fixed hex digests, stable codes), so
+/// the tenant pseudonym — which accepts any non-blank length — is the only
+/// field that could push a serialized record past [`MAX_AUDIT_RECORD_BYTES`]
+/// and drop a required audit terminal. An over-bound tenant is retained as a
+/// deterministic bounded form instead: an at-most-128-byte prefix, `~`, and
+/// the 64-hex SHA-256 digest of the full identity, so every valid identity
+/// still emits exactly one correlated record and the same identity always
+/// retains the same form (ADR-0003 TC-14).
+const MAX_AUDIT_TENANT_BYTES: usize = 256;
+
+/// Retains the tenant pseudonym in a form that cannot exceed the audit
+/// record's share of [`MAX_AUDIT_RECORD_BYTES`].
+///
+/// Identities within [`MAX_AUDIT_TENANT_BYTES`] bytes are retained verbatim;
+/// longer identities keep their at-most-128-byte prefix (cut at a UTF-8
+/// character boundary) plus the digest of the full identity, so correlation
+/// stays deterministic for over-bound tenants.
+fn bounded_tenant_id(tenant: &TenantId) -> String {
+    let raw = tenant.as_str();
+    if raw.len() <= MAX_AUDIT_TENANT_BYTES {
+        return raw.to_owned();
+    }
+    let mut prefix_end = 128.min(raw.len());
+    while prefix_end > 0 && !raw.is_char_boundary(prefix_end) {
+        prefix_end -= 1;
+    }
+    format!("{}~{}", &raw[..prefix_end], output_digest(raw.as_bytes()))
+}
 
 /// A serialized audit record exceeded the TC-14 byte bound.
 #[derive(Clone, Copy, Debug, Error, Eq, PartialEq)]
@@ -121,7 +153,10 @@ impl PolicyDenialContext {
 /// policy decision, executor effect state, timing, byte counts, and the
 /// stable terminal code. It is constructed only from owned canonical values:
 /// the type has no field for raw action parameters, executor results, or
-/// credential values, so none can enter an audit record (ADR-0003 TC-14).
+/// credential values, so none can enter an audit record; the tenant
+/// pseudonym is the single unbounded identity and is retained through
+/// [`bounded_tenant_id`]'s bounded deterministic form, so no valid identity
+/// can push a record past [`MAX_AUDIT_RECORD_BYTES`] (ADR-0003 TC-14).
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct ToolAuditRecord {
     /// Tenant pseudonym that owns the audited action.
@@ -182,6 +217,24 @@ impl ToolAuditRecord {
     ) -> Self {
         Self {
             policy_decision: denial.stable_code().to_owned(),
+            ..Self::policy_denial_base(context, at_millis)
+        }
+    }
+
+    /// Creates the audit record for the retry-budget terminal delivered
+    /// without a new D-7.
+    ///
+    /// The Turn's 16-slot budget is exhausted, so no new D-6/D-7 identity
+    /// exists; the record correlates the exact action (descriptor, Permission
+    /// Profile, pre-attempt digest) with the delivered `failed/attempt_limit`
+    /// terminal through its stable code, without any attempt or approval
+    /// identity (ADR-0003 TC-08/TC-14).
+    #[must_use]
+    pub fn budget_exhausted(context: &PolicyDenialContext, at_millis: u64) -> Self {
+        let stable = ExecutionFailure::AttemptLimit.stable_code();
+        Self {
+            policy_decision: stable.to_owned(),
+            failure_code: Some(stable.to_owned()),
             ..Self::policy_denial_base(context, at_millis)
         }
     }
@@ -247,7 +300,7 @@ impl ToolAuditRecord {
     fn correlated_base(binding: &ExactActionBinding, at_millis: u64) -> Self {
         let action = binding.action();
         Self {
-            tenant_id: binding.tenant_id().as_str().to_owned(),
+            tenant_id: bounded_tenant_id(binding.tenant_id()),
             thread_id: binding.thread_id().as_uuid().to_string(),
             turn_id: binding.turn_id().as_uuid().to_string(),
             attempt_id: None,
@@ -274,7 +327,7 @@ impl ToolAuditRecord {
     /// Returns the correlation fields available before D-7 allocation.
     fn policy_denial_base(context: &PolicyDenialContext, at_millis: u64) -> Self {
         Self {
-            tenant_id: context.tenant_id.as_str().to_owned(),
+            tenant_id: bounded_tenant_id(&context.tenant_id),
             thread_id: context.thread_id.as_uuid().to_string(),
             turn_id: context.turn_id.as_uuid().to_string(),
             attempt_id: None,
@@ -302,6 +355,30 @@ impl ToolAuditRecord {
     #[must_use]
     pub fn policy_decision(&self) -> &str {
         &self.policy_decision
+    }
+
+    /// Returns the owning tenant pseudonym, for durable Turn correlation.
+    #[must_use]
+    pub fn tenant_id(&self) -> &str {
+        &self.tenant_id
+    }
+
+    /// Returns the owning durable Thread identity, for Turn correlation.
+    #[must_use]
+    pub fn thread_id(&self) -> &str {
+        &self.thread_id
+    }
+
+    /// Returns the owning durable Turn identity, for Turn correlation.
+    #[must_use]
+    pub fn turn_id(&self) -> &str {
+        &self.turn_id
+    }
+
+    /// Returns the audit observation time of this terminal.
+    #[must_use]
+    pub const fn at_millis(&self) -> u64 {
+        self.at_millis
     }
 
     /// Serializes the record within the TC-14 byte bound.
@@ -343,8 +420,10 @@ fn outcome_effect_state(outcome: &ToolExecutionOutcome) -> EffectState {
 
 /// Consumer-owned sink receiving one bounded audit record per terminal.
 ///
-/// The sink receives only already-serialized records that passed the TC-14
-/// bound, so no adapter can widen audit content.
+/// The sink receives the owned application record together with its
+/// already-serialized form that passed the TC-14 bound, so no adapter can
+/// widen audit content and a durable trail can persist its own Turn
+/// correlation columns without re-parsing the serialized record.
 pub trait ToolAuditSink {
     /// Records one serialized audit terminal.
     ///
@@ -352,7 +431,7 @@ pub trait ToolAuditSink {
     ///
     /// Returns an implementation error when the audit trail cannot receive
     /// the record; the caller reports the failure without retry storms.
-    fn record(&mut self, serialized: &str) -> Result<(), ToolAuditError>;
+    fn record(&mut self, record: &ToolAuditRecord, serialized: &str) -> Result<(), ToolAuditError>;
 }
 
 /// A sink failure reported to the caller without concealing the terminal.
@@ -360,7 +439,7 @@ pub trait ToolAuditSink {
 #[error("tool audit sink unavailable")]
 pub struct ToolAuditError;
 
-/// Fail-closed audit sink used until an audit trail adapter is configured.
+/// Fail-closed audit sink used when no trail is configured.
 ///
 /// Recording fails rather than silently dropping correlated evidence
 /// (ADR-0003 TC-14).
@@ -368,7 +447,71 @@ pub struct ToolAuditError;
 pub struct NoToolAudits;
 
 impl ToolAuditSink for NoToolAudits {
-    fn record(&mut self, _serialized: &str) -> Result<(), ToolAuditError> {
+    fn record(
+        &mut self,
+        _record: &ToolAuditRecord,
+        _serialized: &str,
+    ) -> Result<(), ToolAuditError> {
         Err(ToolAuditError)
+    }
+}
+
+impl ToolAuditTrail for NoToolAudits {
+    fn emit(&mut self, _record: &ToolAuditRecord) -> Result<(), ToolAuditEmitError> {
+        // No trail is configured: the emission fails closed and surfaces as a
+        // structured diagnostic rather than silently dropping evidence
+        // (ADR-0003 TC-14).
+        Err(ToolAuditEmitError::Sink(ToolAuditError))
+    }
+}
+
+/// Adapter-owned emission boundary for audit terminals.
+///
+/// The adapter serializes this owned application type into its wire format
+/// and enforces [`MAX_AUDIT_RECORD_BYTES`] through
+/// [`ToolAuditRecord::serialized_within_bound`] before delivering the record
+/// to its trail, so no adapter can widen audit content (ADR-0003 TC-14).
+pub trait ToolAuditTrail {
+    /// Emits one bounded audit terminal to the configured trail.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ToolAuditEmitError::TooLarge`] when the record cannot
+    /// serialize within [`MAX_AUDIT_RECORD_BYTES`] — no record is emitted
+    /// rather than truncating correlated evidence — or
+    /// [`ToolAuditEmitError::Sink`] when the trail cannot receive it.
+    fn emit(&mut self, record: &ToolAuditRecord) -> Result<(), ToolAuditEmitError>;
+}
+
+/// Why one audit terminal could not be emitted to the trail.
+#[derive(Clone, Copy, Debug, Error, Eq, PartialEq)]
+pub enum ToolAuditEmitError {
+    /// The serialized record exceeded the TC-14 byte bound.
+    #[error("serialized audit record exceeds the 16,384-byte bound")]
+    TooLarge(ToolAuditRecordTooLarge),
+    /// The audit trail could not receive the serialized record.
+    #[error("tool audit sink unavailable")]
+    Sink(ToolAuditError),
+}
+
+/// Emits one bounded audit terminal without changing any canonical state.
+///
+/// A record that cannot serialize within the TC-14 bound, or a trail that
+/// cannot receive it, is never concealed and never retried: the failure is
+/// reported as a structured, content-free diagnostic so operators and
+/// reconciliation tooling can observe the missing audit evidence, while the
+/// already-committed terminal stands unchanged (ADR-0003 TC-14).
+pub(crate) fn record_audit(audits: &mut dyn ToolAuditTrail, record: &ToolAuditRecord) {
+    if let Err(error) = audits.emit(record) {
+        let (event, cause) = match error {
+            ToolAuditEmitError::TooLarge(cause) => {
+                ("tool_audit_record_too_large", cause.to_string())
+            }
+            ToolAuditEmitError::Sink(cause) => ("tool_audit_sink_failed", cause.to_string()),
+        };
+        eprintln!(
+            "event={event} error={cause} policy_decision={}",
+            record.policy_decision()
+        );
     }
 }

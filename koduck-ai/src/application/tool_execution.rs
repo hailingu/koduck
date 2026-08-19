@@ -12,6 +12,7 @@ use crate::domain::tool::Action;
 use crate::domain::{LeaseGeneration, TenantId, ThreadId, TrustContext, TurnId};
 
 use super::attempt_store::DurableAttemptTransitions;
+use super::audit::{PolicyDenialContext, ToolAuditRecord, ToolAuditTrail, record_audit};
 use super::execution::{
     ApprovalAuthorizer, ApprovalDecisionService, AttemptCommitter, ExecutionCoordinator,
     ExecutionPending, ExecutionPreparationError, ExecutionPreparer, IsolatedExecutor,
@@ -19,9 +20,8 @@ use super::execution::{
 };
 use super::executor_envelope::{EffectState, ExecutionFailure};
 use super::policy::{DenialCode, ToolAuthorizationService, ToolPolicyConfiguration};
-use super::tool_projection::{
-    NoToolProjections, ToolProjection, ToolProjectionSink, attempt_version, emit,
-};
+use super::tool_execution_terminal::{emit_requested_approval, emit_tool_result};
+use super::tool_projection::{NoToolProjections, ToolProjection, ToolProjectionSink, emit};
 
 /// Identity and action inputs for one C-5 tool-call execution.
 #[derive(Clone, Debug)]
@@ -146,6 +146,9 @@ impl<C, A> ToolExecutionDriver<C, A> {
         L: LeaseValidator,
         Co: AttemptCommitter + DurableAttemptTransitions,
     {
+        // Convenience wrapper for callers that publish no projections and
+        // configure no audit sink; the runtime's projected path carries both
+        // (ADR-0003 TC-06/TC-14).
         self.execute_projected(
             preparer,
             coordinator,
@@ -154,6 +157,7 @@ impl<C, A> ToolExecutionDriver<C, A> {
             decision_for,
             now,
             &mut NoToolProjections,
+            &mut crate::application::NoToolAudits,
         )
     }
 
@@ -163,7 +167,10 @@ impl<C, A> ToolExecutionDriver<C, A> {
     /// The projections are ordered durable views: each approval-status,
     /// dispatch, and terminal-result projection references its canonical
     /// identity and version, is appended before it is published, and can never
-    /// authorize or redispatch execution.
+    /// authorize or redispatch execution. Every audit terminal is stamped by
+    /// one controlled-clock read at its own emission, so a delayed approval
+    /// or long-running executor never produces an observation time that
+    /// predates its terminal (TC-14).
     #[allow(
         clippy::too_many_arguments,
         reason = "each parameter is one independently validated orchestration input"
@@ -177,6 +184,7 @@ impl<C, A> ToolExecutionDriver<C, A> {
         decision_for: &mut dyn FnMut(&ApprovalRequest) -> (ApprovalDecision, u64),
         now: &mut dyn FnMut() -> u64,
         projections: &mut dyn ToolProjectionSink,
+        audits: &mut dyn ToolAuditTrail,
     ) -> Result<ToolExecutionOutcome, ToolCallError>
     where
         C: ToolPolicyConfiguration,
@@ -190,100 +198,62 @@ impl<C, A> ToolExecutionDriver<C, A> {
         }
         let mut retried = false;
         loop {
-            let (mut authority, mut attempt, pre_approval) =
-                match self.authorize_and_prepare(preparer, inputs, trust, now) {
-                    Ok((authority, attempt, pre_approval)) => (authority, attempt, pre_approval),
-                    Err(ToolCallError::Preparation(ExecutionPreparationError::Rejected(
-                        ExecutionError::AttemptLimit,
-                    ))) if retried => {
-                        return Ok(exhausted_retry_attempt_limit(inputs, projections));
-                    }
-                    Err(error) => {
-                        // A retry-time preparation failure (e.g., the owner was fenced)
-                        // must not deliver the committed NotStarted terminal to the
-                        // model; reconciliation owns the next transition.
-                        return Err(error);
-                    }
-                };
-            // TC-12: the canonical prepared D-7 exists durably before any
-            // approval resolution, dispatch, or cancellation binds to it, so
-            // every later conditional transition targets the durable row and
-            // a failed durable preparation fails the call closed.
-            if let Err(pending) =
-                coordinator.record_prepared_attempt(&mut authority, &mut attempt, now())
-            {
-                if retried
-                    && matches!(
-                        &pending,
-                        ExecutionPending::DispatchRejected {
-                            code: ExecutionFailure::AttemptLimit
-                        }
-                    )
-                {
-                    return Ok(exhausted_retry_attempt_limit(inputs, projections));
-                }
-                return Err(map_preparation_record_error(pending));
-            }
-            if let PreApproval::Validated(request) = &pre_approval {
-                // TC-06: publish the requested D-6 view only after its bound
-                // D-7 exists canonically, so a durable preparation failure
-                // cannot leave projection consumers an unresolvable request.
-                emit_requested_approval(request, projections);
-            }
-            let plan = match pre_approval {
-                PreApproval::NotRequired => ApprovalPlan::Dispatch {
-                    approval: None,
-                    earliest_start_millis: now(),
-                },
-                PreApproval::AlreadyExpired => ApprovalPlan::Cancel,
-                PreApproval::Validated(request) => self.resolve_validated_approval(
-                    *request,
-                    trust,
-                    inputs.thread_id,
-                    decision_for,
-                    projections,
-                )?,
-            };
-            let executed = match plan {
-                ApprovalPlan::Dispatch {
-                    approval,
-                    earliest_start_millis,
-                } => {
-                    // The dispatch start time never precedes the verified
-                    // approval decision, even when the clock reads earlier.
-                    let started_at_millis = now().max(earliest_start_millis);
-                    coordinator.execute_projected(
-                        &mut authority,
-                        approval.as_deref(),
-                        &mut attempt,
-                        started_at_millis,
-                        &mut *now,
-                        projections,
-                    )
-                }
-                ApprovalPlan::Cancel => {
-                    coordinator.cancel_prepared_attempt(&mut authority, &mut attempt)
+            let (mut authority, mut attempt, pre_approval) = match self.open_pass(
+                preparer,
+                coordinator,
+                inputs,
+                trust,
+                retried,
+                projections,
+                audits,
+                now,
+            )? {
+                OpenedPass::Recorded {
+                    authority,
+                    attempt,
+                    pre_approval,
+                } => (authority, attempt, pre_approval),
+                OpenedPass::Exhausted(outcome) => {
+                    // The delivered failed/attempt_limit terminal allocates no
+                    // new D-6/D-7, so its correlated audit record carries the
+                    // exact action without any attempt or approval identity
+                    // (ADR-0003 TC-08/TC-14).
+                    record_audit(
+                        audits,
+                        &ToolAuditRecord::budget_exhausted(&denial_context(inputs), now()),
+                    );
+                    return Ok(outcome);
                 }
             };
-            let outcome = match executed {
-                Err(pending) => return Err(ToolCallError::Reconciliation(pending)),
-                Ok(outcome) => outcome,
-            };
+            let plan = self.resolve_plan(
+                pre_approval,
+                trust,
+                inputs.thread_id,
+                decision_for,
+                projections,
+                audits,
+                now,
+            )?;
+            let outcome = dispatch(
+                coordinator,
+                &mut authority,
+                &mut attempt,
+                plan,
+                now,
+                projections,
+                audits,
+            )?;
             // TC-06: the terminal-result projection is a durable view of the
             // committed D-7 terminal; a failed append suppresses publication
             // but changes no canonical state, and `emit` reports the failure
             // as a structured diagnostic.
-            emit(
-                projections,
-                ToolProjection::ToolResult {
-                    attempt_id: attempt.binding().attempt_id(),
-                    status: outcome_status(&outcome),
-                    code: outcome_failure_code(&outcome),
-                    effect_state: outcome.effect_state(),
-                    output_bytes: outcome_output_bytes(&outcome),
-                    output_digest: outcome_output_digest(&outcome),
-                    version: attempt_version(outcome_status(&outcome)),
-                },
+            emit_tool_result(&attempt, &outcome, projections);
+            // Every committed D-7 execution terminal emits one correlated,
+            // bounded audit record at its own observation-time clock read; a
+            // failed emission never changes the committed terminal (TC-14).
+            record_audit(
+                audits,
+                &ToolAuditRecord::execution_terminal(attempt.binding(), &outcome, now()),
             );
             // Retry only on a committed executor pre-effect failure (TC-08); a
             // cancellation or success never retries even when it reports NotStarted.
@@ -299,6 +269,132 @@ impl<C, A> ToolExecutionDriver<C, A> {
                 continue;
             }
             return Ok(outcome);
+        }
+    }
+
+    /// Opens one execution pass: authorize policy, pre-validate C-7, prepare
+    /// one fresh D-7, durably record it, and append its requested D-6 view
+    /// only after the canonical row exists (TC-05/TC-06/TC-12).
+    ///
+    /// A retry that already exhausted the Turn's 16-slot budget returns
+    /// [`OpenedPass::Exhausted`] with the committed `failed/attempt_limit`
+    /// terminal. Every default-deny policy terminal emits one correlated,
+    /// content-minimized audit record at its observation-time clock read
+    /// before the typed denial propagates (TC-02/TC-14).
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "each parameter is one independently validated pass-opening input plus the audit, projection, and clock sinks"
+    )]
+    fn open_pass<E, L, Co>(
+        &mut self,
+        preparer: &mut ExecutionPreparer<L>,
+        coordinator: &mut ExecutionCoordinator<E, L, Co>,
+        inputs: &ToolCallInputs,
+        trust: &TrustContext,
+        retried: bool,
+        projections: &mut dyn ToolProjectionSink,
+        audits: &mut dyn ToolAuditTrail,
+        now: &mut dyn FnMut() -> u64,
+    ) -> Result<OpenedPass, ToolCallError>
+    where
+        C: ToolPolicyConfiguration,
+        A: ApprovalAuthorizer,
+        E: IsolatedExecutor,
+        L: LeaseValidator,
+        Co: AttemptCommitter + DurableAttemptTransitions,
+    {
+        let (mut authority, mut attempt, pre_approval) =
+            match self.authorize_and_prepare(preparer, inputs, trust, now) {
+                Ok((authority, attempt, pre_approval)) => (authority, attempt, pre_approval),
+                Err(ToolCallError::Preparation(ExecutionPreparationError::Rejected(
+                    ExecutionError::AttemptLimit,
+                ))) if retried => {
+                    return Ok(OpenedPass::Exhausted(exhausted_retry_attempt_limit(
+                        inputs,
+                        projections,
+                    )));
+                }
+                Err(error) => {
+                    // A retry-time preparation failure (e.g., the owner was fenced)
+                    // must not deliver the committed NotStarted terminal to the
+                    // model; reconciliation owns the next transition.
+                    if let ToolCallError::Denied(code) = error {
+                        record_audit(
+                            audits,
+                            &ToolAuditRecord::policy_denial(&denial_context(inputs), code, now()),
+                        );
+                    }
+                    return Err(error);
+                }
+            };
+        // TC-12: the canonical prepared D-7 exists durably before any
+        // approval resolution, dispatch, or cancellation binds to it, so
+        // every later conditional transition targets the durable row and
+        // a failed durable preparation fails the call closed.
+        if let Err(pending) =
+            coordinator.record_prepared_attempt(&mut authority, &mut attempt, now())
+        {
+            if retried
+                && matches!(
+                    &pending,
+                    ExecutionPending::DispatchRejected {
+                        code: ExecutionFailure::AttemptLimit
+                    }
+                )
+            {
+                return Ok(OpenedPass::Exhausted(exhausted_retry_attempt_limit(
+                    inputs,
+                    projections,
+                )));
+            }
+            return Err(map_preparation_record_error(pending));
+        }
+        if let PreApproval::Validated(request) = &pre_approval {
+            emit_requested_approval(request, projections);
+        }
+        Ok(OpenedPass::Recorded {
+            authority,
+            attempt: Box::new(attempt),
+            pre_approval,
+        })
+    }
+
+    /// Resolves one pass's approval plan: a validated D-6 is resolved — or
+    /// terminalized as expired — with its correlated audit record and D-3
+    /// projection, an already-expired window cancels the prepared D-7, and
+    /// an approval-free action dispatches directly.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "each parameter is one independently validated approval input plus the audit and projection sinks"
+    )]
+    fn resolve_plan(
+        &mut self,
+        pre_approval: PreApproval,
+        trust: &TrustContext,
+        thread_id: ThreadId,
+        decision_for: &mut dyn FnMut(&ApprovalRequest) -> (ApprovalDecision, u64),
+        projections: &mut dyn ToolProjectionSink,
+        audits: &mut dyn ToolAuditTrail,
+        now: &mut dyn FnMut() -> u64,
+    ) -> Result<ApprovalPlan, ToolCallError>
+    where
+        A: ApprovalAuthorizer,
+    {
+        match pre_approval {
+            PreApproval::NotRequired => Ok(ApprovalPlan::Dispatch {
+                approval: None,
+                earliest_start_millis: now(),
+            }),
+            PreApproval::AlreadyExpired => Ok(ApprovalPlan::Cancel),
+            PreApproval::Validated(request) => self.resolve_validated_approval(
+                *request,
+                trust,
+                thread_id,
+                decision_for,
+                projections,
+                audits,
+                now,
+            ),
         }
     }
 
@@ -381,7 +477,12 @@ impl<C, A> ToolExecutionDriver<C, A> {
     ///
     /// The D-7 is prepared before the decision is applied, so a declined,
     /// cancelled, or expired D-6 returns [`ApprovalPlan::Cancel`] to close the
-    /// prepared D-7.
+    /// prepared D-7. Each D-6 terminal audit record is stamped by one
+    /// controlled-clock read at its emission (TC-14).
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "each parameter is one independently validated approval input plus the audit, projection, and clock sinks"
+    )]
     fn resolve_validated_approval(
         &mut self,
         mut request: ApprovalRequest,
@@ -389,6 +490,8 @@ impl<C, A> ToolExecutionDriver<C, A> {
         thread_id: ThreadId,
         decision_for: &mut dyn FnMut(&ApprovalRequest) -> (ApprovalDecision, u64),
         projections: &mut dyn ToolProjectionSink,
+        audits: &mut dyn ToolAuditTrail,
+        now: &mut dyn FnMut() -> u64,
     ) -> Result<ApprovalPlan, ToolCallError>
     where
         A: ApprovalAuthorizer,
@@ -399,8 +502,20 @@ impl<C, A> ToolExecutionDriver<C, A> {
             .resolve(&mut request, trust, thread_id, decision, decided_at_millis)
         {
             Ok(_) => {
-                // TC-06: the resolved D-6 terminal is projected as a durable
-                // view at its canonical version.
+                // TC-06/TC-14: the resolved D-6 terminal is projected as a
+                // durable view at its canonical version and emits its
+                // correlated audit record.
+                record_audit(
+                    audits,
+                    &ToolAuditRecord::approval_resolution(
+                        request.binding(),
+                        request.approval_id(),
+                        request.status(),
+                        request.decision(),
+                        request.version(),
+                        now(),
+                    ),
+                );
                 emit(
                     projections,
                     ToolProjection::ApprovalStatus {
@@ -426,6 +541,19 @@ impl<C, A> ToolExecutionDriver<C, A> {
             // prepared D-7 is cancelled, so consumers never observe `requested`
             // followed only by a cancelled tool result.
             Err(ApprovalError::Expired) => {
+                // The expired D-6 terminal is a canonical resolution and is
+                // audited like every other D-6 terminal (TC-14).
+                record_audit(
+                    audits,
+                    &ToolAuditRecord::approval_resolution(
+                        request.binding(),
+                        request.approval_id(),
+                        request.status(),
+                        request.decision(),
+                        request.version(),
+                        now(),
+                    ),
+                );
                 emit(
                     projections,
                     ToolProjection::ApprovalStatus {
@@ -443,18 +571,65 @@ impl<C, A> ToolExecutionDriver<C, A> {
     }
 }
 
-/// Appends and publishes the requested canonical D-6 projection.
-fn emit_requested_approval(request: &ApprovalRequest, projections: &mut dyn ToolProjectionSink) {
-    emit(
-        projections,
-        ToolProjection::ApprovalStatus {
-            approval_id: request.approval_id(),
-            attempt_id: request.binding().attempt_id(),
-            status: request.status(),
-            decision: request.decision(),
-            version: request.version(),
-        },
-    );
+/// Executes one resolved approval plan through the coordinator.
+///
+/// The dispatch start time never precedes the verified approval decision,
+/// even when the clock reads earlier. The concurrent durable-claim loser
+/// closed its own attempt cancelled before its rejection: that committed
+/// D-7 terminal emits its correlated audit record — stamped by its own
+/// clock read — before the typed reconciliation error propagates (TC-14).
+fn dispatch<E, L, Co>(
+    coordinator: &mut ExecutionCoordinator<E, L, Co>,
+    authority: &mut TurnExecutionAuthority,
+    attempt: &mut ExecutionAttempt,
+    plan: ApprovalPlan,
+    now: &mut dyn FnMut() -> u64,
+    projections: &mut dyn ToolProjectionSink,
+    audits: &mut dyn ToolAuditTrail,
+) -> Result<ToolExecutionOutcome, ToolCallError>
+where
+    E: IsolatedExecutor,
+    L: LeaseValidator,
+    Co: AttemptCommitter + DurableAttemptTransitions,
+{
+    let executed = match plan {
+        ApprovalPlan::Dispatch {
+            approval,
+            earliest_start_millis,
+        } => {
+            let started_at_millis = now().max(earliest_start_millis);
+            coordinator.execute_projected(
+                authority,
+                approval.as_deref(),
+                attempt,
+                started_at_millis,
+                &mut *now,
+                projections,
+            )
+        }
+        ApprovalPlan::Cancel => coordinator.cancel_prepared_attempt(authority, attempt),
+    };
+    match executed {
+        Err(
+            pending @ ExecutionPending::DispatchRejected {
+                code: ExecutionFailure::ConcurrentAttempt,
+            },
+        ) => {
+            record_audit(
+                audits,
+                &ToolAuditRecord::execution_terminal(
+                    attempt.binding(),
+                    &ToolExecutionOutcome::Cancelled {
+                        effect_state: EffectState::NotStarted,
+                    },
+                    now(),
+                ),
+            );
+            Err(ToolCallError::Reconciliation(pending))
+        }
+        Err(pending) => Err(ToolCallError::Reconciliation(pending)),
+        Ok(outcome) => Ok(outcome),
+    }
 }
 
 /// Produces the terminal model result for a retry rejected by the exact attempt cap.
@@ -494,52 +669,19 @@ fn map_preparation_record_error(pending: ExecutionPending) -> ToolCallError {
     }
 }
 
-/// Maps one committed outcome onto its canonical D-7 terminal status.
-fn outcome_status(outcome: &ToolExecutionOutcome) -> crate::domain::execution::ExecutionStatus {
-    match outcome {
-        ToolExecutionOutcome::Succeeded { .. } => {
-            crate::domain::execution::ExecutionStatus::Succeeded
-        }
-        ToolExecutionOutcome::Failed { .. } => crate::domain::execution::ExecutionStatus::Failed,
-        ToolExecutionOutcome::TimedOut { .. } => {
-            crate::domain::execution::ExecutionStatus::TimedOut
-        }
-        ToolExecutionOutcome::Cancelled { .. } => {
-            crate::domain::execution::ExecutionStatus::Cancelled
-        }
-    }
-}
-
-/// Returns the serialized size of a committed successful outcome's output.
-fn outcome_output_bytes(outcome: &ToolExecutionOutcome) -> u64 {
-    match outcome {
-        ToolExecutionOutcome::Succeeded { output, .. } => output.len() as u64,
-        ToolExecutionOutcome::Failed { .. }
-        | ToolExecutionOutcome::TimedOut { .. }
-        | ToolExecutionOutcome::Cancelled { .. } => 0,
-    }
-}
-
-/// Returns the durable continuation-binding digest for a successful output.
-fn outcome_output_digest(outcome: &ToolExecutionOutcome) -> Option<String> {
-    match outcome {
-        ToolExecutionOutcome::Succeeded { output, .. } => {
-            Some(crate::application::output_digest(output))
-        }
-        ToolExecutionOutcome::Failed { .. }
-        | ToolExecutionOutcome::TimedOut { .. }
-        | ToolExecutionOutcome::Cancelled { .. } => None,
-    }
-}
-
-/// Returns the stable failure code of a committed failed outcome.
-fn outcome_failure_code(outcome: &ToolExecutionOutcome) -> Option<ExecutionFailure> {
-    match outcome {
-        ToolExecutionOutcome::Failed { code, .. } => Some(*code),
-        ToolExecutionOutcome::Succeeded { .. }
-        | ToolExecutionOutcome::TimedOut { .. }
-        | ToolExecutionOutcome::Cancelled { .. } => None,
-    }
+/// One durably opened execution pass, or the committed terminal that ends the
+/// call before approval resolution or dispatch.
+enum OpenedPass {
+    /// The prepared D-7 is durably recorded and its requested D-6 view is
+    /// appended.
+    Recorded {
+        authority: TurnExecutionAuthority,
+        attempt: Box<ExecutionAttempt>,
+        pre_approval: PreApproval,
+    },
+    /// The retry already exhausted the Turn's 16-slot budget; the caller
+    /// returns this committed terminal.
+    Exhausted(ToolExecutionOutcome),
 }
 
 /// C-7 pre-validation outcome for one sealed binding, decided before any D-7
@@ -564,4 +706,35 @@ enum ApprovalPlan {
         earliest_start_millis: u64,
     },
     Cancel,
+}
+
+/// Builds the pre-attempt audit context for one denied call from its inputs.
+///
+/// The exact-action correlation digest is attempt-independent by design, so a
+/// throwaway D-7 identity yields the same pre-attempt digest the sealed
+/// binding would carry; an unbindable denial keeps the context without it.
+fn denial_context(inputs: &ToolCallInputs) -> PolicyDenialContext {
+    let mut context = PolicyDenialContext::new(
+        inputs.tenant_id.clone(),
+        inputs.thread_id,
+        inputs.turn_id,
+        inputs.lease_generation,
+    )
+    .with_descriptor(
+        inputs.action.descriptor_id(),
+        inputs.action.descriptor_version(),
+    )
+    .with_profile(inputs.profile_id.clone(), inputs.profile_version.clone());
+    if let Ok(binding) = ExactActionBinding::new(
+        inputs.tenant_id.clone(),
+        inputs.thread_id,
+        inputs.turn_id,
+        inputs.lease_generation,
+        (inputs.profile_id.clone(), inputs.profile_version.clone()),
+        AttemptId::new(),
+        inputs.action.clone(),
+    ) {
+        context = context.with_action_digest(binding.pre_attempt_audit_digest());
+    }
+    context
 }

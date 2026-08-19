@@ -567,8 +567,8 @@ fn production_io_and_background_work_are_bounded() {
     assert!(runtime.contains("async fn database_setup_attempt"));
     assert_eq!(
         runtime.matches("database_deadline,").count(),
-        7,
-        "all seven PostgreSQL startup operations (pool connect plus the six idempotent migrations) must use the shared bounded helper"
+        8,
+        "all eight PostgreSQL startup operations (pool connect plus the seven idempotent migrations) must use the shared bounded helper"
     );
 }
 
