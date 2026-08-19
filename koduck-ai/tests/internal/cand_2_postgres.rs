@@ -886,3 +886,224 @@ fn migration_0003_backfills_the_thread_owner_and_fails_on_orphans() {
         );
     });
 }
+
+#[test]
+fn startup_migrations_wait_for_the_cross_replica_advisory_lock() {
+    // Concurrently starting replicas must serialize their startup migrations:
+    // while another session holds the advisory lock, the bounded migration
+    // sequence waits rather than racing the PostgreSQL catalog, and completes
+    // once the lock is released (ADR-0001/ADR-0003 startup contract).
+    let Some(harness) = harness() else {
+        return;
+    };
+    let key = koduck_ai::runtime::STARTUP_MIGRATION_LOCK_KEY;
+    let mut holder = harness
+        .runtime
+        .block_on(async { harness.pool.acquire().await })
+        .expect("dedicated lock connection");
+    harness
+        .runtime
+        .block_on(async {
+            sqlx::query("SELECT pg_advisory_lock($1)")
+                .bind(key)
+                .execute(&mut *holder)
+                .await
+        })
+        .expect("test holds the advisory lock");
+
+    let contested = harness.runtime.block_on(async {
+        tokio::time::timeout(
+            std::time::Duration::from_millis(300),
+            koduck_ai::runtime::apply_startup_migrations(
+                &harness.pool,
+                std::time::Duration::from_secs(2),
+            ),
+        )
+        .await
+    });
+    assert!(
+        contested.is_err(),
+        "the startup migration sequence must wait for the cross-replica advisory lock"
+    );
+
+    harness
+        .runtime
+        .block_on(async {
+            sqlx::query("SELECT pg_advisory_unlock($1)")
+                .bind(key)
+                .execute(&mut *holder)
+                .await
+        })
+        .expect("test releases the advisory lock");
+    let uncontested = harness.runtime.block_on(async {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            koduck_ai::runtime::apply_startup_migrations(
+                &harness.pool,
+                std::time::Duration::from_secs(2),
+            ),
+        )
+        .await
+    });
+    assert!(
+        matches!(uncontested, Ok(Ok(()))),
+        "the sequence completes after the lock is released"
+    );
+    // Return the dedicated connection to the pool inside a runtime context so
+    // its pool-aware Drop does not panic outside Tokio.
+    harness.runtime.block_on(async {
+        drop(holder);
+    });
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one durable leg seeding every persisted correlation field before the reconciliation and audit assertions"
+)]
+fn lease_expiry_recovery_emits_the_correlated_attempt_audit_records() {
+    // Expiry recovery closing a prepared or running D-7 must also emit its
+    // bounded correlated audit record in the same transaction — the crash
+    // path needing operator evidence cannot be the one path without it
+    // (ADR-0003 TC-14).
+    let Some(harness) = harness() else {
+        return;
+    };
+    let tenant = TenantId::new("recovery-audit").expect("valid tenant");
+    let thread = koduck_ai::domain::ThreadId::new();
+    let turn = koduck_ai::domain::TurnId::new();
+    let generation = koduck_ai::domain::LeaseGeneration::initial();
+    let parameters =
+        koduck_ai::adapters::tool::parse_action_parameters("{}").expect("valid parameters");
+    let action = koduck_ai::domain::tool::Action::new(
+        "fixture.tool",
+        "v1",
+        koduck_ai::domain::tool::Effect::ExternalWrite,
+        "fixture-target",
+        parameters,
+    )
+    .expect("valid action");
+    let binding = koduck_ai::domain::execution::ExactActionBinding::new(
+        tenant.clone(),
+        thread,
+        turn,
+        generation,
+        ("profile-default", "v1"),
+        koduck_ai::domain::execution::AttemptId::new(),
+        action,
+    )
+    .expect("valid binding");
+    let digest_hex = {
+        let mut text = String::new();
+        for byte in binding.action_digest().as_bytes() {
+            use std::fmt::Write as _;
+            let _ = write!(text, "{byte:02x}");
+        }
+        text
+    };
+    harness.runtime.block_on(async {
+        sqlx::query(
+            "INSERT INTO threads (tenant_id, subject_id, thread_id) \
+             VALUES ($1, 'recovery-audit', $2) ON CONFLICT DO NOTHING",
+        )
+        .bind(tenant.as_str())
+        .bind(thread.as_uuid())
+        .execute(&harness.pool)
+        .await
+        .expect("fixture thread");
+        sqlx::query(
+            "INSERT INTO turns (tenant_id, thread_id, turn_id, status, next_sequence) \
+             VALUES ($1, $2, $3, 'started', 1) ON CONFLICT DO NOTHING",
+        )
+        .bind(tenant.as_str())
+        .bind(thread.as_uuid())
+        .bind(turn.as_uuid())
+        .execute(&harness.pool)
+        .await
+        .expect("fixture turn");
+        sqlx::query(
+            "INSERT INTO turn_leases \
+             (tenant_id, thread_id, turn_id, generation, renewed_at, expires_at, fenced) \
+             VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP - INTERVAL '1 hour', \
+                     CURRENT_TIMESTAMP - INTERVAL '55 minutes', FALSE) \
+             ON CONFLICT DO NOTHING",
+        )
+        .bind(tenant.as_str())
+        .bind(thread.as_uuid())
+        .bind(turn.as_uuid())
+        .bind(1_i64)
+        .execute(&harness.pool)
+        .await
+        .expect("fixture expired lease");
+        sqlx::query(
+            "INSERT INTO tool_execution_attempts \
+             (tenant_id, attempt_id, thread_id, turn_id, lease_generation, \
+              descriptor_id, descriptor_version, effect, action_digest, \
+              profile_id, profile_version, prepared_at_millis, started_at_millis, \
+              status, version) \
+             VALUES ($1, $5, $2, $3, $4, 'fixture.tool', 'v1', 'external_write', $6, \
+                     'profile-default', 'v1', 1, 2, 'running', 2)",
+        )
+        .bind(tenant.as_str())
+        .bind(thread.as_uuid())
+        .bind(turn.as_uuid())
+        .bind(1_i64)
+        .bind(binding.attempt_id().as_uuid())
+        .bind(&digest_hex)
+        .execute(&harness.pool)
+        .await
+        .expect("fixture running attempt");
+    });
+    let executor = koduck_ai::adapters::history::postgres::SqlxPostgresExecutor::new(
+        harness.pool.clone(),
+        harness.runtime.handle().clone(),
+    );
+    let key = koduck_ai::adapters::history::postgres::LeaseKey::new(
+        tenant.clone(),
+        thread,
+        turn,
+        generation,
+    );
+    let mut history = koduck_ai::adapters::history::postgres::PostgresTurnHistory::new(executor);
+    let outcome =
+        history.reconcile_expired(&key, koduck_ai::adapters::history::postgres::unix_time_ms());
+    assert!(
+        matches!(
+            outcome,
+            Ok(koduck_ai::adapters::history::postgres::ReconcileOutcome::Cancelled)
+        ),
+        "the expired Turn cancels, found {outcome:?}"
+    );
+
+    let audits: Vec<String> = harness
+        .runtime
+        .block_on(async {
+            sqlx::query_scalar(
+                "SELECT record FROM tool_audit_records \
+                 WHERE tenant_id = $1 AND turn_id = $2",
+            )
+            .bind(tenant.as_str())
+            .bind(turn.as_uuid())
+            .fetch_all(&harness.pool)
+            .await
+        })
+        .expect("audit rows are readable");
+    assert_eq!(
+        audits.len(),
+        1,
+        "one correlated audit row per closed attempt"
+    );
+    let record = &audits[0];
+    assert!(
+        record.contains(&binding.attempt_id().as_uuid().to_string()),
+        "record correlates the closed attempt"
+    );
+    assert!(
+        record.contains("timed_out"),
+        "record carries the timed_out terminal"
+    );
+    assert!(
+        record.contains(&digest_hex),
+        "record carries the action digest"
+    );
+}

@@ -723,6 +723,78 @@ fn terminal_race_notifies_the_executor_after_interrupt_returns_already_terminal(
     );
 }
 
+/// Executor double whose configured call leaves a durable live D-7 behind and
+/// surfaces the canonical reconciliation requirement.
+struct ReconciliationToolExecutor;
+
+impl ToolCallExecutor for ReconciliationToolExecutor {
+    fn execute_tool_call(
+        &mut self,
+        _call: koduck_ai::application::ModelToolCall,
+        _context: &ToolCallTurnContext,
+        _trust: &TrustContext,
+        projections: &mut dyn ToolProjectionSink,
+    ) -> Result<ModelToolResult, ToolCallError> {
+        let attempt_id = koduck_ai::domain::execution::AttemptId::new();
+        emit_projection(
+            projections,
+            &ToolProjection::ToolCall {
+                descriptor_id: "fixture.tool".to_owned(),
+                descriptor_version: "v1".to_owned(),
+                target: "fixture-target".to_owned(),
+                attempt_id,
+                status: koduck_ai::domain::execution::ExecutionStatus::Running,
+                version: 2,
+            },
+        );
+        Err(ToolCallError::Reconciliation(
+            koduck_ai::application::ExecutionPending::ReconciliationRequired {
+                code: koduck_ai::application::ExecutionFailure::DurabilityUnavailable,
+                effect_state: koduck_ai::application::EffectState::Unknown,
+            },
+        ))
+    }
+}
+
+#[test]
+fn a_reconciliation_tool_failure_keeps_the_turn_open_for_d7_reconciliation() {
+    // The C-5 boundary intentionally retains a live D-7 when its canonical
+    // terminal cannot be decided, so the runner must not immediately commit a
+    // failed Turn terminal: a terminal Turn is invisible to expiry recovery
+    // and interruption, stranding the D-7. The runner surfaces a typed
+    // durability failure and leaves the Turn non-terminal so reconciliation
+    // closes both (ADR-0003 TC-10/TC-12).
+    let provider = ScriptedProvider::scripted(vec![
+        vec![tool_call_event("fixture.tool")],
+        vec![ProviderEvent::Completed],
+    ]);
+    let history = MemoryHistory::default();
+    let mut runner =
+        TurnRunner::new(provider, history.clone()).with_tool_executor(ReconciliationToolExecutor);
+
+    let result = runner.execute(command());
+
+    assert!(
+        matches!(
+            result,
+            Err(koduck_ai::application::TurnRunError::Durability(_))
+        ),
+        "a live-D-7 reconciliation requirement surfaces as a durability failure, found {result:?}"
+    );
+    let recorded = history.state.lock().expect("history lock");
+    let items = recorded
+        .items
+        .values()
+        .next()
+        .expect("the accepted turn exists");
+    let kinds = payload_kinds(items);
+    assert_eq!(
+        kinds,
+        vec!["user_message", "tool_call"],
+        "no Turn terminal is committed while the D-7 awaits canonical reconciliation, found {kinds:?}"
+    );
+}
+
 #[test]
 fn a_completed_turn_notifies_the_executor_of_its_durable_terminal() {
     let provider = ScriptedProvider::scripted(vec![

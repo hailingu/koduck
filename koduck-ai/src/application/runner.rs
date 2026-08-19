@@ -10,6 +10,7 @@ use super::ports::{
     NewItem, NoToolExecution, ProviderEvent, ToolCallExecutor, ToolCallTurnContext, ToolRound,
     TurnCommand, TurnHistory, TurnResult, TurnRunError, TurnStreamEvent,
 };
+use super::tool_execution::ToolCallError;
 use super::tool_projection::TurnProjectionSink;
 
 pub(super) mod failure;
@@ -656,6 +657,20 @@ fn handle_tool_call<H: TurnHistory, T: ToolCallExecutor>(
     }
     let result = match result {
         Ok(result) => result,
+        Err(ToolCallError::Reconciliation(_)) => {
+            // The C-5 boundary intentionally retains a live D-7 when its
+            // canonical terminal cannot be decided. Committing a failed Turn
+            // terminal here would strand that D-7: expiry recovery only
+            // reconciles non-terminal Turns and interruption rejects a
+            // terminal Turn. Surface the durability failure and keep the
+            // Turn open so reconciliation closes both (ADR-0003
+            // TC-10/TC-12).
+            return Err(history_failure(
+                HistoryError::Unavailable,
+                true,
+                &state.published,
+            ));
+        }
         Err(error) => {
             append_provider_terminal(
                 history,

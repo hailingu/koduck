@@ -187,56 +187,7 @@ pub async fn run(config: RuntimeConfig) -> Result<(), RuntimeError> {
         PgPoolOptions::new().connect(config.database_url()),
     )
     .await?;
-    database_setup_attempt(
-        database_deadline,
-        sqlx::raw_sql(include_str!("../../migrations/0001_cand_1_history.sql")).execute(&pool),
-    )
-    .await?;
-    database_setup_attempt(
-        database_deadline,
-        sqlx::raw_sql(include_str!(
-            "../../migrations/0002_cand_2_policy_execution.sql"
-        ))
-        .execute(&pool),
-    )
-    .await?;
-    database_setup_attempt(
-        database_deadline,
-        sqlx::raw_sql(include_str!(
-            "../../migrations/0003_cand_2_requester_ownership.sql"
-        ))
-        .execute(&pool),
-    )
-    .await?;
-    database_setup_attempt(
-        database_deadline,
-        sqlx::raw_sql(include_str!(
-            "../../migrations/0004_cand_2_tool_projections.sql"
-        ))
-        .execute(&pool),
-    )
-    .await?;
-    database_setup_attempt(
-        database_deadline,
-        sqlx::raw_sql(include_str!(
-            "../../migrations/0005_cand_2_execution_attempts.sql"
-        ))
-        .execute(&pool),
-    )
-    .await?;
-    database_setup_attempt(
-        database_deadline,
-        sqlx::raw_sql(include_str!(
-            "../../migrations/0006_cand_2_interrupt_barrier.sql"
-        ))
-        .execute(&pool),
-    )
-    .await?;
-    database_setup_attempt(
-        database_deadline,
-        sqlx::raw_sql(include_str!("../../migrations/0007_cand_2_tool_audit.sql")).execute(&pool),
-    )
-    .await?;
+    apply_startup_migrations(&pool, database_deadline).await?;
     let runtime = tokio::runtime::Handle::current();
     // Production canonical D-6 assembly: the authenticated decision route
     // drives the conditional `SQLx` transitions on the same Tokio runtime.
@@ -290,6 +241,48 @@ async fn database_setup_attempt<T>(
         .await
         .map_err(|_| RuntimeError::DatabaseTimeout)?
         .map_err(RuntimeError::Database)
+}
+
+/// Cross-replica advisory-lock key for the startup migration sequence.
+pub(crate) const STARTUP_MIGRATION_LOCK_KEY: i64 = 0x6B6F_6475_636B_3031;
+
+/// Applies the complete idempotent startup migration sequence serialized
+/// across concurrently starting replicas.
+///
+/// Concurrent `CREATE TABLE IF NOT EXISTS` statements race in the `PostgreSQL`
+/// catalog, so the sequence runs inside one transaction that first takes the
+/// transaction-scoped advisory lock: a second replica waits for the first to
+/// finish — and sees the finished schema — instead of racing the catalog. The
+/// whole serialized sequence is bounded by the approved startup deadline.
+pub(crate) async fn apply_startup_migrations(
+    pool: &sqlx::PgPool,
+    deadline: Duration,
+) -> Result<(), RuntimeError> {
+    tokio::time::timeout(deadline, async {
+        let mut transaction = pool.begin().await.map_err(RuntimeError::Database)?;
+        sqlx::query("SELECT pg_advisory_xact_lock($1)")
+            .bind(STARTUP_MIGRATION_LOCK_KEY)
+            .execute(&mut *transaction)
+            .await
+            .map_err(RuntimeError::Database)?;
+        for migration in [
+            include_str!("../../migrations/0001_cand_1_history.sql"),
+            include_str!("../../migrations/0002_cand_2_policy_execution.sql"),
+            include_str!("../../migrations/0003_cand_2_requester_ownership.sql"),
+            include_str!("../../migrations/0004_cand_2_tool_projections.sql"),
+            include_str!("../../migrations/0005_cand_2_execution_attempts.sql"),
+            include_str!("../../migrations/0006_cand_2_interrupt_barrier.sql"),
+            include_str!("../../migrations/0007_cand_2_tool_audit.sql"),
+        ] {
+            sqlx::raw_sql(migration)
+                .execute(&mut *transaction)
+                .await
+                .map_err(RuntimeError::Database)?;
+        }
+        transaction.commit().await.map_err(RuntimeError::Database)
+    })
+    .await
+    .map_err(|_| RuntimeError::DatabaseTimeout)?
 }
 
 async fn handle_request<S>(

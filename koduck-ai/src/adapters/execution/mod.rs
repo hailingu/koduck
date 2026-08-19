@@ -3,6 +3,7 @@
 //! Production executor adapter kept fail-closed until a capability is approved.
 
 pub mod attempts;
+mod fenced_terminal;
 pub mod lease;
 pub mod postgres;
 mod prepared_close;

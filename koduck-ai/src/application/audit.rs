@@ -296,6 +296,83 @@ impl ToolAuditRecord {
         record
     }
 
+    /// Builds the correlated execution-terminal record for one D-7 closed by
+    /// lease-expiry recovery, from the closed attempt's persisted
+    /// correlation fields.
+    ///
+    /// The exact-action parameters are not persisted on the attempt row, so
+    /// the record carries the stored digest directly instead of recomputing
+    /// it; the bounded serialization and byte bound are unchanged
+    /// (ADR-0003 TC-14).
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "each parameter is one persisted correlation field of the closed attempt"
+    )]
+    #[must_use]
+    pub fn lease_recovery_terminal(
+        tenant_id: &crate::domain::TenantId,
+        thread_id: crate::domain::ThreadId,
+        turn_id: crate::domain::TurnId,
+        attempt_id: &crate::domain::execution::AttemptId,
+        descriptor_id: &str,
+        descriptor_version: &str,
+        profile_id: &str,
+        profile_version: &str,
+        action_digest_hex: &str,
+        lease_generation: u64,
+        outcome: &ToolExecutionOutcome,
+        at_millis: u64,
+    ) -> Self {
+        let mut record = Self {
+            tenant_id: bounded_tenant_id(tenant_id),
+            thread_id: thread_id.as_uuid().to_string(),
+            turn_id: turn_id.as_uuid().to_string(),
+            attempt_id: Some(attempt_id.as_uuid().to_string()),
+            policy_decision: "executed".to_owned(),
+            execution_status: Some(outcome_status(outcome).as_str().to_owned()),
+            effect_state: Some(outcome_effect_state(outcome).as_str().to_owned()),
+            descriptor_id: Some(descriptor_id.to_owned()),
+            descriptor_version: Some(descriptor_version.to_owned()),
+            profile_id: Some(profile_id.to_owned()),
+            profile_version: Some(profile_version.to_owned()),
+            action_digest: Some(action_digest_hex.to_owned()),
+            lease_generation,
+            at_millis,
+            ..Self::correlated_defaults()
+        };
+        if let ToolExecutionOutcome::Failed { code, .. } = outcome {
+            record.failure_code = Some(code.stable_code().to_owned());
+        }
+        record
+    }
+
+    /// Returns the neutral field defaults shared by manual constructors.
+    fn correlated_defaults() -> Self {
+        Self {
+            tenant_id: String::new(),
+            thread_id: String::new(),
+            turn_id: String::new(),
+            attempt_id: None,
+            approval_id: None,
+            descriptor_id: None,
+            descriptor_version: None,
+            profile_id: None,
+            profile_version: None,
+            action_digest: None,
+            lease_generation: 0,
+            policy_decision: String::new(),
+            approval_status: None,
+            approval_decision: None,
+            approval_version: None,
+            execution_status: None,
+            effect_state: None,
+            failure_code: None,
+            output_bytes: None,
+            output_digest: None,
+            at_millis: 0,
+        }
+    }
+
     /// Returns the shared exact-action correlation fields.
     fn correlated_base(binding: &ExactActionBinding, at_millis: u64) -> Self {
         let action = binding.action();

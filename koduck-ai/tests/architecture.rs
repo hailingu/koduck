@@ -600,10 +600,13 @@ fn production_io_and_background_work_are_bounded() {
         "provider requests must have connect, header, idle, and total deadlines"
     );
     assert!(runtime.contains("async fn database_setup_attempt"));
-    assert_eq!(
-        runtime.matches("database_deadline,").count(),
-        8,
-        "all eight PostgreSQL startup operations (pool connect plus the seven idempotent migrations) must use the shared bounded helper"
+    assert!(
+        runtime.contains("apply_startup_migrations(&pool, database_deadline)"),
+        "the serialized startup migration sequence must use the approved bounded deadline"
+    );
+    assert!(
+        runtime.contains("pg_advisory_xact_lock"),
+        "the complete startup migration sequence must serialize across replicas through a transaction-scoped advisory lock"
     );
 }
 

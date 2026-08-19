@@ -4,7 +4,7 @@
 
 use std::time::Duration;
 
-use sqlx::{PgConnection, PgPool, Row};
+use sqlx::{PgPool, Row};
 use tokio::runtime::Handle;
 use tokio_stream::StreamExt;
 use uuid::Uuid;
@@ -489,7 +489,7 @@ impl SqlxPostgresExecutor {
         // Every expiry terminal fences this lease permanently. Close any D-7
         // still owned by the Turn before doing so, because no later reconciler
         // can reach an active attempt beneath a terminal Turn.
-        close_active_attempts(&mut transaction, key, now_ms).await?;
+        super::attempt_recovery::close_active_attempts(&mut transaction, key, now_ms).await?;
         let (terminal, terminal_status, outcome) = if interrupt_requested || interrupting {
             (
                 TerminalOutcome::Interrupted,
@@ -588,36 +588,6 @@ impl SqlxPostgresExecutor {
             })
             .collect()
     }
-}
-
-async fn close_active_attempts(
-    connection: &mut PgConnection,
-    key: &LeaseKey,
-    terminal_at_millis: u64,
-) -> Result<(), HistoryError> {
-    sqlx::query(
-        "UPDATE tool_execution_attempts
-         SET status = CASE
-                 WHEN status = 'prepared' THEN 'cancelled'
-                 ELSE 'timed_out'
-             END,
-             effect_state = CASE
-                 WHEN status = 'prepared' THEN 'not_started'
-                 ELSE 'unknown'
-             END,
-             terminal_at_millis = $4,
-             version = 3
-         WHERE tenant_id = $1 AND thread_id = $2 AND turn_id = $3
-           AND status IN ('prepared', 'running')",
-    )
-    .bind(key.tenant_id.as_str())
-    .bind(key.thread_id.as_uuid())
-    .bind(key.turn_id.as_uuid())
-    .bind(milliseconds_i64(terminal_at_millis)?)
-    .execute(connection)
-    .await
-    .map_err(unavailable)?;
-    Ok(())
 }
 
 impl PostgresExecutor for SqlxPostgresExecutor {
@@ -786,10 +756,10 @@ fn sequence_i64(sequence: u64) -> Result<i64, HistoryError> {
     i64::try_from(sequence).map_err(|_| HistoryError::Unavailable)
 }
 
-fn milliseconds_i64(milliseconds: u64) -> Result<i64, HistoryError> {
+pub(super) fn milliseconds_i64(milliseconds: u64) -> Result<i64, HistoryError> {
     i64::try_from(milliseconds).map_err(|_| HistoryError::Unavailable)
 }
 
-fn unavailable(_error: sqlx::Error) -> HistoryError {
+pub(super) fn unavailable(_error: sqlx::Error) -> HistoryError {
     HistoryError::Unavailable
 }
