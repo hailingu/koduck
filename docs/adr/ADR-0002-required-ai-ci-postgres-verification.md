@@ -2,27 +2,27 @@
 
 ## Metadata [Required]
 
-- **Decision Status**: Accepted
-- **Implementation Status**: Verified
+- **Decision Status**: Proposed
+- **Implementation Status**: Not Started
 - **Date**: 2026-08-12
 - **Author**: @codex
 - **Decision Owner**: @linhai
 - **Required Approver**: @linhai
 - **Record Scope**: Project
-- **Approver [Conditionally Required — Decision Status is or has been `Accepted`]**: @linhai
-- **Approval Time [Conditionally Required — Decision Status is or has been `Accepted`]**: 2026-08-12T10:04:09+08:00
-- **Approval Evidence [Conditionally Required — Decision Status is or has been `Accepted`]**: Approve
-- **Rejector [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is `Accepted`
-- **Rejection Time [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is `Accepted`
-- **Rejection Evidence [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is `Accepted`
-- **Retired By [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — Decision Status is `Accepted`
-- **Retirement Time [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — Decision Status is `Accepted`
-- **Retirement Evidence [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — Decision Status is `Accepted`
-- **Retirement Reason [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — Decision Status is `Accepted`
-- **Blocked From [Conditionally Required — Implementation Status is `Blocked`]**: N/A — Implementation Status is `Verified`
-- **Blocker And Evidence [Conditionally Required — Implementation Status is `Blocked`]**: N/A — Implementation Status is `Verified`
-- **Blocker Owner [Conditionally Required — Implementation Status is `Blocked`]**: N/A — Implementation Status is `Verified`
-- **Blocker Exit Or Recheck Criterion [Conditionally Required — Implementation Status is `Blocked`]**: N/A — Implementation Status is `Verified`
+- **Approver [Conditionally Required — Decision Status is or has been `Accepted`]**: Pending — reapproval required
+- **Approval Time [Conditionally Required — Decision Status is or has been `Accepted`]**: Pending — reapproval required
+- **Approval Evidence [Conditionally Required — Decision Status is or has been `Accepted`]**: Pending — reapproval required
+- **Rejector [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is `Proposed`
+- **Rejection Time [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is `Proposed`
+- **Rejection Evidence [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is `Proposed`
+- **Retired By [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — Decision Status is `Proposed`
+- **Retirement Time [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — Decision Status is `Proposed`
+- **Retirement Evidence [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — Decision Status is `Proposed`
+- **Retirement Reason [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — Decision Status is `Proposed`
+- **Blocked From [Conditionally Required — Implementation Status is `Blocked`]**: N/A — Implementation Status is `Not Started`
+- **Blocker And Evidence [Conditionally Required — Implementation Status is `Blocked`]**: N/A — Implementation Status is `Not Started`
+- **Blocker Owner [Conditionally Required — Implementation Status is `Blocked`]**: N/A — Implementation Status is `Not Started`
+- **Blocker Exit Or Recheck Criterion [Conditionally Required — Implementation Status is `Blocked`]**: N/A — Implementation Status is `Not Started`
 - **Related [Optional]**: [Pull request 1](https://github.com/hailingu/koduck/pull/1)
 - **Architecture Source [Conditionally Required — product demand]**: N/A — this is repository verification governance, not product demand
 - **Supersedes [Conditionally Required — this ADR replaces another]**: None
@@ -67,7 +67,13 @@ In scope:
 
 - One GitHub Actions workflow for pull requests targeting `dev`, with checks
   named exactly `koduck-ai-format`,
-  `koduck-ai-clippy`, and `koduck-ai-test-postgres`.
+  `koduck-ai-clippy`, and `koduck-ai-test-postgres`; the format job executes
+  the routed governance commands (`npm test --prefix tools/governance-validator`
+  and `npm run validate --prefix tools/governance-validator`) before its exact
+  Rust format command, per the `AGENTS.md` Scope Routing row for
+  `.github/workflows/koduck-ai.yml`, so either a governance failure or a
+  formatting failure fails the already-required `koduck-ai-format` context
+  while the exact three protected context names stay unchanged.
 - Workspace package metadata and all three jobs use the repository owner's
   selected Rust 1.95 toolchain, which exceeds the Rust 1.94 minimum required
   by the committed `sqlx 0.9.0` dependency.
@@ -104,7 +110,10 @@ Out of scope:
 
 - The exact routed commands remain `cargo fmt --all --check`,
   `cargo clippy -p koduck-ai --all-targets --all-features -- -D warnings`, and
-  `cargo test -p koduck-ai --all-targets --all-features`.
+  `cargo test -p koduck-ai --all-targets --all-features`; the format job
+  additionally executes both routed governance commands before its Rust
+  format command, so governance validation is an accepted failure condition
+  of the protected `koduck-ai-format` context itself.
 - Root workspace package metadata and each workflow job must use Rust 1.95;
   any compiler-version change is approval-invalidating because it changes the
   supported build contract.
@@ -297,7 +306,7 @@ must remain within the standard guardrails or receive a decomposition review.
 
 | Check ID | Subtask | Binary acceptance point | Preconditions or input | Verification method | Exact expected result | Expected evidence | Status | Actual result and evidence |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| AC-1 | T-1 | The workflow maps the latest `dev` pull-request revision to exactly three bounded Koduck AI verification jobs. | Workflow exists and a pull-request revision is pushed. | Inspect workflow triggers, concurrency, job names, service declarations, and timeouts; query the revision's check runs. | Trigger includes pull requests targeting `dev`; the latest SHA has exactly `koduck-ai-format`, `koduck-ai-clippy`, and `koduck-ai-test-postgres`; each job has a finite timeout; no job uploads an artifact. | Workflow diff and check-run JSON for the exact SHA. | Pass | Run `31556012717` at SHA `18f1404a8edf6bb296960dadca8553e53e6b50e5` exposed exactly the three named finite jobs; each concluded `success`. |
+| AC-1 | T-1 | The workflow maps the latest `dev` pull-request revision to exactly three bounded Koduck AI verification jobs whose format job also gates the routed governance commands. | Workflow exists and a pull-request revision is pushed. | Inspect workflow triggers, concurrency, job names, service declarations, and timeouts; query the revision's check runs. | Trigger includes pull requests targeting `dev`; the latest SHA has exactly `koduck-ai-format`, `koduck-ai-clippy`, and `koduck-ai-test-postgres`; the format job executes both routed governance commands before its exact Rust format command; each job has a finite timeout; no job uploads an artifact. | Workflow diff and check-run JSON for the exact SHA. | Not Started | Run `31556012717` at SHA `18f1404a8edf6bb296960dadca8553e53e6b50e5` exposed exactly the three named finite jobs; each concluded `success`. |
 | AC-2 | T-1 | The workspace and all three CI jobs use a compiler compatible with the committed dependency graph, and format/strict-Clippy succeed without changing recovery outcomes. | Committed lock and Rust sources are checked out in CI. | Run the focused recovery-error test before and after the rewrite; inspect root `rust-version`, every workflow toolchain pin, and the `recover_append_failure` predicates; then inspect logs for `cargo fmt --all --check` and `cargo clippy -p koduck-ai --all-targets --all-features -- -D warnings`. | Root metadata and all three jobs specify Rust 1.95; the focused test proves non-`Unavailable` scheduling errors remain `TurnRunError::History`; the let-chain retains the `Unavailable`, valid `recovery_pending`, failed scheduling, and non-`Unavailable` propagation conditions; both commands exit 0 and their named checks conclude `success`. | Focused test RED/GREEN output, metadata/workflow/source diff, check-run conclusions, and command logs. | Pass | Mutation test failed when the scheduling error was discarded and passed with the let-chain; local Rust 1.95 format/Clippy passed, and run `31556012717` format plus Clippy jobs concluded `success`. |
 | AC-3 | T-1 | The test check executes the complete routed test command successfully. | PostgreSQL service is healthy and the test database URL is supplied from disposable workflow values. | Run `cargo test -p koduck-ai --all-targets --all-features` in the test job. | Command exits 0; the test check concludes `success`; no test reports skipped PostgreSQL verification when the CI database variable is present. | Test log, test count, and check conclusion. | Pass | Local routed suite passed 77 tests; run `31556012717` completed the exact Cargo test step and `koduck-ai-test-postgres` concluded `success`. |
 | AC-4 | T-2 | Production PostgreSQL behavior satisfies the selected datastore invariants. | Fresh CI PostgreSQL database; migration not previously applied. | Run the exact named PostgreSQL integration test through `SqlxPostgresExecutor`. | Migration succeeds; U+0000 round-trips; a different subject receives `NotFound`; concurrent terminal arbitration leaves one terminal with approved interrupt priority; stale generation receives `Fenced`; no rejected attempt adds an Item. | Named test output and SQL assertions from the CI run. | Pass | Named test passed locally against disposable PostgreSQL 18 and inside successful test job `93988472996` in run `31556012717`. |
@@ -312,7 +321,7 @@ precondition demonstrably does not apply.
 
 | ID | Item | Completion Criterion | Expected Evidence | Status | Actual Evidence |
 | --- | --- | --- | --- | --- | --- |
-| A-1 | ADR approved | An eligible non-author approver, approval time, and exact `Approval Evidence: Approve` are recorded. | ADR metadata | Complete | `@linhai` approved at `2026-08-12T10:04:09+08:00` with exact evidence `Approve`. |
+| A-1 | ADR approved | An eligible non-author approver, approval time, and exact `Approval Evidence: Approve` are recorded. | ADR metadata | Not Started | The 2026-08-12 approval by `@linhai` (10:04:09+08:00, `Approve`) was invalidated on 2026-08-20 by the revision adopting the expanded format-check contract and is retained in the Change Log; reapproval is required. |
 | A-2 | Complete task delivered | T-1 through T-3 are complete and AC-1 through AC-6 are Pass. | Implementation Plan, CI check runs, PostgreSQL test output, and Accepted OCR | Complete | T-1 through T-3 are complete; AC-1 through AC-6 pass. Workflow run `31568207691`, the production PostgreSQL integration result, and verified `docs/adr/ocr/archive/OCR-0002-dev-required-ai-checks.md` provide the required evidence. |
 | A-3 | Reciprocal ADD link synchronized, when applicable | Product-demand handoff does not apply. | Architecture Source metadata | N/A — this governance/CI task is not derived from product demand | Architecture Source records the specific N/A reason. |
 | A-4 | Requirement levels satisfied | Every required and triggered field is complete or has a valid specific N/A reason for the current stage. | Structured document review | Complete | Structured review found no unresolved placeholders or missing `Verified`-stage fields; pushed-revision, T-3, acceptance-check, risk, and closure evidence are complete. |
@@ -343,6 +352,7 @@ implementation completion. When triggered:
 
 | Date | Change | Author |
 | --- | --- | --- |
+| 2026-08-20 | Approval invalidated at 2026-08-20T00:54:39+08:00: the 2026-08-14 governance-command expansion of the required `koduck-ai-format` job was an approval-invalidating change to this record's accepted command contract that was never reapproved (automatic review `4974588517` on PR 3, P1). This revision formally adopts the expansion — Scope, Constraints, and AC-1 now define the format job as executing both routed governance commands before its exact Rust format command, keeping the exact three protected context names — and returns the record to `Proposed, Not Started` pending `@linhai`'s reapproval. Prior approval retained as history: Approver `@linhai`, Approval Time `2026-08-12T10:04:09+08:00`, Approval Evidence `Approve`, no Approval Context Revision. AC-1 returns to `Not Started` for post-reapproval execution; earlier evidence for the unchanged checks stays historical until re-executed after reapproval. | @zcode |
 | 2026-08-14 | Addressed the required-governance-check review without mutating branch protection: the existing required `koduck-ai-format` job now runs both routed governance commands before its exact Rust format command, so either governance failure makes an already-required context fail while the exact three protected context names remain unchanged. A focused architecture contract test observed RED before the workflow mapping and GREEN after it; governance validation, format, strict Clippy, and the full Rust suite pass locally. | @codex |
 | 2026-08-12 | Addressed automatic Review `4913685804`: required checks are repository-wide for `dev`, so the workflow must emit all three contexts for every pull request targeting `dev`, including changes outside the former path allowlist. Extended the existing architecture contract test, observed RED with the path filter, removed only that filter, and observed GREEN; format, strict Clippy, and all 91 tests passed locally. | @codex |
 | 2026-08-12 | Executed Accepted `docs/adr/ocr/archive/OCR-0002-dev-required-ai-checks.md` after `@linhai` approval. The `dev` protection API now reports strict required checks for exactly `koduck-ai-format`, `koduck-ai-clippy`, and `koduck-ai-test-postgres`, all bound to GitHub Actions App ID `15368`; unrelated protection is absent/disabled and rulesets remain empty. PR 1 was `CLEAN` / `MERGEABLE` with all three checks successful and zero current unresolved threads. Marked T-3 complete, AC-6 and the cancellation risk row pass, completion items complete, and ADR implementation `Verified`. | @codex |

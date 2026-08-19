@@ -92,6 +92,37 @@ test("rejects an Accepted OCR with a missing stage actual-result field", () => {
   assert.match(result.stderr, /field Actual result and stable evidence must be present/i);
 });
 
+test("does not count a Mermaid example nested inside an outer fence as the required diagram", () => {
+  const root = validRepository();
+  makeCurrentAdd(root);
+  rewrite(root, "docs/architecture/ADD-0001-example.md", (content) => content.replace(
+    "```mermaid\nflowchart LR\n  C1[\"C-1\"]\n```",
+    "````text\nAn embedded example:\n\n```mermaid\nflowchart LR\n  C1[\"C-1\"]\n```\n````",
+  ));
+
+  const result = run(root);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Architecture Design requires a Mermaid flowchart in this section/i);
+});
+
+test("does not syntax-check a Mermaid example nested inside an outer fence", () => {
+  const root = validRepository();
+  rewrite(root, "docs/architecture/ADD-0001-example.md", (content) => content.replace(
+    "## Control Flow Design [Conditionally Required — multi-step behavior]",
+    `## Control Flow Design [Conditionally Required — multi-step behavior]
+
+\`\`\`\`text
+\`\`\`mermaid
+garbage diagram syntax ((( [[
+\`\`\`
+\`\`\`\`
+`,
+  ));
+
+  const result = run(root);
+  assert.equal(result.status, 0, `nested example must not be syntax-checked: ${result.stderr}`);
+});
+
 test("rejects a Current ADD component list without a Markdown table separator", () => {
   const root = validRepository();
   makeCurrentAdd(root);

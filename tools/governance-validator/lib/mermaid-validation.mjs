@@ -6,7 +6,6 @@ export function createMermaidValidator(context) {
     mermaid,
     metadata,
     sectionContent,
-    stripFencedCode,
     tableFromContent,
   } = context;
 
@@ -17,11 +16,45 @@ export function createMermaidValidator(context) {
     return table.rows.map((row) => row[idColumn]).filter((id) => pattern.test(id));
   }
 
+  // Collects only real fenced Mermaid blocks: a fence opens on a triple-plus
+  // backtick or tilde run whose info string is exactly `mermaid` and closes
+  // only on a same-character run at least as long (CommonMark). A literal
+  // ```mermaid example nested inside an outer longer fence is content of that
+  // outer fence, never a diagram, so it can neither satisfy a diagram gate
+  // nor be syntax-checked.
+  function mermaidBlocks(text) {
+    const lines = text.split("\n");
+    let fence = null;
+    let current = null;
+    const blocks = [];
+    for (const line of lines) {
+      const marker = line.match(/^\s{0,3}(`{3,}|~{3,})(.*)$/);
+      if (fence !== null) {
+        if (
+          marker && marker[1][0] === fence.char && marker[1].length >= fence.length
+          && /^\s{0,3}(`{3,}|~{3,})\s*$/.test(line)
+        ) {
+          if (current !== null) blocks.push(current.join("\n"));
+          current = null;
+          fence = null;
+        } else if (current !== null) {
+          current.push(line);
+        }
+        continue;
+      }
+      if (marker) {
+        fence = { char: marker[1][0], length: marker[1].length };
+        current = marker[2].trim() === "mermaid" ? [] : null;
+      }
+    }
+    return blocks;
+  }
+
   async function validateMermaid(path, markdown, errors) {
-    const blocks = [...markdown.matchAll(/```mermaid\s*\n([\s\S]*?)```/g)];
-    for (const [index, match] of blocks.entries()) {
+    const blocks = mermaidBlocks(markdown);
+    for (const [index, block] of blocks.entries()) {
       try {
-        const result = await mermaid.parse(match[1], { suppressErrors: true });
+        const result = await mermaid.parse(block, { suppressErrors: true });
         if (result === false) throw new Error("parser rejected the diagram");
       } catch (error) {
         errors.push(`${path}: invalid Mermaid block ${index + 1}: ${error.message}`);
@@ -35,7 +68,7 @@ export function createMermaidValidator(context) {
       && metadata(markdown, "Design Status") === "Current") {
       const content = sectionContent(markdown, "Architecture Design");
       if (content) {
-        const sectionDiagrams = [...content.matchAll(/```mermaid\s*\n([\s\S]*?)```/g)].map((m) => m[1]);
+        const sectionDiagrams = mermaidBlocks(content);
         if (tableIds(content, /^C-\d+$/).length === 0) {
           errors.push(`${path}: Architecture Design requires a structured component table`);
         }
@@ -55,8 +88,7 @@ export function createMermaidValidator(context) {
       const content = sectionContent(markdown, section);
       if (!content || /^\s*N\/A\s+—/m.test(content)) continue;
       const ids = tableIds(content, idPattern);
-      const diagrams = [...content.matchAll(/```mermaid\s*\n([\s\S]*?)```/g)]
-        .map((match) => match[1]).join("\n");
+      const diagrams = mermaidBlocks(content).join("\n");
       for (const id of ids) {
         if (!new RegExp(`(^|[^A-Za-z0-9-])${escapeRegExp(id)}($|[^A-Za-z0-9-])`).test(diagrams)) {
           errors.push(`${path}: ${description} does not cover ${id}`);
@@ -79,7 +111,7 @@ export function createMermaidValidator(context) {
         const content = sectionContent(markdown, section);
         if (!content || /^\s*N\/A\s+—/m.test(content)) continue;
         const ids = tableIds(content, idPattern);
-        const diagrams = [...content.matchAll(/```mermaid\s*\n([\s\S]*?)```/g)].map((match) => match[1]);
+        const diagrams = mermaidBlocks(content);
         if (ids.length === 0) {
           errors.push(`${path}: ${section} requires a structured table for a Current ADD`);
         }
