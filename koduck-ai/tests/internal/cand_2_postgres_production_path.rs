@@ -476,6 +476,98 @@ fn canonical_terminal_probe_retains_authority_during_recovery_pending() {
     );
 }
 
+#[test]
+fn fenced_post_dispatch_started_effect_persists_owner_fenced_failure() {
+    // ADR-0003 lines 309-314: fencing after dispatch with a started or
+    // unknown effect persists failed/owner_fenced_after_dispatch through the
+    // dedicated reconciliation-capable transition — not the lease-expiry
+    // fallback's timed_out/unknown — while a still-current lease can never be
+    // relabelled through it (TC-07/TC-12).
+    let Some(harness) = harness() else {
+        return;
+    };
+    let (identity, sealed) = sealed_binding(&harness);
+    let mut store = attempt_store(harness.pool.clone(), &harness.runtime);
+    assert_eq!(
+        koduck_ai::application::ExecutionAttemptStore::insert_prepared(&mut store, &sealed, 1_000),
+        Ok(koduck_ai::application::AttemptInsertResolution::Inserted),
+    );
+    assert_eq!(
+        koduck_ai::application::ExecutionAttemptStore::claim_running(&mut store, &sealed, 2_000),
+        Ok(DispatchClaimResolution::Claimed { version: 2 }),
+    );
+
+    // A still-current lease must not be relabelled through the transition.
+    assert_eq!(
+        koduck_ai::application::ExecutionAttemptStore::commit_fenced_after_dispatch(
+            &mut store,
+            &sealed,
+            EffectState::Started,
+            3_000,
+        ),
+        Ok(koduck_ai::application::AttemptTerminalResolution::Conflict),
+        "a current lease keeps the current-generation terminal path"
+    );
+
+    // Fence the bound lease; the canonical failure commits exactly once and
+    // replays idempotently.
+    harness.runtime.block_on(async {
+        sqlx::query(
+            "UPDATE turn_leases SET fenced = TRUE \
+             WHERE tenant_id = $1 AND thread_id = $2 AND turn_id = $3",
+        )
+        .bind(identity.tenant.as_str())
+        .bind(identity.thread.as_uuid())
+        .bind(identity.turn.as_uuid())
+        .execute(&harness.pool)
+        .await
+        .expect("fixture lease is fenced");
+    });
+    let expected_terminal = koduck_ai::application::AttemptTerminalResolution::Won { version: 3 };
+    assert_eq!(
+        koduck_ai::application::ExecutionAttemptStore::commit_fenced_after_dispatch(
+            &mut store,
+            &sealed,
+            EffectState::Started,
+            3_000,
+        ),
+        Ok(expected_terminal),
+        "the fenced post-dispatch failure persists as the canonical terminal"
+    );
+    let replay = koduck_ai::application::ExecutionAttemptStore::commit_fenced_after_dispatch(
+        &mut store,
+        &sealed,
+        EffectState::Started,
+        4_000,
+    );
+    assert!(
+        matches!(
+            replay,
+            Ok(koduck_ai::application::AttemptTerminalResolution::ExistingTerminal(_))
+        ),
+        "the second fenced commit replays the committed terminal, found {replay:?}"
+    );
+    assert_eq!(
+        identity.canonical_rows(&harness),
+        vec![("failed".to_owned(), 3, Some(2_000))],
+        "the canonical row carries failed at version 3"
+    );
+    let failure_code: Option<String> = harness
+        .runtime
+        .block_on(async {
+            sqlx::query_scalar(
+                "SELECT failure_code FROM tool_execution_attempts \
+                 WHERE tenant_id = $1 AND attempt_id = $2",
+            )
+            .bind(identity.tenant.as_str())
+            .bind(sealed.attempt_id().as_uuid())
+            .fetch_one(&harness.pool)
+            .await
+        })
+        .expect("failure code is readable");
+    assert_eq!(failure_code.as_deref(), Some("owner_fenced_after_dispatch"));
+}
+
 /// Lease validator double answering Current for every check: these legs
 /// isolate the durable store's own fencing with a controlled foreground
 /// answer, while the production runtime wires the durable C-6 check into

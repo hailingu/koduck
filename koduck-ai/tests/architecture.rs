@@ -255,8 +255,8 @@ fn cand_2_digest_and_turn_budget_are_stable_authorities() {
     );
     assert_eq!(
         count_identifier_tokens(&production, "mirror_terminal"),
-        6,
-        "mirror_terminal must have exactly one definition, two conditional-commit call sites, identity-conflict and attempt-limit orphan closes, and one prepared-only close"
+        7,
+        "mirror_terminal must have exactly one definition, two conditional-commit call sites, identity-conflict and attempt-limit orphan closes, one prepared-only close, and the fenced post-dispatch failure mirror"
     );
     // The durable preparation and dispatch-claim transitions are the
     // cross-instance half of TC-12: each identifier covers exactly its code

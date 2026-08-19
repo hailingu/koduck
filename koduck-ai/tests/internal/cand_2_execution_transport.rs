@@ -42,6 +42,124 @@ impl IsolatedExecutor for EnvelopeRecordingExecutor {
     }
 }
 
+/// Committer double recording the dedicated fenced post-dispatch transition.
+struct FencedRecordingCommitter {
+    inner: RecordingCommitter,
+    fenced_calls: usize,
+    fenced_effect: Option<EffectState>,
+}
+
+impl AttemptCommitter for FencedRecordingCommitter {
+    fn commit_outcome(
+        &mut self,
+        binding: &ExactActionBinding,
+        outcome: &ToolExecutionOutcome,
+    ) -> Result<AttemptCommitResult, koduck_ai::application::AttemptCommitError> {
+        self.inner.commit_outcome(binding, outcome)
+    }
+
+    fn commit_fenced_after_dispatch(
+        &mut self,
+        binding: &ExactActionBinding,
+        effect_state: EffectState,
+        terminal_at_millis: u64,
+    ) -> Result<AttemptTerminalResolution, koduck_ai::application::AttemptStoreError> {
+        self.fenced_calls += 1;
+        self.fenced_effect = Some(effect_state);
+        let _ = (binding, terminal_at_millis);
+        Ok(AttemptTerminalResolution::Won { version: 3 })
+    }
+}
+
+impl koduck_ai::application::DurableAttemptTransitions for FencedRecordingCommitter {
+    fn insert_prepared(
+        &mut self,
+        _binding: &ExactActionBinding,
+        _prepared_at_millis: u64,
+    ) -> Result<AttemptInsertResolution, koduck_ai::application::AttemptStoreError> {
+        Ok(AttemptInsertResolution::Inserted)
+    }
+
+    fn claim_running(
+        &mut self,
+        _binding: &ExactActionBinding,
+        _started_at_millis: u64,
+    ) -> Result<DispatchClaimResolution, koduck_ai::application::AttemptStoreError> {
+        Ok(DispatchClaimResolution::Claimed { version: 2 })
+    }
+
+    fn cancel_prepared_attempt(
+        &mut self,
+        _binding: &ExactActionBinding,
+    ) -> Result<PreparedCloseResolution, koduck_ai::application::AttemptStoreError> {
+        Ok(PreparedCloseResolution::Won { version: 3 })
+    }
+}
+
+impl FencedRecordingCommitter {
+    fn commit_outcome_calls(&self) -> usize {
+        self.inner.calls
+    }
+}
+
+#[test]
+fn fenced_post_dispatch_started_effect_persists_the_canonical_failure() {
+    // ADR-0003 requires started/unknown effects fenced after dispatch to
+    // persist failed/owner_fenced_after_dispatch rather than leaving the
+    // canonical row running for the lease-expiry fallback to relabel as
+    // timed_out/unknown: the coordinator commits that canonical failure
+    // through the dedicated fenced transition, mirrors it locally, and still
+    // surfaces the reconciliation error so no Tool result reaches the model
+    // (ADR-0003 TC-07, lines 309-314).
+    let (binding, approval) = accepted();
+    let (mut authority, mut attempt) = prepared(binding);
+    let committer = FencedRecordingCommitter {
+        inner: committer(Ok(())),
+        fenced_calls: 0,
+        fenced_effect: None,
+    };
+    let mut coordinator = ExecutionCoordinator::new(
+        RecordingExecutor {
+            calls: 0,
+            response: Ok(response(EffectState::Started, b"result")),
+        },
+        SequencedLease {
+            decisions: VecDeque::from([true, true, false]),
+        },
+        committer,
+    );
+
+    let observed = coordinator.execute(&mut authority, Some(&approval), &mut attempt, 2, &mut || 2);
+
+    assert_eq!(
+        observed,
+        Err(ExecutionPending::ReconciliationRequired {
+            code: ExecutionFailure::OwnerFencedAfterDispatch,
+            effect_state: EffectState::Started,
+        }),
+        "the fenced owner still delivers no Tool result"
+    );
+    assert_eq!(coordinator.executor().calls, 1);
+    {
+        let committer = coordinator.committer();
+        assert_eq!(
+            committer.fenced_calls, 1,
+            "the canonical failure persists once"
+        );
+        assert_eq!(committer.fenced_effect, Some(EffectState::Started));
+        assert_eq!(
+            committer.commit_outcome_calls(),
+            0,
+            "the fenced transition is not the current-generation commit path"
+        );
+    }
+    assert_eq!(
+        attempt.status(),
+        koduck_ai::domain::execution::ExecutionStatus::Failed,
+        "the local mirror records the canonical failure"
+    );
+}
+
 #[test]
 fn stale_owner_never_commits_tool_result() {
     // AC-5 fence-before-prepare: a stale owner cannot even allocate the D-7.

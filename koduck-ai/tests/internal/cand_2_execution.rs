@@ -7,11 +7,12 @@ use koduck_ai::adapters::execution::DisabledExecutor;
 use koduck_ai::adapters::tool::{parse_action_parameters, parse_input_schema};
 use koduck_ai::application::{
     ActionDeadline, ApprovalAuthorizer, ApprovalDecisionService, AttemptCommitError,
-    AttemptCommitResult, AttemptCommitter, CancelAcknowledgement, CancelPermit,
-    CanonicalAttemptTerminal, CanonicalTerminalError, DenialCode, DispatchPermit, EffectState,
-    ExecutionCoordinator, ExecutionFailure, ExecutionPending, ExecutionPreparationError,
-    ExecutionResponse, ExecutionResponseBuilder, ExecutorError, IsolatedExecutor, LeaseCheck,
-    LeaseValidator, PolicyDecision, ToolAuthorizationService, ToolExecutionAuthorityRoot,
+    AttemptCommitResult, AttemptCommitter, AttemptInsertResolution, AttemptTerminalResolution,
+    CancelAcknowledgement, CancelPermit, CanonicalAttemptTerminal, CanonicalTerminalError,
+    DenialCode, DispatchClaimResolution, DispatchPermit, EffectState, ExecutionCoordinator,
+    ExecutionFailure, ExecutionPending, ExecutionPreparationError, ExecutionResponse,
+    ExecutionResponseBuilder, ExecutorError, IsolatedExecutor, LeaseCheck, LeaseValidator,
+    PolicyDecision, PreparedCloseResolution, ToolAuthorizationService, ToolExecutionAuthorityRoot,
     ToolExecutionOutcome, ToolExecutionRuntime, ToolPolicy, ToolPolicyConfiguration,
 };
 use koduck_ai::domain::execution::{

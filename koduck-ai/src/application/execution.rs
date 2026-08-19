@@ -217,6 +217,30 @@ pub trait AttemptCommitter {
         binding: &ExactActionBinding,
         outcome: &ToolExecutionOutcome,
     ) -> Result<AttemptCommitResult, AttemptCommitError>;
+
+    /// Durably commits the canonical `failed/owner_fenced_after_dispatch`
+    /// terminal for one running D-7 whose bound lease is definitively fenced.
+    ///
+    /// The default fails closed because only the production canonical store
+    /// can prove the bound lease is no longer current under the Turn
+    /// ownership lock; a composition without that proof must keep the
+    /// attempt for reconciliation instead of writing a fenced terminal.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AttemptStoreError::Unavailable`] by default; the production
+    /// store reports its conditional resolution.
+    fn commit_fenced_after_dispatch(
+        &mut self,
+        _binding: &ExactActionBinding,
+        _effect_state: EffectState,
+        _terminal_at_millis: u64,
+    ) -> Result<
+        super::attempt_store::AttemptTerminalResolution,
+        super::attempt_store::AttemptStoreError,
+    > {
+        Err(super::attempt_store::AttemptStoreError::Unavailable)
+    }
 }
 
 /// Typed result of one C-6 foreground-generation validation.
@@ -546,6 +570,42 @@ where
                     ExecutionStatus::Cancelled,
                     DispatchPhase::AfterDispatch,
                 );
+            }
+            if matches!(
+                pending,
+                ExecutionPending::ReconciliationRequired {
+                    code: ExecutionFailure::OwnerFencedAfterDispatch,
+                    ..
+                }
+            ) && matches!(effect_state, EffectState::Started | EffectState::Unknown)
+            {
+                // The lease is definitively fenced after an effect may have
+                // started, so the canonical row must carry
+                // failed/owner_fenced_after_dispatch rather than staying
+                // running for the lease-expiry fallback to relabel
+                // timed_out/unknown (ADR-0003 lines 309-314). The dedicated
+                // transition re-proves the fence under the ownership lock; a
+                // lost or conflicted write stays held for reconciliation and
+                // no Tool result reaches the model either way (TC-07).
+                if authority.reserve_terminal(attempt).is_ok() {
+                    let now_ms = (now)();
+                    match self.committer.commit_fenced_after_dispatch(
+                        &binding,
+                        effect_state,
+                        now_ms,
+                    ) {
+                        Ok(super::attempt_store::AttemptTerminalResolution::Won { .. }) => {
+                            let _ = authority.mirror_terminal(attempt, ExecutionStatus::Failed);
+                        }
+                        Ok(super::attempt_store::AttemptTerminalResolution::ExistingTerminal(
+                            _,
+                        )) => {
+                            authority.release_terminal_reservation(attempt);
+                        }
+                        _ => {}
+                    }
+                }
+                return Err(pending);
             }
             if matches!(
                 pending,

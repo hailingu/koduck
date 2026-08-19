@@ -345,6 +345,27 @@ pub trait ExecutionAttemptStore {
         &mut self,
         binding: &ExactActionBinding,
     ) -> Result<PreparedCloseResolution, AttemptStoreError>;
+
+    /// Commits the canonical `failed/owner_fenced_after_dispatch` terminal
+    /// for one running D-7 whose bound lease is definitively fenced,
+    /// superseded, or expired past its arbitration window.
+    ///
+    /// The default fails closed: without a durable proof that the bound lease
+    /// is no longer current, the attempt must stay running for reconciliation
+    /// rather than be relabelled through this transition.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AttemptStoreError::Unavailable`] by default; the production
+    /// store reports its conditional resolution.
+    fn commit_fenced_after_dispatch(
+        &mut self,
+        _binding: &ExactActionBinding,
+        _effect_state: crate::application::EffectState,
+        _terminal_at_millis: u64,
+    ) -> Result<AttemptTerminalResolution, AttemptStoreError> {
+        Err(AttemptStoreError::Unavailable)
+    }
 }
 
 /// Narrow coordinator-side port for the durable canonical D-7 transitions
