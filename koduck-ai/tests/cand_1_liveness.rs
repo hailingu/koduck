@@ -5,7 +5,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use koduck_ai::adapters::history::postgres::{
-    LeaseKey, LeaseTiming, PostgresExecutor, PostgresTurnHistory, ReconcileOutcome, RecoveryOutcome,
+    LeaseKey, LeaseTiming, PostgresExecutor, PostgresTurnHistory, ReconcileOutcome,
+    RecoveryOutcome, TurnTerminalObserver,
 };
 use koduck_ai::application::{AcceptedTurn, HistoryError, NewItem, TurnCommand, TurnHistory};
 use koduck_ai::domain::{
@@ -16,6 +17,13 @@ use koduck_ai::domain::{
 #[derive(Clone)]
 struct SimulatedPostgres {
     state: Arc<Mutex<SimulatedState>>,
+}
+
+#[derive(Clone, Copy, Default)]
+enum ReconciliationRace {
+    #[default]
+    None,
+    TerminalWonElsewhere,
 }
 
 struct SimulatedState {
@@ -30,6 +38,32 @@ struct SimulatedState {
     transient_renewal_failures: usize,
     interrupt_checks: usize,
     interrupt_read_error: Option<HistoryError>,
+    reconciliation_race: ReconciliationRace,
+}
+
+#[derive(Clone, Default)]
+struct RecordingTerminalObserver {
+    terminals: Arc<Mutex<Vec<(TenantId, ThreadId, TurnId)>>>,
+}
+
+impl RecordingTerminalObserver {
+    fn terminals(&self) -> Vec<(TenantId, ThreadId, TurnId)> {
+        self.terminals.lock().expect("observer lock").clone()
+    }
+}
+
+impl TurnTerminalObserver for RecordingTerminalObserver {
+    fn terminal_may_have_committed(
+        &self,
+        tenant_id: &TenantId,
+        thread_id: ThreadId,
+        turn_id: TurnId,
+    ) {
+        self.terminals
+            .lock()
+            .expect("observer lock")
+            .push((tenant_id.clone(), thread_id, turn_id));
+    }
 }
 
 impl SimulatedPostgres {
@@ -76,6 +110,7 @@ impl SimulatedPostgres {
                     transient_renewal_failures: 0,
                     interrupt_checks: 0,
                     interrupt_read_error: None,
+                    reconciliation_race: ReconciliationRace::None,
                 })),
             },
             key,
@@ -105,6 +140,11 @@ impl SimulatedPostgres {
 
     fn interrupt_checks(&self) -> usize {
         self.state.lock().expect("state lock").interrupt_checks
+    }
+
+    fn lose_reconciliation_race(&self) {
+        self.state.lock().expect("state lock").reconciliation_race =
+            ReconciliationRace::TerminalWonElsewhere;
     }
 }
 
@@ -196,6 +236,14 @@ impl PostgresExecutor for SimulatedPostgres {
         let mut state = self.state.lock().expect("state lock");
         if !state.available {
             return Err(HistoryError::Unavailable);
+        }
+        if matches!(
+            state.reconciliation_race,
+            ReconciliationRace::TerminalWonElsewhere
+        ) {
+            state.reconciliation_race = ReconciliationRace::None;
+            state.terminal = true;
+            return Err(HistoryError::AlreadyTerminal);
         }
         if state.terminal {
             return Err(HistoryError::AlreadyTerminal);
@@ -313,6 +361,164 @@ fn production_reconciliation_worker_scans_expired_turns() {
         assert!(
             Instant::now() < deadline,
             "reconciliation worker did not scan the expired generation"
+        );
+        thread::sleep(Duration::from_millis(5));
+    }
+    drop(worker);
+}
+
+#[test]
+fn in_request_recovery_handoff_leaves_the_terminal_notification_to_the_runner() {
+    // The runner already notifies the tool boundary after a Recovered
+    // handoff, so the in-request recovery closure must not fire the
+    // history-side terminal observer as well: both paths share one canonical
+    // probe, and a duplicated notification doubles the durable query and
+    // reclamation work — up to two extra two-second probes per recovery
+    // while the database is degraded. The history observer stays reserved
+    // for recovery the runner does not own: the background worker and the
+    // scheduled jobs.
+    let (executor, _, accepted) = SimulatedPostgres::seeded();
+    let observer = Arc::new(RecordingTerminalObserver::default());
+    let history = PostgresTurnHistory::new(executor).with_terminal_observer(observer.clone());
+    let guard = history
+        .start_turn_liveness(&accepted)
+        .expect("renewal worker starts");
+
+    let handoff = guard
+        .handoff_to_recovery()
+        .expect("the in-request recovery handoff completes");
+
+    assert_eq!(
+        handoff,
+        koduck_ai::application::RecoveryHandoff::Recovered,
+        "the seeded fixture recovers in-request"
+    );
+    assert!(
+        observer.terminals().is_empty(),
+        "the in-request handoff must not duplicate the runner's terminal notification"
+    );
+}
+
+#[test]
+fn direct_reconcile_expired_notifies_the_terminal_observer() {
+    // The public reconciliation entry must behave like the background worker:
+    // every outcome that may have durably terminalized the Turn gives the
+    // observer a chance to prove it and release local C-5 authority, while
+    // TooEarly and Fenced — which never commit a terminal — stay silent.
+    let (executor, key, _) = SimulatedPostgres::seeded();
+    let observer = Arc::new(RecordingTerminalObserver::default());
+    let mut history = PostgresTurnHistory::new(executor).with_terminal_observer(observer.clone());
+
+    // A stale key fences without terminalizing and stays silent.
+    let stale = LeaseKey::new(
+        key.tenant_id.clone(),
+        key.thread_id,
+        TurnId::new(),
+        LeaseGeneration::initial(),
+    );
+    assert_eq!(
+        history.reconcile_expired(&stale, 22_000),
+        Err(HistoryError::Fenced),
+        "a stale key fences without terminalizing"
+    );
+    assert!(
+        observer.terminals().is_empty(),
+        "Fenced commits no terminal and notifies nobody"
+    );
+
+    assert_eq!(
+        history
+            .reconcile_expired(&key, 21_999)
+            .expect("early reconciliation is a typed result"),
+        ReconcileOutcome::TooEarly
+    );
+    assert!(
+        observer.terminals().is_empty(),
+        "TooEarly commits no terminal and notifies nobody"
+    );
+
+    assert_eq!(
+        history
+            .reconcile_expired(&key, 22_000)
+            .expect("reconciliation at exact boundary succeeds"),
+        ReconcileOutcome::Cancelled
+    );
+    assert_eq!(
+        observer.terminals(),
+        vec![(key.tenant_id.clone(), key.thread_id, key.turn_id)],
+        "the direct Cancelled reconciliation notifies the observer exactly like the worker"
+    );
+}
+
+#[test]
+fn direct_reconcile_expired_notifies_after_losing_the_terminal_race() {
+    // A caller that loses the race to another reconciler still durably
+    // terminalized its Turn, so the direct path must give the observer the
+    // same AlreadyTerminal notification the background worker sends.
+    let (executor, key, _) = SimulatedPostgres::seeded();
+    executor.lose_reconciliation_race();
+    let observer = Arc::new(RecordingTerminalObserver::default());
+    let mut history = PostgresTurnHistory::new(executor).with_terminal_observer(observer.clone());
+
+    assert_eq!(
+        history.reconcile_expired(&key, 22_000),
+        Err(HistoryError::AlreadyTerminal),
+        "the competing reconciler owns the terminal"
+    );
+    assert_eq!(
+        observer.terminals(),
+        vec![(key.tenant_id.clone(), key.thread_id, key.turn_id)],
+        "the direct AlreadyTerminal loss notifies the observer exactly like the worker"
+    );
+}
+
+#[test]
+fn reconciliation_worker_notifies_terminal_observer_after_closing_a_turn() {
+    // This fails if the global reconciler commits a terminal but never gives
+    // C-5 a second chance to release its process-local Turn authority.
+    let (executor, key, _) = SimulatedPostgres::seeded();
+    let observer = Arc::new(RecordingTerminalObserver::default());
+    let history = PostgresTurnHistory::new(executor).with_terminal_observer(observer.clone());
+    let worker = history
+        .start_reconciliation_worker()
+        .expect("reconciliation worker starts");
+    let deadline = Instant::now() + Duration::from_millis(500);
+
+    loop {
+        if observer.terminals() == vec![(key.tenant_id.clone(), key.thread_id, key.turn_id)] {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the terminal observer did not receive the reconciler-owned completion"
+        );
+        thread::sleep(Duration::from_millis(5));
+    }
+    drop(worker);
+}
+
+#[test]
+fn reconciliation_worker_notifies_terminal_observer_after_losing_the_terminal_race() {
+    // This catches the competing-reconciler path: the scan observes a live
+    // expired key, another instance closes it, and this worker then receives
+    // AlreadyTerminal. The observer must still get a chance to independently
+    // prove the terminal and release any local C-5 authority.
+    let (executor, key, _) = SimulatedPostgres::seeded();
+    executor.lose_reconciliation_race();
+    let observer = Arc::new(RecordingTerminalObserver::default());
+    let history = PostgresTurnHistory::new(executor).with_terminal_observer(observer.clone());
+    let worker = history
+        .start_reconciliation_worker()
+        .expect("reconciliation worker starts");
+    let deadline = Instant::now() + Duration::from_millis(500);
+
+    loop {
+        if observer.terminals() == vec![(key.tenant_id.clone(), key.thread_id, key.turn_id)] {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the observer missed the terminal committed by the competing reconciler"
         );
         thread::sleep(Duration::from_millis(5));
     }

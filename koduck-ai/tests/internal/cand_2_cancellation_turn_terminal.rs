@@ -88,6 +88,17 @@ impl AttemptCommitter for PausingLivenessStore {
     }
 }
 
+impl koduck_ai::application::CanonicalTurnTerminal for PausingLivenessStore {
+    fn turn_is_terminal(
+        &mut self,
+        tenant_id: &TenantId,
+        thread_id: koduck_ai::domain::ThreadId,
+        turn_id: koduck_ai::domain::TurnId,
+    ) -> Result<bool, AttemptStoreError> {
+        self.inner.turn_is_terminal(tenant_id, thread_id, turn_id)
+    }
+}
+
 impl DurableAttemptTransitions for PausingLivenessStore {
     fn insert_prepared(
         &mut self,
@@ -188,6 +199,7 @@ fn interruption_leaves_one_durable_turn_terminal_and_replay() {
             durable.clone(),
             SqlxTurnLeaseValidator::new(pool, runtime.handle().clone()),
             koduck_ai::application::NoToolAudits,
+            durable.clone(),
         ),
     );
     runner
@@ -244,9 +256,10 @@ fn interruption_barrier_prevents_a_remote_dispatch_after_no_live_lookup() {
     let runtime_state = RuntimeState::assemble();
     let mut runner = TurnRunner::new(NoopProvider, history.clone()).with_tool_executor(
         runtime_state.tool_call_executor(
-            pausing_store,
+            pausing_store.clone(),
             SqlxTurnLeaseValidator::new(pool, runtime.handle().clone()),
             koduck_ai::application::NoToolAudits,
+            pausing_store,
         ),
     );
 
@@ -524,6 +537,7 @@ fn stale_owner_interruption_mutates_nothing(stale: StaleLease) {
             durable.clone(),
             SqlxTurnLeaseValidator::new(pool.clone(), runtime.handle().clone()),
             koduck_ai::application::NoToolAudits,
+            durable,
         ),
     );
     assert!(

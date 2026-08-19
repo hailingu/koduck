@@ -2,7 +2,7 @@
 
 //! Provider-neutral lifecycle orchestration and durable-before-visible ordering.
 
-use crate::domain::{Item, TenantId, TerminalOutcome, TrustContext, Turn, TurnId, Usage};
+use crate::domain::{Item, TenantId, TerminalOutcome, ThreadId, TrustContext, Turn, TurnId, Usage};
 
 use super::MAX_EXECUTOR_OUTPUT_BYTES;
 use super::ports::{
@@ -12,11 +12,16 @@ use super::ports::{
 };
 use super::tool_projection::TurnProjectionSink;
 
-mod failure;
+pub(super) mod failure;
 
 use failure::{
-    accept_appended_provider_item, apply_terminal_outcome, history_failure, post_accept_failure,
-    recover_append_failure, validate_provider_item,
+    accept_appended_provider_item, apply_terminal_outcome, history_failure, recover_append_failure,
+    validate_provider_item,
+};
+
+use super::runner_terminals::{
+    append_provider_terminal, append_provider_terminal_observed, append_terminal,
+    event_terminal_or_recover, observe_item, publish_replayed_terminal,
 };
 
 /// Owns provider-neutral lifecycle transitions and durable-before-visible ordering.
@@ -31,27 +36,27 @@ pub struct TurnRunner<P, H, T = NoToolExecution> {
     tools: T,
 }
 
-struct ExecutionState {
-    published: Vec<Item>,
+pub(super) struct ExecutionState {
+    pub(super) published: Vec<Item>,
     /// Leading count of `published` items already sent to the observer.
     ///
     /// Tool-projection items are observed at their publish boundary while the
     /// call is still serviced, so the driving loop resumes observation at
     /// this watermark instead of re-observing them.
-    observed_len: usize,
-    usage: Usage,
-    lifecycle: Turn,
-    provider_item_count: usize,
-    provider_payload_bytes: usize,
+    pub(super) observed_len: usize,
+    pub(super) usage: Usage,
+    pub(super) lifecycle: Turn,
+    pub(super) provider_item_count: usize,
+    pub(super) provider_payload_bytes: usize,
     /// Every completed Tool-call batch carried into continuation requests.
-    tool_rounds: Vec<ToolRound>,
+    pub(super) tool_rounds: Vec<ToolRound>,
     /// This stream's serviced calls, batched into `tool_rounds` when the
     /// stream ends without a terminal; non-empty means the current stream
     /// still owes a continuation.
-    current_calls: Vec<CommittedToolCall>,
+    pub(super) current_calls: Vec<CommittedToolCall>,
     /// Assistant text emitted by the current stream, retained with its Tool
     /// round when the stream requires continuation.
-    current_assistant_content: String,
+    pub(super) current_assistant_content: String,
 }
 
 impl ExecutionState {
@@ -125,11 +130,26 @@ where
         trust: &TrustContext,
         turn_id: TurnId,
     ) -> Result<(), TurnRunError> {
-        if let Some(thread_id) = self.history.interruption_thread(trust, turn_id)? {
+        let thread_id = self.history.interruption_thread(trust, turn_id)?;
+        if let Some(thread_id) = thread_id {
             self.tools.request_interrupt(trust, thread_id, turn_id)?;
         }
-        self.history.request_interrupt(trust, turn_id)?;
+        let interrupt_result = self.history.request_interrupt(trust, turn_id);
+        // A lost acknowledgement or competing terminal may have committed the
+        // durable terminal even when `request_interrupt` reports an error.
+        // The boundary's probe decides whether local authority can release.
+        if let Some(thread_id) = thread_id {
+            self.notify_terminal(trust, thread_id, turn_id);
+        }
+        interrupt_result?;
         Ok(())
+    }
+
+    /// Notifies the tool boundary after a durable Turn terminal so its
+    /// fail-closed probe can reclaim process-local authority (ADR-0003 T-3).
+    fn notify_terminal(&mut self, trust: &TrustContext, thread_id: ThreadId, turn_id: TurnId) {
+        self.tools
+            .turn_terminal_committed(&trust.tenant_id, thread_id, turn_id);
     }
 
     /// Executes one accepted turn and publishes only successfully appended items.
@@ -215,8 +235,12 @@ where
             observer,
             cancelled,
         ) {
-            Ok(()) => {}
+            // The durable Turn terminal may release the boundary's Turn authority (ADR-0003 T-3).
+            Ok(()) => {
+                self.notify_terminal(&command.trust, accepted.thread_id, accepted.turn_id);
+            }
             Err(TurnRunError::Durability(failure)) => {
+                let mut terminal_notified = false;
                 if state.lifecycle.status() == crate::domain::TurnStatus::RecoveryPending {
                     let handoff = liveness.handoff_to_recovery()?;
                     if handoff == super::RecoveryHandoff::Released
@@ -226,21 +250,35 @@ where
                     {
                         return Err(TurnRunError::History(schedule_error));
                     }
-                    if handoff == super::RecoveryHandoff::Recovered
-                        && let Err(error) = publish_replayed_terminal(
+                    if handoff == super::RecoveryHandoff::Recovered {
+                        // A recovered handoff has already committed the
+                        // canonical terminal. Notify C-5 before replay so
+                        // its fail-closed probe can reclaim process-local
+                        // authority even if replay becomes unavailable.
+                        self.notify_terminal(&command.trust, accepted.thread_id, accepted.turn_id);
+                        terminal_notified = true;
+                        if let Err(error) = publish_replayed_terminal(
                             &self.history,
                             &accepted,
                             &mut state,
                             observer,
-                        )
-                        && !matches!(
+                        ) && !matches!(
                             error,
                             TurnRunError::History(HistoryError::Fenced | HistoryError::NotFound)
                                 | TurnRunError::Durability(_)
-                        )
-                    {
-                        return Err(error);
+                        ) {
+                            return Err(error);
+                        }
                     }
+                }
+                if !terminal_notified {
+                    // A durability failure may still follow a committed
+                    // durable terminal — terminalize_from_limit closes the
+                    // Turn as Failed(DURABILITY_UNAVAILABLE) before returning
+                    // here — so notify fail-closed: the probe independently
+                    // proves the terminal and safely retains authority when
+                    // none is provable (ADR-0003 T-3).
+                    self.notify_terminal(&command.trust, accepted.thread_id, accepted.turn_id);
                 }
                 return Err(TurnRunError::Durability(failure));
             }
@@ -439,100 +477,6 @@ fn terminalize_from_control<H: TurnHistory>(
         }
         Err(error) => Err(recover_append_failure(state, error)),
     }
-}
-
-fn publish_replayed_terminal<H: TurnHistory>(
-    history: &H,
-    accepted: &AcceptedTurn,
-    state: &mut ExecutionState,
-    observer: &mut dyn FnMut(TurnStreamEvent),
-) -> Result<(), TurnRunError> {
-    let replay = history
-        .replay(&accepted.tenant_id, accepted.turn_id)
-        .map_err(|error| history_failure(error, true, &state.published))?;
-    let terminal = replay
-        .last()
-        .filter(|item| matches!(item.payload, crate::domain::ItemPayload::Terminal(_)))
-        .ok_or(HistoryError::Fenced)?
-        .clone();
-    let crate::domain::ItemPayload::Terminal(outcome) = &terminal.payload else {
-        return Err(HistoryError::Fenced.into());
-    };
-    apply_terminal_outcome(state, outcome)?;
-    observe_item(observer, accepted, &terminal);
-    state.published.push(terminal);
-    Ok(())
-}
-
-fn event_terminal_or_recover<H: TurnHistory>(
-    history: &mut H,
-    accepted: &AcceptedTurn,
-    state: &mut ExecutionState,
-    event_result: Result<bool, TurnRunError>,
-    observer: &mut dyn FnMut(TurnStreamEvent),
-) -> Result<bool, TurnRunError> {
-    match event_result {
-        Ok(terminal) => Ok(terminal),
-        Err(TurnRunError::History(HistoryError::Fenced | HistoryError::AlreadyTerminal)) => {
-            publish_replayed_terminal(history, accepted, state, observer)?;
-            Ok(true)
-        }
-        Err(TurnRunError::History(error)) => Err(recover_append_failure(state, error)),
-        Err(error) => Err(post_accept_failure(error, &state.published)),
-    }
-}
-
-fn append_terminal<H: TurnHistory>(
-    history: &mut H,
-    accepted: &AcceptedTurn,
-    state: &mut ExecutionState,
-    outcome: TerminalOutcome,
-    observer: &mut dyn FnMut(TurnStreamEvent),
-) -> Result<(), TurnRunError> {
-    let terminal = history
-        .append(accepted, NewItem::Terminal(outcome))
-        .map_err(|error| recover_append_failure(state, error))?;
-    observe_item(observer, accepted, &terminal);
-    state.published.push(terminal);
-    Ok(())
-}
-
-fn append_provider_terminal_observed<H: TurnHistory>(
-    history: &mut H,
-    accepted: &AcceptedTurn,
-    state: &mut ExecutionState,
-    outcome: TerminalOutcome,
-    observer: &mut dyn FnMut(TurnStreamEvent),
-) -> Result<(), TurnRunError> {
-    append_provider_terminal(history, accepted, state, outcome)?;
-    let terminal = state.published.last().ok_or(HistoryError::Unavailable)?;
-    observe_item(observer, accepted, terminal);
-    Ok(())
-}
-
-fn append_provider_terminal<H: TurnHistory>(
-    history: &mut H,
-    accepted: &AcceptedTurn,
-    state: &mut ExecutionState,
-    outcome: TerminalOutcome,
-) -> Result<(), TurnRunError> {
-    let terminal = history
-        .append_provider_terminal(accepted, outcome)
-        .map_err(|error| recover_append_failure(state, error))?;
-    let crate::domain::ItemPayload::Terminal(actual) = &terminal.payload else {
-        return Err(HistoryError::Unavailable.into());
-    };
-    apply_terminal_outcome(state, actual)?;
-    state.published.push(terminal);
-    Ok(())
-}
-
-fn observe_item(observer: &mut dyn FnMut(TurnStreamEvent), accepted: &AcceptedTurn, item: &Item) {
-    observer(TurnStreamEvent::Item {
-        thread_id: accepted.thread_id,
-        turn_id: accepted.turn_id,
-        item: item.clone(),
-    });
 }
 
 fn handle_event<H: TurnHistory, T: ToolCallExecutor>(

@@ -25,6 +25,22 @@ pub(crate) struct TurnAuthorityCatalog {
     state: Mutex<TurnAuthorityCatalogState>,
 }
 
+/// Outcome of one guarded authority reclamation attempt.
+///
+/// A `Reclaimed` Turn may allocate fresh process-local slots again, but every
+/// durable D-7 write requires the Turn's canonical `started` status, so a
+/// Turn reclaimed only after its proven canonical terminal can never
+/// resurrect its durable attempt budget (ADR-0003 TC-09/TC-12).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AuthorityReclamation {
+    /// The Turn's authority state and interruption seal were removed after
+    /// retiring every local live or reserved mirror.
+    Reclaimed,
+    /// The canonical terminal was not proven or no local authority state or
+    /// interruption seal existed to release.
+    Retained,
+}
+
 /// Catalog state coupling live authorities with interruption tombstones.
 #[derive(Debug, Default)]
 struct TurnAuthorityCatalogState {
@@ -82,6 +98,62 @@ impl TurnAuthorityCatalog {
             recover_lock(state).interruption_requested = true;
         }
         state.map(|state| TurnExecutionAuthority { state })
+    }
+
+    /// Reclaims one Turn's process-local authority after its canonical terminal.
+    ///
+    /// The caller MUST first prove the canonical Turn terminal through the
+    /// durable boundary; this catalog only guards the process-local half.
+    /// Canonical Turn terminality retires every cataloged prepared, running,
+    /// or reserved D-7 mirror before release. Those mirrors can no longer
+    /// dispatch or commit after the durable Turn terminal, so retaining them
+    /// would leak process-local authority after background reconciliation.
+    /// Lock order matches [`Self::authority_for`]: catalog lock first, then
+    /// the authority state lock.
+    pub(crate) fn reclaim(
+        &self,
+        tenant: &TenantId,
+        thread: ThreadId,
+        turn: TurnId,
+    ) -> AuthorityReclamation {
+        let key = TurnAuthorityKey {
+            tenant: tenant.clone(),
+            thread,
+            turn,
+        };
+        let mut catalog = recover_lock(&self.state);
+        // Clone the shared state handle so the map borrow ends while the
+        // catalog lock stays held: `authority_for` and `request_interruption`
+        // take the same lock, so no allocation can interleave between the
+        // liveness check and the removal.
+        let state = catalog.states.get(&key).cloned();
+        let Some(state) = state else {
+            // A sealed Turn that never gained authority drops only its
+            // interruption seal once its canonical terminal is proven.
+            return if catalog.interrupted.remove(&key) {
+                AuthorityReclamation::Reclaimed
+            } else {
+                AuthorityReclamation::Retained
+            };
+        };
+        {
+            let mut authority = recover_lock(&state);
+            // Seal the detached state as well as the catalog entry: a
+            // preparer may have cached this authority before reclamation and
+            // allocates under the authority lock rather than the catalog lock.
+            authority.interruption_requested = true;
+            for (_, status, _, in_flight) in authority.attempts.values_mut() {
+                *status = match *status {
+                    ExecutionStatus::Prepared => ExecutionStatus::Cancelled,
+                    ExecutionStatus::Running => ExecutionStatus::TimedOut,
+                    terminal => terminal,
+                };
+                *in_flight = false;
+            }
+        }
+        catalog.states.remove(&key);
+        catalog.interrupted.remove(&key);
+        AuthorityReclamation::Reclaimed
     }
 }
 

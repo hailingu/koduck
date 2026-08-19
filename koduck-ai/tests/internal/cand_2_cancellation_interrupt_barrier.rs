@@ -84,6 +84,7 @@ fn local_close_with_remote_live_attempt_requires_reconciliation() {
         LocalCloseWithRemoteLive,
         CurrentLease,
         koduck_ai::application::NoToolAudits,
+        koduck_ai::application::NoCanonicalTurnTerminal,
     );
 
     let result = executor.request_interrupt(&trust, thread_id, turn_id);

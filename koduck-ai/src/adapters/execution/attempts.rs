@@ -11,10 +11,10 @@ use tokio::runtime::Handle;
 use crate::application::{
     AppendPolicy, AttemptCommitError, AttemptCommitResult, AttemptCommitter,
     AttemptInsertResolution, AttemptStoreError, AttemptTerminalResolution,
-    CanonicalAttemptTerminal, DispatchClaimResolution, DurableAttemptTerminal,
-    DurableAttemptTransitions, EffectState, ExecutionAttemptInterruptionGuard,
-    ExecutionAttemptLiveness, ExecutionAttemptStore, ExecutionFailure, PreparedCloseResolution,
-    ToolExecutionOutcome,
+    CanonicalAttemptTerminal, CanonicalTurnTerminal, DispatchClaimResolution,
+    DurableAttemptTerminal, DurableAttemptTransitions, EffectState,
+    ExecutionAttemptInterruptionGuard, ExecutionAttemptLiveness, ExecutionAttemptStore,
+    ExecutionFailure, PreparedCloseResolution, ToolExecutionOutcome,
 };
 use crate::domain::execution::{ExactActionBinding, ExecutionStatus};
 
@@ -150,6 +150,32 @@ impl ExecutionAttemptLiveness for SqlxExecutionAttemptStore {
             .fetch_one(&self.pool)
             .await
             .map_err(|_| AttemptStoreError::Unavailable)
+        })
+    }
+}
+
+impl CanonicalTurnTerminal for SqlxExecutionAttemptStore {
+    fn turn_is_terminal(
+        &mut self,
+        tenant_id: &TenantId,
+        thread_id: ThreadId,
+        turn_id: TurnId,
+    ) -> Result<bool, AttemptStoreError> {
+        self.wait(async {
+            // A missing Turn row proves nothing, so it fails closed as
+            // not-terminal rather than authorizing reclamation.
+            sqlx::query_scalar(
+                "SELECT status IN ('completed', 'failed', 'interrupted', 'cancelled') \
+                 FROM turns \
+                 WHERE tenant_id = $1 AND thread_id = $2 AND turn_id = $3",
+            )
+            .bind(tenant_id.as_str())
+            .bind(thread_id.as_uuid())
+            .bind(turn_id.as_uuid())
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|_| AttemptStoreError::Unavailable)
+            .map(|terminal| terminal.unwrap_or(false))
         })
     }
 }

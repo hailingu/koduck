@@ -8,7 +8,8 @@ use std::sync::{Arc, Mutex};
 use koduck_ai::application::{
     AcceptedTurn, HistoryError, ModelInput, ModelProvider, ModelToolResult, NewItem, ProviderError,
     ProviderEvent, ProviderStream, ToolCallError, ToolCallExecutor, ToolCallTurnContext,
-    ToolProjection, ToolProjectionSink, TurnCommand, TurnHistory, TurnRunner, output_digest,
+    ToolProjection, ToolProjectionSink, TurnCommand, TurnHistory, TurnLiveness, TurnRunError,
+    TurnRunner, output_digest,
 };
 use koduck_ai::domain::{
     Item, ItemPayload, LeaseGeneration, TenantId, TerminalOutcome, ThreadId, TrustContext, TurnId,
@@ -60,6 +61,7 @@ fn emit_projection(sink: &mut dyn ToolProjectionSink, projection: &ToolProjectio
 struct RecordingToolExecutor {
     calls: Arc<Mutex<Vec<String>>>,
     interruptions: Arc<Mutex<Vec<(ThreadId, TurnId)>>>,
+    committed_terminals: Arc<Mutex<Vec<(TenantId, ThreadId, TurnId)>>>,
 }
 
 impl RecordingToolExecutor {
@@ -67,6 +69,13 @@ impl RecordingToolExecutor {
         self.interruptions
             .lock()
             .expect("executor interruptions lock")
+            .clone()
+    }
+
+    fn committed_terminals(&self) -> Vec<(TenantId, ThreadId, TurnId)> {
+        self.committed_terminals
+            .lock()
+            .expect("executor terminal notifications lock")
             .clone()
     }
 }
@@ -83,6 +92,18 @@ impl ToolCallExecutor for RecordingToolExecutor {
             .expect("executor interruptions lock")
             .push((thread_id, turn_id));
         Ok(())
+    }
+
+    fn turn_terminal_committed(
+        &mut self,
+        tenant_id: &TenantId,
+        thread_id: ThreadId,
+        turn_id: TurnId,
+    ) {
+        self.committed_terminals
+            .lock()
+            .expect("executor terminal notifications lock")
+            .push((tenant_id.clone(), thread_id, turn_id));
     }
 
     fn execute_tool_call(
@@ -130,10 +151,35 @@ impl ToolCallExecutor for RecordingToolExecutor {
 }
 
 /// Executor double whose committed result exceeds the model-bound serialized
-/// limit, violating the port's bounded-result contract (ADR-0003 TC-09).
-struct OversizedResultToolExecutor;
+/// limit, violating the port's bounded-result contract (ADR-0003 TC-09), and
+/// which records durable Turn-terminal notifications (ADR-0003 T-3).
+#[derive(Clone, Default)]
+struct OversizedResultToolExecutor {
+    committed_terminals: Arc<Mutex<Vec<(TenantId, ThreadId, TurnId)>>>,
+}
+
+impl OversizedResultToolExecutor {
+    fn committed_terminals(&self) -> Vec<(TenantId, ThreadId, TurnId)> {
+        self.committed_terminals
+            .lock()
+            .expect("executor terminal notifications lock")
+            .clone()
+    }
+}
 
 impl ToolCallExecutor for OversizedResultToolExecutor {
+    fn turn_terminal_committed(
+        &mut self,
+        tenant_id: &TenantId,
+        thread_id: ThreadId,
+        turn_id: TurnId,
+    ) {
+        self.committed_terminals
+            .lock()
+            .expect("executor terminal notifications lock")
+            .push((tenant_id.clone(), thread_id, turn_id));
+    }
+
     fn execute_tool_call(
         &mut self,
         call: koduck_ai::application::ModelToolCall,
@@ -394,6 +440,8 @@ struct MemoryHistoryState {
     items: BTreeMap<TurnId, Vec<Item>>,
     interruption_thread: Option<ThreadId>,
     requested_interrupts: Vec<TurnId>,
+    interrupt_error: Option<HistoryError>,
+    fail_provider_terminal_once: bool,
 }
 
 #[derive(Clone, Default)]
@@ -412,6 +460,23 @@ impl MemoryHistory {
         history
     }
 
+    fn with_recovered_terminal() -> Self {
+        let history = Self::default();
+        history
+            .state
+            .lock()
+            .expect("history lock")
+            .fail_provider_terminal_once = true;
+        history
+    }
+
+    fn with_interrupt_terminal_race(thread_id: ThreadId) -> Self {
+        let history = Self::with_interruption_thread(thread_id);
+        history.state.lock().expect("history lock").interrupt_error =
+            Some(HistoryError::AlreadyTerminal);
+        history
+    }
+
     fn requested_interrupts(&self) -> Vec<TurnId> {
         self.state
             .lock()
@@ -422,17 +487,24 @@ impl MemoryHistory {
 }
 
 impl TurnHistory for MemoryHistory {
+    fn start_turn_liveness(
+        &self,
+        turn: &AcceptedTurn,
+    ) -> Result<Box<dyn TurnLiveness>, HistoryError> {
+        Ok(Box::new(RecoveredTerminalLiveness {
+            state: Arc::clone(&self.state),
+            turn_id: turn.turn_id,
+        }))
+    }
+
     fn request_interrupt(
         &mut self,
         _trust: &TrustContext,
         turn_id: TurnId,
     ) -> Result<(), HistoryError> {
-        self.state
-            .lock()
-            .expect("history lock")
-            .requested_interrupts
-            .push(turn_id);
-        Ok(())
+        let mut state = self.state.lock().expect("history lock");
+        state.requested_interrupts.push(turn_id);
+        state.interrupt_error.clone().map_or(Ok(()), Err)
     }
 
     fn interruption_thread(
@@ -512,6 +584,25 @@ impl TurnHistory for MemoryHistory {
         Ok(batch)
     }
 
+    fn append_provider_terminal(
+        &mut self,
+        turn: &AcceptedTurn,
+        outcome: TerminalOutcome,
+    ) -> Result<Item, HistoryError> {
+        let mut state = self.state.lock().expect("history lock");
+        if state.fail_provider_terminal_once {
+            state.fail_provider_terminal_once = false;
+            return Err(HistoryError::Unavailable);
+        }
+        let items = state
+            .items
+            .get_mut(&turn.turn_id)
+            .ok_or(HistoryError::NotFound)?;
+        let terminal = Item::new(items.len() as u64 + 1, ItemPayload::Terminal(outcome));
+        items.push(terminal.clone());
+        Ok(terminal)
+    }
+
     fn replay(&self, _tenant_id: &TenantId, turn_id: TurnId) -> Result<Vec<Item>, HistoryError> {
         self.state
             .lock()
@@ -520,6 +611,30 @@ impl TurnHistory for MemoryHistory {
             .get(&turn_id)
             .cloned()
             .ok_or(HistoryError::NotFound)
+    }
+}
+
+struct RecoveredTerminalLiveness {
+    state: Arc<Mutex<MemoryHistoryState>>,
+    turn_id: TurnId,
+}
+
+impl TurnLiveness for RecoveredTerminalLiveness {
+    fn handoff_to_recovery(
+        self: Box<Self>,
+    ) -> Result<koduck_ai::application::RecoveryHandoff, HistoryError> {
+        let mut state = self.state.lock().expect("history lock");
+        let items = state
+            .items
+            .get_mut(&self.turn_id)
+            .ok_or(HistoryError::NotFound)?;
+        items.push(Item::new(
+            items.len() as u64 + 1,
+            ItemPayload::Terminal(TerminalOutcome::Failed {
+                code: "DURABILITY_UNAVAILABLE".to_owned(),
+            }),
+        ));
+        Ok(koduck_ai::application::RecoveryHandoff::Recovered)
     }
 }
 
@@ -576,6 +691,82 @@ fn authenticated_interrupt_cancels_live_tool_work_before_terminalizing_the_turn(
 
     assert_eq!(executor.interruptions(), vec![(thread_id, turn_id)]);
     assert_eq!(history.requested_interrupts(), vec![turn_id]);
+    // The runner notifies the executor after the durable interrupt terminal,
+    // so a C-5 boundary can reclaim its process-local authority against the
+    // proven canonical terminal (ADR-0003 T-3).
+    assert_eq!(
+        executor.committed_terminals(),
+        vec![(command().trust.tenant_id.clone(), thread_id, turn_id)],
+        "the interrupt terminal notifies the executor once"
+    );
+}
+
+#[test]
+fn terminal_race_notifies_the_executor_after_interrupt_returns_already_terminal() {
+    let thread_id = ThreadId::new();
+    let turn_id = TurnId::new();
+    let history = MemoryHistory::with_interrupt_terminal_race(thread_id);
+    let executor = RecordingToolExecutor::default();
+    let mut runner = TurnRunner::new(ScriptedProvider::default(), history.clone())
+        .with_tool_executor(executor.clone());
+
+    assert!(matches!(
+        runner.request_interrupt(&command().trust, turn_id),
+        Err(TurnRunError::History(HistoryError::AlreadyTerminal))
+    ));
+    assert_eq!(executor.interruptions(), vec![(thread_id, turn_id)]);
+    assert_eq!(history.requested_interrupts(), vec![turn_id]);
+    assert_eq!(
+        executor.committed_terminals(),
+        vec![(command().trust.tenant_id.clone(), thread_id, turn_id)],
+        "a post-lookup terminal race still gives C-5 a canonical reclamation probe"
+    );
+}
+
+#[test]
+fn a_completed_turn_notifies_the_executor_of_its_durable_terminal() {
+    let provider = ScriptedProvider::scripted(vec![
+        vec![tool_call_event("fixture.tool")],
+        vec![ProviderEvent::Completed],
+    ]);
+    let executor = RecordingToolExecutor::default();
+    let mut runner =
+        TurnRunner::new(provider, MemoryHistory::default()).with_tool_executor(executor.clone());
+
+    let result = runner.execute(command()).expect("the turn completes");
+
+    assert_eq!(result.status, TurnStatus::Completed);
+    assert_eq!(
+        executor.committed_terminals(),
+        vec![(
+            command().trust.tenant_id.clone(),
+            result.thread_id,
+            result.turn_id
+        )],
+        "the runner notifies the executor exactly once after the durable terminal (ADR-0003 T-3)"
+    );
+}
+
+#[test]
+fn a_recovered_terminal_notifies_the_executor_of_its_durable_terminal() {
+    // This fails if the recovery-pending branch replays the recovered terminal
+    // but forgets to notify C-5, leaving its process-local authority retained.
+    let provider = ScriptedProvider::scripted(vec![
+        vec![tool_call_event("fixture.tool")],
+        vec![ProviderEvent::Completed],
+    ]);
+    let history = MemoryHistory::with_recovered_terminal();
+    let executor = RecordingToolExecutor::default();
+    let mut runner = TurnRunner::new(provider, history).with_tool_executor(executor.clone());
+
+    let result = runner.execute(command());
+
+    assert!(matches!(result, Err(TurnRunError::Durability(_))));
+    assert_eq!(
+        executor.committed_terminals().len(),
+        1,
+        "a recovered canonical terminal notifies C-5 exactly once"
+    );
 }
 
 #[test]
@@ -784,8 +975,9 @@ fn an_oversized_model_bound_result_is_rejected_at_the_executor_boundary() {
         vec![ProviderEvent::Completed],
     ]);
     let history = MemoryHistory::default();
-    let mut runner = TurnRunner::new(provider.clone(), history.clone())
-        .with_tool_executor(OversizedResultToolExecutor);
+    let executor = OversizedResultToolExecutor::default();
+    let mut runner =
+        TurnRunner::new(provider.clone(), history.clone()).with_tool_executor(executor.clone());
 
     let result = runner.execute(command());
 
@@ -815,6 +1007,11 @@ fn an_oversized_model_bound_result_is_rejected_at_the_executor_boundary() {
         provider.recorded_inputs().len(),
         1,
         "no continuation request starts after the boundary rejection"
+    );
+    assert_eq!(
+        executor.committed_terminals().len(),
+        1,
+        "the committed DURABILITY_UNAVAILABLE terminal still notifies the executor, so its fail-closed probe can reclaim process-local authority (ADR-0003 T-3)"
     );
 }
 

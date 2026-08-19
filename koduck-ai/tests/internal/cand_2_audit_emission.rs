@@ -344,6 +344,7 @@ fn drive_executor(
         WinningCommitter,
         AlwaysCurrentLease,
         audits.clone(),
+        koduck_ai::application::NoCanonicalTurnTerminal,
     );
     let result = executor
         .execute_tool_call(

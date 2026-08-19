@@ -17,6 +17,7 @@ mod policy;
 mod ports;
 mod preparation;
 mod runner;
+mod runner_terminals;
 mod terminal;
 pub(crate) mod tool_boundary;
 mod tool_execution;
@@ -29,9 +30,10 @@ pub use approval_store::{
     ApprovalDecisionResolution, ApprovalInsertResolution, ApprovalRecordStore, ApprovalStoreError,
 };
 pub use attempt_store::{
-    AttemptInsertResolution, AttemptStoreError, AttemptTerminalResolution, DispatchClaimResolution,
-    DurableAttemptTerminal, DurableAttemptTransitions, ExecutionAttemptInterruptionGuard,
-    ExecutionAttemptLiveness, ExecutionAttemptStore, PreparedCloseResolution,
+    AttemptInsertResolution, AttemptStoreError, AttemptTerminalResolution, CanonicalTurnTerminal,
+    DispatchClaimResolution, DurableAttemptTerminal, DurableAttemptTransitions,
+    ExecutionAttemptInterruptionGuard, ExecutionAttemptLiveness, ExecutionAttemptStore,
+    NoCanonicalTurnTerminal, PreparedCloseResolution,
 };
 pub(crate) use audit::record_audit;
 pub use audit::{

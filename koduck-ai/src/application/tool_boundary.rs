@@ -199,6 +199,22 @@ impl ToolExecutionAssembly {
             now,
         )
     }
+
+    /// Reclaims one Turn's process-local authority after its proven canonical
+    /// terminal (ADR-0003 T-3, TC-09/TC-12).
+    ///
+    /// Delegates to the shared runtime catalog; see
+    /// [`ToolExecutionRuntime::reclaim_terminated`](super::ToolExecutionRuntime::reclaim_terminated).
+    pub(crate) fn reclaim_terminated(
+        &self,
+        canonical: &mut dyn super::attempt_store::CanonicalTurnTerminal,
+        tenant_id: &crate::domain::TenantId,
+        thread_id: ThreadId,
+        turn_id: crate::domain::TurnId,
+    ) -> crate::domain::execution::AuthorityReclamation {
+        self.runtime
+            .reclaim_terminated(canonical, tenant_id, thread_id, turn_id)
+    }
 }
 
 /// Public entry to the C-5 default-deny policy and isolated executor boundary.

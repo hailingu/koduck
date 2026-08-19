@@ -3,39 +3,63 @@
 //! Runtime composition of the runner's C-5 tool-call executor.
 
 use crate::adapters::execution::DisabledExecutor;
-use crate::adapters::history::postgres::unix_time_ms;
+use crate::adapters::history::postgres::{TurnTerminalObserver, unix_time_ms};
 use crate::adapters::tool::{ConfiguredCapability, translate_native_tool_call};
 use crate::application::tool_boundary::{ToolExecutionAssembly, ToolExecutionRuntimeRoot};
 use crate::application::tool_projection::emit;
 use crate::application::{
-    AttemptCommitter, DenialCode, DurableAttemptTransitions, EffectState,
+    AttemptCommitter, CanonicalTurnTerminal, DenialCode, DurableAttemptTransitions, EffectState,
     ExecutionAttemptInterruptionGuard, ExecutionAttemptLiveness, ExecutionFailure,
-    ExecutionPending, LeaseCheck, LeaseValidator, ModelToolResult, PendingApprovalCancellation,
-    PendingApprovalCanceller, PolicyDenialContext, ToolAuditRecord, ToolAuditTrail, ToolCallError,
-    ToolCallInputs, ToolCallTurnContext, ToolConfigurationSnapshot, ToolExecutionOutcome,
-    ToolProjection, ToolProjectionSink, record_audit,
+    ExecutionPending, LeaseValidator, ModelToolResult, NoCanonicalTurnTerminal,
+    PendingApprovalCancellation, PendingApprovalCanceller, PolicyDenialContext, ToolAuditRecord,
+    ToolAuditTrail, ToolCallError, ToolCallInputs, ToolCallTurnContext, ToolConfigurationSnapshot,
+    ToolExecutionOutcome, ToolProjection, ToolProjectionSink, record_audit,
 };
 use crate::domain::execution::{ApprovalDecision, ApprovalRequest, ExactActionBinding};
-use crate::domain::{ThreadId, TrustContext, TurnId};
+use crate::domain::{TenantId, ThreadId, TrustContext, TurnId};
 
-/// Foreground-lease validator for tool calls serviced by the live runner.
+/// Reclaims runtime-owned C-5 authority after a history-owned background
+/// terminal may have committed.
 ///
-/// The runner services a call only while it is the current foreground owner of
-/// that exact Turn, so the bound generation is current for the synchronous
-/// servicing window. Genuinely stale owners are still fenced by the shared
-/// process authority catalog and the interruption boundary; the durable C-6
-/// lease check replaces this validator when canonical lease persistence
-/// lands (ADR-0003 TC-07). The interruption path never uses this validator:
-/// an authenticated interrupt can arrive after the owning generation was
-/// fenced or expired, so it validates the durable `turn_leases` row through
-/// the injected [`crate::adapters::execution::SqlxTurnLeaseValidator`]
-/// instead.
-#[derive(Clone, Copy, Debug, Default)]
-struct RunnerForegroundLease;
+/// Each notification clones the thread-safe canonical probe, so concurrent
+/// notifications never serialize behind one lock around the bounded durable
+/// probe: recovery jobs observe terminals while holding their admission
+/// permits, and a shared lock would queue up to 256 two-second probes and
+/// starve later recovery scheduling. A poisoned or unavailable probe leaves
+/// authority retained, which is the required fail-closed outcome.
+#[derive(Clone)]
+pub(crate) struct AuthorityTerminalObserver<P> {
+    assembly: ToolExecutionAssembly,
+    terminals: P,
+}
 
-impl LeaseValidator for RunnerForegroundLease {
-    fn check_current(&mut self, _binding: &ExactActionBinding) -> LeaseCheck {
-        LeaseCheck::Current
+impl<P> AuthorityTerminalObserver<P>
+where
+    P: CanonicalTurnTerminal + Clone,
+{
+    /// Binds a history observer to this process's one C-5 authority root.
+    pub(crate) fn new(root: &ToolExecutionRuntimeRoot, terminals: P) -> Self {
+        Self {
+            assembly: ToolExecutionAssembly::new(root, ToolConfigurationSnapshot::empty()),
+            terminals,
+        }
+    }
+}
+
+impl<P> TurnTerminalObserver for AuthorityTerminalObserver<P>
+where
+    P: CanonicalTurnTerminal + Clone + Send + Sync,
+{
+    fn terminal_may_have_committed(
+        &self,
+        tenant_id: &TenantId,
+        thread_id: ThreadId,
+        turn_id: TurnId,
+    ) {
+        let mut terminals = self.terminals.clone();
+        let _ = self
+            .assembly
+            .reclaim_terminated(&mut terminals, tenant_id, thread_id, turn_id);
     }
 }
 
@@ -72,18 +96,24 @@ impl PendingApprovalCanceller for UnavailablePendingApprovalCanceller {
 /// `SQLx` D-7 store in production (TC-12). The approval decision provider
 /// fails closed — the empty production inventory makes every call deny at
 /// policy before any approval could be requested, and an interactive decision
-/// bridge requires its own accepted capability record. Authenticated
-/// interruption validates the bound generation against the durable C-6 lease
-/// through the injected interruption validator before any D-7 mutation, so a
-/// fenced or expired owner modifies no canonical state (TC-07).
+/// bridge requires its own accepted capability record. Both the dispatch and
+/// interruption paths validate the bound generation against the durable C-6
+/// lease through the injected validator before any D-7 mutation, so a fenced
+/// or expired owner modifies no canonical state (TC-07).
 ///
 /// Every policy, approval, and execution terminal — including the denials
 /// this executor decides before the C-5 driver exists — emits one
 /// correlated, bounded audit record through the injected trail at the
 /// wall-clock observation time; the production runtime wires the durable
 /// `PostgreSQL` trail (TC-14).
+///
+/// The runner's durable Turn-terminal notification reclaims the Turn's
+/// process-local authority through the injected canonical-terminal probe, so
+/// a long-running process drops authority state only after its proven
+/// canonical terminal and forcibly retires any cataloged live or reserved
+/// work before release (ADR-0003 T-3).
 #[derive(Clone)]
-pub(crate) struct BoundaryToolCallExecutor<C, L, A>
+pub(crate) struct BoundaryToolCallExecutor<C, L, A, P = NoCanonicalTurnTerminal>
 where
     C: AttemptCommitter
         + DurableAttemptTransitions
@@ -92,19 +122,27 @@ where
         + Clone,
     L: LeaseValidator + Clone,
     A: ToolAuditTrail + Clone,
+    P: CanonicalTurnTerminal + Clone,
 {
     configuration: ToolConfigurationSnapshot,
     assembly: ToolExecutionAssembly,
     committer: C,
-    interruption_lease: L,
+    /// Injected C-6 lease validator shared by the dispatch and interruption
+    /// paths: both validate the bound generation against durable lease state
+    /// before any D-7 allocation, dispatch, or cancellation commits
+    /// (ADR-0003 TC-07).
+    lease: L,
     /// Injected audit trail receiving one correlated, bounded record per
     /// policy, approval, and execution terminal; an emission failure
     /// surfaces as a structured diagnostic without changing the committed
     /// terminal (TC-14).
     audits: A,
+    /// Injected canonical Turn-terminal probe gating authority reclamation;
+    /// the fail-closed default retains every Turn's process-local authority.
+    terminals: P,
 }
 
-impl<C, L, A> BoundaryToolCallExecutor<C, L, A>
+impl<C, L, A, P> BoundaryToolCallExecutor<C, L, A, P>
 where
     C: AttemptCommitter
         + DurableAttemptTransitions
@@ -113,23 +151,26 @@ where
         + Clone,
     L: LeaseValidator + Clone,
     A: ToolAuditTrail + Clone,
+    P: CanonicalTurnTerminal + Clone,
 {
     /// Creates the executor over the injected authority root, snapshot,
-    /// conditional terminal committer, durable interruption-lease validator,
-    /// and audit trail.
+    /// conditional terminal committer, durable C-6 lease validator, audit
+    /// trail, and canonical Turn-terminal probe.
     pub(crate) fn new(
         root: &ToolExecutionRuntimeRoot,
         configuration: ToolConfigurationSnapshot,
         committer: C,
-        interruption_lease: L,
+        lease: L,
         audits: A,
+        terminals: P,
     ) -> Self {
         Self {
             assembly: ToolExecutionAssembly::new(root, configuration.clone()),
             configuration,
             committer,
-            interruption_lease,
+            lease,
             audits,
+            terminals,
         }
     }
 
@@ -207,12 +248,13 @@ where
                 (descriptor_id, descriptor_version, String::new()),
             );
         };
-        // Invalid arguments deny before any D-6/D-7 exists: the typed denial
-        // is a recorded tool result, never a Turn terminal (ADR-0003 TC-02).
-        let Ok(action) = translate_native_tool_call(
-            &ConfiguredCapability::new(&descriptor_id, &descriptor_version, effect, &target),
-            &call.arguments,
-        ) else {
+        let capability =
+            ConfiguredCapability::new(&descriptor_id, &descriptor_version, effect, &target);
+        // Invalid provider Tool-call arguments deny before any D-6/D-7
+        // exists: the typed denial is a recorded tool result, never a Turn
+        // terminal (ADR-0003 TC-02). MCP has no runtime ingress yet; its
+        // adapter translation remains available for its future transport.
+        let Ok(action) = translate_native_tool_call(&capability, &call.arguments) else {
             return PreDriverResolution::denied(
                 DenialCode::InvalidInput,
                 Self::denial_audit_context(
@@ -303,7 +345,7 @@ where
     }
 }
 
-impl<C, L, A> crate::application::ToolCallExecutor for BoundaryToolCallExecutor<C, L, A>
+impl<C, L, A, P> crate::application::ToolCallExecutor for BoundaryToolCallExecutor<C, L, A, P>
 where
     C: AttemptCommitter
         + DurableAttemptTransitions
@@ -312,6 +354,7 @@ where
         + Clone,
     L: LeaseValidator + Clone + 'static,
     A: ToolAuditTrail + Clone + 'static,
+    P: CanonicalTurnTerminal + Clone + 'static,
 {
     fn request_interrupt(
         &mut self,
@@ -332,14 +375,14 @@ where
                 })
             })?;
         let mut approvals = UnavailablePendingApprovalCanceller;
-        // The interruption lease validator answers from durable C-6 state: a
-        // fenced or expired generation fails closed as reconciliation before
-        // any D-7 cancellation commits (ADR-0003 TC-07).
+        // Both the dispatch and interruption paths validate the bound
+        // generation against durable C-6 lease state before any D-7 mutation
+        // commits (ADR-0003 TC-07).
         let outcome = self
             .assembly
             .interrupt(
                 DisabledExecutor,
-                self.interruption_lease.clone(),
+                self.lease.clone(),
                 self.committer.clone(),
                 &mut self.audits,
                 &mut approvals,
@@ -374,6 +417,21 @@ where
         }
     }
 
+    fn turn_terminal_committed(
+        &mut self,
+        tenant_id: &TenantId,
+        thread_id: ThreadId,
+        turn_id: TurnId,
+    ) {
+        // Reclamation is hygiene bound to the durable probe: an unproven or
+        // unavailable probe retains the authority, while a proven terminal
+        // forcibly retires cataloged live or reserved D-7 work before release.
+        // Neither outcome needs an error surface here (ADR-0003 T-3).
+        let _ =
+            self.assembly
+                .reclaim_terminated(&mut self.terminals, tenant_id, thread_id, turn_id);
+    }
+
     fn execute_tool_call(
         &mut self,
         call: crate::application::ModelToolCall,
@@ -405,14 +463,13 @@ where
         // The runner-supplied sink is forwarded through the boundary, so the
         // approval, dispatch, and terminal projections are durably appended
         // as they happen — the running view before the executor dispatch
-        // (ADR-0003 TC-06).
+        // (ADR-0003 TC-06). The injected durable C-6 validator leases the
+        // preparation and dispatch halves of the boundary, so a fenced or
+        // expired servicing generation fails closed before any D-7
+        // allocation or dispatch (ADR-0003 TC-07).
         let outcome = match self
             .assembly
-            .boundary(
-                DisabledExecutor,
-                RunnerForegroundLease,
-                self.committer.clone(),
-            )
+            .boundary(DisabledExecutor, self.lease.clone(), self.committer.clone())
             .execute_projected(
                 &inputs,
                 trust,

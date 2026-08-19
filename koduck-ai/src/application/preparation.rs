@@ -5,16 +5,19 @@
 use std::sync::Arc;
 
 use crate::domain::execution::{
-    ExactActionBinding, ExecutionAttempt, ExecutionError, TurnAuthorityCatalog,
-    TurnExecutionAuthority,
+    AuthorityReclamation, ExactActionBinding, ExecutionAttempt, ExecutionError,
+    TurnAuthorityCatalog, TurnExecutionAuthority,
 };
 
+use super::attempt_store::CanonicalTurnTerminal;
 use super::execution::{ExecutionPreparationError, LeaseCheck, LeaseValidator};
 
 /// Runtime-assembly-owned root for every live Turn execution authority.
 ///
-/// Exactly one root is injected into runtime handles. T-3 replaces its
-/// process-local catalog with canonical persistence.
+/// Exactly one root is injected into runtime handles. Its process-local
+/// catalog arbitrates allocation while every durable D-7 transition passes
+/// through the injected canonical store, and reclamation drops a Turn's
+/// authority only after its proven canonical terminal.
 #[derive(Debug, Default)]
 pub(crate) struct ToolExecutionAuthorityRoot {
     catalog: Arc<TurnAuthorityCatalog>,
@@ -56,13 +59,37 @@ impl ToolExecutionRuntime {
             authority: None,
         }
     }
+
+    /// Reclaims one Turn's process-local authority after its canonical terminal.
+    ///
+    /// The durable probe must prove the canonical Turn terminal first: every
+    /// durable D-7 preparation and dispatch claim requires the Turn's
+    /// `started` status, so only a terminally-proven Turn can never
+    /// resurrect its durable attempt budget after its process-local
+    /// authority drops. An unproven or unavailable Turn retains its authority
+    /// unchanged; a proven terminal retires stale local live and reserved
+    /// mirrors before releasing the authority.
+    pub fn reclaim_terminated(
+        &self,
+        canonical: &mut dyn CanonicalTurnTerminal,
+        tenant_id: &crate::domain::TenantId,
+        thread_id: crate::domain::ThreadId,
+        turn_id: crate::domain::TurnId,
+    ) -> AuthorityReclamation {
+        match canonical.turn_is_terminal(tenant_id, thread_id, turn_id) {
+            Ok(true) => self.catalog.reclaim(tenant_id, thread_id, turn_id),
+            Ok(false) | Err(_) => AuthorityReclamation::Retained,
+        }
+    }
 }
 
 /// Lease-validating preparation handle scoped to one runtime-owned Turn authority.
 ///
 /// The first successful binding fixes this handle's Turn and profile identity.
-/// Every process handle shares that authority. The process root strongly retains
-/// it until T-3 can bind reclamation to canonical persistence without resurrection.
+/// Every process handle shares that authority. The process root retains it
+/// until [`ToolExecutionRuntime::reclaim_terminated`] proves the canonical
+/// Turn terminal, so the durable attempt budget cannot be resurrected on an
+/// unproven state.
 pub struct ExecutionPreparer<L> {
     lease: L,
     catalog: Arc<TurnAuthorityCatalog>,

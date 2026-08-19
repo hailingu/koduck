@@ -13,11 +13,11 @@ use std::sync::Mutex;
 use koduck_ai::adapters::execution::SqlxTurnLeaseValidator;
 use koduck_ai::adapters::tool::{parse_action_parameters, parse_input_schema};
 use koduck_ai::application::{
-    ActionDeadline, CancelAcknowledgement, CancelPermit, DispatchClaimResolution, DispatchPermit,
-    EffectState, ExecutionCoordinator, ExecutionFailure, ExecutionPending, ExecutionResponse,
-    ExecutionResponseBuilder, ExecutorError, IsolatedExecutor, ToolAuthorizationService,
-    ToolCallInputs, ToolConfigurationSnapshot, ToolExecutionAssembly, ToolExecutionOutcome,
-    ToolExecutionRuntimeRoot,
+    ActionDeadline, CancelAcknowledgement, CancelPermit, CanonicalTurnTerminal,
+    DispatchClaimResolution, DispatchPermit, EffectState, ExecutionCoordinator, ExecutionFailure,
+    ExecutionPending, ExecutionResponse, ExecutionResponseBuilder, ExecutorError, IsolatedExecutor,
+    ToolAuthorizationService, ToolCallInputs, ToolConfigurationSnapshot, ToolExecutionAssembly,
+    ToolExecutionOutcome, ToolExecutionRuntimeRoot,
 };
 use koduck_ai::domain::execution::{ApprovalDecision, AttemptId, ExactActionBinding};
 use koduck_ai::domain::tool::{
@@ -365,10 +365,121 @@ fn production_dispatch_claims_permit_exactly_one_executor_dispatch_across_instan
     );
 }
 
+#[test]
+fn canonical_terminal_probe_gates_durable_authority_reclamation() {
+    // A Turn with a live process-local authority reclaims only after the
+    // durable probe observes its canonical terminal: a `started` Turn
+    // retains the authority, the durable terminal releases it, and a
+    // missing Turn row never authorizes reclamation (ADR-0003 T-3).
+    let Some(harness) = harness() else {
+        return;
+    };
+    let (identity, sealed) = sealed_binding(&harness);
+    let mut store = attempt_store(harness.pool.clone(), &harness.runtime);
+    assert_eq!(
+        store.turn_is_terminal(&identity.tenant, identity.thread, identity.turn),
+        Ok(false),
+        "a started canonical Turn is not terminal"
+    );
+    let missing = call_identity();
+    assert_eq!(
+        store.turn_is_terminal(&missing.tenant, missing.thread, missing.turn),
+        Ok(false),
+        "a missing canonical Turn row proves nothing"
+    );
+
+    let root = ToolExecutionRuntimeRoot::issue();
+    let mut preparer = root.runtime().preparer(AlwaysCurrentLease);
+    let (mut authority, mut attempt) = preparer
+        .prepare(sealed.clone())
+        .expect("the live fixture attempt prepares locally");
+    authority
+        .claim_dispatch(&mut attempt, None, STARTED_AT_MILLIS)
+        .expect("the fixture attempt claims its dispatch");
+    authority
+        .reserve_terminal(&attempt)
+        .expect("the fixture attempt reserves its terminal");
+    authority
+        .mirror_terminal(
+            &mut attempt,
+            koduck_ai::domain::execution::ExecutionStatus::Failed,
+        )
+        .expect("the fixture attempt mirrors its terminal");
+
+    assert_eq!(
+        root.runtime().reclaim_terminated(
+            &mut store,
+            &identity.tenant,
+            identity.thread,
+            identity.turn
+        ),
+        koduck_ai::domain::execution::AuthorityReclamation::Retained,
+        "a started canonical Turn retains even a fully terminal local authority"
+    );
+    harness.runtime.block_on(async {
+        sqlx::query(
+            "UPDATE turns SET status = 'completed' \
+             WHERE tenant_id = $1 AND thread_id = $2 AND turn_id = $3",
+        )
+        .bind(identity.tenant.as_str())
+        .bind(identity.thread.as_uuid())
+        .bind(identity.turn.as_uuid())
+        .execute(&harness.pool)
+        .await
+        .expect("fixture turn reaches its canonical terminal");
+    });
+    assert_eq!(
+        store.turn_is_terminal(&identity.tenant, identity.thread, identity.turn),
+        Ok(true),
+        "the durable terminal is proven"
+    );
+    assert_eq!(
+        root.runtime().reclaim_terminated(
+            &mut store,
+            &identity.tenant,
+            identity.thread,
+            identity.turn
+        ),
+        koduck_ai::domain::execution::AuthorityReclamation::Reclaimed,
+        "the proven canonical terminal releases the process-local authority"
+    );
+}
+
+#[test]
+fn canonical_terminal_probe_retains_authority_during_recovery_pending() {
+    // `recovery-pending` is an intermediate durable lifecycle state. It must
+    // not release C-5's process-local authority because recovery still owns
+    // the Turn and may commit its final terminal (ADR-0003 T-3).
+    let Some(harness) = harness() else {
+        return;
+    };
+    let identity = call_identity();
+    identity.seed(&harness);
+    harness.runtime.block_on(async {
+        sqlx::query(
+            "UPDATE turns SET status = 'recovery-pending' \
+             WHERE tenant_id = $1 AND thread_id = $2 AND turn_id = $3",
+        )
+        .bind(identity.tenant.as_str())
+        .bind(identity.thread.as_uuid())
+        .bind(identity.turn.as_uuid())
+        .execute(&harness.pool)
+        .await
+        .expect("fixture turn enters recovery-pending");
+    });
+
+    let mut store = attempt_store(harness.pool.clone(), &harness.runtime);
+    assert_eq!(
+        store.turn_is_terminal(&identity.tenant, identity.thread, identity.turn),
+        Ok(false),
+        "recovery-pending remains non-terminal until durable recovery commits its terminal"
+    );
+}
+
 /// Lease validator double answering Current for every check: these legs
-/// prove the durable store's own fencing, mirroring the production shape
-/// where the dispatch-path lease validator is replaced by the durable C-6
-/// check only in later wiring.
+/// isolate the durable store's own fencing with a controlled foreground
+/// answer, while the production runtime wires the durable C-6 check into
+/// both the dispatch and interruption paths.
 #[derive(Clone, Copy)]
 struct AlwaysCurrentLease;
 

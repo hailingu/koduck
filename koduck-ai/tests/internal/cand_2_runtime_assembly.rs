@@ -15,15 +15,27 @@ use koduck_ai::domain::{LeaseGeneration, TenantId, ThreadId, TrustContext, TurnI
 use koduck_ai::runtime::RuntimeState;
 use koduck_ai::runtime::tool_executor::BoundaryToolCallExecutor;
 
-/// Interruption-lease double for the assembly harness: these legs exercise
-/// Tool-call servicing only and never interrupt, so the current-generation
-/// answer is never consulted.
+/// Lease double for the assembly harness: these legs exercise Tool-call
+/// servicing only and never observe a fenced generation, so the
+/// current-generation answer is never load-bearing.
 #[derive(Clone, Copy)]
 struct UnusedInterruptionLease;
 
 impl LeaseValidator for UnusedInterruptionLease {
     fn check_current(&mut self, _binding: &ExactActionBinding) -> LeaseCheck {
         LeaseCheck::Current
+    }
+}
+
+/// Lease double that reports the bound generation as durably fenced, so the
+/// servicing path must observe it through the injected validator instead of
+/// trusting the synchronous servicing window (ADR-0003 TC-07).
+#[derive(Clone, Copy)]
+struct DurableFencedLease;
+
+impl LeaseValidator for DurableFencedLease {
+    fn check_current(&mut self, _binding: &ExactActionBinding) -> LeaseCheck {
+        LeaseCheck::Fenced
     }
 }
 
@@ -177,6 +189,7 @@ fn runtime_assembly_denies_every_tool_call_through_the_empty_inventory() {
         RecordingCommitter::default(),
         UnusedInterruptionLease,
         koduck_ai::application::NoToolAudits,
+        koduck_ai::application::NoCanonicalTurnTerminal,
     );
 
     let mut projections = RecordingProjections::default();
@@ -206,6 +219,7 @@ fn interruption_with_remote_live_attempt_requires_reconciliation() {
         RemoteLiveCommitter,
         UnusedInterruptionLease,
         koduck_ai::application::NoToolAudits,
+        koduck_ai::application::NoCanonicalTurnTerminal,
     );
 
     let result = executor.request_interrupt(&trust(), ThreadId::new(), TurnId::new());
@@ -225,6 +239,7 @@ fn runtime_assembly_normalizes_an_invalid_tool_name_before_recording_denial() {
         RecordingCommitter::default(),
         UnusedInterruptionLease,
         koduck_ai::application::NoToolAudits,
+        koduck_ai::application::NoCanonicalTurnTerminal,
     );
     let mut projections = RecordingProjections::default();
 
@@ -284,6 +299,7 @@ fn runtime_assembly_records_the_full_c5_path_for_a_configured_capability() {
         committer.clone(),
         UnusedInterruptionLease,
         koduck_ai::application::NoToolAudits,
+        koduck_ai::application::NoCanonicalTurnTerminal,
     );
 
     let mut projections = RecordingProjections::default();
@@ -312,6 +328,69 @@ fn runtime_assembly_records_the_full_c5_path_for_a_configured_capability() {
         committer.commits(),
         2,
         "the resolved C-5 path commits one terminal per attempt through the injected committer"
+    );
+}
+
+#[test]
+fn dispatch_path_uses_the_injected_durable_lease_validator() {
+    // A configured capability whose injected validator reports the bound
+    // generation as durably fenced must fail closed before any D-7
+    // allocation or dispatch: the runtime executor passes its injected C-6
+    // lease validator into the C-5 boundary's dispatch path rather than a
+    // process-local stub that always answers Current (ADR-0003 TC-07).
+    let mut snapshot = ToolConfigurationSnapshot::empty();
+    snapshot
+        .register_descriptor(
+            CapabilityDescriptor::new(
+                "fixture.read",
+                "v1",
+                Effect::ReadData,
+                DescriptorState::Active,
+                parse_input_schema(
+                    r#"{"type":"object","properties":{},"required":[],"additionalProperties":false}"#,
+                )
+                .expect("valid schema"),
+            )
+            .expect("unique descriptor"),
+        )
+        .expect("descriptor registers");
+    snapshot
+        .register_profile(
+            PermissionProfile::builder("profile-default", "v1")
+                .expect("valid profile")
+                .allow("fixture.read", "v1", Effect::ReadData, "fixture-target")
+                .expect("valid entry")
+                .build(),
+        )
+        .expect("profile registers");
+    let root = ToolExecutionRuntimeRoot::issue();
+    let committer = RecordingCommitter::default();
+    let mut executor = BoundaryToolCallExecutor::new(
+        &root,
+        snapshot,
+        committer.clone(),
+        DurableFencedLease,
+        koduck_ai::application::NoToolAudits,
+        koduck_ai::application::NoCanonicalTurnTerminal,
+    );
+
+    let mut projections = RecordingProjections::default();
+    let result =
+        executor.execute_tool_call(call("fixture.read"), &context(), &trust(), &mut projections);
+
+    assert!(
+        matches!(
+            result,
+            Err(koduck_ai::application::ToolCallError::Preparation(
+                koduck_ai::application::ExecutionPreparationError::OwnerFenced
+            ))
+        ),
+        "a fenced injected lease fails the dispatch path closed before allocation, found {result:?}"
+    );
+    assert_eq!(
+        committer.commits(),
+        0,
+        "a fenced owner commits no terminal through the injected committer"
     );
 }
 
@@ -354,6 +433,7 @@ fn policy_denials_are_recorded_tool_results_not_turn_terminals() {
         committer.clone(),
         UnusedInterruptionLease,
         koduck_ai::application::NoToolAudits,
+        koduck_ai::application::NoCanonicalTurnTerminal,
     );
 
     let mut projections = RecordingProjections::default();

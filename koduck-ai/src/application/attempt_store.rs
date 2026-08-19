@@ -455,3 +455,42 @@ pub trait ExecutionAttemptInterruptionGuard {
         turn_id: TurnId,
     ) -> Result<(), AttemptStoreError>;
 }
+
+/// Consumer-owned proof that one Turn reached its canonical terminal state.
+///
+/// Authority-root reclamation MUST be bound to this proof: only a Turn in a
+/// canonical terminal state can never prepare or claim another D-7, so
+/// dropping its process-local authority cannot resurrect the durable attempt
+/// budget (ADR-0003 TC-09/TC-12). `recovery-pending` is not terminal.
+pub trait CanonicalTurnTerminal {
+    /// Reports whether the canonical Turn reached an irreversible terminal.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AttemptStoreError`] when canonical status cannot be decided;
+    /// callers MUST treat that answer as unproven and retain authority.
+    fn turn_is_terminal(
+        &mut self,
+        tenant_id: &TenantId,
+        thread_id: ThreadId,
+        turn_id: TurnId,
+    ) -> Result<bool, AttemptStoreError>;
+}
+
+/// Fail-closed canonical Turn-terminal probe.
+///
+/// Nothing is provable through this probe, so reclamation always retains the
+/// process-local authority; compositions without a durable probe inject it.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct NoCanonicalTurnTerminal;
+
+impl CanonicalTurnTerminal for NoCanonicalTurnTerminal {
+    fn turn_is_terminal(
+        &mut self,
+        _tenant_id: &TenantId,
+        _thread_id: ThreadId,
+        _turn_id: TurnId,
+    ) -> Result<bool, AttemptStoreError> {
+        Err(AttemptStoreError::Unavailable)
+    }
+}

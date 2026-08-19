@@ -13,7 +13,7 @@ Accepted ADR remains authoritative when this implementation copy differs.
 | `KODUCK_AI_BIND_ADDR` | Socket address such as `127.0.0.1:8080` | Axum listener address | No |
 | `KODUCK_AI_DATABASE_URL` | PostgreSQL connection URL | Canonical Thread, Turn, Item, and lease storage | Yes |
 | `KODUCK_AI_OPENAI_BASE_URL` | HTTPS base URL ending before `/chat/completions` | Explicit OpenAI-compatible provider | No |
-| `KODUCK_AI_OPENAI_MODEL` | Non-empty provider model identifier | Tool-free chat-completions model | No |
+| `KODUCK_AI_OPENAI_MODEL` | Non-empty provider model identifier | Chat-completions model; Tool calls resolve against the empty C-5 inventory | No |
 | `KODUCK_AI_OPENAI_API_KEY` | Provider bearer credential | Provider authentication | Yes |
 
 Every variable is required and blank values are rejected. Runtime debug output
@@ -69,17 +69,45 @@ deadline and mapped to `durability-unavailable` (`503`) on expiration.
 ## Startup
 
 The executable connects to PostgreSQL and applies the idempotent CAND-1
-history schema plus the idempotent ADR-0003 CAND-2 approval schemas
-(`0002_cand_2_policy_execution.sql` and
-`0003_cand_2_requester_ownership.sql`), with each startup operation limited by
-the 2-second database-attempt deadline, constructs exactly one
-`PostgresTurnHistory<SqlxPostgresExecutor>` and one
-`ApprovalDecisionRoute<SqlxApprovalRecordStore>` over the shared pool,
-constructs the configured OpenAI-compatible transport, binds the listener, and
-exposes only the four owned v1 routes. Startup fails explicitly if
-configuration, PostgreSQL, provider-client construction, listener binding, or
-HTTP serving fails. No process-local, Memory, Multitask, predecessor, or
-alternate history fallback is configured.
+history schema plus the idempotent ADR-0003 CAND-2 schemas
+(`0002_cand_2_policy_execution.sql`,
+`0003_cand_2_requester_ownership.sql`, `0004_cand_2_tool_projections.sql`,
+`0005_cand_2_execution_attempts.sql`, `0006_cand_2_interrupt_barrier.sql`,
+and `0007_cand_2_tool_audit.sql`), with each startup operation — connection
+plus seven migrations — limited by the 2-second database-attempt deadline,
+constructs exactly one `PostgresTurnHistory<SqlxPostgresExecutor>`, one
+`ApprovalDecisionRoute<SqlxApprovalRecordStore>`, and one runner-backed C-5
+tool executor over the shared pool, constructs the configured
+OpenAI-compatible transport, binds the listener, and exposes only the four
+owned v1 routes. Startup fails explicitly if configuration, PostgreSQL,
+provider-client construction, listener binding, or HTTP serving fails. No
+process-local, Memory, Multitask, predecessor, or alternate history fallback
+is configured.
+
+## Tool Execution Boundary (C-5)
+
+The runner services every model Tool call through the C-5 boundary
+(`RuntimeState::tool_call_executor`). The production descriptor inventory is
+empty — zero configured descriptors and Permission Profiles — so every call
+is recorded as a typed denial (`descriptor_missing`) with zero D-6, zero
+D-7, and zero dispatch; a later Accepted capability record owns enabling any
+real descriptor. The production runtime currently accepts provider-native
+Tool calls only. The MCP action translator exists as an adapter seam, but an
+MCP transport and production ingress are not configured. The sole production
+executor is the disabled executor, so a configured capability records
+`executor_unavailable` with its canonical D-7 identity; the runtime contains
+no direct host-process, filesystem, or MCP-server execution path.
+
+Both the dispatch and interruption paths validate the bound foreground lease
+generation against the durable `turn_leases` rows through the injected
+`SqlxTurnLeaseValidator` before any D-7 mutation. D-7 terminals commit
+through the durable `SqlxExecutionAttemptStore` conditional transitions,
+and every policy, approval, and execution terminal emits one bounded audit
+record through the durable audit trail. After each durable Turn terminal the
+runner notifies the executor, which reclaims that Turn's process-local
+authority only after the durable probe proves the canonical terminal, forcibly
+retiring any cataloged live or reserved attempt before release. An unproven or
+unavailable probe retains that authority.
 
 ## Operational Bounds
 

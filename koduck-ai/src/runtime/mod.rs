@@ -29,7 +29,9 @@ use crate::adapters::audit::{SerializingToolAuditTrail, SqlxToolAuditSink};
 use crate::adapters::execution::{
     SqlxApprovalRecordStore, SqlxExecutionAttemptStore, SqlxTurnLeaseValidator,
 };
-use crate::adapters::history::postgres::{PostgresTurnHistory, SqlxPostgresExecutor, unix_time_ms};
+use crate::adapters::history::postgres::{
+    PostgresTurnHistory, SqlxPostgresExecutor, TurnTerminalObserver, unix_time_ms,
+};
 use crate::adapters::http::{
     HttpAdapter, HttpMethod, HttpRequest, TurnService, approvals::ApprovalDecisionAdapter,
     approvals::ApprovalDecisionTransport, invalid_request_response,
@@ -243,16 +245,17 @@ pub async fn run(config: RuntimeConfig) -> Result<(), RuntimeError> {
     // Production canonical D-7 assembly: the runner's C-5 boundary commits
     // every terminal through the durable conditional `SQLx` transitions
     // (ADR-0003 TC-12), so the process-local arbitration catalog is no longer
-    // the terminal authority. Authenticated interruption validates the durable
-    // C-6 lease before any D-7 mutation (ADR-0003 TC-07).
+    // the terminal authority. Dispatch and authenticated interruption validate
+    // the durable C-6 lease before any D-7 mutation (ADR-0003 TC-07).
     let attempts = SqlxExecutionAttemptStore::new(pool.clone(), runtime.clone());
-    let interruption_lease = SqlxTurnLeaseValidator::new(pool.clone(), runtime.clone());
+    let lease = SqlxTurnLeaseValidator::new(pool.clone(), runtime.clone());
     // Production C-5 audit trail: every policy, approval, and execution
     // terminal emits one bounded, correlated record durably appended to the
     // canonical trail (ADR-0003 TC-14).
     let audit_trail =
         SerializingToolAuditTrail::new(SqlxToolAuditSink::new(pool.clone(), runtime.clone()));
-    let history = PostgresTurnHistory::new(SqlxPostgresExecutor::new(pool, runtime.clone()));
+    let history = PostgresTurnHistory::new(SqlxPostgresExecutor::new(pool, runtime.clone()))
+        .with_terminal_observer(runtime_state.terminal_observer(attempts.clone()));
     let _reconciliation_worker = history
         .start_reconciliation_worker()
         .map_err(RuntimeError::ReconciliationWorker)?;
@@ -269,7 +272,7 @@ pub async fn run(config: RuntimeConfig) -> Result<(), RuntimeError> {
     );
     let provider = OpenAiCompatibleProvider::new(transport);
     let runner = TurnRunner::new(provider, history).with_tool_executor(
-        runtime_state.tool_call_executor(attempts, interruption_lease, audit_trail),
+        runtime_state.tool_call_executor(attempts.clone(), lease, audit_trail, attempts),
     );
     let listener = tokio::net::TcpListener::bind(config.bind_addr())
         .await
@@ -472,21 +475,24 @@ impl RuntimeState {
 
     /// Returns the production tool-call executor over this state's sole C-5
     /// authority root, the empty production descriptor snapshot, the injected
-    /// conditional terminal committer, the injected durable
-    /// interruption-lease validator, and the injected audit trail: every
-    /// model Tool call resolves against the empty inventory and is recorded
-    /// as a typed denial with zero D-6/D-7 and zero dispatch, a configured
-    /// capability commits its terminals through the durable store, an
-    /// authenticated interruption cancels D-7 work only for the current
-    /// durable lease generation, and every terminal emits one correlated,
-    /// bounded audit record through the trail
-    /// (ADR-0003 TC-02/TC-07/TC-12/TC-13/TC-14).
-    pub(crate) fn tool_call_executor<C, L, A>(
+    /// conditional terminal committer, the injected durable C-6 lease
+    /// validator, the injected audit trail, and the injected canonical
+    /// Turn-terminal probe: every model Tool call resolves against the empty
+    /// inventory and is recorded as a typed denial with zero D-6/D-7 and zero
+    /// dispatch, a configured capability commits its terminals through the
+    /// durable store, both dispatch and authenticated interruption validate
+    /// the bound generation against the durable lease before any D-7
+    /// mutation, every terminal emits one correlated, bounded audit record
+    /// through the trail, and the runner's Turn-terminal notification
+    /// reclaims process-local authority only after the probe proves the
+    /// canonical terminal (ADR-0003 TC-02/TC-07/TC-12/TC-13/TC-14, T-3).
+    pub(crate) fn tool_call_executor<C, L, A, P>(
         &self,
         committer: C,
-        interruption_lease: L,
+        lease: L,
         audits: A,
-    ) -> tool_executor::BoundaryToolCallExecutor<C, L, A>
+        terminals: P,
+    ) -> tool_executor::BoundaryToolCallExecutor<C, L, A, P>
     where
         C: crate::application::AttemptCommitter
             + crate::application::DurableAttemptTransitions
@@ -495,14 +501,28 @@ impl RuntimeState {
             + Clone,
         L: crate::application::LeaseValidator + Clone + 'static,
         A: crate::application::ToolAuditTrail + Clone + 'static,
+        P: crate::application::CanonicalTurnTerminal + Clone + 'static,
     {
         tool_executor::BoundaryToolCallExecutor::new(
             &self.tool_execution_root,
             crate::application::ToolConfigurationSnapshot::empty(),
             committer,
-            interruption_lease,
+            lease,
             audits,
+            terminals,
         )
+    }
+
+    /// Returns the background-terminal observer bound to this process's sole
+    /// C-5 authority root and canonical terminal probe.
+    pub(crate) fn terminal_observer<P>(&self, terminals: P) -> Arc<dyn TurnTerminalObserver>
+    where
+        P: crate::application::CanonicalTurnTerminal + Clone + Send + Sync + 'static,
+    {
+        Arc::new(tool_executor::AuthorityTerminalObserver::new(
+            &self.tool_execution_root,
+            terminals,
+        ))
     }
 }
 

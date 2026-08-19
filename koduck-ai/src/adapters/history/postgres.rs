@@ -170,6 +170,34 @@ pub enum RecoveryOutcome {
     Failed,
 }
 
+/// Receives a best-effort notification after a canonical Turn terminal.
+///
+/// The observer owns no lifecycle authority: it must independently prove the
+/// terminal before releasing any process-local resource.
+pub trait TurnTerminalObserver: Send + Sync {
+    /// Observes a Turn whose terminal may have been durably committed.
+    fn terminal_may_have_committed(
+        &self,
+        tenant_id: &TenantId,
+        thread_id: ThreadId,
+        turn_id: TurnId,
+    );
+}
+
+/// Default observer for histories without process-local terminal resources.
+#[derive(Default)]
+pub struct NoTurnTerminalObserver;
+
+impl TurnTerminalObserver for NoTurnTerminalObserver {
+    fn terminal_may_have_committed(
+        &self,
+        _tenant_id: &TenantId,
+        _thread_id: ThreadId,
+        _turn_id: TurnId,
+    ) {
+    }
+}
+
 /// Adapter-owned operations required from a `PostgreSQL` transaction executor.
 ///
 /// Implementations must bind every statement by tenant, Thread, Turn, and
@@ -393,6 +421,7 @@ pub struct PostgresTurnHistory<E> {
     executor: E,
     timing: LeaseTiming,
     background: Arc<BackgroundAdmission>,
+    terminal_observer: Arc<dyn TurnTerminalObserver>,
 }
 
 impl<E: PostgresExecutor> PostgresTurnHistory<E> {
@@ -403,7 +432,15 @@ impl<E: PostgresExecutor> PostgresTurnHistory<E> {
             executor,
             timing: LeaseTiming::cand_1(),
             background: Arc::new(BackgroundAdmission::new(MAX_BACKGROUND_WORKERS)),
+            terminal_observer: Arc::new(NoTurnTerminalObserver),
         }
+    }
+
+    /// Returns this history with a terminal observer for background completions.
+    #[must_use]
+    pub fn with_terminal_observer(mut self, observer: Arc<dyn TurnTerminalObserver>) -> Self {
+        self.terminal_observer = observer;
+        self
     }
 
     /// Persists a foreground heartbeat for the complete expected lease key.
@@ -426,7 +463,13 @@ impl<E: PostgresExecutor> PostgresTurnHistory<E> {
         key: &LeaseKey,
         now_ms: u64,
     ) -> Result<ReconcileOutcome, HistoryError> {
-        self.executor.reconcile_expired(key, now_ms, self.timing)
+        reconcile_and_notify(
+            &self.executor,
+            key,
+            now_ms,
+            self.timing,
+            &self.terminal_observer,
+        )
     }
 
     /// Starts the production loop that fences orphaned expired generations.
@@ -440,6 +483,7 @@ impl<E: PostgresExecutor> PostgresTurnHistory<E> {
     {
         let executor = self.executor.clone();
         let timing = self.timing;
+        let terminal_observer = Arc::clone(&self.terminal_observer);
         let stop = Arc::new(AtomicBool::new(false));
         let worker_stop = Arc::clone(&stop);
         let thread = thread::Builder::new()
@@ -450,14 +494,13 @@ impl<E: PostgresExecutor> PostgresTurnHistory<E> {
                     match executor.expired_lease_keys(now_ms, timing) {
                         Ok(keys) => {
                             for key in keys {
-                                match executor.reconcile_expired(&key, now_ms, timing) {
-                                    Ok(_)
-                                    | Err(HistoryError::Fenced | HistoryError::AlreadyTerminal) => {
-                                    }
-                                    Err(error) => {
-                                        eprintln!("event=lease_reconcile_failed error={error}");
-                                    }
-                                }
+                                let _ = reconcile_and_notify(
+                                    &executor,
+                                    &key,
+                                    now_ms,
+                                    timing,
+                                    &terminal_observer,
+                                );
                             }
                         }
                         Err(error) => eprintln!("event=lease_scan_failed error={error}"),
@@ -470,6 +513,43 @@ impl<E: PostgresExecutor> PostgresTurnHistory<E> {
             thread: Some(thread),
         })
     }
+}
+
+/// Reconciles one expired generation and notifies the terminal observer for
+/// every outcome that may have durably terminalized the Turn.
+///
+/// Both the background worker and the public `PostgresTurnHistory::reconcile_expired`
+/// entry route through this helper, so a caller that terminalizes a Turn
+/// directly cannot leave its configured C-5 authority retained. The observer
+/// independently proves the terminal before releasing anything, so notifying
+/// on a lost race (`AlreadyTerminal`) stays safe.
+fn reconcile_and_notify<E: PostgresExecutor>(
+    executor: &E,
+    key: &LeaseKey,
+    now_ms: u64,
+    timing: LeaseTiming,
+    terminal_observer: &Arc<dyn TurnTerminalObserver>,
+) -> Result<ReconcileOutcome, HistoryError> {
+    let outcome = executor.reconcile_expired(key, now_ms, timing);
+    match &outcome {
+        Ok(
+            ReconcileOutcome::Cancelled
+            | ReconcileOutcome::Failed
+            | ReconcileOutcome::Interrupted,
+        )
+        // Another reconciler may have committed the terminal after this
+        // caller listed the expired key.
+        | Err(HistoryError::AlreadyTerminal) => terminal_observer.terminal_may_have_committed(
+            &key.tenant_id,
+            key.thread_id,
+            key.turn_id,
+        ),
+        Ok(ReconcileOutcome::TooEarly) | Err(HistoryError::Fenced) => {}
+        Err(error) => {
+            eprintln!("event=lease_reconcile_failed error={error}");
+        }
+    }
+    outcome
 }
 
 impl<E: PostgresExecutor + Send + 'static> TurnHistory for PostgresTurnHistory<E> {
@@ -518,6 +598,13 @@ impl<E: PostgresExecutor + Send + 'static> TurnHistory for PostgresTurnHistory<E
             stop,
             thread: Some(thread),
             permit_receiver: Some(permit_receiver),
+            // The in-request handoff deliberately skips the history-side
+            // terminal observer: the runner owns this recovery and notifies
+            // the tool boundary itself after the Recovered result, so a
+            // second observer probe would duplicate the durable query and
+            // reclamation work. Recovery the runner does not own — the
+            // background worker and scheduled jobs — keeps notifying through
+            // this history's observer.
             recovery: Some(Box::new(move |permit| {
                 recovery::recover_with_permit(
                     &recovery_executor,
@@ -592,6 +679,7 @@ impl<E: PostgresExecutor + Send + 'static> TurnHistory for PostgresTurnHistory<E
             turn.clone(),
             self.timing,
             &self.background,
+            Arc::clone(&self.terminal_observer),
         )
     }
 }

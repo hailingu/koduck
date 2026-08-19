@@ -369,6 +369,21 @@ pub trait ToolCallExecutor {
     ) -> Result<(), super::ToolCallError> {
         Ok(())
     }
+
+    /// Notifies the boundary that one Turn's durable terminal committed.
+    ///
+    /// The default is deliberately a no-op because configurations without a
+    /// live C-5 boundary retain no process-owned authority. The production
+    /// boundary overrides it to reclaim its process-local Turn authority
+    /// against the proven canonical terminal; reclamation is hygiene, so an
+    /// unproven probe retains the authority instead of surfacing an error.
+    fn turn_terminal_committed(
+        &mut self,
+        _tenant_id: &TenantId,
+        _thread_id: ThreadId,
+        _turn_id: TurnId,
+    ) {
+    }
 }
 
 /// Explicit unconfigured tool-execution boundary.

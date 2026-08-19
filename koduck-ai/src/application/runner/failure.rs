@@ -42,7 +42,7 @@ pub(super) fn accept_appended_provider_item(
 }
 
 /// Advances the in-memory lifecycle through one persisted terminal outcome.
-pub(super) fn apply_terminal_outcome(
+pub(in crate::application) fn apply_terminal_outcome(
     state: &mut ExecutionState,
     outcome: &TerminalOutcome,
 ) -> Result<(), TurnRunError> {
@@ -56,7 +56,7 @@ pub(super) fn apply_terminal_outcome(
 }
 
 /// Converts a history failure into the public Turn failure contract.
-pub(super) fn history_failure(
+pub(in crate::application) fn history_failure(
     error: HistoryError,
     accepted: bool,
     published: &[Item],
@@ -73,7 +73,10 @@ pub(super) fn history_failure(
 }
 
 /// Marks a post-accept history failure as durable when required.
-pub(super) fn post_accept_failure(error: TurnRunError, published: &[Item]) -> TurnRunError {
+pub(in crate::application) fn post_accept_failure(
+    error: TurnRunError,
+    published: &[Item],
+) -> TurnRunError {
     match error {
         TurnRunError::History(history_error) => history_failure(history_error, true, published),
         other => other,
@@ -81,7 +84,7 @@ pub(super) fn post_accept_failure(error: TurnRunError, published: &[Item]) -> Tu
 }
 
 /// Moves an append outage into recovery-pending before surfacing it.
-pub(super) fn recover_append_failure(
+pub(in crate::application) fn recover_append_failure(
     state: &mut ExecutionState,
     error: HistoryError,
 ) -> TurnRunError {

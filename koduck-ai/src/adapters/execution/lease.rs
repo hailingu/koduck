@@ -1,6 +1,6 @@
 // ADR: docs/adr/ADR-0003-default-deny-tool-approval-execution-boundary.md
 
-//! `SQLx`-backed C-6 foreground-lease validation for the C-5 interruption path.
+//! `SQLx`-backed canonical C-6 lease validation for C-5 dispatch and interruption.
 
 use sqlx::{PgPool, Row};
 use tokio::runtime::Handle;
@@ -11,14 +11,12 @@ use crate::domain::execution::ExactActionBinding;
 /// Production C-6 lease validator answering from the canonical `turn_leases`
 /// table.
 ///
-/// The runner's foreground validator covers only the synchronous servicing
-/// window of the process that owns the Turn; an authenticated interruption,
-/// by contrast, can arrive when that process's generation is already fenced
-/// or expired. This validator reads the durable lease row so the C-5
-/// cancellation boundary commits no D-7 terminal for a stale generation
-/// (ADR-0003 TC-07). The expiry check mirrors the two-second arbitration
-/// window of the authenticated interrupt write, so a lease near its boundary
-/// is treated consistently by both paths.
+/// Both C-5 dispatch and authenticated interruption read the durable lease
+/// row through this validator before any D-7 mutation. A fenced or expired
+/// generation therefore cannot dispatch or commit a terminal (ADR-0003
+/// TC-07). The expiry check mirrors the two-second arbitration window of the
+/// authenticated interrupt write, so a lease near its boundary is treated
+/// consistently by both paths.
 #[derive(Clone)]
 pub struct SqlxTurnLeaseValidator {
     pool: PgPool,

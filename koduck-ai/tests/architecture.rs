@@ -62,9 +62,33 @@ fn cand_2_policy_dependencies_are_inward_and_unbypassable() {
 
     // AC-1 structural guard: both native Tool and MCP translation entrypoints
     // exist, return the owned action, and the adapter owns no dispatch path.
-    // The production runner currently receives only provider-native Tool
-    // calls; the MCP entrypoint is separately pinned to the same translation
-    // function, rather than being misrepresented as a runtime ingress.
+    // The production runtime feeds provider-native Tool calls through C-5;
+    // MCP translation remains adapter-only until an MCP transport is added.
+    assert_tool_and_runtime_ingress(&crate_root);
+
+    // C-1/C-2 delivery adapters hold no direct filesystem, process, or MCP
+    // execution entrypoint.
+    let mut delivery = String::new();
+    collect_text(&crate_root.join("src/adapters/http"), &mut delivery);
+    collect_text(&crate_root.join("src/adapters/provider"), &mut delivery);
+    for forbidden in [
+        "std::process::Command",
+        "tokio::process::Command",
+        "IsolatedExecutor",
+        "DispatchPermit",
+    ] {
+        assert!(
+            !delivery.contains(forbidden),
+            "C-1/C-2 must hold no direct execution entrypoint: {forbidden}"
+        );
+    }
+}
+
+/// Adapter and native runtime-ingress pins: every Tool/MCP translation
+/// entrypoint exists, delegates its effect and target only to the configured
+/// C-5 snapshot, owns no dispatch path, and the production provider-native
+/// path feeds its action through C-5 (ADR-0003 TC-07/TC-11, T-3).
+fn assert_tool_and_runtime_ingress(crate_root: &Path) {
     let tool_adapter = fs::read_to_string(crate_root.join("src/adapters/tool.rs"))
         .expect("CAND-2 tool adapter source is readable");
     let native_entrypoints = ["translate_native_tool_call", "translate_mcp_tool_call"];
@@ -96,10 +120,17 @@ fn cand_2_policy_dependencies_are_inward_and_unbypassable() {
             "the Tool/MCP adapter must not own a dispatch or direct execution path: {forbidden}"
         );
     }
+    assert!(
+        tool_adapter.contains(
+            "translate_native_tool_call(
+            &ConfiguredCapability::new("
+        ) || tool_adapter.matches("translate_native_tool_call(").count() >= 2,
+        "the MCP entrypoint delegates to the native translation"
+    );
 
     // AC-1 call-path assertion: the production runtime executor invokes the
     // provider-native entrypoint and feeds the translated action into the C-5
-    // boundary (TC-01). MCP has no production ingress in this slice.
+    // boundary (TC-01).
     let runtime_executor = fs::read_to_string(crate_root.join("src/runtime/tool_executor.rs"))
         .expect("CAND-2 runtime tool executor source is readable");
     assert!(
@@ -110,36 +141,40 @@ fn cand_2_policy_dependencies_are_inward_and_unbypassable() {
         runtime_executor.contains(".execute_projected(") && runtime_executor.contains(".boundary("),
         "the runtime executor dispatches the translated action through the C-5 boundary"
     );
+    // TC-07 structural pin: the dispatch path validates the bound generation
+    // through the injected durable C-6 validator — the removed
+    // `RunnerForegroundLease` stub answered Current for every check.
+    assert_eq!(
+        count_identifier_tokens(&runtime_executor, "RunnerForegroundLease"),
+        0,
+        "no process-local lease stub may answer the dispatch path"
+    );
+    assert!(
+        runtime_executor.matches("self.lease.clone(),").count() >= 2,
+        "the dispatch and interruption paths share the injected durable C-6 lease validator"
+    );
     let runner = fs::read_to_string(crate_root.join("src/application/runner.rs"))
         .expect("turn runner source is readable");
     assert!(
         runner.contains("self.tools.request_interrupt("),
         "the production interruption path must also route live Tool attempts through C-5"
     );
-    assert!(
-        tool_adapter.contains(
-            "translate_native_tool_call(
-            &ConfiguredCapability::new("
-        ) || tool_adapter.matches("translate_native_tool_call(").count() >= 2,
-        "the MCP entrypoint delegates to the native translation"
+    // T-3 reclamation pin: the runner notifies the tool boundary after every
+    // durable Turn terminal — interrupt, ordinary completion, recovered
+    // completion, and any durability failure that may still follow a
+    // committed terminal — through one notify_terminal helper, so the
+    // boundary can reclaim process-local authority bound to the proven
+    // canonical terminal.
+    assert_eq!(
+        count_identifier_tokens(&runner, "turn_terminal_committed"),
+        1,
+        "the runner dispatches the terminal notification through one helper"
     );
-
-    // C-1/C-2 delivery adapters hold no direct filesystem, process, or MCP
-    // execution entrypoint.
-    let mut delivery = String::new();
-    collect_text(&crate_root.join("src/adapters/http"), &mut delivery);
-    collect_text(&crate_root.join("src/adapters/provider"), &mut delivery);
-    for forbidden in [
-        "std::process::Command",
-        "tokio::process::Command",
-        "IsolatedExecutor",
-        "DispatchPermit",
-    ] {
-        assert!(
-            !delivery.contains(forbidden),
-            "C-1/C-2 must hold no direct execution entrypoint: {forbidden}"
-        );
-    }
+    assert_eq!(
+        count_identifier_tokens(&runner, "notify_terminal"),
+        5,
+        "the helper definition plus four durable terminal fire sites must notify the boundary"
+    );
 }
 
 #[test]

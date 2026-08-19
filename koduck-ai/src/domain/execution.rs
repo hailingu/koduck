@@ -17,6 +17,7 @@ mod approval;
 mod authority;
 
 pub use approval::{ApprovalDecision, ApprovalError, ApprovalRequest, ApprovalStatus};
+pub use authority::AuthorityReclamation;
 pub(crate) use authority::TurnAuthorityCatalog;
 use authority::TurnAuthorityKey;
 
