@@ -48,8 +48,17 @@ async fn fenced_failure_winner(
     effect_state: EffectState,
     terminal_at_millis: u64,
 ) -> Result<bool, AttemptStoreError> {
+    // Lock and evaluate the exact bound lease row first, in the same
+    // transaction as the failure write: a concurrently renewing heartbeat
+    // serializes behind this lock, so a lease that renewed back to current
+    // can never be relabelled from the old expiry snapshot (ADR-0003
+    // TC-07/TC-12).
+    let mut transaction = pool
+        .begin()
+        .await
+        .map_err(|_| AttemptStoreError::Unavailable)?;
     let action = binding.action();
-    sqlx::query(
+    let winner = sqlx::query(
         "UPDATE tool_execution_attempts
          SET status = 'failed', effect_state = $3,
              failure_code = 'owner_fenced_after_dispatch',
@@ -63,13 +72,9 @@ async fn fenced_failure_winner(
                SELECT 1 FROM turn_leases bound
                WHERE bound.tenant_id = $1 AND bound.thread_id = $5
                  AND bound.turn_id = $6 AND bound.generation = $7
-           )
-           AND NOT EXISTS (
-               SELECT 1 FROM turn_leases bound
-               WHERE bound.tenant_id = $1 AND bound.thread_id = $5
-                 AND bound.turn_id = $6 AND bound.generation = $7
-                 AND NOT bound.fenced
-                 AND bound.expires_at + INTERVAL '2 seconds' > CURRENT_TIMESTAMP
+                 AND (bound.fenced
+                      OR bound.expires_at + INTERVAL '2 seconds' <= CURRENT_TIMESTAMP)
+               FOR UPDATE
            )
          RETURNING version",
     )
@@ -86,8 +91,12 @@ async fn fenced_failure_winner(
     .bind(hex_digest(binding.action_digest().as_bytes()))
     .bind(binding.profile_id())
     .bind(binding.profile_version())
-    .fetch_optional(pool)
+    .fetch_optional(&mut *transaction)
     .await
-    .map(|winner| winner.is_some())
-    .map_err(|_| AttemptStoreError::Unavailable)
+    .map_err(|_| AttemptStoreError::Unavailable)?;
+    transaction
+        .commit()
+        .await
+        .map_err(|_| AttemptStoreError::Unavailable)?;
+    Ok(winner.is_some())
 }

@@ -477,6 +477,10 @@ fn canonical_terminal_probe_retains_authority_during_recovery_pending() {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one durable leg covering the fenced, replayed, and renewed-lease outcomes of the dedicated transition"
+)]
 fn fenced_post_dispatch_started_effect_persists_owner_fenced_failure() {
     // ADR-0003 lines 309-314: fencing after dispatch with a started or
     // unknown effect persists failed/owner_fenced_after_dispatch through the
@@ -546,6 +550,42 @@ fn fenced_post_dispatch_started_effect_persists_owner_fenced_failure() {
             Ok(koduck_ai::application::AttemptTerminalResolution::ExistingTerminal(_))
         ),
         "the second fenced commit replays the committed terminal, found {replay:?}"
+    );
+
+    // A lease that expired and then renewed back to current must never be
+    // relabelled through the fenced transition: the write locks and
+    // evaluates the exact lease row in its own transaction, so a concurrent
+    // heartbeat serializes with — and can prevent — the failure write
+    // (ADR-0003 TC-07/TC-12).
+    let (renewed_identity, sealed_renewed) = sealed_binding(&harness);
+    renewed_identity.seed(&harness);
+    assert_eq!(
+        koduck_ai::application::ExecutionAttemptStore::insert_prepared(
+            &mut store,
+            &sealed_renewed,
+            1_500
+        ),
+        Ok(koduck_ai::application::AttemptInsertResolution::Inserted),
+    );
+    assert_eq!(
+        koduck_ai::application::ExecutionAttemptStore::claim_running(
+            &mut store,
+            &sealed_renewed,
+            2_500
+        ),
+        Ok(DispatchClaimResolution::Claimed { version: 2 }),
+    );
+    let renewed_outcome =
+        koduck_ai::application::ExecutionAttemptStore::commit_fenced_after_dispatch(
+            &mut store,
+            &sealed_renewed,
+            EffectState::Started,
+            3_500,
+        );
+    assert_ne!(
+        renewed_outcome,
+        Ok(koduck_ai::application::AttemptTerminalResolution::Won { version: 3 }),
+        "a current lease is never relabelled through the fenced transition, found {renewed_outcome:?}"
     );
     assert_eq!(
         identity.canonical_rows(&harness),
