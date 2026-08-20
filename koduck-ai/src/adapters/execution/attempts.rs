@@ -522,7 +522,8 @@ async fn commit_terminal_winner(
                SELECT 1 FROM turns barrier
                WHERE barrier.tenant_id = $1 AND barrier.thread_id = $9
                  AND barrier.turn_id = $10
-                 AND barrier.status = 'started' AND NOT barrier.interrupting
+                 AND barrier.status = 'started'
+                 AND (NOT barrier.interrupting OR $3::text IN ('cancelled', 'timed_out'))
                FOR UPDATE
            )
          RETURNING version",

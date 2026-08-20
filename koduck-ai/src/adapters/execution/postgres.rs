@@ -176,7 +176,61 @@ impl ApprovalRecordStore for SqlxApprovalRecordStore {
                     .map_err(|_| ApprovalStoreError::Unavailable)?;
                 if owner_status != "started" || interrupting {
                     // The owning Turn is terminal or interrupted: commit no
-                    // decision and leave the in-window record `requested`.
+                    // decision. An in-window record stays `requested` for the
+                    // Turn's own reconciliation; a record whose deadline
+                    // already passed commits its audited expiry terminal here
+                    // so no pending approval can stay permanently
+                    // `requested` (ADR-0003 D-6 state machine, TC-14).
+                    let deadline_row = sqlx::query(
+                        "SELECT requested_at_millis, expires_at_millis FROM tool_approvals \
+                         WHERE tenant_id = $1 AND approval_id = $2 \
+                           AND requester_subject = $3 AND thread_id = $4 \
+                           AND status = 'requested'",
+                    )
+                    .bind(tenant_id.as_str())
+                    .bind(approval_id.as_uuid())
+                    .bind(requester_subject)
+                    .bind(thread_id.as_uuid())
+                    .fetch_optional(&mut *transaction)
+                    .await
+                    .map_err(|_| ApprovalStoreError::Unavailable)?;
+                    if let Some(record) = deadline_row {
+                        let expires_at: i64 = record
+                            .try_get("expires_at_millis")
+                            .map_err(|_| ApprovalStoreError::Unavailable)?;
+                        if i64::try_from(decided_at_millis)
+                            .map_or(true, |decided| decided >= expires_at)
+                        {
+                            let expired = sqlx::query(
+                                "UPDATE tool_approvals \
+                                 SET status = 'expired', version = version + 1 \
+                                 WHERE tenant_id = $1 AND approval_id = $2 \
+                                   AND requester_subject = $3 AND thread_id = $4 \
+                                   AND status = 'requested' AND expires_at_millis <= $5 \
+                                 RETURNING version",
+                            )
+                            .bind(tenant_id.as_str())
+                            .bind(approval_id.as_uuid())
+                            .bind(requester_subject)
+                            .bind(thread_id.as_uuid())
+                            .bind(millis(decided_at_millis)?)
+                            .fetch_optional(&mut *transaction)
+                            .await
+                            .map_err(|_| ApprovalStoreError::Unavailable)?;
+                            transaction
+                                .commit()
+                                .await
+                                .map_err(|_| ApprovalStoreError::Unavailable)?;
+                            return match expired {
+                                Some(row) => Ok(ApprovalDecisionResolution::ExistingTerminal {
+                                    decision: None,
+                                    status: ApprovalStatus::Expired,
+                                    version: row_version(&row)?,
+                                }),
+                                None => Ok(ApprovalDecisionResolution::TurnGuardRejected),
+                            };
+                        }
+                    }
                     return Ok(ApprovalDecisionResolution::TurnGuardRejected);
                 }
             }

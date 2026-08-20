@@ -701,6 +701,100 @@ fn normal_terminal_commits_stop_after_the_interruption_barrier() {
     );
 }
 
+#[test]
+fn interruption_owned_termals_commit_past_the_barrier_while_stale_results_lose() {
+    // The durable interruption barrier must block stale normal executor
+    // results but never the interruption's own bounded cancellation
+    // terminals: after `interrupting = TRUE`, a `cancelled` write wins while
+    // a `succeeded` write still loses (ADR-0003 TC-10/TC-12).
+    let Some(harness) = harness() else {
+        return;
+    };
+    let (identity, sealed) = sealed_binding(&harness);
+    let mut store = attempt_store(harness.pool.clone(), &harness.runtime);
+    assert_eq!(
+        koduck_ai::application::ExecutionAttemptStore::insert_prepared(&mut store, &sealed, 1_000),
+        Ok(koduck_ai::application::AttemptInsertResolution::Inserted),
+    );
+    assert_eq!(
+        koduck_ai::application::ExecutionAttemptStore::claim_running(&mut store, &sealed, 2_000),
+        Ok(DispatchClaimResolution::Claimed { version: 2 }),
+    );
+    harness.runtime.block_on(async {
+        sqlx::query(
+            "UPDATE turns SET interrupting = TRUE \
+             WHERE tenant_id = $1 AND thread_id = $2 AND turn_id = $3",
+        )
+        .bind(identity.tenant.as_str())
+        .bind(identity.thread.as_uuid())
+        .bind(identity.turn.as_uuid())
+        .execute(&harness.pool)
+        .await
+        .expect("fixture barrier committed");
+    });
+
+    let cancelled = koduck_ai::application::DurableAttemptTerminal::from_outcome(
+        &koduck_ai::application::ToolExecutionOutcome::Cancelled {
+            effect_state: EffectState::Started,
+        },
+    );
+    assert_eq!(
+        koduck_ai::application::ExecutionAttemptStore::commit_terminal(
+            &mut store, &sealed, &cancelled, 3_000
+        ),
+        Ok(koduck_ai::application::AttemptTerminalResolution::Won { version: 3 }),
+        "the interruption-owned cancelled terminal commits past its own barrier"
+    );
+
+    // A stale normal result on a second attempt still loses.
+    let (stale_identity, sealed_stale) = sealed_binding(&harness);
+    stale_identity.seed(&harness);
+    assert_eq!(
+        koduck_ai::application::ExecutionAttemptStore::insert_prepared(
+            &mut store,
+            &sealed_stale,
+            1_500
+        ),
+        Ok(koduck_ai::application::AttemptInsertResolution::Inserted),
+    );
+    assert_eq!(
+        koduck_ai::application::ExecutionAttemptStore::claim_running(
+            &mut store,
+            &sealed_stale,
+            2_500
+        ),
+        Ok(DispatchClaimResolution::Claimed { version: 2 }),
+    );
+    harness.runtime.block_on(async {
+        sqlx::query(
+            "UPDATE turns SET interrupting = TRUE \
+             WHERE tenant_id = $1 AND thread_id = $2 AND turn_id = $3",
+        )
+        .bind(stale_identity.tenant.as_str())
+        .bind(stale_identity.thread.as_uuid())
+        .bind(stale_identity.turn.as_uuid())
+        .execute(&harness.pool)
+        .await
+        .expect("fixture barrier committed");
+    });
+    let succeeded = koduck_ai::application::DurableAttemptTerminal::from_outcome(
+        &koduck_ai::application::ToolExecutionOutcome::Succeeded {
+            output: b"ok".to_vec(),
+            effect_state: EffectState::Started,
+        },
+    );
+    assert_eq!(
+        koduck_ai::application::ExecutionAttemptStore::commit_terminal(
+            &mut store,
+            &sealed_stale,
+            &succeeded,
+            3_500
+        ),
+        Ok(koduck_ai::application::AttemptTerminalResolution::Conflict),
+        "a stale normal executor result still loses after the barrier"
+    );
+}
+
 /// Lease validator double answering Current for every check: these legs
 /// isolate the durable store's own fencing with a controlled foreground
 /// answer, while the production runtime wires the durable C-6 check into

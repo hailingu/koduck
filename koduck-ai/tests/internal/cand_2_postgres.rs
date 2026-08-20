@@ -1511,4 +1511,39 @@ fn a_decision_on_a_requested_approval_is_rejected_after_the_turn_terminalizes() 
         status, "requested",
         "the in-window record keeps its requested status"
     );
+    // Once the deadline passes, the same guarded path commits the record's
+    // audited expiry terminal — no pending approval stays permanently
+    // `requested` under a terminal Turn (ADR-0003 D-6 state machine).
+    let late = route.decide(
+        &trust,
+        thread,
+        approval_id,
+        koduck_ai::domain::execution::ApprovalDecision::Accepted,
+        700_000,
+    );
+    assert!(
+        matches!(
+            late,
+            koduck_ai::application::ApprovalDecisionOutcome::Conflict { status, .. }
+                if status == koduck_ai::domain::execution::ApprovalStatus::Expired
+        ),
+        "a post-deadline decision reports the committed expiry, found {late:?}"
+    );
+    let final_status: String = harness
+        .runtime
+        .block_on(async {
+            sqlx::query_scalar(
+                "SELECT status FROM tool_approvals \
+                 WHERE tenant_id = $1 AND approval_id = $2",
+            )
+            .bind(tenant.as_str())
+            .bind(approval_id.as_uuid())
+            .fetch_one(&harness.pool)
+            .await
+        })
+        .expect("final approval status is readable");
+    assert_eq!(
+        final_status, "expired",
+        "the deadline-passed record reaches its expiry terminal"
+    );
 }
