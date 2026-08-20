@@ -1325,3 +1325,149 @@ fn a_won_approval_decision_emits_its_correlated_audit_record() {
     );
     assert!(record.contains("accepted"), "record carries the decision");
 }
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one durable leg seeding the approval and expired-lease fixtures before the recovery and decision assertions"
+)]
+fn a_decision_on_a_requested_approval_is_rejected_after_the_turn_terminalizes() {
+    // Lease recovery terminalizes a Turn whose foreground owner died and
+    // closes its attempts, but a requested D-6 could still be decided inside
+    // its five-minute window; the canonical D-6 transition must therefore
+    // also condition on the owning Turn remaining non-terminal, so a decision
+    // arriving after recovery cannot return success for a cancelled attempt
+    // under a terminal Turn (ADR-0003 D-6 state machine, TC-12).
+    let Some(harness) = harness() else {
+        return;
+    };
+    let tenant = TenantId::new("terminal-turn-decision").expect("valid tenant");
+    let thread = koduck_ai::domain::ThreadId::new();
+    let turn = koduck_ai::domain::TurnId::new();
+    let approval_id = koduck_ai::domain::execution::ApprovalId::new();
+    let parameters = koduck_ai::adapters::tool::parse_action_parameters("{}").expect("valid");
+    let action = koduck_ai::domain::tool::Action::new(
+        "fixture.tool",
+        "v1",
+        koduck_ai::domain::tool::Effect::ExternalWrite,
+        "fixture-target",
+        parameters,
+    )
+    .expect("valid action");
+    let binding = koduck_ai::domain::execution::ExactActionBinding::new(
+        tenant.clone(),
+        thread,
+        turn,
+        koduck_ai::domain::LeaseGeneration::initial(),
+        ("profile-default", "v1"),
+        koduck_ai::domain::execution::AttemptId::new(),
+        action,
+    )
+    .expect("valid binding");
+    let digest_hex = {
+        let mut text = String::new();
+        for byte in binding.action_digest().as_bytes() {
+            use std::fmt::Write as _;
+            let _ = write!(text, "{byte:02x}");
+        }
+        text
+    };
+    harness.runtime.block_on(async {
+        sqlx::query(
+            "INSERT INTO threads (tenant_id, subject_id, thread_id) \
+             VALUES ($1, 'approver-a', $2) ON CONFLICT DO NOTHING",
+        )
+        .bind(tenant.as_str())
+        .bind(thread.as_uuid())
+        .execute(&harness.pool)
+        .await
+        .expect("fixture thread");
+        sqlx::query(
+            "INSERT INTO turns (tenant_id, thread_id, turn_id, status, next_sequence) \
+             VALUES ($1, $2, $3, 'started', 1) ON CONFLICT DO NOTHING",
+        )
+        .bind(tenant.as_str())
+        .bind(thread.as_uuid())
+        .bind(turn.as_uuid())
+        .execute(&harness.pool)
+        .await
+        .expect("fixture turn");
+        sqlx::query(
+            "INSERT INTO turn_leases \
+             (tenant_id, thread_id, turn_id, generation, renewed_at, expires_at, fenced) \
+             VALUES ($1, $2, $3, 1, CURRENT_TIMESTAMP - INTERVAL '1 hour', \
+                     CURRENT_TIMESTAMP - INTERVAL '55 minutes', FALSE) \
+             ON CONFLICT DO NOTHING",
+        )
+        .bind(tenant.as_str())
+        .bind(thread.as_uuid())
+        .bind(turn.as_uuid())
+        .execute(&harness.pool)
+        .await
+        .expect("fixture expired lease");
+        sqlx::query(
+            "INSERT INTO tool_approvals \
+             (tenant_id, approval_id, thread_id, turn_id, attempt_id, lease_generation, \
+              descriptor_id, descriptor_version, effect, action_digest, profile_id, \
+              profile_version, requested_at_millis, expires_at_millis, status, \
+              requester_subject, version) \
+             VALUES ($1, $2, $3, $4, $5, 1, 'fixture.tool', 'v1', 'external_write', $6, \
+                     'profile-default', 'v1', 1, 600000, 'requested', 'approver-a', 1)",
+        )
+        .bind(tenant.as_str())
+        .bind(approval_id.as_uuid())
+        .bind(thread.as_uuid())
+        .bind(turn.as_uuid())
+        .bind(binding.attempt_id().as_uuid())
+        .bind(&digest_hex)
+        .execute(&harness.pool)
+        .await
+        .expect("fixture requested approval");
+    });
+
+    // Expiry recovery terminalizes the Turn (cancelled) with its lease fenced.
+    let executor = koduck_ai::adapters::history::postgres::SqlxPostgresExecutor::new(
+        harness.pool.clone(),
+        harness.runtime.handle().clone(),
+    );
+    let key = koduck_ai::adapters::history::postgres::LeaseKey::new(
+        tenant.clone(),
+        thread,
+        turn,
+        koduck_ai::domain::LeaseGeneration::initial(),
+    );
+    let mut history = koduck_ai::adapters::history::postgres::PostgresTurnHistory::new(executor);
+    let outcome =
+        history.reconcile_expired(&key, koduck_ai::adapters::history::postgres::unix_time_ms());
+    assert!(
+        matches!(
+            outcome,
+            Ok(koduck_ai::adapters::history::postgres::ReconcileOutcome::Cancelled)
+        ),
+        "the expired Turn cancels, found {outcome:?}"
+    );
+
+    // A decision arriving after recovery must not win the transition.
+    let store =
+        SqlxApprovalRecordStore::new(harness.pool.clone(), harness.runtime.handle().clone());
+    let mut route = koduck_ai::application::ApprovalDecisionRoute::new(store);
+    let trust = koduck_ai::domain::TrustContext::new(tenant.clone(), "approver-a")
+        .expect("valid principal")
+        .with_approval_scopes(koduck_ai::domain::ApprovalScopes::from_validated(vec![
+            "ai.tool.approve".to_owned(),
+        ]));
+    let decided = route.decide(
+        &trust,
+        thread,
+        approval_id,
+        koduck_ai::domain::execution::ApprovalDecision::Accepted,
+        10_000,
+    );
+    assert!(
+        !matches!(
+            decided,
+            koduck_ai::application::ApprovalDecisionOutcome::Resolved { .. }
+        ),
+        "a decision under a terminal Turn must not resolve, found {decided:?}"
+    );
+}

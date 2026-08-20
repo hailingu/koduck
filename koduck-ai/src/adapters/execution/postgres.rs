@@ -155,6 +155,13 @@ impl ApprovalRecordStore for SqlxApprovalRecordStore {
                  WHERE tenant_id = $1 AND approval_id = $2
                    AND requester_subject = $6 AND thread_id = $7
                    AND status = 'requested' AND expires_at_millis > $5
+                   AND NOT EXISTS (
+                       SELECT 1 FROM turns owner
+                       WHERE owner.tenant_id = $1 AND owner.thread_id = $7
+                         AND owner.turn_id = tool_approvals.turn_id
+                         AND (owner.status <> 'started' OR owner.interrupting)
+                       FOR UPDATE
+                   )
                  RETURNING version, thread_id, turn_id, attempt_id, \
                             lease_generation, descriptor_id, descriptor_version, \
                             action_digest, profile_id, profile_version",
