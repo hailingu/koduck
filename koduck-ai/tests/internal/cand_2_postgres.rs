@@ -924,20 +924,43 @@ fn startup_migrations_wait_for_the_cross_replica_advisory_lock() {
         )
         .await
     });
-    assert!(
-        contested.is_err(),
-        "the startup migration sequence must wait for the cross-replica advisory lock"
-    );
+    let mut holder = Some(holder);
+    if contested.is_ok() {
+        // Release the lock and connection before any panic unwinds outside a
+        // runtime context, so a failing assertion aborts cleanly instead of
+        // panicking again in the connection's Drop.
+        if let Some(mut connection) = holder.take() {
+            harness
+                .runtime
+                .block_on(async {
+                    sqlx::query("SELECT pg_advisory_unlock($1)")
+                        .bind(key)
+                        .execute(&mut *connection)
+                        .await
+                        .map(|_| ())
+                })
+                .ok();
+            harness.runtime.block_on(async {
+                drop(connection);
+            });
+        }
+        panic!("the startup migration sequence must wait for the cross-replica advisory lock");
+    }
 
-    harness
-        .runtime
-        .block_on(async {
-            sqlx::query("SELECT pg_advisory_unlock($1)")
-                .bind(key)
-                .execute(&mut *holder)
-                .await
-        })
-        .expect("test releases the advisory lock");
+    let mut connection = holder.expect("the holder survives the contested wait");
+    let unlocked = harness.runtime.block_on(async {
+        sqlx::query("SELECT pg_advisory_unlock($1)")
+            .bind(key)
+            .execute(&mut *connection)
+            .await
+            .map(|_| ())
+    });
+    // Return the dedicated connection to the pool inside a runtime context so
+    // its pool-aware Drop cannot abort the test process outside Tokio.
+    harness.runtime.block_on(async {
+        drop(connection);
+    });
+    unlocked.expect("test releases the advisory lock");
     let uncontested = harness.runtime.block_on(async {
         tokio::time::timeout(
             std::time::Duration::from_secs(2),
@@ -952,11 +975,6 @@ fn startup_migrations_wait_for_the_cross_replica_advisory_lock() {
         matches!(uncontested, Ok(Ok(()))),
         "the sequence completes after the lock is released"
     );
-    // Return the dedicated connection to the pool inside a runtime context so
-    // its pool-aware Drop does not panic outside Tokio.
-    harness.runtime.block_on(async {
-        drop(holder);
-    });
 }
 
 #[test]
