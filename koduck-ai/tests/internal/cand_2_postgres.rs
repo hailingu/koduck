@@ -326,6 +326,9 @@ fn thirty_two_competing_decisions_commit_exactly_one_terminal() {
                 existing += 1;
             }
             ApprovalDecisionResolution::NotFound => panic!("racing contender lost the record"),
+            ApprovalDecisionResolution::TurnGuardRejected => {
+                panic!("racing contender hit the Turn guard unexpectedly")
+            }
         }
     }
     assert_eq!(winners, 1, "exactly one decision wins");
@@ -1469,5 +1472,25 @@ fn a_decision_on_a_requested_approval_is_rejected_after_the_turn_terminalizes() 
             koduck_ai::application::ApprovalDecisionOutcome::Resolved { .. }
         ),
         "a decision under a terminal Turn must not resolve, found {decided:?}"
+    );
+    // The rejected decision is inside the approval's decision window, so the
+    // canonical record must remain `requested` — the Turn guard must not
+    // corrupt it to `expired` (ADR-0003 D-6 state machine).
+    let status: String = harness
+        .runtime
+        .block_on(async {
+            sqlx::query_scalar(
+                "SELECT status FROM tool_approvals \
+                 WHERE tenant_id = $1 AND approval_id = $2",
+            )
+            .bind(tenant.as_str())
+            .bind(approval_id.as_uuid())
+            .fetch_one(&harness.pool)
+            .await
+        })
+        .expect("approval status is readable");
+    assert_eq!(
+        status, "requested",
+        "the in-window record keeps its requested status"
     );
 }

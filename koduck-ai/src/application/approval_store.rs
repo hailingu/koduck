@@ -62,6 +62,9 @@ pub enum ApprovalDecisionResolution {
         /// The canonical record version after the transition.
         version: u64,
     },
+    /// The owning Turn is terminal or interrupted, so the decision was
+    /// rejected without mutating the still-requested record.
+    TurnGuardRejected,
     /// A terminal already won canonically; this caller changed no state.
     ExistingTerminal {
         /// The winning decision, or `None` when the record expired undecided.

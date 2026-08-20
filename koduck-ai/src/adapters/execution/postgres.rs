@@ -148,6 +148,38 @@ impl ApprovalRecordStore for SqlxApprovalRecordStore {
                 .begin()
                 .await
                 .map_err(|_| ApprovalStoreError::Unavailable)?;
+            // Lock the owning Turn row unconditionally before deciding, so an
+            // interruption transaction cannot commit its barrier between this
+            // transaction's snapshot and the decision write: the lock
+            // serializes the two orderings canonically (ADR-0003 TC-12).
+            let owner = sqlx::query(
+                "SELECT owner.status, owner.interrupting FROM turns owner \
+                 WHERE owner.tenant_id = $1 AND owner.thread_id = $2 \
+                   AND owner.turn_id = (SELECT turn_id FROM tool_approvals \
+                                        WHERE tenant_id = $1 AND approval_id = $3 \
+                                          AND requester_subject = $4 AND thread_id = $2) \
+                 FOR UPDATE",
+            )
+            .bind(tenant_id.as_str())
+            .bind(thread_id.as_uuid())
+            .bind(approval_id.as_uuid())
+            .bind(requester_subject)
+            .fetch_optional(&mut *transaction)
+            .await
+            .map_err(|_| ApprovalStoreError::Unavailable)?;
+            if let Some(owner_row) = &owner {
+                let owner_status: String = owner_row
+                    .try_get("status")
+                    .map_err(|_| ApprovalStoreError::Unavailable)?;
+                let interrupting: bool = owner_row
+                    .try_get("interrupting")
+                    .map_err(|_| ApprovalStoreError::Unavailable)?;
+                if owner_status != "started" || interrupting {
+                    // The owning Turn is terminal or interrupted: commit no
+                    // decision and leave the in-window record `requested`.
+                    return Ok(ApprovalDecisionResolution::TurnGuardRejected);
+                }
+            }
             let winner = sqlx::query(
                 "UPDATE tool_approvals
                  SET status = $3, decision = $3, approver = $4,
@@ -155,13 +187,6 @@ impl ApprovalRecordStore for SqlxApprovalRecordStore {
                  WHERE tenant_id = $1 AND approval_id = $2
                    AND requester_subject = $6 AND thread_id = $7
                    AND status = 'requested' AND expires_at_millis > $5
-                   AND NOT EXISTS (
-                       SELECT 1 FROM turns owner
-                       WHERE owner.tenant_id = $1 AND owner.thread_id = $7
-                         AND owner.turn_id = tool_approvals.turn_id
-                         AND (owner.status <> 'started' OR owner.interrupting)
-                       FOR UPDATE
-                   )
                  RETURNING version, thread_id, turn_id, attempt_id, \
                             lease_generation, descriptor_id, descriptor_version, \
                             action_digest, profile_id, profile_version",
@@ -214,21 +239,24 @@ impl ApprovalRecordStore for SqlxApprovalRecordStore {
                 .try_get("status")
                 .map_err(|_| ApprovalStoreError::Unavailable)?;
             if status_text == "requested" {
-                // The decision arrived at or after expiry: commit no decision
-                // and conditionally transition the record to its terminal
-                // `expired` state so every later contender reads one outcome.
+                // Only a genuinely expired record transitions here: the winner
+                // update can also lose to the Turn guard while the record is
+                // still inside its decision window, and such a rejection must
+                // leave the canonical status untouched (ADR-0003 D-6 state
+                // machine).
                 let expired = sqlx::query(
                     "UPDATE tool_approvals
                      SET status = 'expired', version = version + 1
                      WHERE tenant_id = $1 AND approval_id = $2
                        AND requester_subject = $3 AND thread_id = $4
-                       AND status = 'requested'
+                       AND status = 'requested' AND expires_at_millis <= $5
                      RETURNING version",
                 )
                 .bind(tenant_id.as_str())
                 .bind(approval_id.as_uuid())
                 .bind(requester_subject)
                 .bind(thread_id.as_uuid())
+                .bind(millis(decided_at_millis)?)
                 .fetch_optional(&self.pool)
                 .await
                 .map_err(|_| ApprovalStoreError::Unavailable)?;

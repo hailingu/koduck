@@ -121,6 +121,16 @@ where
                 version,
             },
             Ok(ApprovalDecisionResolution::NotFound) => ApprovalDecisionOutcome::NotFound,
+            // The owning Turn is terminal or interrupted: the decision
+            // changes nothing and reads as a conflict so no caller can
+            // mistake it for a canonical resolution.
+            Ok(ApprovalDecisionResolution::TurnGuardRejected) => {
+                ApprovalDecisionOutcome::Conflict {
+                    status: ApprovalStatus::Requested,
+                    decision: None,
+                    version: 1,
+                }
+            }
             Err(ApprovalStoreError::Unavailable | ApprovalStoreError::IdentityConflict) => {
                 ApprovalDecisionOutcome::Unavailable
             }
