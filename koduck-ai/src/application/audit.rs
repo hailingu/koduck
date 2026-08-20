@@ -265,6 +265,56 @@ impl ToolAuditRecord {
         }
     }
 
+    /// Creates the canonical D-6 resolution audit record from the persisted
+    /// approval correlation columns.
+    ///
+    /// The store's winning decision transition returns these columns, so the
+    /// route-level resolution and its audit append share one atomic
+    /// transaction without reconstructing the exact-action parameters
+    /// (ADR-0003 TC-14).
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "each parameter is one persisted correlation field of the resolved approval"
+    )]
+    #[must_use]
+    pub fn approval_resolution_from_persisted(
+        tenant_id: &crate::domain::TenantId,
+        thread_id: crate::domain::ThreadId,
+        turn_id: crate::domain::TurnId,
+        attempt_id: &crate::domain::execution::AttemptId,
+        approval_id: ApprovalId,
+        descriptor_id: &str,
+        descriptor_version: &str,
+        profile_id: &str,
+        profile_version: &str,
+        action_digest_hex: &str,
+        lease_generation: u64,
+        status: ApprovalStatus,
+        decision: ApprovalDecision,
+        version: u64,
+        at_millis: u64,
+    ) -> Self {
+        Self {
+            approval_id: Some(approval_id.as_uuid().to_string()),
+            approval_status: Some(status.as_str().to_owned()),
+            approval_decision: Some(decision.as_str().to_owned()),
+            approval_version: Some(version),
+            attempt_id: Some(attempt_id.as_uuid().to_string()),
+            policy_decision: "approval_resolved".to_owned(),
+            descriptor_id: Some(descriptor_id.to_owned()),
+            descriptor_version: Some(descriptor_version.to_owned()),
+            profile_id: Some(profile_id.to_owned()),
+            profile_version: Some(profile_version.to_owned()),
+            action_digest: Some(action_digest_hex.to_owned()),
+            lease_generation,
+            tenant_id: bounded_tenant_id(tenant_id),
+            thread_id: thread_id.as_uuid().to_string(),
+            turn_id: turn_id.as_uuid().to_string(),
+            at_millis,
+            ..Self::correlated_defaults()
+        }
+    }
+
     /// Creates the audit record for one D-7 execution terminal.
     ///
     /// The bounded outcome supplies the transition, effect state, stable

@@ -123,6 +123,10 @@ impl ApprovalRecordStore for SqlxApprovalRecordStore {
         clippy::too_many_arguments,
         reason = "ownership dimensions are individually conditional lookup keys"
     )]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the winning branch additionally appends the atomic correlated audit record"
+    )]
     fn resolve_decision(
         &mut self,
         approval_id: ApprovalId,
@@ -134,6 +138,16 @@ impl ApprovalRecordStore for SqlxApprovalRecordStore {
         decided_at_millis: u64,
     ) -> Result<ApprovalDecisionResolution, ApprovalStoreError> {
         self.wait(async {
+            // The winning decision transition and its correlated audit append
+            // commit atomically: RETURNING carries the persisted approval
+            // correlation columns the bounded audit record needs, so the
+            // production decision route cannot resolve a D-6 without its
+            // TC-14 evidence.
+            let mut transaction = self
+                .pool
+                .begin()
+                .await
+                .map_err(|_| ApprovalStoreError::Unavailable)?;
             let winner = sqlx::query(
                 "UPDATE tool_approvals
                  SET status = $3, decision = $3, approver = $4,
@@ -141,7 +155,9 @@ impl ApprovalRecordStore for SqlxApprovalRecordStore {
                  WHERE tenant_id = $1 AND approval_id = $2
                    AND requester_subject = $6 AND thread_id = $7
                    AND status = 'requested' AND expires_at_millis > $5
-                 RETURNING version",
+                 RETURNING version, thread_id, turn_id, attempt_id, \
+                            lease_generation, descriptor_id, descriptor_version, \
+                            action_digest, profile_id, profile_version",
             )
             .bind(tenant_id.as_str())
             .bind(approval_id.as_uuid())
@@ -150,15 +166,28 @@ impl ApprovalRecordStore for SqlxApprovalRecordStore {
             .bind(millis(decided_at_millis)?)
             .bind(requester_subject)
             .bind(thread_id.as_uuid())
-            .fetch_optional(&self.pool)
+            .fetch_optional(&mut *transaction)
             .await
             .map_err(|_| ApprovalStoreError::Unavailable)?;
             if let Some(row) = winner {
-                return Ok(ApprovalDecisionResolution::Won {
+                let version = row_version(&row)?;
+                emit_decision_audit(
+                    &mut transaction,
+                    approval_id,
                     decision,
-                    version: row_version(&row)?,
-                });
+                    version,
+                    decided_at_millis,
+                    tenant_id,
+                    &row,
+                )
+                .await?;
+                transaction
+                    .commit()
+                    .await
+                    .map_err(|_| ApprovalStoreError::Unavailable)?;
+                return Ok(ApprovalDecisionResolution::Won { decision, version });
             }
+            drop(transaction);
             let existing = sqlx::query(
                 "SELECT status, decision, version FROM tool_approvals
                  WHERE tenant_id = $1 AND approval_id = $2
@@ -411,4 +440,83 @@ fn hex_digest(bytes: &[u8; 32]) -> String {
         let _ = write!(text, "{byte:02x}");
     }
     text
+}
+
+/// Appends the bounded correlated audit record for one won D-6 decision
+/// inside its resolving transaction (ADR-0003 TC-14).
+async fn emit_decision_audit(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    approval_id: ApprovalId,
+    decision: ApprovalDecision,
+    version: u64,
+    decided_at_millis: u64,
+    tenant_id: &TenantId,
+    row: &sqlx::postgres::PgRow,
+) -> Result<(), ApprovalStoreError> {
+    use sqlx::Row as _;
+    let thread: uuid::Uuid = row
+        .try_get("thread_id")
+        .map_err(|_| ApprovalStoreError::Unavailable)?;
+    let turn: uuid::Uuid = row
+        .try_get("turn_id")
+        .map_err(|_| ApprovalStoreError::Unavailable)?;
+    let attempt: uuid::Uuid = row
+        .try_get("attempt_id")
+        .map_err(|_| ApprovalStoreError::Unavailable)?;
+    let descriptor_id: String = row
+        .try_get("descriptor_id")
+        .map_err(|_| ApprovalStoreError::Unavailable)?;
+    let descriptor_version: String = row
+        .try_get("descriptor_version")
+        .map_err(|_| ApprovalStoreError::Unavailable)?;
+    let action_digest: String = row
+        .try_get("action_digest")
+        .map_err(|_| ApprovalStoreError::Unavailable)?;
+    let profile_id: String = row
+        .try_get("profile_id")
+        .map_err(|_| ApprovalStoreError::Unavailable)?;
+    let profile_version: String = row
+        .try_get("profile_version")
+        .map_err(|_| ApprovalStoreError::Unavailable)?;
+    let lease_generation: i64 = row
+        .try_get("lease_generation")
+        .map_err(|_| ApprovalStoreError::Unavailable)?;
+    let status = match decision {
+        ApprovalDecision::Accepted => crate::domain::execution::ApprovalStatus::Accepted,
+        ApprovalDecision::Declined => crate::domain::execution::ApprovalStatus::Declined,
+        ApprovalDecision::Cancelled => crate::domain::execution::ApprovalStatus::Cancelled,
+    };
+    let record = crate::application::ToolAuditRecord::approval_resolution_from_persisted(
+        tenant_id,
+        crate::domain::ThreadId::from_uuid(thread),
+        crate::domain::TurnId::from_uuid(turn),
+        &crate::domain::execution::AttemptId::from_uuid(attempt),
+        approval_id,
+        &descriptor_id,
+        &descriptor_version,
+        &profile_id,
+        &profile_version,
+        &action_digest,
+        u64::try_from(lease_generation).map_err(|_| ApprovalStoreError::Unavailable)?,
+        status,
+        decision,
+        version,
+        decided_at_millis,
+    );
+    let serialized = crate::adapters::audit::serialize_audit_record(&record)
+        .map_err(|_| ApprovalStoreError::Unavailable)?;
+    sqlx::query(
+        "INSERT INTO tool_audit_records \
+         (tenant_id, thread_id, turn_id, at_millis, record) \
+         VALUES ($1, $2, $3, $4, $5)",
+    )
+    .bind(record.tenant_id())
+    .bind(thread)
+    .bind(turn)
+    .bind(millis(decided_at_millis)?)
+    .bind(serialized)
+    .execute(&mut **transaction)
+    .await
+    .map_err(|_| ApprovalStoreError::Unavailable)?;
+    Ok(())
 }

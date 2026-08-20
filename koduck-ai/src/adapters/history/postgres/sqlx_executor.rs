@@ -426,7 +426,8 @@ impl SqlxPostgresExecutor {
              FROM turns t WHERE l.tenant_id = $1 AND l.thread_id = $2 \
              AND l.turn_id = $3 AND l.generation = $4 AND NOT l.fenced \
              AND t.tenant_id = l.tenant_id AND t.thread_id = l.thread_id \
-             AND t.turn_id = l.turn_id AND t.status = 'started'",
+             AND t.turn_id = l.turn_id AND t.status = 'started' \
+             AND NOT t.interrupting",
         )
         .bind(key.tenant_id.as_str())
         .bind(key.thread_id.as_uuid())

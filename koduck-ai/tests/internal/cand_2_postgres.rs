@@ -1107,3 +1107,221 @@ fn lease_expiry_recovery_emits_the_correlated_attempt_audit_records() {
         "record carries the action digest"
     );
 }
+
+#[test]
+fn renewal_stops_once_the_durable_interruption_barrier_commits() {
+    // An authenticated interruption that reaches another replica commits the
+    // durable barrier; the owning replica's renewal must stop at its next
+    // beat so the foreground lease expires and the running effect stays
+    // bounded by the fencing and expiry paths (ADR-0003 TC-10).
+    let Some(harness) = harness() else {
+        return;
+    };
+    let tenant = TenantId::new("renewal-barrier").expect("valid tenant");
+    let thread = koduck_ai::domain::ThreadId::new();
+    let turn = koduck_ai::domain::TurnId::new();
+    let generation = koduck_ai::domain::LeaseGeneration::initial();
+    let key = koduck_ai::adapters::history::postgres::LeaseKey::new(
+        tenant.clone(),
+        thread,
+        turn,
+        generation,
+    );
+    harness.runtime.block_on(async {
+        sqlx::query(
+            "INSERT INTO threads (tenant_id, subject_id, thread_id) \
+             VALUES ($1, 'renewal-barrier', $2) ON CONFLICT DO NOTHING",
+        )
+        .bind(tenant.as_str())
+        .bind(thread.as_uuid())
+        .execute(&harness.pool)
+        .await
+        .expect("fixture thread");
+        sqlx::query(
+            "INSERT INTO turns (tenant_id, thread_id, turn_id, status, next_sequence) \
+             VALUES ($1, $2, $3, 'started', 1) ON CONFLICT DO NOTHING",
+        )
+        .bind(tenant.as_str())
+        .bind(thread.as_uuid())
+        .bind(turn.as_uuid())
+        .execute(&harness.pool)
+        .await
+        .expect("fixture turn");
+        sqlx::query(
+            "INSERT INTO turn_leases \
+             (tenant_id, thread_id, turn_id, generation, renewed_at, expires_at, fenced) \
+             VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP, \
+                     CURRENT_TIMESTAMP + INTERVAL '20 seconds', FALSE) \
+             ON CONFLICT DO NOTHING",
+        )
+        .bind(tenant.as_str())
+        .bind(thread.as_uuid())
+        .bind(turn.as_uuid())
+        .bind(1_i64)
+        .execute(&harness.pool)
+        .await
+        .expect("fixture live lease");
+    });
+    let executor = koduck_ai::adapters::history::postgres::SqlxPostgresExecutor::new(
+        harness.pool.clone(),
+        harness.runtime.handle().clone(),
+    );
+    let mut history = koduck_ai::adapters::history::postgres::PostgresTurnHistory::new(executor);
+    history
+        .renew_lease(&key, koduck_ai::adapters::history::postgres::unix_time_ms())
+        .expect("an unbarriered started Turn renews");
+
+    harness.runtime.block_on(async {
+        sqlx::query(
+            "UPDATE turns SET interrupting = TRUE \
+             WHERE tenant_id = $1 AND thread_id = $2 AND turn_id = $3",
+        )
+        .bind(tenant.as_str())
+        .bind(thread.as_uuid())
+        .bind(turn.as_uuid())
+        .execute(&harness.pool)
+        .await
+        .expect("fixture barrier committed");
+    });
+    assert_eq!(
+        history.renew_lease(&key, koduck_ai::adapters::history::postgres::unix_time_ms()),
+        Err(koduck_ai::application::HistoryError::Fenced),
+        "renewal stops once the durable interruption barrier commits"
+    );
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one durable leg seeding the full approval correlation row before the route decision and audit assertions"
+)]
+fn a_won_approval_decision_emits_its_correlated_audit_record() {
+    // The production HTTP decision route writes the canonical D-6 terminal;
+    // that transition must also append its bounded correlated audit record
+    // atomically (ADR-0003 TC-14).
+    let Some(harness) = harness() else {
+        return;
+    };
+    let tenant = TenantId::new("approval-audit").expect("valid tenant");
+    let thread = koduck_ai::domain::ThreadId::new();
+    let turn = koduck_ai::domain::TurnId::new();
+    let approval_id = koduck_ai::domain::execution::ApprovalId::new();
+    let parameters = koduck_ai::adapters::tool::parse_action_parameters("{}").expect("valid");
+    let action = koduck_ai::domain::tool::Action::new(
+        "fixture.tool",
+        "v1",
+        koduck_ai::domain::tool::Effect::ExternalWrite,
+        "fixture-target",
+        parameters,
+    )
+    .expect("valid action");
+    let binding = koduck_ai::domain::execution::ExactActionBinding::new(
+        tenant.clone(),
+        thread,
+        turn,
+        koduck_ai::domain::LeaseGeneration::initial(),
+        ("profile-default", "v1"),
+        koduck_ai::domain::execution::AttemptId::new(),
+        action,
+    )
+    .expect("valid binding");
+    let digest_hex = {
+        let mut text = String::new();
+        for byte in binding.action_digest().as_bytes() {
+            use std::fmt::Write as _;
+            let _ = write!(text, "{byte:02x}");
+        }
+        text
+    };
+    harness.runtime.block_on(async {
+        sqlx::query(
+            "INSERT INTO threads (tenant_id, subject_id, thread_id) \
+             VALUES ($1, 'approver-a', $2) ON CONFLICT DO NOTHING",
+        )
+        .bind(tenant.as_str())
+        .bind(thread.as_uuid())
+        .execute(&harness.pool)
+        .await
+        .expect("fixture thread");
+        sqlx::query(
+            "INSERT INTO turns (tenant_id, thread_id, turn_id, status, next_sequence) \
+             VALUES ($1, $2, $3, 'started', 1) ON CONFLICT DO NOTHING",
+        )
+        .bind(tenant.as_str())
+        .bind(thread.as_uuid())
+        .bind(turn.as_uuid())
+        .execute(&harness.pool)
+        .await
+        .expect("fixture turn");
+        sqlx::query(
+            "INSERT INTO tool_approvals \
+             (tenant_id, approval_id, thread_id, turn_id, attempt_id, lease_generation, \
+              descriptor_id, descriptor_version, effect, action_digest, profile_id, \
+              profile_version, requested_at_millis, expires_at_millis, status, \
+              requester_subject, version) \
+             VALUES ($1, $2, $3, $4, $5, 1, 'fixture.tool', 'v1', 'external_write', $6, \
+                     'profile-default', 'v1', 1, 600000, 'requested', 'approver-a', 1)",
+        )
+        .bind(tenant.as_str())
+        .bind(approval_id.as_uuid())
+        .bind(thread.as_uuid())
+        .bind(turn.as_uuid())
+        .bind(binding.attempt_id().as_uuid())
+        .bind(&digest_hex)
+        .execute(&harness.pool)
+        .await
+        .expect("fixture requested approval");
+    });
+
+    let store =
+        SqlxApprovalRecordStore::new(harness.pool.clone(), harness.runtime.handle().clone());
+    let mut route = koduck_ai::application::ApprovalDecisionRoute::new(store);
+    let trust = koduck_ai::domain::TrustContext::new(tenant.clone(), "approver-a")
+        .expect("valid principal")
+        .with_approval_scopes(koduck_ai::domain::ApprovalScopes::from_validated(vec![
+            "ai.tool.approve".to_owned(),
+        ]));
+    let outcome = route.decide(
+        &trust,
+        thread,
+        approval_id,
+        koduck_ai::domain::execution::ApprovalDecision::Accepted,
+        10_000,
+    );
+    assert!(
+        matches!(
+            outcome,
+            koduck_ai::application::ApprovalDecisionOutcome::Resolved { version: 2, .. }
+        ),
+        "the decision wins, found {outcome:?}"
+    );
+
+    let audits: Vec<String> = harness
+        .runtime
+        .block_on(async {
+            sqlx::query_scalar(
+                "SELECT record FROM tool_audit_records \
+                 WHERE tenant_id = $1 AND turn_id = $2",
+            )
+            .bind(tenant.as_str())
+            .bind(turn.as_uuid())
+            .fetch_all(&harness.pool)
+            .await
+        })
+        .expect("audit rows are readable");
+    assert_eq!(audits.len(), 1, "the won decision appends its audit record");
+    let record = &audits[0];
+    assert!(
+        record.contains(&approval_id.as_uuid().to_string()),
+        "record correlates the approval"
+    );
+    assert!(
+        record.contains(&binding.attempt_id().as_uuid().to_string()),
+        "record correlates the attempt"
+    );
+    assert!(
+        record.contains(&digest_hex),
+        "record carries the action digest"
+    );
+    assert!(record.contains("accepted"), "record carries the decision");
+}
