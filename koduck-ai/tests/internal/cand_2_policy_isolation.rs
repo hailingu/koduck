@@ -3,7 +3,7 @@
 //! Semantic dependency-direction verification for the C-5 policy path.
 //!
 //! This module imports ONLY `crate::domain` and `crate::application` types —
-//! no adapter, provider, HTTP, SQLx, executor, or runtime module is
+//! no adapter, provider, `HTTP`, `SQLx`, executor, or runtime module is
 //! referenced. It drives the complete default-deny authorization pipeline —
 //! configured snapshot, descriptor/profile resolution, exact-action sealing,
 //! lease-validated preparation, approval validation, and the guarded
@@ -16,12 +16,12 @@ use koduck_ai::application::{
     AttemptCommitResult, AttemptCommitter, ExecutionCoordinator, LeaseCheck, LeaseValidator,
     ToolAuthorizationService, ToolConfigurationSnapshot, ToolExecutionOutcome,
 };
-use koduck_ai::domain::execution::{ApprovalDecision, ExactActionBinding};
+use koduck_ai::domain::execution::ExactActionBinding;
 use koduck_ai::domain::tool::{
     Action, CapabilityDescriptor, DescriptorState, Effect, InputSchema, PermissionProfile,
     ToolValueError,
 };
-use koduck_ai::domain::{LeaseGeneration, TenantId, ThreadId, TrustContext, TurnId};
+use koduck_ai::domain::{LeaseGeneration, TenantId, ThreadId, TurnId};
 
 /// Executor double implementing the application's consumer-owned port; the
 /// isolation pipeline needs no adapter executor.
@@ -147,7 +147,7 @@ fn owned_action() -> Result<Action, ToolValueError> {
         Effect::ReadData,
         "fixture-target",
         koduck_ai::domain::tool::ActionParameters::new(
-            koduck_ai::domain::tool::JsonValue::Object(Default::default()),
+            koduck_ai::domain::tool::JsonValue::Object(std::collections::BTreeMap::default()),
         )?,
     )
 }
@@ -189,8 +189,8 @@ fn the_default_deny_pipeline_runs_on_domain_and_application_types_alone() {
 
     // An approval-free read_data action dispatches on its sealed authority
     // alone; the approval-free path itself stays inside the two boundaries.
-    drop((sealed_for_approval, ApprovalDecision::Accepted));
-    let mut committer = RecordingCommitter::default();
+    drop(sealed_for_approval);
+    let committer = RecordingCommitter::default();
     let mut coordinator = ExecutionCoordinator::new(SucceedingExecutor, CurrentLease, committer);
     let mut now = || 5_000_u64;
     let outcome = coordinator
@@ -200,7 +200,6 @@ fn the_default_deny_pipeline_runs_on_domain_and_application_types_alone() {
         matches!(outcome, ToolExecutionOutcome::Succeeded { .. }),
         "found {outcome:?}"
     );
-    drop(ApprovalDecision::Accepted);
 }
 
 #[test]
