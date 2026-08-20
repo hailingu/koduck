@@ -6,6 +6,7 @@ export function createMermaidValidator(context) {
     mermaid,
     metadata,
     sectionContent,
+    stripFencedCode,
     tableFromContent,
   } = context;
 
@@ -50,6 +51,14 @@ export function createMermaidValidator(context) {
     return blocks;
   }
 
+  // A conditional flow section is exempt only when its entire stripped body
+  // is one reasoned N/A: a real table followed by a stray N/A line still owes
+  // its triggered table/diagram gates.
+  function wholeBodyIsNa(content) {
+    const body = stripFencedCode(content).trim();
+    return body.length > 0 && !body.includes("\n") && /^N\/A\s+—\s+\S/.test(body);
+  }
+
   async function validateMermaid(path, markdown, errors) {
     const blocks = mermaidBlocks(markdown);
     for (const [index, block] of blocks.entries()) {
@@ -86,9 +95,13 @@ export function createMermaidValidator(context) {
       ["Interaction Flow Design", /^IX-\d+$/, "Mermaid interaction-flow diagram"],
     ]) {
       const content = sectionContent(markdown, section);
-      if (!content || /^\s*N\/A\s+—/m.test(content)) continue;
+      if (!content || wholeBodyIsNa(content)) continue;
       const ids = tableIds(content, idPattern);
-      const diagrams = mermaidBlocks(content).join("\n");
+      // A Mermaid comment renders nothing, so an ID mentioned only in a
+      // `%%` comment does not cover its flow or interaction.
+      const diagrams = mermaidBlocks(content)
+        .map((block) => block.split("\n").filter((line) => !line.trimStart().startsWith("%%")).join("\n"))
+        .join("\n");
       for (const id of ids) {
         if (!new RegExp(`(^|[^A-Za-z0-9-])${escapeRegExp(id)}($|[^A-Za-z0-9-])`).test(diagrams)) {
           errors.push(`${path}: ${description} does not cover ${id}`);
@@ -109,7 +122,7 @@ export function createMermaidValidator(context) {
         ["Interaction Flow Design", /^IX-\d+$/, [/^sequenceDiagram\b/m, /^stateDiagram-v2\b/m]],
       ]) {
         const content = sectionContent(markdown, section);
-        if (!content || /^\s*N\/A\s+—/m.test(content)) continue;
+        if (!content || wholeBodyIsNa(content)) continue;
         const ids = tableIds(content, idPattern);
         const diagrams = mermaidBlocks(content);
         if (ids.length === 0) {

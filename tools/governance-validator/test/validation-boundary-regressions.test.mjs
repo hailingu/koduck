@@ -92,6 +92,46 @@ test("rejects an Accepted OCR with a missing stage actual-result field", () => {
   assert.match(result.stderr, /field Actual result and stable evidence must be present/i);
 });
 
+test("does not count a Mermaid comment as covering a flow ID", () => {
+  const root = validRepository();
+  makeCurrentAdd(root);
+  rewrite(root, "docs/architecture/ADD-0001-example.md", (content) => content.replace(
+    "## Control Flow Design [Conditionally Required — multi-step behavior]\nN/A — this fixture has no multi-step control flow.",
+    `## Control Flow Design [Conditionally Required — triggered]
+| ID | Description |
+| --- | --- |
+| CF-1 | Flow |
+
+\`\`\`mermaid
+flowchart LR
+  F["Unrelated step"]
+  %% CF-1
+\`\`\``,
+  ));
+
+  const result = run(root);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Mermaid control-flow diagram does not cover CF-1/i);
+});
+
+test("does not exempt a triggered flow section from its diagram when N/A appears after real content", () => {
+  const root = validRepository();
+  makeCurrentAdd(root);
+  rewrite(root, "docs/architecture/ADD-0001-example.md", (content) => content.replace(
+    "## Control Flow Design [Conditionally Required — multi-step behavior]\nN/A — this fixture has no multi-step control flow.",
+    `## Control Flow Design [Conditionally Required — multi-step behavior]
+| ID | Description |
+| --- | --- |
+| CF-1 | Flow |
+
+N/A — stray exemption line after a real table with no diagram.`,
+  ));
+
+  const result = run(root);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Control Flow Design requires a Mermaid diagram for a Current ADD/i);
+});
+
 test("does not count a Mermaid example nested inside an outer fence as the required diagram", () => {
   const root = validRepository();
   makeCurrentAdd(root);
