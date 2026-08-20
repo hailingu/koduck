@@ -207,7 +207,10 @@ impl ApprovalRecordStore for SqlxApprovalRecordStore {
                                  WHERE tenant_id = $1 AND approval_id = $2 \
                                    AND requester_subject = $3 AND thread_id = $4 \
                                    AND status = 'requested' AND expires_at_millis <= $5 \
-                                 RETURNING version",
+                                 RETURNING version, thread_id, turn_id, attempt_id, \
+                                            lease_generation, descriptor_id, \
+                                            descriptor_version, action_digest, profile_id, \
+                                            profile_version",
                             )
                             .bind(tenant_id.as_str())
                             .bind(approval_id.as_uuid())
@@ -217,6 +220,23 @@ impl ApprovalRecordStore for SqlxApprovalRecordStore {
                             .fetch_optional(&mut *transaction)
                             .await
                             .map_err(|_| ApprovalStoreError::Unavailable)?;
+                            if let Some(row) = &expired {
+                                // The guarded expiry terminal appends its
+                                // correlated audit record atomically, exactly
+                                // like a won decision (ADR-0003 TC-14).
+                                let version = row_version(row)?;
+                                emit_decision_audit(
+                                    &mut transaction,
+                                    approval_id,
+                                    ApprovalStatus::Expired,
+                                    None,
+                                    version,
+                                    decided_at_millis,
+                                    tenant_id,
+                                    row,
+                                )
+                                .await?;
+                            }
                             transaction
                                 .commit()
                                 .await
@@ -260,7 +280,8 @@ impl ApprovalRecordStore for SqlxApprovalRecordStore {
                 emit_decision_audit(
                     &mut transaction,
                     approval_id,
-                    decision,
+                    crate::domain::execution::ApprovalStatus::from_decision(decision),
+                    Some(decision),
                     version,
                     decided_at_millis,
                     tenant_id,
@@ -533,10 +554,15 @@ fn hex_digest(bytes: &[u8; 32]) -> String {
 
 /// Appends the bounded correlated audit record for one won D-6 decision
 /// inside its resolving transaction (ADR-0003 TC-14).
+#[allow(
+    clippy::too_many_arguments,
+    reason = "each parameter is one persisted correlation field or committed terminal dimension"
+)]
 async fn emit_decision_audit(
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     approval_id: ApprovalId,
-    decision: ApprovalDecision,
+    status: ApprovalStatus,
+    decision: Option<ApprovalDecision>,
     version: u64,
     decided_at_millis: u64,
     tenant_id: &TenantId,
@@ -570,11 +596,6 @@ async fn emit_decision_audit(
     let lease_generation: i64 = row
         .try_get("lease_generation")
         .map_err(|_| ApprovalStoreError::Unavailable)?;
-    let status = match decision {
-        ApprovalDecision::Accepted => crate::domain::execution::ApprovalStatus::Accepted,
-        ApprovalDecision::Declined => crate::domain::execution::ApprovalStatus::Declined,
-        ApprovalDecision::Cancelled => crate::domain::execution::ApprovalStatus::Cancelled,
-    };
     let record = crate::application::ToolAuditRecord::approval_resolution_from_persisted(
         tenant_id,
         crate::domain::ThreadId::from_uuid(thread),
@@ -588,7 +609,7 @@ async fn emit_decision_audit(
         &action_digest,
         u64::try_from(lease_generation).map_err(|_| ApprovalStoreError::Unavailable)?,
         status,
-        decision,
+        decision.unwrap_or(ApprovalDecision::Cancelled),
         version,
         decided_at_millis,
     );

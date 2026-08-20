@@ -1546,4 +1546,29 @@ fn a_decision_on_a_requested_approval_is_rejected_after_the_turn_terminalizes() 
         final_status, "expired",
         "the deadline-passed record reaches its expiry terminal"
     );
+    // The guarded expiry terminal appends its correlated audit record
+    // atomically — every approval terminal carries TC-14 evidence.
+    let expiry_audits: Vec<String> = harness
+        .runtime
+        .block_on(async {
+            sqlx::query_scalar(
+                "SELECT record FROM tool_audit_records \
+                 WHERE tenant_id = $1 AND turn_id = $2",
+            )
+            .bind(tenant.as_str())
+            .bind(turn.as_uuid())
+            .fetch_all(&harness.pool)
+            .await
+        })
+        .expect("audit rows are readable");
+    assert_eq!(
+        expiry_audits.len(),
+        1,
+        "the guarded expiry appends exactly one audit record"
+    );
+    assert!(
+        expiry_audits[0].contains("expired"),
+        "the audit record carries the expired terminal, found {}",
+        expiry_audits[0]
+    );
 }

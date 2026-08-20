@@ -48,6 +48,16 @@ pub enum ApprovalStatus {
 }
 
 impl ApprovalStatus {
+    /// Returns the terminal status a committed decision produces.
+    #[must_use]
+    pub const fn from_decision(decision: ApprovalDecision) -> Self {
+        match decision {
+            ApprovalDecision::Accepted => Self::Accepted,
+            ApprovalDecision::Declined => Self::Declined,
+            ApprovalDecision::Cancelled => Self::Cancelled,
+        }
+    }
+
     /// Returns the canonical wire name carried by D-3/D-6 payloads.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
