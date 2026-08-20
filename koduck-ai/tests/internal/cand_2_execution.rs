@@ -207,10 +207,10 @@ fn resolve(
 
 #[path = "cand_2_authority_reclamation.rs"]
 mod authority_reclamation;
-#[path = "cand_2_policy_isolation.rs"]
-mod policy_isolation;
 #[path = "cand_2_execution_durable_gates.rs"]
 mod durable_gates;
+#[path = "cand_2_policy_isolation.rs"]
+mod policy_isolation;
 #[path = "cand_2_execution_transport.rs"]
 mod transport;
 

@@ -13,18 +13,15 @@
 //! signatures unwritable here (ADR-0003 TC-01, AC-1).
 
 use koduck_ai::application::{
-    AttemptCommitResult, AttemptCommitter, ExecutionCoordinator, ExecutionPending, LeaseCheck,
-    LeaseValidator,
+    AttemptCommitResult, AttemptCommitter, ExecutionCoordinator, LeaseCheck, LeaseValidator,
     ToolAuthorizationService, ToolConfigurationSnapshot, ToolExecutionOutcome,
 };
-use koduck_ai::domain::execution::{ApprovalDecision, ApprovalRequest, ExactActionBinding};
+use koduck_ai::domain::execution::{ApprovalDecision, ExactActionBinding};
 use koduck_ai::domain::tool::{
     Action, CapabilityDescriptor, DescriptorState, Effect, InputSchema, PermissionProfile,
     ToolValueError,
 };
-use koduck_ai::domain::{
-    LeaseGeneration, TenantId, ThreadId, TrustContext, TurnId,
-};
+use koduck_ai::domain::{LeaseGeneration, TenantId, ThreadId, TrustContext, TurnId};
 
 /// Executor double implementing the application's consumer-owned port; the
 /// isolation pipeline needs no adapter executor.
@@ -75,8 +72,10 @@ impl koduck_ai::application::DurableAttemptTransitions for RecordingCommitter {
         &mut self,
         _binding: &ExactActionBinding,
         _prepared_at_millis: u64,
-    ) -> Result<koduck_ai::application::AttemptInsertResolution, koduck_ai::application::AttemptStoreError>
-    {
+    ) -> Result<
+        koduck_ai::application::AttemptInsertResolution,
+        koduck_ai::application::AttemptStoreError,
+    > {
         Ok(koduck_ai::application::AttemptInsertResolution::Inserted)
     }
 
@@ -84,16 +83,20 @@ impl koduck_ai::application::DurableAttemptTransitions for RecordingCommitter {
         &mut self,
         _binding: &ExactActionBinding,
         _started_at_millis: u64,
-    ) -> Result<koduck_ai::application::DispatchClaimResolution, koduck_ai::application::AttemptStoreError>
-    {
+    ) -> Result<
+        koduck_ai::application::DispatchClaimResolution,
+        koduck_ai::application::AttemptStoreError,
+    > {
         Ok(koduck_ai::application::DispatchClaimResolution::Claimed { version: 2 })
     }
 
     fn cancel_prepared_attempt(
         &mut self,
         _binding: &ExactActionBinding,
-    ) -> Result<koduck_ai::application::PreparedCloseResolution, koduck_ai::application::AttemptStoreError>
-    {
+    ) -> Result<
+        koduck_ai::application::PreparedCloseResolution,
+        koduck_ai::application::AttemptStoreError,
+    > {
         Ok(koduck_ai::application::PreparedCloseResolution::Won { version: 3 })
     }
 }
@@ -133,9 +136,7 @@ fn snapshot() -> ToolConfigurationSnapshot {
     snapshot
         .register_descriptor(descriptor)
         .expect("unique descriptor");
-    snapshot
-        .register_profile(profile)
-        .expect("unique profile");
+    snapshot.register_profile(profile).expect("unique profile");
     snapshot
 }
 
@@ -190,11 +191,7 @@ fn the_default_deny_pipeline_runs_on_domain_and_application_types_alone() {
     // alone; the approval-free path itself stays inside the two boundaries.
     drop((sealed_for_approval, ApprovalDecision::Accepted));
     let mut committer = RecordingCommitter::default();
-    let mut coordinator = ExecutionCoordinator::new(
-        SucceedingExecutor,
-        CurrentLease,
-        committer,
-    );
+    let mut coordinator = ExecutionCoordinator::new(SucceedingExecutor, CurrentLease, committer);
     let mut now = || 5_000_u64;
     let outcome = coordinator
         .execute(&mut authority, None, &mut attempt, 5_000, &mut now)
