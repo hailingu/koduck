@@ -12,6 +12,7 @@ mod canonical_dispatch;
 mod deadline;
 mod durability;
 mod execution;
+mod execution_dispatch;
 mod executor_envelope;
 mod policy;
 mod ports;

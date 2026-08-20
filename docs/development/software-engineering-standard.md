@@ -176,6 +176,17 @@ the stated problem and forces, not by matching a class diagram mechanically.
 - Test observable behavior and stable contracts. Avoid tests coupled to private
   call order, framework internals, or incidental data structures unless that
   detail is itself the contract.
+- Do not inspect repository-versioned source or documentation as opaque text to
+  assert ordinary prose, exact phrasing, substring presence or occurrence
+  counts, physical line counts, formatting, section placement, or
+  implementation layout. Use the language/compiler or the configured parser or
+  validator to verify semantics. Exact text may be asserted only when its form
+  is an authoritative contract, such as a stable clause ID, required heading,
+  wire or golden fixture, schema token, command contract, or machine-readable
+  diagnostic code, and the test must cite that contract. Parser and validator
+  fixtures may contain exact grammar examples, but their assertions should
+  target semantic outcomes or stable diagnostic codes instead of ordinary
+  wording.
 - For maintained source work, use the governing ADR's
   Contract-To-Check Traceability table and Risk Coverage Matrix as required by
   the root `AGENTS.md`. Every normative contract clause must be exercised by an

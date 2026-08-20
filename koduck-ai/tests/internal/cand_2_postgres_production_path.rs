@@ -568,6 +568,99 @@ fn fenced_post_dispatch_started_effect_persists_owner_fenced_failure() {
     assert_eq!(failure_code.as_deref(), Some("owner_fenced_after_dispatch"));
 }
 
+#[test]
+fn normal_terminal_commits_stop_after_the_interruption_barrier() {
+    // An authenticated interruption committed on another replica sets the
+    // durable Turn barrier while the owning replica's lease is still live for
+    // its remaining window; a normal current-generation terminal (for example
+    // `succeeded`) must not commit through that barrier — the write loses to
+    // the typed conflict and expiry reconciliation closes the attempt
+    // (ADR-0003 TC-10/TC-12).
+    let Some(harness) = harness() else {
+        return;
+    };
+    let (identity, sealed) = sealed_binding(&harness);
+    let mut store = attempt_store(harness.pool.clone(), &harness.runtime);
+    assert_eq!(
+        koduck_ai::application::ExecutionAttemptStore::insert_prepared(&mut store, &sealed, 1_000),
+        Ok(koduck_ai::application::AttemptInsertResolution::Inserted),
+    );
+    assert_eq!(
+        koduck_ai::application::ExecutionAttemptStore::claim_running(&mut store, &sealed, 2_000),
+        Ok(DispatchClaimResolution::Claimed { version: 2 }),
+    );
+    let succeeded = koduck_ai::application::DurableAttemptTerminal::from_outcome(
+        &koduck_ai::application::ToolExecutionOutcome::Succeeded {
+            output: b"ok".to_vec(),
+            effect_state: EffectState::Started,
+        },
+    );
+    assert_eq!(
+        koduck_ai::application::ExecutionAttemptStore::commit_terminal(
+            &mut store, &sealed, &succeeded, 3_000
+        ),
+        Ok(koduck_ai::application::AttemptTerminalResolution::Won { version: 3 }),
+        "an unbarriered running attempt commits its terminal normally"
+    );
+
+    // A second attempt under a freshly committed interruption barrier loses
+    // the normal terminal write even though its lease row is still current.
+    let loser = koduck_ai::domain::execution::ExactActionBinding::new(
+        identity.tenant.clone(),
+        identity.thread,
+        identity.turn,
+        identity.lease_generation,
+        ("profile-default", "v1"),
+        koduck_ai::domain::execution::AttemptId::new(),
+        fixture_action(),
+    )
+    .expect("valid loser binding");
+    let sealed_loser = ToolAuthorizationService::new(super::FixturePolicyConfiguration {
+        descriptor: fixture_descriptor(),
+        profile: fixture_profile(),
+    })
+    .authorize_binding(loser)
+    .expect("loser binding is policy-authorized");
+    assert_eq!(
+        koduck_ai::application::ExecutionAttemptStore::insert_prepared(
+            &mut store,
+            &sealed_loser,
+            1_500
+        ),
+        Ok(koduck_ai::application::AttemptInsertResolution::Inserted),
+    );
+    assert_eq!(
+        koduck_ai::application::ExecutionAttemptStore::claim_running(
+            &mut store,
+            &sealed_loser,
+            2_500
+        ),
+        Ok(DispatchClaimResolution::Claimed { version: 2 }),
+    );
+    harness.runtime.block_on(async {
+        sqlx::query(
+            "UPDATE turns SET interrupting = TRUE \
+             WHERE tenant_id = $1 AND thread_id = $2 AND turn_id = $3",
+        )
+        .bind(identity.tenant.as_str())
+        .bind(identity.thread.as_uuid())
+        .bind(identity.turn.as_uuid())
+        .execute(&harness.pool)
+        .await
+        .expect("fixture barrier committed");
+    });
+    assert_eq!(
+        koduck_ai::application::ExecutionAttemptStore::commit_terminal(
+            &mut store,
+            &sealed_loser,
+            &succeeded,
+            3_500
+        ),
+        Ok(koduck_ai::application::AttemptTerminalResolution::Conflict),
+        "the normal terminal write loses to the committed interruption barrier"
+    );
+}
+
 /// Lease validator double answering Current for every check: these legs
 /// isolate the durable store's own fencing with a controlled foreground
 /// answer, while the production runtime wires the durable C-6 check into

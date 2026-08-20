@@ -526,23 +526,6 @@ fn reconciliation_worker_notifies_terminal_observer_after_losing_the_terminal_ra
 }
 
 #[test]
-fn reconciliation_worker_startup_is_fallible_and_propagated() {
-    let history = include_str!("../src/adapters/history/postgres.rs");
-    let runtime = include_str!("../src/runtime/mod.rs");
-
-    assert!(
-        history.contains("thread::Builder::new()") && history.contains("koduck-ai-reconciliation"),
-        "the global worker must use the fallible named-thread builder"
-    );
-    assert!(
-        runtime.contains("RuntimeError::ReconciliationWorker")
-            && runtime.contains("start_reconciliation_worker()")
-            && runtime.contains("map_err(RuntimeError::ReconciliationWorker)?"),
-        "runtime assembly must propagate reconciliation-worker spawn failure"
-    );
-}
-
-#[test]
 fn process_crash_fences_and_cancels_once() {
     let (executor, key, accepted) = SimulatedPostgres::seeded();
     let mut history = PostgresTurnHistory::new(executor.clone());

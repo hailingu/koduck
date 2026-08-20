@@ -10,7 +10,7 @@ use crate::domain::{ThreadId, TrustContext};
 
 use super::attempt_store::DurableAttemptTransitions;
 use super::cancellation::{CancelAcknowledgement, CancelPermit};
-use super::deadline::{ActionDeadline, MAX_ACTION_DURATION_MILLIS};
+use super::deadline::ActionDeadline;
 use super::executor_envelope::{
     EffectState, ExecutionFailure, ExecutionResponse, ExecutorError, MAX_EXECUTOR_OUTPUT_BYTES,
 };
@@ -18,7 +18,6 @@ pub(super) use super::preparation::{
     ExecutionPreparer, ToolExecutionAuthorityRoot, ToolExecutionRuntime,
 };
 use super::terminal::TerminalReservationFailure;
-use super::tool_projection::{ToolProjection, ToolProjectionSink, attempt_version, emit};
 
 /// Final application outcome after lease, bounds, and durable-commit validation.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -122,6 +121,13 @@ pub trait IsolatedExecutor {
 /// Opaque single-call authority created only by [`ExecutionCoordinator`].
 pub struct DispatchPermit {
     _private: (),
+}
+
+impl DispatchPermit {
+    /// Mints the coordinator's single-call dispatch permit.
+    pub(super) fn issue() -> Self {
+        Self { _private: () }
+    }
 }
 
 /// A conditional durable result-commit failure.
@@ -384,7 +390,7 @@ pub struct ExecutionCoordinator<E, L, C> {
     pub(super) committer: C,
     /// Started-at timestamp of the most recent dispatch, retained as evidence.
     #[cfg(test)]
-    last_started_at_millis: u64,
+    pub(super) last_started_at_millis: u64,
 }
 
 #[derive(Clone, Copy)]
@@ -456,209 +462,6 @@ where
             started_at_millis,
             now,
             &mut crate::application::NoToolProjections,
-        )
-    }
-
-    /// Dispatches one exact D-7 result while appending the D-3 running
-    /// projection after the canonical dispatch claim wins (TC-06).
-    ///
-    /// The projection is a durable view published only after its append; it
-    /// never authorizes or redispatches the attempt.
-    /// # Errors
-    ///
-    /// Returns [`ExecutionPending`] when the canonical dispatch claim was rejected
-    /// or no canonical terminal write won. No error variant is a final Tool result.
-    // One ordered lease-check, dispatch-claim, projection, executor, deadline,
-    // and conditional-commit sequence whose ordering encodes TC-07; extracting
-    // a phase would separate the claim from its projection and commit.
-    #[allow(clippy::too_many_lines)]
-    pub fn execute_projected(
-        &mut self,
-        authority: &mut TurnExecutionAuthority,
-        approval: Option<&ApprovalRequest>,
-        attempt: &mut ExecutionAttempt,
-        started_at_millis: u64,
-        now: &mut dyn FnMut() -> u64,
-        projections: &mut dyn ToolProjectionSink,
-    ) -> Result<ToolExecutionOutcome, ExecutionPending> {
-        if attempt.status() != ExecutionStatus::Prepared {
-            return Err(rejected_start(ExecutionError::AlreadyDispatched));
-        }
-        let binding = attempt.binding().clone();
-        if let Some(cancelled) = self.pre_dispatch_lease(authority, attempt, &binding)? {
-            return Ok(cancelled);
-        }
-        if let Err(error) = authority.claim_dispatch(attempt, approval, started_at_millis) {
-            return Err(rejected_start(error));
-        }
-        // TC-12: only the won durable running claim permits an executor
-        // dispatch, so the one-running-per-Turn and single-dispatch
-        // guarantees hold across processes; a fenced or concurrent durable
-        // slot closes this never-dispatched attempt or defers to
-        // reconciliation with zero executor calls.
-        if let Some(cancelled) =
-            self.claim_canonical_dispatch(authority, attempt, started_at_millis)?
-        {
-            return Ok(cancelled);
-        }
-        // TC-06: the running projection immediately follows the won canonical
-        // dispatch claim, before the post-claim lease check and any executor
-        // call, so publication can never outrun the canonical running
-        // transition and a post-claim fence cannot leave a terminal projection
-        // without it.
-        emit(
-            projections,
-            ToolProjection::ToolCall {
-                descriptor_id: binding.action().descriptor_id().to_owned(),
-                descriptor_version: binding.action().descriptor_version().to_owned(),
-                target: binding.action().target().to_owned(),
-                attempt_id: binding.attempt_id(),
-                status: ExecutionStatus::Running,
-                version: attempt_version(ExecutionStatus::Running),
-            },
-        );
-        if let Some(cancelled) = self.post_claim_lease(authority, attempt, &binding)? {
-            return Ok(cancelled);
-        }
-        let permit = DispatchPermit { _private: () };
-        let deadline = ActionDeadline::from_started_at(started_at_millis, now());
-        if deadline.remaining_millis() == 0 {
-            return self.commit_terminal(
-                authority,
-                attempt,
-                ToolExecutionOutcome::TimedOut {
-                    effect_state: EffectState::NotStarted,
-                },
-                ExecutionStatus::TimedOut,
-                DispatchPhase::BeforeDispatch,
-            );
-        }
-        #[cfg(test)]
-        {
-            self.last_started_at_millis = started_at_millis;
-        }
-        let response = self.executor.execute(&permit, &binding, deadline);
-        let effect_state = match &response {
-            Ok(response) => response.effect_state(),
-            Err(error) => error.effect_state(),
-        };
-        if let Err(pending) = self.post_dispatch_lease(&binding, effect_state) {
-            // The executor already returned, so an external effect may exist.
-            // An executor-confirmed `not_started` effect never started, so a
-            // fenced owner may still close its D-7 as cancelled without
-            // delivering any Tool result (ADR-0003 TC-07); `started` or
-            // `unknown` effects stay held for reconciliation as
-            // failed/owner_fenced_after_dispatch. When ownership is merely
-            // undetermined rather than proven fenced, hold the running
-            // attempt's terminal reservation for reconciliation; otherwise a
-            // recovered lease would let the interruption boundary cancel an
-            // already-executed effect (TC-07/TC-10).
-            if matches!(
-                pending,
-                ExecutionPending::ReconciliationRequired {
-                    code: ExecutionFailure::OwnerFencedAfterDispatch,
-                    ..
-                }
-            ) && effect_state == EffectState::NotStarted
-            {
-                return self.commit_terminal(
-                    authority,
-                    attempt,
-                    ToolExecutionOutcome::Cancelled {
-                        effect_state: EffectState::NotStarted,
-                    },
-                    ExecutionStatus::Cancelled,
-                    DispatchPhase::AfterDispatch,
-                );
-            }
-            if matches!(
-                pending,
-                ExecutionPending::ReconciliationRequired {
-                    code: ExecutionFailure::OwnerFencedAfterDispatch,
-                    ..
-                }
-            ) && matches!(effect_state, EffectState::Started | EffectState::Unknown)
-            {
-                // The lease is definitively fenced after an effect may have
-                // started, so the canonical row must carry
-                // failed/owner_fenced_after_dispatch rather than staying
-                // running for the lease-expiry fallback to relabel
-                // timed_out/unknown (ADR-0003 lines 309-314). The dedicated
-                // transition re-proves the fence under the ownership lock; a
-                // lost or conflicted write stays held for reconciliation and
-                // no Tool result reaches the model either way (TC-07).
-                if authority.reserve_terminal(attempt).is_ok() {
-                    let now_ms = (now)();
-                    match self.committer.commit_fenced_after_dispatch(
-                        &binding,
-                        effect_state,
-                        now_ms,
-                    ) {
-                        Ok(super::attempt_store::AttemptTerminalResolution::Won { .. }) => {
-                            let _ = authority.mirror_terminal(attempt, ExecutionStatus::Failed);
-                        }
-                        Ok(super::attempt_store::AttemptTerminalResolution::ExistingTerminal(
-                            _,
-                        )) => {
-                            authority.release_terminal_reservation(attempt);
-                        }
-                        _ => {}
-                    }
-                }
-                return Err(pending);
-            }
-            if matches!(
-                pending,
-                ExecutionPending::ReconciliationRequired {
-                    code: ExecutionFailure::LeaseUnavailable,
-                    ..
-                }
-            ) && authority.reserve_terminal(attempt).is_err()
-            {
-                return Err(ExecutionPending::ReconciliationRequired {
-                    code: ExecutionFailure::TerminalConflict,
-                    effect_state,
-                });
-            }
-            return Err(pending);
-        }
-        let deadline_elapsed =
-            now().saturating_sub(started_at_millis) >= MAX_ACTION_DURATION_MILLIS;
-        if deadline_elapsed {
-            return self.commit_terminal(
-                authority,
-                attempt,
-                ToolExecutionOutcome::TimedOut { effect_state },
-                ExecutionStatus::TimedOut,
-                DispatchPhase::AfterDispatch,
-            );
-        }
-        let response = match response {
-            Ok(response) => response,
-            Err(error) => {
-                return self.commit_terminal(
-                    authority,
-                    attempt,
-                    ToolExecutionOutcome::Failed {
-                        code: error.code(),
-                        effect_state: error.effect_state(),
-                    },
-                    ExecutionStatus::Failed,
-                    DispatchPhase::AfterDispatch,
-                );
-            }
-        };
-        let effect_state = response.effect_state();
-        let outcome = ToolExecutionOutcome::Succeeded {
-            output: response.into_output(),
-            effect_state,
-        };
-        self.commit_terminal(
-            authority,
-            attempt,
-            outcome,
-            ExecutionStatus::Succeeded,
-            DispatchPhase::AfterDispatch,
         )
     }
 
@@ -801,7 +604,7 @@ where
 }
 
 /// Maps a rejected canonical dispatch claim without reporting a terminal result.
-fn rejected_start(error: ExecutionError) -> ExecutionPending {
+pub(super) fn rejected_start(error: ExecutionError) -> ExecutionPending {
     ExecutionPending::DispatchRejected {
         code: match error {
             ExecutionError::AlreadyDispatched => ExecutionFailure::ApprovalAlreadyConsumed,

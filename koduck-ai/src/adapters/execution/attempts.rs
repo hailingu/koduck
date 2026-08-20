@@ -518,6 +518,13 @@ async fn commit_terminal_winner(
                WHERE bound_lease.generation = $11 AND NOT bound_lease.fenced
                  AND bound_lease.expires_at + INTERVAL '2 seconds' > CURRENT_TIMESTAMP
            )
+           AND EXISTS (
+               SELECT 1 FROM turns barrier
+               WHERE barrier.tenant_id = $1 AND barrier.thread_id = $9
+                 AND barrier.turn_id = $10
+                 AND barrier.status = 'started' AND NOT barrier.interrupting
+               FOR UPDATE
+           )
          RETURNING version",
     )
     .bind(binding.tenant_id().as_str())
