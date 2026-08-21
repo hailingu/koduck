@@ -793,7 +793,7 @@ fn lease_recovery_waits_for_a_running_action_deadline() {
     let started_at_millis = koduck_ai::adapters::history::postgres::unix_time_ms();
     harness.runtime.block_on(async {
         sqlx::query(
-            "INSERT INTO threads (tenant_id, subject_id, thread_id) \\
+            "INSERT INTO threads (tenant_id, subject_id, thread_id)
              VALUES ($1, 'running-owner', $2)",
         )
         .bind(tenant.as_str())
@@ -802,7 +802,7 @@ fn lease_recovery_waits_for_a_running_action_deadline() {
         .await
         .expect("fixture thread");
         sqlx::query(
-            "INSERT INTO turns (tenant_id, thread_id, turn_id, status, next_sequence) \\
+            "INSERT INTO turns (tenant_id, thread_id, turn_id, status, next_sequence)
              VALUES ($1, $2, $3, 'started', 1)",
         )
         .bind(tenant.as_str())
@@ -812,9 +812,9 @@ fn lease_recovery_waits_for_a_running_action_deadline() {
         .await
         .expect("fixture turn");
         sqlx::query(
-            "INSERT INTO turn_leases \\
-             (tenant_id, thread_id, turn_id, generation, renewed_at, expires_at, fenced) \\
-             VALUES ($1, $2, $3, 1, CURRENT_TIMESTAMP - INTERVAL '1 hour', \\
+            "INSERT INTO turn_leases
+             (tenant_id, thread_id, turn_id, generation, renewed_at, expires_at, fenced)
+             VALUES ($1, $2, $3, 1, CURRENT_TIMESTAMP - INTERVAL '1 hour',
                      CURRENT_TIMESTAMP - INTERVAL '55 minutes', FALSE)",
         )
         .bind(tenant.as_str())
@@ -824,11 +824,11 @@ fn lease_recovery_waits_for_a_running_action_deadline() {
         .await
         .expect("fixture expired lease");
         sqlx::query(
-            "INSERT INTO tool_execution_attempts \\
-             (tenant_id, attempt_id, thread_id, turn_id, lease_generation, \\
-              descriptor_id, descriptor_version, effect, action_digest, profile_id, \\
-              profile_version, prepared_at_millis, started_at_millis, status, version) \\
-             VALUES ($1, $2, $3, $4, 1, 'fixture.tool', 'v1', 'external_write', \\
+            "INSERT INTO tool_execution_attempts
+             (tenant_id, attempt_id, thread_id, turn_id, lease_generation,
+              descriptor_id, descriptor_version, effect, action_digest, profile_id,
+              profile_version, prepared_at_millis, started_at_millis, status, version)
+             VALUES ($1, $2, $3, $4, 1, 'fixture.tool', 'v1', 'external_write',
                      'ab', 'profile-default', 'v1', 1, $5, 'running', 2)",
         )
         .bind(tenant.as_str())
@@ -859,9 +859,9 @@ fn lease_recovery_waits_for_a_running_action_deadline() {
         .runtime
         .block_on(async {
             sqlx::query_as(
-                "SELECT t.status, attempt.status \\
-             FROM turns t JOIN tool_execution_attempts attempt \\
-               USING (tenant_id, thread_id, turn_id) \\
+                "SELECT t.status, attempt.status
+             FROM turns t JOIN tool_execution_attempts attempt
+               USING (tenant_id, thread_id, turn_id)
              WHERE t.tenant_id = $1 AND t.thread_id = $2 AND t.turn_id = $3",
             )
             .bind(tenant.as_str())

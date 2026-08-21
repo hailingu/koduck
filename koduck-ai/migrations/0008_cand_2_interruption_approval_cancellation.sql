@@ -6,6 +6,8 @@
 -- a C-7 cancellation decision remain valid under the second branch below.
 
 DO $$
+DECLARE
+    constraint_name TEXT;
 BEGIN
     IF EXISTS (
         SELECT 1
@@ -15,8 +17,18 @@ BEGIN
     ) THEN
         RETURN;
     END IF;
-    ALTER TABLE tool_approvals
-        DROP CONSTRAINT IF EXISTS tool_approvals_check;
+    FOR constraint_name IN
+        SELECT conname
+        FROM pg_constraint
+        WHERE conrelid = 'tool_approvals'::regclass
+          AND contype = 'c'
+          AND pg_get_constraintdef(oid) LIKE '%decision IS NULL%'
+    LOOP
+        EXECUTE format(
+            'ALTER TABLE tool_approvals DROP CONSTRAINT %I',
+            constraint_name
+        );
+    END LOOP;
     ALTER TABLE tool_approvals
         ADD CONSTRAINT tool_approvals_resolution_shape
         CHECK (
