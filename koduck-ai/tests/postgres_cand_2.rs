@@ -25,7 +25,7 @@ use sqlx::postgres::{PgPool, PgPoolOptions};
 use tower::ServiceExt;
 use uuid::Uuid;
 
-const MIGRATIONS: [&str; 7] = [
+const MIGRATIONS: [&str; 8] = [
     include_str!("../migrations/0001_cand_1_history.sql"),
     include_str!("../migrations/0002_cand_2_policy_execution.sql"),
     include_str!("../migrations/0003_cand_2_requester_ownership.sql"),
@@ -33,6 +33,7 @@ const MIGRATIONS: [&str; 7] = [
     include_str!("../migrations/0005_cand_2_execution_attempts.sql"),
     include_str!("../migrations/0006_cand_2_interrupt_barrier.sql"),
     include_str!("../migrations/0007_cand_2_tool_audit.sql"),
+    include_str!("../migrations/0008_cand_2_interruption_approval_cancellation.sql"),
 ];
 
 struct Harness {

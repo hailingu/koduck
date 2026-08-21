@@ -154,6 +154,10 @@ impl ToolPolicyConfiguration for FixturePolicyConfiguration {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the migration idempotency and durable decision race must share one canonical fixture"
+)]
 fn migration_is_idempotent_and_decisions_are_single_winner() {
     let Some(mut harness) = harness() else {
         return;
@@ -166,6 +170,8 @@ fn migration_is_idempotent_and_decisions_are_single_winner() {
             include_str!("../../migrations/0004_cand_2_tool_projections.sql"),
             include_str!("../../migrations/0005_cand_2_execution_attempts.sql"),
             include_str!("../../migrations/0006_cand_2_interrupt_barrier.sql"),
+            include_str!("../../migrations/0007_cand_2_tool_audit.sql"),
+            include_str!("../../migrations/0008_cand_2_interruption_approval_cancellation.sql"),
         ] {
             harness
                 .runtime

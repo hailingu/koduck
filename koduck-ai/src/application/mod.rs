@@ -47,6 +47,7 @@ pub(crate) use cancellation::{AttemptCancellationService, ExecutionInterrupter};
 pub use cancellation::{CancelAcknowledgement, CancelPermit, CancelledEffectState};
 pub(crate) use cancellation::{PendingApprovalCancellation, PendingApprovalCanceller};
 pub use deadline::ActionDeadline;
+pub(crate) use deadline::MAX_ACTION_DURATION_MILLIS;
 pub use durability::{AppendPolicy, BufferLimitError};
 pub use execution::*;
 pub use executor_envelope::*;

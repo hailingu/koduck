@@ -646,13 +646,13 @@ fn a_decision_on_a_requested_approval_is_rejected_after_the_turn_terminalizes() 
     clippy::too_many_lines,
     reason = "one durable regression seeds the interruption barrier, requested approval, recovery call, and atomic audit assertions"
 )]
-fn recovered_interruption_expires_and_audits_requested_approvals() {
+fn recovered_interruption_cancels_and_audits_requested_approvals() {
     // A process can die after committing the durable interruption barrier but
     // before it settles the requested D-6. Expiry recovery owns that same
     // interruption, so it must terminalize and audit the D-6 in the recovery
     // transaction rather than leave approval state pending forever. Recovery
-    // expires it without fabricating a human cancellation decision (TC-10,
-    // TC-14).
+    // records the barrier-owned cancellation without fabricating a C-7 approval
+    // decision (TC-10, TC-14).
     let Some(harness) = harness() else {
         return;
     };
@@ -746,7 +746,7 @@ fn recovered_interruption_expires_and_audits_requested_approvals() {
         .expect("approval terminal is readable");
     assert_eq!(
         (status.as_str(), decision.as_deref(), version),
-        ("expired", None, 2)
+        ("cancelled", None, 2)
     );
     let audits: Vec<String> = harness
         .runtime
@@ -769,6 +769,110 @@ fn recovered_interruption_expires_and_audits_requested_approvals() {
     );
     assert!(audits[0].contains(&approval_id.as_uuid().to_string()));
     assert!(audits[0].contains(&attempt_id.to_string()));
-    assert!(audits[0].contains("\"approval_status\":\"expired\""));
+    assert!(audits[0].contains("\"approval_status\":\"cancelled\""));
     assert!(audits[0].contains("\"approval_decision\":null"));
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one durable regression seeds the expired lease and live D-7 before asserting recovery defers its terminal"
+)]
+fn lease_recovery_waits_for_a_running_action_deadline() {
+    // An expired foreground lease is not cancellation evidence for a remote
+    // effect that is still inside its 30-second D-7 deadline. Recovery must
+    // retain the running attempt and retry after that deadline rather than
+    // terminalizing the Turn early (TC-09/TC-10).
+    let Some(harness) = harness() else {
+        return;
+    };
+    let tenant = TenantId::new("recovery-awaits-running-deadline").expect("valid tenant");
+    let thread = koduck_ai::domain::ThreadId::new();
+    let turn = koduck_ai::domain::TurnId::new();
+    let attempt_id = uuid::Uuid::new_v4();
+    let started_at_millis = koduck_ai::adapters::history::postgres::unix_time_ms();
+    harness.runtime.block_on(async {
+        sqlx::query(
+            "INSERT INTO threads (tenant_id, subject_id, thread_id) \\
+             VALUES ($1, 'running-owner', $2)",
+        )
+        .bind(tenant.as_str())
+        .bind(thread.as_uuid())
+        .execute(&harness.pool)
+        .await
+        .expect("fixture thread");
+        sqlx::query(
+            "INSERT INTO turns (tenant_id, thread_id, turn_id, status, next_sequence) \\
+             VALUES ($1, $2, $3, 'started', 1)",
+        )
+        .bind(tenant.as_str())
+        .bind(thread.as_uuid())
+        .bind(turn.as_uuid())
+        .execute(&harness.pool)
+        .await
+        .expect("fixture turn");
+        sqlx::query(
+            "INSERT INTO turn_leases \\
+             (tenant_id, thread_id, turn_id, generation, renewed_at, expires_at, fenced) \\
+             VALUES ($1, $2, $3, 1, CURRENT_TIMESTAMP - INTERVAL '1 hour', \\
+                     CURRENT_TIMESTAMP - INTERVAL '55 minutes', FALSE)",
+        )
+        .bind(tenant.as_str())
+        .bind(thread.as_uuid())
+        .bind(turn.as_uuid())
+        .execute(&harness.pool)
+        .await
+        .expect("fixture expired lease");
+        sqlx::query(
+            "INSERT INTO tool_execution_attempts \\
+             (tenant_id, attempt_id, thread_id, turn_id, lease_generation, \\
+              descriptor_id, descriptor_version, effect, action_digest, profile_id, \\
+              profile_version, prepared_at_millis, started_at_millis, status, version) \\
+             VALUES ($1, $2, $3, $4, 1, 'fixture.tool', 'v1', 'external_write', \\
+                     'ab', 'profile-default', 'v1', 1, $5, 'running', 2)",
+        )
+        .bind(tenant.as_str())
+        .bind(attempt_id)
+        .bind(thread.as_uuid())
+        .bind(turn.as_uuid())
+        .bind(i64::try_from(started_at_millis).expect("clock fits database"))
+        .execute(&harness.pool)
+        .await
+        .expect("fixture running attempt");
+    });
+    let executor = koduck_ai::adapters::history::postgres::SqlxPostgresExecutor::new(
+        harness.pool.clone(),
+        harness.runtime.handle().clone(),
+    );
+    let key = koduck_ai::adapters::history::postgres::LeaseKey::new(
+        tenant.clone(),
+        thread,
+        turn,
+        koduck_ai::domain::LeaseGeneration::initial(),
+    );
+    let mut history = koduck_ai::adapters::history::postgres::PostgresTurnHistory::new(executor);
+    assert_eq!(
+        history.reconcile_expired(&key, started_at_millis),
+        Ok(koduck_ai::adapters::history::postgres::ReconcileOutcome::TooEarly)
+    );
+    let (turn_status, attempt_status): (String, String) = harness
+        .runtime
+        .block_on(async {
+            sqlx::query_as(
+                "SELECT t.status, attempt.status \\
+             FROM turns t JOIN tool_execution_attempts attempt \\
+               USING (tenant_id, thread_id, turn_id) \\
+             WHERE t.tenant_id = $1 AND t.thread_id = $2 AND t.turn_id = $3",
+            )
+            .bind(tenant.as_str())
+            .bind(thread.as_uuid())
+            .bind(turn.as_uuid())
+            .fetch_one(&harness.pool)
+            .await
+        })
+        .expect("recovery left the live attempt unchanged");
+    assert_eq!(
+        (turn_status.as_str(), attempt_status.as_str()),
+        ("started", "running")
+    );
 }

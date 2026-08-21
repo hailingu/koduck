@@ -6,7 +6,9 @@
 
 use sqlx::{PgConnection, Row};
 
-use crate::application::{HistoryError, ToolAuditRecord, ToolExecutionOutcome};
+use crate::application::{
+    HistoryError, MAX_ACTION_DURATION_MILLIS, ToolAuditRecord, ToolExecutionOutcome,
+};
 use crate::domain::execution::ApprovalStatus;
 
 use super::LeaseKey;
@@ -16,7 +18,31 @@ pub(super) async fn close_active_attempts(
     connection: &mut PgConnection,
     key: &LeaseKey,
     terminal_at_millis: u64,
-) -> Result<(), HistoryError> {
+) -> Result<bool, HistoryError> {
+    // An expired lease is not evidence that a remote running action stopped.
+    // Recovery has no isolated-executor cancellation channel, so preserve a
+    // running D-7 until its bounded action deadline has elapsed.
+    let running_starts = sqlx::query_scalar::<_, i64>(
+        "SELECT started_at_millis
+         FROM tool_execution_attempts
+         WHERE tenant_id = $1 AND thread_id = $2 AND turn_id = $3
+           AND status = 'running'
+         FOR UPDATE",
+    )
+    .bind(key.tenant_id.as_str())
+    .bind(key.thread_id.as_uuid())
+    .bind(key.turn_id.as_uuid())
+    .fetch_all(&mut *connection)
+    .await
+    .map_err(unavailable)?;
+    let deadline_pending = running_starts.iter().any(|started_at_millis| {
+        u64::try_from(*started_at_millis).map_or(true, |started_at_millis| {
+            terminal_at_millis < started_at_millis.saturating_add(MAX_ACTION_DURATION_MILLIS)
+        })
+    });
+    if deadline_pending {
+        return Ok(false);
+    }
     // RETURNING exposes each closed attempt's persisted correlation fields so
     // the same transaction also emits its bounded audit record: the crash
     // path this recovery closes is exactly the path that needs operator
@@ -96,23 +122,23 @@ pub(super) async fn close_active_attempts(
         .await
         .map_err(unavailable)?;
     }
-    Ok(())
+    Ok(true)
 }
 
-/// Expires and audits D-6 approvals left requested by a recovered interruption.
+/// Cancels and audits D-6 approvals left requested by a recovered interruption.
 ///
-/// Recovery owns the committed interruption barrier, not a human approval
-/// decision. It therefore expires an unconsumed approval without inventing an
-/// approver or a cancellation decision, and appends the correlated terminal
-/// audit record in the same transaction (ADR-0003 TC-10/TC-14).
-pub(super) async fn expire_requested_approvals(
+/// Recovery owns the committed authenticated interruption barrier, not a C-7
+/// approval decision. It records the interruption-owned cancellation without
+/// inventing an approver or decision, and appends the correlated terminal audit
+/// record in the same transaction (ADR-0003 TC-10/TC-14).
+pub(super) async fn cancel_requested_approvals(
     connection: &mut PgConnection,
     key: &LeaseKey,
     terminal_at_millis: u64,
 ) -> Result<(), HistoryError> {
-    let expired = sqlx::query(
+    let cancelled = sqlx::query(
         "UPDATE tool_approvals
-         SET status = 'expired', version = version + 1
+         SET status = 'cancelled', version = version + 1
          WHERE tenant_id = $1 AND thread_id = $2 AND turn_id = $3
            AND status = 'requested'
          RETURNING approval_id, thread_id, turn_id, attempt_id, descriptor_id,
@@ -125,7 +151,7 @@ pub(super) async fn expire_requested_approvals(
     .fetch_all(&mut *connection)
     .await
     .map_err(unavailable)?;
-    for approval in expired {
+    for approval in cancelled {
         let approval_id: uuid::Uuid = approval.try_get("approval_id").map_err(unavailable)?;
         let thread_id: uuid::Uuid = approval.try_get("thread_id").map_err(unavailable)?;
         let turn_id: uuid::Uuid = approval.try_get("turn_id").map_err(unavailable)?;
@@ -151,7 +177,7 @@ pub(super) async fn expire_requested_approvals(
             &profile_version,
             &action_digest,
             u64::try_from(lease_generation).map_err(|_| HistoryError::Unavailable)?,
-            ApprovalStatus::Expired,
+            ApprovalStatus::Cancelled,
             None,
             u64::try_from(version).map_err(|_| HistoryError::Unavailable)?,
             terminal_at_millis,
@@ -159,8 +185,8 @@ pub(super) async fn expire_requested_approvals(
         let serialized = crate::adapters::audit::serialize_audit_record(&record)
             .map_err(|_| HistoryError::Unavailable)?;
         sqlx::query(
-            "INSERT INTO tool_audit_records \\
-             (tenant_id, thread_id, turn_id, at_millis, record) \\
+            "INSERT INTO tool_audit_records
+             (tenant_id, thread_id, turn_id, at_millis, record)
              VALUES ($1, $2, $3, $4, $5)",
         )
         .bind(record.tenant_id())

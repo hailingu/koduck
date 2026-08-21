@@ -493,13 +493,14 @@ impl SqlxPostgresExecutor {
         // the Turn permanently fenced.
         // Every expiry terminal fences this lease permanently. Close any D-7
         // still owned by the Turn before doing so, because no later reconciler
-        // can reach an active attempt beneath a terminal Turn. A recovered
-        // interruption also expires its remaining requested D-6 approvals in
-        // this transaction: the barrier makes them permanently unconsumable.
-        super::attempt_recovery::close_active_attempts(&mut transaction, key, now_ms).await?;
+        // can reach an active attempt beneath a terminal Turn. Recovery waits
+        // for an in-flight D-7 deadline when it has no cancellation evidence.
+        if !super::attempt_recovery::close_active_attempts(&mut transaction, key, now_ms).await? {
+            return Ok(ReconcileOutcome::TooEarly);
+        }
         let recovered_interruption = interrupt_requested || interrupting;
         if recovered_interruption {
-            super::attempt_recovery::expire_requested_approvals(&mut transaction, key, now_ms)
+            super::attempt_recovery::cancel_requested_approvals(&mut transaction, key, now_ms)
                 .await?;
         }
         let (terminal, terminal_status, outcome) = if recovered_interruption {
