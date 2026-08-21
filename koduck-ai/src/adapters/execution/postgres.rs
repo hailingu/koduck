@@ -244,17 +244,23 @@ impl SqlxApprovalRecordStore {
             .try_get("status")
             .map_err(|_| ApprovalStoreError::Unavailable)?;
         if status_text == "requested" {
-            // Only a genuinely expired record transitions here: the winner
-            // update can also lose to the Turn guard while the record is
-            // still inside its decision window, and such a rejection must
-            // leave the canonical status untouched (ADR-0003 D-6 state
-            // machine).
+            // Only a genuinely expired record transitions here. The same
+            // owning-Turn guard as the decision winner protects this fallback:
+            // an authenticated interruption owns the requested D-6 terminal,
+            // so recovery must cancel it rather than allowing expiry to win
+            // (ADR-0003 TC-10/TC-12).
             let expired = sqlx::query(
                 "UPDATE tool_approvals
              SET status = 'expired', version = version + 1
              WHERE tenant_id = $1 AND approval_id = $2
                AND requester_subject = $3 AND thread_id = $4
                AND status = 'requested' AND expires_at_millis <= $5
+               AND NOT EXISTS (
+                   SELECT 1 FROM turns owner
+                   WHERE owner.tenant_id = $1 AND owner.thread_id = $4
+                     AND owner.turn_id = tool_approvals.turn_id
+                     AND (owner.status <> 'started' OR owner.interrupting)
+               )
              RETURNING version, thread_id, turn_id, attempt_id, \
                         lease_generation, descriptor_id, descriptor_version, \
                         action_digest, profile_id, profile_version",
@@ -292,19 +298,24 @@ impl SqlxApprovalRecordStore {
                     .await
                     .map_err(|_| ApprovalStoreError::Unavailable)?;
             }
-            return match expired {
-                Some(expired_row) => Ok(ApprovalDecisionResolution::ExistingTerminal {
+            if let Some(expired_row) = expired {
+                return Ok(ApprovalDecisionResolution::ExistingTerminal {
                     decision: None,
                     status: ApprovalStatus::Expired,
                     version: row_version(&expired_row)?,
-                }),
-                // Another contender won a transition between the read and
-                // this write; the canonical row is already terminal.
-                None => {
-                    self.reread_terminal(approval_id, tenant_id, requester_subject, thread_id)
-                        .await
-                }
-            };
+                });
+            }
+            // Another contender won a transition between the read and this
+            // write, or the owning Turn guard rejected expiry.
+            if self
+                .turn_guard_rejects(pool, tenant_id, requester_subject, thread_id, approval_id)
+                .await?
+            {
+                return Ok(ApprovalDecisionResolution::TurnGuardRejected);
+            }
+            return self
+                .reread_terminal(approval_id, tenant_id, requester_subject, thread_id)
+                .await;
         }
         Ok(ApprovalDecisionResolution::ExistingTerminal {
             decision: row
@@ -315,6 +326,37 @@ impl SqlxApprovalRecordStore {
             status: status_from_code(&status_text).ok_or(ApprovalStoreError::Unavailable)?,
             version: row_version(&row)?,
         })
+    }
+
+    /// Reports whether the owning Turn prevents a D-6 decision or expiry
+    /// transition without changing the still-requested approval.
+    async fn turn_guard_rejects(
+        &self,
+        pool: &sqlx::PgPool,
+        tenant_id: &TenantId,
+        requester_subject: &str,
+        thread_id: crate::domain::ThreadId,
+        approval_id: ApprovalId,
+    ) -> Result<bool, ApprovalStoreError> {
+        sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS (
+                 SELECT 1 FROM tool_approvals approval
+                 JOIN turns owner
+                   ON owner.tenant_id = approval.tenant_id
+                  AND owner.thread_id = approval.thread_id
+                  AND owner.turn_id = approval.turn_id
+                 WHERE approval.tenant_id = $1 AND approval.approval_id = $2
+                   AND approval.requester_subject = $3 AND approval.thread_id = $4
+                   AND (owner.status <> 'started' OR owner.interrupting)
+             )",
+        )
+        .bind(tenant_id.as_str())
+        .bind(approval_id.as_uuid())
+        .bind(requester_subject)
+        .bind(thread_id.as_uuid())
+        .fetch_one(pool)
+        .await
+        .map_err(|_| ApprovalStoreError::Unavailable)
     }
 
     /// Classifies one conflicting canonical row against the replayed record.

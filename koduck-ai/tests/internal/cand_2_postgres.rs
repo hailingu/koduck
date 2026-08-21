@@ -482,6 +482,75 @@ fn decision_at_or_after_expiry_commits_no_decision() {
 }
 
 #[test]
+fn interruption_barrier_owns_an_expired_requested_approval() {
+    let Some(mut harness) = harness() else {
+        return;
+    };
+    let approval = requested_approval(1_000, 2_000);
+    let tenant = approval.tenant_id().clone();
+    let thread_id = approval.binding().thread_id();
+    let turn_id = approval.binding().turn_id();
+    harness.runtime.block_on(async {
+        sqlx::query(
+            "INSERT INTO threads (tenant_id, subject_id, thread_id) VALUES ($1, 'requester', $2)",
+        )
+        .bind(tenant.as_str())
+        .bind(thread_id.as_uuid())
+        .execute(&harness.pool)
+        .await
+        .expect("fixture thread");
+        sqlx::query(
+            "INSERT INTO turns \
+             (tenant_id, thread_id, turn_id, status, next_sequence, interrupting) \
+             VALUES ($1, $2, $3, 'started', 1, TRUE)",
+        )
+        .bind(tenant.as_str())
+        .bind(thread_id.as_uuid())
+        .bind(turn_id.as_uuid())
+        .execute(&harness.pool)
+        .await
+        .expect("fixture interruption barrier");
+    });
+    assert_eq!(
+        harness.store.insert_requested(&approval, "requester"),
+        Ok(ApprovalInsertResolution::Inserted)
+    );
+
+    let resolution = harness
+        .store
+        .resolve_decision(
+            approval.approval_id(),
+            &tenant,
+            thread_id,
+            "requester",
+            ApprovalDecision::Accepted,
+            &approver("approver-a"),
+            2_000,
+        )
+        .expect("interruption guard answers deterministically");
+
+    assert_eq!(resolution, ApprovalDecisionResolution::TurnGuardRejected);
+    let (status, decision, version): (String, Option<String>, i64) = harness
+        .runtime
+        .block_on(async {
+            sqlx::query_as(
+                "SELECT status, decision, version FROM tool_approvals \
+                 WHERE tenant_id = $1 AND approval_id = $2",
+            )
+            .bind(tenant.as_str())
+            .bind(approval.approval_id().as_uuid())
+            .fetch_one(&harness.pool)
+            .await
+        })
+        .expect("approval remains readable");
+    assert_eq!(
+        (status.as_str(), decision.as_deref(), version),
+        ("requested", None, 1),
+        "recovery owns the interruption cancellation"
+    );
+}
+
+#[test]
 fn conflicting_identity_replay_is_a_typed_conflict() {
     let Some(mut harness) = harness() else {
         return;
