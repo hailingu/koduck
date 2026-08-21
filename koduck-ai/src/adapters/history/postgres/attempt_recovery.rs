@@ -9,16 +9,21 @@ use sqlx::{PgConnection, Row};
 use crate::application::{
     HistoryError, MAX_ACTION_DURATION_MILLIS, ToolAuditRecord, ToolExecutionOutcome,
 };
-use crate::domain::execution::ApprovalStatus;
+use crate::domain::execution::{ApprovalStatus, AttemptId, ExecutionStatus};
+use crate::domain::{Item, ItemPayload, ToolEffectState};
 
 use super::LeaseKey;
 use super::sqlx_executor::{milliseconds_i64, unavailable};
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "one recovery transaction must close D-7 state, append its audit evidence, and construct the corresponding durable D-3 terminal projections"
+)]
 pub(super) async fn close_active_attempts(
     connection: &mut PgConnection,
     key: &LeaseKey,
     terminal_at_millis: u64,
-) -> Result<bool, HistoryError> {
+) -> Result<Option<Vec<Item>>, HistoryError> {
     // An expired lease is not evidence that a remote running action stopped.
     // Recovery has no isolated-executor cancellation channel, so preserve a
     // running D-7 until its bounded action deadline has elapsed.
@@ -41,7 +46,7 @@ pub(super) async fn close_active_attempts(
         })
     });
     if deadline_pending {
-        return Ok(false);
+        return Ok(None);
     }
     // RETURNING exposes each closed attempt's persisted correlation fields so
     // the same transaction also emits its bounded audit record: the crash
@@ -73,6 +78,7 @@ pub(super) async fn close_active_attempts(
     .fetch_all(&mut *connection)
     .await
     .map_err(unavailable)?;
+    let mut projections = Vec::with_capacity(closed.len());
     for attempt in closed {
         let attempt_id: uuid::Uuid = attempt.try_get("attempt_id").map_err(unavailable)?;
         let descriptor_id: String = attempt.try_get("descriptor_id").map_err(unavailable)?;
@@ -83,14 +89,22 @@ pub(super) async fn close_active_attempts(
         let action_digest: String = attempt.try_get("action_digest").map_err(unavailable)?;
         let lease_generation: i64 = attempt.try_get("lease_generation").map_err(unavailable)?;
         let effect_state: String = attempt.try_get("effect_state").map_err(unavailable)?;
-        let outcome = if effect_state == "not_started" {
-            ToolExecutionOutcome::Cancelled {
-                effect_state: crate::application::EffectState::NotStarted,
-            }
+        let (outcome, status, projection_effect_state) = if effect_state == "not_started" {
+            (
+                ToolExecutionOutcome::Cancelled {
+                    effect_state: crate::application::EffectState::NotStarted,
+                },
+                ExecutionStatus::Cancelled,
+                ToolEffectState::NotStarted,
+            )
         } else {
-            ToolExecutionOutcome::TimedOut {
-                effect_state: crate::application::EffectState::Unknown,
-            }
+            (
+                ToolExecutionOutcome::TimedOut {
+                    effect_state: crate::application::EffectState::Unknown,
+                },
+                ExecutionStatus::TimedOut,
+                ToolEffectState::Unknown,
+            )
         };
         let record = ToolAuditRecord::lease_recovery_terminal(
             &key.tenant_id,
@@ -121,8 +135,20 @@ pub(super) async fn close_active_attempts(
         .execute(&mut *connection)
         .await
         .map_err(unavailable)?;
+        projections.push(Item::new(
+            0,
+            ItemPayload::ToolResult {
+                attempt_id: Some(AttemptId::from_uuid(attempt_id)),
+                status,
+                code: None,
+                effect_state: Some(projection_effect_state),
+                output_bytes: 0,
+                output_digest: None,
+                version: Some(3),
+            },
+        ));
     }
-    Ok(true)
+    Ok(Some(projections))
 }
 
 /// Cancels and audits D-6 approvals left requested by a recovered interruption.

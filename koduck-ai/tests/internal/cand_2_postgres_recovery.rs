@@ -5,7 +5,9 @@
 
 use super::harness;
 use koduck_ai::adapters::execution::SqlxApprovalRecordStore;
-use koduck_ai::domain::TenantId;
+use koduck_ai::application::TurnHistory;
+use koduck_ai::domain::execution::ExecutionStatus;
+use koduck_ai::domain::{ItemPayload, TenantId, ToolEffectState};
 
 #[test]
 #[allow(
@@ -124,6 +126,24 @@ fn lease_expiry_recovery_emits_the_correlated_attempt_audit_records() {
             Ok(koduck_ai::adapters::history::postgres::ReconcileOutcome::Cancelled)
         ),
         "the expired Turn cancels, found {outcome:?}"
+    );
+    let replayed = history
+        .replay(&tenant, turn)
+        .expect("recovery projections are replayable");
+    assert!(
+        replayed.iter().any(|item| matches!(
+            &item.payload,
+            ItemPayload::ToolResult {
+                attempt_id: Some(attempt_id),
+                status: ExecutionStatus::TimedOut,
+                effect_state: Some(ToolEffectState::Unknown),
+                code: None,
+                output_bytes: 0,
+                output_digest: None,
+                version: Some(3),
+            } if *attempt_id == binding.attempt_id()
+        )),
+        "expiry recovery appends the D-3 terminal projection for its closed D-7 attempt"
     );
 
     let audits: Vec<String> = harness
