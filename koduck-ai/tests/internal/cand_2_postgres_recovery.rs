@@ -541,9 +541,9 @@ fn a_decision_on_a_requested_approval_is_rejected_after_the_turn_terminalizes() 
         ),
         "a decision under a terminal Turn must not resolve, found {decided:?}"
     );
-    // The rejected decision is inside the approval's decision window, so the
-    // canonical record must remain `requested` — the Turn guard must not
-    // corrupt it to `expired` (ADR-0003 D-6 state machine).
+    // Terminal recovery owns every unresolved D-6 beneath the recovered Turn.
+    // It cancels the in-window approval rather than leaving an unreachable
+    // `requested` record whose later decision can never win (ADR-0003 TC-10).
     let status: String = harness
         .runtime
         .block_on(async {
@@ -558,12 +558,11 @@ fn a_decision_on_a_requested_approval_is_rejected_after_the_turn_terminalizes() 
         })
         .expect("approval status is readable");
     assert_eq!(
-        status, "requested",
-        "the in-window record keeps its requested status"
+        status, "cancelled",
+        "the recovered Turn closes the in-window approval"
     );
-    // Once the deadline passes, the same guarded path commits the record's
-    // audited expiry terminal — no pending approval stays permanently
-    // `requested` under a terminal Turn (ADR-0003 D-6 state machine).
+    // The same cancelled terminal replays after the original decision window;
+    // recovery has already closed the record, so no expiry transition follows.
     let late = route.decide(
         &trust,
         thread,
@@ -575,9 +574,9 @@ fn a_decision_on_a_requested_approval_is_rejected_after_the_turn_terminalizes() 
         matches!(
             late,
             koduck_ai::application::ApprovalDecisionOutcome::Conflict { status, .. }
-                if status == koduck_ai::domain::execution::ApprovalStatus::Expired
+                if status == koduck_ai::domain::execution::ApprovalStatus::Cancelled
         ),
-        "a post-deadline decision reports the committed expiry, found {late:?}"
+        "a post-deadline decision reports the recovered cancellation, found {late:?}"
     );
     let final_status: String = harness
         .runtime
@@ -593,12 +592,12 @@ fn a_decision_on_a_requested_approval_is_rejected_after_the_turn_terminalizes() 
         })
         .expect("final approval status is readable");
     assert_eq!(
-        final_status, "expired",
-        "the deadline-passed record reaches its expiry terminal"
+        final_status, "cancelled",
+        "the recovered record retains its cancellation terminal"
     );
-    // The guarded expiry terminal appends its correlated audit record
-    // atomically — every approval terminal carries TC-14 evidence.
-    let expiry_audits: Vec<String> = harness
+    // Recovery appends its correlated cancellation audit record atomically —
+    // every approval terminal carries TC-14 evidence.
+    let cancellation_audits: Vec<String> = harness
         .runtime
         .block_on(async {
             sqlx::query_scalar(
@@ -612,19 +611,19 @@ fn a_decision_on_a_requested_approval_is_rejected_after_the_turn_terminalizes() 
         })
         .expect("audit rows are readable");
     assert_eq!(
-        expiry_audits.len(),
+        cancellation_audits.len(),
         1,
-        "the guarded expiry appends exactly one audit record"
+        "the recovered cancellation appends exactly one audit record"
     );
     assert!(
-        expiry_audits[0].contains("expired"),
-        "the audit record carries the expired terminal, found {}",
-        expiry_audits[0]
+        cancellation_audits[0].contains("cancelled"),
+        "the audit record carries the cancelled terminal, found {}",
+        cancellation_audits[0]
     );
     assert!(
-        expiry_audits[0].contains("\"approval_decision\":null"),
-        "the expired terminal carries no fabricated decision, found {}",
-        expiry_audits[0]
+        cancellation_audits[0].contains("\"approval_decision\":null"),
+        "the recovered terminal carries no fabricated decision, found {}",
+        cancellation_audits[0]
     );
 
     // An already-terminal approval replays its terminal after the Turn
