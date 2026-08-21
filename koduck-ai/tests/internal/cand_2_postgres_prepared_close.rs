@@ -145,3 +145,44 @@ fn prepared_only_close_reports_a_fenced_owner_without_mutation() {
         "a fenced owner must not mutate the canonical row",
     );
 }
+
+#[test]
+fn a_won_prepared_close_appends_its_audit_record_atomically() {
+    // The prepared-only cancellation terminal commits with its correlated
+    // audit record in one transaction, matching every other D-7 terminal
+    // (ADR-0003 TC-14).
+    let Some(harness) = harness() else {
+        return;
+    };
+    let binding = prepared_binding(koduck_ai::domain::tool::Effect::ReadData);
+    let mut store = attempt_store(harness.pool.clone(), &harness.runtime);
+    assert_eq!(
+        insert_prepared(&harness, &mut store, &binding, 1_000),
+        Ok(AttemptInsertResolution::Inserted),
+    );
+    assert_eq!(
+        koduck_ai::application::ExecutionAttemptStore::cancel_prepared_attempt(
+            &mut store, &binding
+        ),
+        Ok(PreparedCloseResolution::Won { version: 3 }),
+    );
+    let audit: Option<String> = harness
+        .runtime
+        .block_on(async {
+            sqlx::query_scalar(
+                "SELECT record FROM tool_audit_records \
+                 WHERE tenant_id = $1 AND turn_id = $2",
+            )
+            .bind(binding.tenant_id().as_str())
+            .bind(binding.turn_id().as_uuid())
+            .fetch_optional(&harness.pool)
+            .await
+        })
+        .expect("audit rows are readable");
+    let audit = audit.expect("the prepared-only close appends its audit record");
+    assert!(
+        audit.contains(&binding.attempt_id().as_uuid().to_string()),
+        "the audit record correlates the attempt"
+    );
+    assert!(audit.contains("cancelled"), "found {audit}");
+}

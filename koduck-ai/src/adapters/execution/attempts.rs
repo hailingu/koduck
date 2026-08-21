@@ -121,10 +121,15 @@ impl ExecutionAttemptStore for SqlxExecutionAttemptStore {
                 Ok(Some(version)) => {
                     append_terminal_audit(&mut transaction, binding, terminal, terminal_at_millis)
                         .await?;
-                    transaction
-                        .commit()
-                        .await
-                        .map_err(|_| AttemptStoreError::Unavailable)?;
+                    // An ambiguous COMMIT acknowledgement — the transaction
+                    // may have committed while its acknowledgement was lost —
+                    // reconciles through the canonical reread like every
+                    // other ambiguous write: a committed terminal surfaces
+                    // as ExistingTerminal instead of withholding an
+                    // already-committed result (ADR-0003 TC-12/TC-14).
+                    if transaction.commit().await.is_err() {
+                        return resolve_terminal_loss(&self.pool, binding).await;
+                    }
                     Ok(AttemptTerminalResolution::Won { version })
                 }
                 // A lost write and an ambiguous write — the statement may

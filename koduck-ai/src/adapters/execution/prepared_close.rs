@@ -27,6 +27,14 @@ pub(super) async fn close_prepared_row(
     binding: &ExactActionBinding,
     cancelled_at_millis: u64,
 ) -> Result<PreparedCloseResolution, AttemptStoreError> {
+    // The close and its correlated audit append commit atomically, exactly
+    // like every other D-7 terminal: this transition bypasses the audited
+    // commit_terminal path, but its committed cancelled terminal carries the
+    // same TC-14 evidence requirement (ADR-0003).
+    let mut transaction = pool
+        .begin()
+        .await
+        .map_err(|_| AttemptStoreError::Unavailable)?;
     let action = binding.action();
     let winner = sqlx::query(
         "UPDATE tool_execution_attempts
@@ -62,16 +70,33 @@ pub(super) async fn close_prepared_row(
     .bind(hex_digest(binding.action_digest().as_bytes()))
     .bind(binding.profile_id())
     .bind(binding.profile_version())
-    .fetch_optional(pool)
+    .fetch_optional(&mut *transaction)
     .await
     .map_err(|_| AttemptStoreError::Unavailable)?;
     if let Some(row) = winner {
         let version = row_version(&row)?;
         if version == 3 {
+            let terminal = crate::application::DurableAttemptTerminal::from_outcome(
+                &crate::application::ToolExecutionOutcome::Cancelled {
+                    effect_state: crate::application::EffectState::NotStarted,
+                },
+            );
+            super::attempts::append_terminal_audit_pub(
+                &mut transaction,
+                binding,
+                &terminal,
+                cancelled_at_millis,
+            )
+            .await?;
+            transaction
+                .commit()
+                .await
+                .map_err(|_| AttemptStoreError::Unavailable)?;
             return Ok(PreparedCloseResolution::Won { version });
         }
         return Err(AttemptStoreError::Unavailable);
     }
+    drop(transaction);
     resolve_prepared_close_loss(pool, binding).await
 }
 
