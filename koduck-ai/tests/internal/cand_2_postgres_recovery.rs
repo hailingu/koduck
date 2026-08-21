@@ -142,6 +142,22 @@ fn foreground_recovery_closes_the_correlated_attempt_audit_records() {
         Ok(koduck_ai::adapters::history::postgres::RecoveryOutcome::Failed),
         "the foreground recovery closes its active C-5 state before terminalizing"
     );
+    let persisted_turn: (String, i64) = harness
+        .runtime
+        .block_on(async {
+            sqlx::query_as(
+                "SELECT status, next_sequence FROM turns \
+                 WHERE tenant_id = $1 AND thread_id = $2 AND turn_id = $3",
+            )
+            .bind(tenant.as_str())
+            .bind(thread.as_uuid())
+            .bind(turn.as_uuid())
+            .fetch_one(&harness.pool)
+            .await
+        })
+        .expect("foreground recovery persists its Turn terminal");
+    assert_eq!(persisted_turn.0, "failed");
+    assert_eq!(persisted_turn.1, 3);
     let replayed = history
         .replay(&tenant, turn)
         .expect("recovery projections are replayable");

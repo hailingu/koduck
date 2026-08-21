@@ -138,7 +138,7 @@ impl SqlxPostgresExecutor {
             &item,
         )
         .await?;
-        sqlx::query(
+        let turn_update = sqlx::query(
             "UPDATE turns SET status = $5, next_sequence = $6 \
              WHERE tenant_id = $1 AND thread_id = $2 AND turn_id = $3 \
              AND next_sequence = $4 AND status = $7",
@@ -146,7 +146,7 @@ impl SqlxPostgresExecutor {
         .bind(turn.tenant_id.as_str())
         .bind(turn.thread_id.as_uuid())
         .bind(turn.turn_id.as_uuid())
-        .bind(sequence_i64(item.sequence)?)
+        .bind(sequence)
         .bind(terminal_status)
         .bind(sequence_i64(
             item.sequence
@@ -157,6 +157,9 @@ impl SqlxPostgresExecutor {
         .execute(&mut *transaction)
         .await
         .map_err(unavailable)?;
+        if turn_update.rows_affected() != 1 {
+            return Err(HistoryError::Fenced);
+        }
         transaction.commit().await.map_err(unavailable)?;
         Ok(RecoveryOutcome::Failed)
     }
