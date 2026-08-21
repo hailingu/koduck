@@ -979,7 +979,7 @@ fn startup_migrations_wait_for_the_cross_replica_advisory_lock() {
         .await
     });
     assert!(
-        matches!(uncontested, Ok(Ok(()))),
+        matches!(uncontended, Ok(Ok(()))),
         "the sequence completes after the lock is released"
     );
 }
