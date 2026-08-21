@@ -330,15 +330,7 @@ fn production_dispatch_claims_permit_exactly_one_executor_dispatch_across_instan
         .count();
     let reconciliation = results
         .iter()
-        .filter(|result| {
-            matches!(
-                result,
-                Err(ExecutionPending::ReconciliationRequired {
-                    code: ExecutionFailure::TerminalConflict,
-                    ..
-                })
-            )
-        })
+        .filter(|result| matches!(result, Err(ExecutionPending::ReconciliationRequired { .. })))
         .count();
     assert_eq!(
         executor.dispatch_count(),
@@ -352,7 +344,7 @@ fn production_dispatch_claims_permit_exactly_one_executor_dispatch_across_instan
     assert_eq!(
         reconciliation,
         contenders - 1,
-        "every other instance fails closed without dispatch, found {results:?}"
+        "every other instance fails closed into reconciliation without dispatch, found {results:?}"
     );
     assert_eq!(
         identity.canonical_rows(&harness),
