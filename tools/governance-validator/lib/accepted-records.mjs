@@ -63,8 +63,42 @@ export function createAcceptedRecordValidator(context) {
       const allowsReasonedNa = !kind.isAdd && !kind.isOcr && !kind.isLightweight
         && FULL_ADR_SOURCE_ONLY_SECTIONS.has(section)
         && isReasonedNa(body);
-      if (!body || /^Pending\b/i.test(body) || (/^N\/A\b/i.test(body) && !allowsReasonedNa)) {
+      if (
+        !body
+        || containsStandalonePending(body)
+        || (/^N\/A\b/i.test(body) && !allowsReasonedNa)
+      ) {
         errors.push(`${path}: ${section} body must contain substantive content, not Pending or N/A`);
+      }
+    }
+    validateRetainedOptionalSections(path, markdown, errors);
+  }
+
+  // A standalone Pending placeholder anywhere in the body — not only as its
+  // first token — leaves a lifecycle-gated required section deliberately
+  // incomplete.
+  function containsStandalonePending(body) {
+    // The placeholder is the capitalized token `Pending`; lowercase prose
+    // wrapping onto a line starting with "pending" is content, not a
+    // placeholder.
+    return body.split(/\n+/).some((line) => /^Pending\b/.test(line.trim()));
+  }
+
+  // Retained optional sections must carry complete content at final
+  // lifecycle gates; removing the section entirely stays permitted.
+  function validateRetainedOptionalSections(path, markdown, errors) {
+    const seen = new Set();
+    for (const match of markdown.matchAll(/^## ([^\n]+)$/gm)) {
+      const heading = match[1].trim();
+      if (!/\[Optional[^\]]*\]/.test(heading) || seen.has(heading)) continue;
+      seen.add(heading);
+      const raw = sectionContent(markdown, heading);
+      if (raw === undefined) continue;
+      const body = stripFencedCode(raw).trim();
+      if (!body || containsStandalonePending(body)) {
+        errors.push(
+          `${path}: ${heading.split("[")[0].trim()} is a retained optional section and must contain complete content`,
+        );
       }
     }
   }

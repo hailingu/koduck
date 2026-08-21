@@ -92,6 +92,39 @@ test("rejects an Accepted OCR with a missing stage actual-result field", () => {
   assert.match(result.stderr, /field Actual result and stable evidence must be present/i);
 });
 
+test("rejects a standalone Pending placeholder later in a required section", () => {
+  const root = validRepository();
+  acceptedAdr(root, "0097");
+  rewrite(root, "docs/adr/ADR-0097-example.md", (content) => content.replace(
+    "## Context [Required]\nContext.",
+    `## Context [Required]
+Substantive opening sentence.
+
+Pending — reapproval required
+`,
+  ));
+
+  const result = run(root);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Context body must contain substantive content/i);
+});
+
+test("rejects a blank retained optional section at a final lifecycle gate", () => {
+  const root = validRepository();
+  acceptedAdr(root, "0096");
+  rewrite(root, "docs/adr/ADR-0096-example.md", (content) => content.replace(
+    "## Change Log [Required]\nInitial.",
+    `## Supporting Notes [Optional — informative]
+Pending
+
+## Change Log [Required]\nInitial.`,
+  ));
+
+  const result = run(root);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Supporting Notes.*retained optional section.*complete content/i);
+});
+
 test("does not count a Mermaid comment as covering a flow ID", () => {
   const root = validRepository();
   makeCurrentAdd(root);
