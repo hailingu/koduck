@@ -71,8 +71,39 @@ pub(super) async fn request(
     .execute(&mut *transaction)
     .await
     .map_err(unavailable)?;
-    transaction.commit().await.map_err(unavailable)?;
+    if transaction.commit().await.is_err() {
+        if recover_committed_interruption(pool, trust, turn_id).await? {
+            return Ok(());
+        }
+        return Err(HistoryError::Unavailable);
+    }
     Ok(())
+}
+
+/// Proves that an interrupted Turn committed after an ambiguous `COMMIT`
+/// acknowledgement for the authenticated owner.
+async fn recover_committed_interruption(
+    pool: &PgPool,
+    trust: &TrustContext,
+    turn_id: TurnId,
+) -> Result<bool, HistoryError> {
+    let status = sqlx::query_scalar::<_, String>(
+        "SELECT t.status FROM turns t JOIN threads h USING (tenant_id, thread_id) \
+         WHERE t.tenant_id = $1 AND h.subject_id = $2 AND t.turn_id = $3",
+    )
+    .bind(trust.tenant_id.as_str())
+    .bind(trust.subject_id.as_str())
+    .bind(turn_id.as_uuid())
+    .fetch_optional(pool)
+    .await
+    .map_err(unavailable)?;
+    Ok(status
+        .as_deref()
+        .is_some_and(committed_interruption_is_recoverable))
+}
+
+fn committed_interruption_is_recoverable(status: &str) -> bool {
+    status == "interrupted"
 }
 
 /// Resolves the authenticated Turn's owning Thread before the runner enters
@@ -102,4 +133,16 @@ pub(super) async fn resolve(
     }
     let thread_id: Uuid = ownership.try_get("thread_id").map_err(unavailable)?;
     Ok(Some(ThreadId::from_uuid(thread_id)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::committed_interruption_is_recoverable;
+
+    #[test]
+    fn a_durable_interrupted_turn_reconciles_a_lost_commit_acknowledgement() {
+        assert!(committed_interruption_is_recoverable("interrupted"));
+        assert!(!committed_interruption_is_recoverable("started"));
+        assert!(!committed_interruption_is_recoverable("failed"));
+    }
 }
