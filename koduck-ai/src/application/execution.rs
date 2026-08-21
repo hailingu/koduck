@@ -224,6 +224,13 @@ pub trait AttemptCommitter {
         outcome: &ToolExecutionOutcome,
     ) -> Result<AttemptCommitResult, AttemptCommitError>;
 
+    /// Reports whether this committer appends the correlated audit record
+    /// atomically inside its terminal transaction, so the driver must not
+    /// emit a second, non-atomic record (ADR-0003 TC-14).
+    fn appends_terminal_audit_atomically(&self) -> bool {
+        false
+    }
+
     /// Durably commits the canonical `failed/owner_fenced_after_dispatch`
     /// terminal for one running D-7 whose bound lease is definitively fenced.
     ///
@@ -407,6 +414,11 @@ where
 {
     /// Creates a coordinator around the only executor and lease ports.
     #[must_use]
+    /// Reports whether the committer appends terminal audits atomically.
+    pub(super) fn appends_terminal_audit_atomically(&self) -> bool {
+        self.committer.appends_terminal_audit_atomically()
+    }
+
     pub const fn new(executor: E, lease: L, committer: C) -> Self {
         Self {
             executor,

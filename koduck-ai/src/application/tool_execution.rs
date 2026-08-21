@@ -249,12 +249,15 @@ impl<C, A> ToolExecutionDriver<C, A> {
             // as a structured diagnostic.
             emit_tool_result(&attempt, &outcome, projections);
             // Every committed D-7 execution terminal emits one correlated,
-            // bounded audit record at its own observation-time clock read; a
-            // failed emission never changes the committed terminal (TC-14).
-            record_audit(
-                audits,
-                &ToolAuditRecord::execution_terminal(attempt.binding(), &outcome, now()),
-            );
+            // bounded audit record. The production durable committer appends
+            // it atomically inside its terminal transaction, so the driver
+            // emits only for committers without that capability (TC-14).
+            if !coordinator.appends_terminal_audit_atomically() {
+                record_audit(
+                    audits,
+                    &ToolAuditRecord::execution_terminal(attempt.binding(), &outcome, now()),
+                );
+            }
             // Retry only on a committed executor pre-effect failure (TC-08); a
             // cancellation or success never retries even when it reports NotStarted.
             if matches!(

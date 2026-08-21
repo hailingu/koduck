@@ -1114,3 +1114,55 @@ fn schema_rejects_illegal_attempt_tuples() {
         }
     }
 }
+
+#[test]
+fn a_won_terminal_commit_appends_its_audit_record_atomically() {
+    // The terminal transition and its correlated audit record commit in one
+    // transaction, so a committed D-7 can never permanently lack its durable
+    // TC-14 evidence — even if the process exits before any driver-side
+    // emission (ADR-0003 TC-14).
+    let Some(harness) = harness() else {
+        return;
+    };
+    let binding = prepared_binding(koduck_ai::domain::tool::Effect::ReadData);
+    let mut store = attempt_store(harness.pool.clone(), &harness.runtime);
+    assert_eq!(
+        insert_prepared(&harness, &mut store, &binding, 1_000),
+        Ok(AttemptInsertResolution::Inserted),
+    );
+    assert_eq!(
+        koduck_ai::application::ExecutionAttemptStore::claim_running(&mut store, &binding, 2_000),
+        Ok(koduck_ai::application::DispatchClaimResolution::Claimed { version: 2 }),
+    );
+    let terminal = koduck_ai::application::DurableAttemptTerminal::from_outcome(
+        &koduck_ai::application::ToolExecutionOutcome::Succeeded {
+            output: b"ok".to_vec(),
+            effect_state: koduck_ai::application::EffectState::Started,
+        },
+    );
+    assert_eq!(
+        koduck_ai::application::ExecutionAttemptStore::commit_terminal(
+            &mut store, &binding, &terminal, 3_000
+        ),
+        Ok(koduck_ai::application::AttemptTerminalResolution::Won { version: 3 }),
+    );
+    let audit: Option<String> = harness
+        .runtime
+        .block_on(async {
+            sqlx::query_scalar(
+                "SELECT record FROM tool_audit_records \
+                 WHERE tenant_id = $1 AND turn_id = $2",
+            )
+            .bind(binding.tenant_id().as_str())
+            .bind(binding.turn_id().as_uuid())
+            .fetch_optional(&harness.pool)
+            .await
+        })
+        .expect("audit rows are readable");
+    let audit = audit.expect("the won terminal appends its audit record atomically");
+    assert!(
+        audit.contains(&binding.attempt_id().as_uuid().to_string()),
+        "the audit record correlates the attempt"
+    );
+    assert!(audit.contains("succeeded"), "found {audit}");
+}

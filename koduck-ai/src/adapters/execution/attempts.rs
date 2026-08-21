@@ -101,8 +101,16 @@ impl ExecutionAttemptStore for SqlxExecutionAttemptStore {
             _ => vec!["running"],
         };
         self.wait(async {
-            match commit_terminal_winner(
-                &self.pool,
+            // The terminal write and its correlated audit append commit
+            // atomically: a committed D-7 can never permanently lack its
+            // durable TC-14 evidence (ADR-0003).
+            let mut transaction = self
+                .pool
+                .begin()
+                .await
+                .map_err(|_| AttemptStoreError::Unavailable)?;
+            match commit_terminal_winner_tx(
+                &mut transaction,
                 binding,
                 terminal,
                 terminal_at_millis,
@@ -110,16 +118,28 @@ impl ExecutionAttemptStore for SqlxExecutionAttemptStore {
             )
             .await
             {
-                Ok(Some(version)) => Ok(AttemptTerminalResolution::Won { version }),
+                Ok(Some(version)) => {
+                    append_terminal_audit(&mut transaction, binding, terminal, terminal_at_millis)
+                        .await?;
+                    transaction
+                        .commit()
+                        .await
+                        .map_err(|_| AttemptStoreError::Unavailable)?;
+                    Ok(AttemptTerminalResolution::Won { version })
+                }
                 // A lost write and an ambiguous write — the statement may
                 // have committed while its acknowledgement was lost to a
                 // timeout or connection failure — both reconcile through the
                 // canonical re-read: a committed terminal surfaces as
-                // ExistingTerminal so the driver still emits its correlated
-                // audit record, while a confirmed-absent row stays NotFound
-                // (mapped to the undecidable unavailability the committer
-                // contract defines) (ADR-0003 TC-12/TC-14).
-                Ok(None) | Err(_) => resolve_terminal_loss(&self.pool, binding).await,
+                // ExistingTerminal so the caller still observes the terminal,
+                // while a confirmed-absent row stays NotFound (mapped to the
+                // undecidable unavailability the committer contract defines)
+                // (ADR-0003 TC-12).
+                lost_or_ambiguous => {
+                    drop(transaction);
+                    let _ = lost_or_ambiguous;
+                    resolve_terminal_loss(&self.pool, binding).await
+                }
             }
         })
     }
@@ -269,6 +289,10 @@ impl AttemptCommitter for SqlxExecutionAttemptStore {
             effect_state,
             terminal_at_millis,
         )
+    }
+
+    fn appends_terminal_audit_atomically(&self) -> bool {
+        true
     }
 
     fn commit_outcome(
@@ -490,8 +514,8 @@ async fn another_attempt_is_running(
     .map_err(|_| AttemptStoreError::Unavailable)
 }
 
-async fn commit_terminal_winner(
-    pool: &PgPool,
+async fn commit_terminal_winner_tx(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     binding: &ExactActionBinding,
     terminal: &DurableAttemptTerminal,
     terminal_at_millis: u64,
@@ -545,7 +569,7 @@ async fn commit_terminal_winner(
     .bind(hex_digest(binding.action_digest().as_bytes()))
     .bind(binding.profile_id())
     .bind(binding.profile_version())
-    .fetch_optional(pool)
+    .fetch_optional(&mut **transaction)
     .await
     .map_err(|_| AttemptStoreError::Unavailable)?;
     winner.map_or(Ok(None), |row| {
@@ -556,6 +580,70 @@ async fn commit_terminal_winner(
             Err(AttemptStoreError::Unavailable)
         }
     })
+}
+
+/// Appends the bounded correlated audit record for one won D-7 terminal,
+/// inside the terminal's own transaction (ADR-0003 TC-14).
+pub(super) async fn append_terminal_audit_pub(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    binding: &ExactActionBinding,
+    terminal: &DurableAttemptTerminal,
+    terminal_at_millis: u64,
+) -> Result<(), AttemptStoreError> {
+    append_terminal_audit(transaction, binding, terminal, terminal_at_millis).await
+}
+
+async fn append_terminal_audit(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    binding: &ExactActionBinding,
+    terminal: &DurableAttemptTerminal,
+    terminal_at_millis: u64,
+) -> Result<(), AttemptStoreError> {
+    let outcome = match terminal.status() {
+        ExecutionStatus::Succeeded => ToolExecutionOutcome::Succeeded {
+            output: terminal
+                .output()
+                .ok_or(AttemptStoreError::Unavailable)?
+                .to_vec(),
+            effect_state: terminal.effect_state(),
+        },
+        ExecutionStatus::Failed => ToolExecutionOutcome::Failed {
+            code: terminal
+                .failure_code()
+                .ok_or(AttemptStoreError::Unavailable)?,
+            effect_state: terminal.effect_state(),
+        },
+        ExecutionStatus::TimedOut => ToolExecutionOutcome::TimedOut {
+            effect_state: terminal.effect_state(),
+        },
+        ExecutionStatus::Cancelled => ToolExecutionOutcome::Cancelled {
+            effect_state: terminal.effect_state(),
+        },
+        ExecutionStatus::Prepared | ExecutionStatus::Running => {
+            return Err(AttemptStoreError::Unavailable);
+        }
+    };
+    let record = crate::application::ToolAuditRecord::execution_terminal(
+        binding,
+        &outcome,
+        terminal_at_millis,
+    );
+    let serialized = crate::adapters::audit::serialize_audit_record(&record)
+        .map_err(|_| AttemptStoreError::Unavailable)?;
+    sqlx::query(
+        "INSERT INTO tool_audit_records \
+         (tenant_id, thread_id, turn_id, at_millis, record) \
+         VALUES ($1, $2, $3, $4, $5)",
+    )
+    .bind(record.tenant_id())
+    .bind(binding.thread_id().as_uuid())
+    .bind(binding.turn_id().as_uuid())
+    .bind(millis(terminal_at_millis)?)
+    .bind(serialized)
+    .execute(&mut **transaction)
+    .await
+    .map_err(|_| AttemptStoreError::Unavailable)?;
+    Ok(())
 }
 
 pub(super) async fn resolve_terminal_loss(

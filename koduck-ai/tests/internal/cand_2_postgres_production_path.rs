@@ -606,6 +606,30 @@ fn fenced_post_dispatch_started_effect_persists_owner_fenced_failure() {
         })
         .expect("failure code is readable");
     assert_eq!(failure_code.as_deref(), Some("owner_fenced_after_dispatch"));
+    // The fenced terminal committed its correlated audit record atomically
+    // in the same transaction (ADR-0003 TC-14).
+    let fenced_audit: Option<String> = harness
+        .runtime
+        .block_on(async {
+            sqlx::query_scalar(
+                "SELECT record FROM tool_audit_records \
+                 WHERE tenant_id = $1 AND turn_id = $2",
+            )
+            .bind(identity.tenant.as_str())
+            .bind(identity.turn.as_uuid())
+            .fetch_optional(&harness.pool)
+            .await
+        })
+        .expect("fenced audit rows are readable");
+    let fenced_audit = fenced_audit.expect("the fenced terminal appends its audit record");
+    assert!(
+        fenced_audit.contains(&sealed.attempt_id().as_uuid().to_string()),
+        "the fenced audit record correlates the attempt"
+    );
+    assert!(
+        fenced_audit.contains("owner_fenced_after_dispatch"),
+        "found {fenced_audit}"
+    );
 }
 
 #[test]

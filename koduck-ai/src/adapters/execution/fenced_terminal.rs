@@ -94,6 +94,23 @@ async fn fenced_failure_winner(
     .fetch_optional(&mut *transaction)
     .await
     .map_err(|_| AttemptStoreError::Unavailable)?;
+    if winner.is_some() {
+        // The fenced terminal commits with its correlated audit record in the
+        // same transaction (ADR-0003 TC-14).
+        let terminal = crate::application::DurableAttemptTerminal::from_outcome(
+            &crate::application::ToolExecutionOutcome::Failed {
+                code: crate::application::ExecutionFailure::OwnerFencedAfterDispatch,
+                effect_state,
+            },
+        );
+        super::attempts::append_terminal_audit_pub(
+            &mut transaction,
+            binding,
+            &terminal,
+            terminal_at_millis,
+        )
+        .await?;
+    }
     transaction
         .commit()
         .await
