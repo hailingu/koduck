@@ -6,15 +6,17 @@ use crate::test_support::process_local_durable_claims;
 use koduck_ai::adapters::tool::{parse_action_parameters, parse_input_schema};
 use koduck_ai::application::{
     ActionDeadline, ApprovalAuthorizer, ApprovalDecisionService, AttemptCommitError,
-    AttemptCommitResult, AttemptCommitter, CancelAcknowledgement, CancelPermit, DispatchPermit,
-    EffectState, ExecutionCoordinator, ExecutionFailure, ExecutionPreparationError,
-    ExecutionResponse, ExecutionResponseBuilder, ExecutorError, IsolatedExecutor, LeaseCheck,
-    LeaseValidator, ToolAuthorizationService, ToolCallError, ToolCallInputs,
-    ToolExecutionAuthorityRoot, ToolExecutionDriver, ToolExecutionOutcome, ToolExecutionRuntime,
-    ToolProjection, ToolProjectionError, ToolProjectionSink,
+    AttemptCommitResult, AttemptCommitter, AttemptTerminalResolution, CancelAcknowledgement,
+    CancelPermit, DispatchPermit, EffectState, ExecutionCoordinator, ExecutionFailure,
+    ExecutionPending, ExecutionPreparationError, ExecutionResponse, ExecutionResponseBuilder,
+    ExecutorError, IsolatedExecutor, LeaseCheck, LeaseValidator, ToolAuthorizationService,
+    ToolCallError, ToolCallInputs, ToolExecutionAuthorityRoot, ToolExecutionDriver,
+    ToolExecutionOutcome, ToolExecutionRuntime, ToolProjection, ToolProjectionError,
+    ToolProjectionSink,
 };
 use koduck_ai::domain::execution::{
     ApprovalDecision, ApprovalRequest, AttemptId, ExactActionBinding, ExecutionError,
+    ExecutionStatus,
 };
 use koduck_ai::domain::tool::{
     Action, CapabilityDescriptor, DescriptorState, Effect, PermissionProfile,
@@ -107,6 +109,9 @@ impl AttemptCommitter for WinningCommitter {
 /// Committer that always reports a conflicting canonical terminal.
 struct ConflictCommitter;
 
+/// Committer whose dedicated post-dispatch fenced transition has durably won.
+struct FencedTerminalCommitter;
+
 impl AttemptCommitter for ConflictCommitter {
     fn commit_outcome(
         &mut self,
@@ -114,6 +119,25 @@ impl AttemptCommitter for ConflictCommitter {
         _outcome: &ToolExecutionOutcome,
     ) -> Result<AttemptCommitResult, AttemptCommitError> {
         Err(AttemptCommitError::Conflict)
+    }
+}
+
+impl AttemptCommitter for FencedTerminalCommitter {
+    fn commit_outcome(
+        &mut self,
+        _binding: &ExactActionBinding,
+        _outcome: &ToolExecutionOutcome,
+    ) -> Result<AttemptCommitResult, AttemptCommitError> {
+        unreachable!("a post-dispatch fence uses the dedicated terminal transition")
+    }
+
+    fn commit_fenced_after_dispatch(
+        &mut self,
+        _binding: &ExactActionBinding,
+        _effect_state: EffectState,
+        _terminal_at_millis: u64,
+    ) -> Result<AttemptTerminalResolution, koduck_ai::application::AttemptStoreError> {
+        Ok(AttemptTerminalResolution::Won { version: 3 })
     }
 }
 
@@ -265,6 +289,7 @@ fn binding_from(inputs: &ToolCallInputs) -> ExactActionBinding {
 }
 
 process_local_durable_claims!(ConflictCommitter);
+process_local_durable_claims!(FencedTerminalCommitter);
 
 /// Winning close double whose durable transitions count every canonical
 /// terminal close — a dispatched terminal or a prepared-only cancellation —
@@ -302,6 +327,69 @@ impl koduck_ai::application::DurableAttemptTransitions for WinningCommitter {
         self.calls += 1;
         Ok(koduck_ai::application::PreparedCloseResolution::Won { version: 3 })
     }
+}
+
+#[test]
+fn fenced_post_dispatch_failure_projects_the_committed_terminal() {
+    // This fails if `dispatch` returns the reconciliation error before
+    // emitting the canonical terminal that the dedicated fenced transition
+    // already committed. The sink must retain a D-3 failed/version-3 view so
+    // replay cannot leave the D-7 at running (ADR-0003 TC-06/TC-07).
+    let inputs = inputs(action_for(Effect::ReadData));
+    let mut preparer = new_runtime().preparer(SequencedLease {
+        decisions: VecDeque::from([true]),
+    });
+    let mut coordinator = ExecutionCoordinator::new(
+        ScriptedExecutor {
+            responses: VecDeque::from([Ok(succeeded(b"effect"))]),
+            seen: Vec::new(),
+        },
+        SequencedLease {
+            decisions: VecDeque::from([true, true, false]),
+        },
+        FencedTerminalCommitter,
+    );
+    let mut projections = ProjectionRecorder::default();
+
+    let error = driver(config_for(Effect::ReadData))
+        .execute_projected(
+            &mut preparer,
+            &mut coordinator,
+            &inputs,
+            &trust(),
+            &mut |_| (ApprovalDecision::Cancelled, 0),
+            &mut fixed_clock(1_000),
+            &mut projections,
+            &mut koduck_ai::application::NoToolAudits,
+        )
+        .expect_err("a fenced post-dispatch effect still requires reconciliation");
+
+    assert!(matches!(
+        error,
+        ToolCallError::Reconciliation(ExecutionPending::ReconciliationRequired {
+            code: ExecutionFailure::OwnerFencedAfterDispatch,
+            effect_state: EffectState::Started,
+        })
+    ));
+    assert!(matches!(
+        projections.appended.as_slice(),
+        [
+            ToolProjection::ToolCall {
+                status: ExecutionStatus::Running,
+                version: 2,
+                ..
+            },
+            ToolProjection::ToolResult {
+                status: ExecutionStatus::Failed,
+                code: Some(ExecutionFailure::OwnerFencedAfterDispatch),
+                effect_state: EffectState::Started,
+                output_bytes: 0,
+                output_digest: None,
+                version: 3,
+                ..
+            }
+        ]
+    ));
 }
 
 #[test]

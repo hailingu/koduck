@@ -630,8 +630,44 @@ where
             );
             Err(ToolCallError::Reconciliation(pending))
         }
-        Err(pending) => Err(ToolCallError::Reconciliation(pending)),
+        Err(pending) => {
+            if let Some(outcome) = committed_fenced_post_dispatch_outcome(pending, attempt) {
+                // The dedicated fenced transition has already committed the
+                // D-7 terminal, but it still returns reconciliation so the
+                // runner does not continue the model. Its D-3 and non-atomic
+                // audit views must nevertheless record that durable terminal.
+                emit_tool_result(attempt, &outcome, projections);
+                if !coordinator.appends_terminal_audit_atomically() {
+                    record_audit(
+                        audits,
+                        &ToolAuditRecord::execution_terminal(attempt.binding(), &outcome, now()),
+                    );
+                }
+            }
+            Err(ToolCallError::Reconciliation(pending))
+        }
         Ok(outcome) => Ok(outcome),
+    }
+}
+
+/// Returns the D-7 terminal already committed by the dedicated post-dispatch
+/// fence transition, when its local mirror proves this coordinator won it.
+fn committed_fenced_post_dispatch_outcome(
+    pending: ExecutionPending,
+    attempt: &ExecutionAttempt,
+) -> Option<ToolExecutionOutcome> {
+    match (pending, attempt.status()) {
+        (
+            ExecutionPending::ReconciliationRequired {
+                code: ExecutionFailure::OwnerFencedAfterDispatch,
+                effect_state,
+            },
+            crate::domain::execution::ExecutionStatus::Failed,
+        ) => Some(ToolExecutionOutcome::Failed {
+            code: ExecutionFailure::OwnerFencedAfterDispatch,
+            effect_state,
+        }),
+        _ => None,
     }
 }
 
