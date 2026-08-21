@@ -208,7 +208,11 @@ authority root and the empty descriptor snapshot: an unresolved name denies as
 `outside_permission_profile` — both with zero D-6/D-7 and zero dispatch — and
 the empty inventory makes every production call take the denial path
 (TC-02/TC-13). The approval decision provider fails closed (`cancelled`); an
-interactive decision bridge requires its own accepted capability record. The
-foreground-lease validator reports the servicing runner's bound generation as
-current for its synchronous window, and the terminal committer is the
-process-local authority catalog until T-3 lands the durable D-7 store.
+interactive decision bridge requires its own accepted capability record. Both the dispatch and interruption paths validate the bound foreground lease
+generation through the injected durable `SqlxTurnLeaseValidator` (reading the
+canonical `turn_leases` rows under the two-second arbitration window), and
+every D-7 terminal commits through the injected durable
+`SqlxExecutionAttemptStore` conditional transitions — the terminal write, its
+correlated audit append, and the Turn-barrier arbitration are one atomic
+durable sequence, with the process-local authority catalog only arbitrating
+preparation and dispatch ordering (ADR-0003 TC-07/TC-12/TC-14).

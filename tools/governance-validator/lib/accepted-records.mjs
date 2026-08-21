@@ -78,10 +78,21 @@ export function createAcceptedRecordValidator(context) {
   // first token — leaves a lifecycle-gated required section deliberately
   // incomplete.
   function containsStandalonePending(body) {
-    // The placeholder is the capitalized token `Pending`; lowercase prose
-    // wrapping onto a line starting with "pending" is content, not a
-    // placeholder.
-    return body.split(/\n+/).some((line) => /^Pending\b/.test(line.trim()));
+    // The placeholder is the capitalized token `Pending`, either as a whole
+    // line or as the value of a Markdown field (`- **Owner**: Pending`); a
+    // label prefix, bullet, quote, or emphasis never hides it. Lowercase
+    // prose wrapping onto a line starting with "pending" is content.
+    return body.split(/\n+/).some((line) => {
+      const trimmed = line.trim();
+      // Strip markdown scaffolding — bullets, quotes, emphasis, and a
+      // field label ending in ":" — then require the placeholder at the
+      // value position.
+      const stripped = trimmed
+        .replace(/^[-*_>]+\s*/, "")
+        .replace(/^\*\*([^*]*)\*\*\s*:\s*/, "")
+        .replace(/^[^:*]{0,80}:\s*/, "");
+      return /^Pending\b/.test(stripped);
+    });
   }
 
   // Retained optional sections must carry complete content at final

@@ -726,6 +726,10 @@ fn normal_terminal_commits_stop_after_the_interruption_barrier() {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one durable leg proving both sides of the ownership discrimination on a single store"
+)]
 fn interruption_owned_termals_commit_past_the_barrier_while_stale_results_lose() {
     // The durable interruption barrier must block stale normal executor
     // results but never the interruption's own bounded cancellation
@@ -757,17 +761,40 @@ fn interruption_owned_termals_commit_past_the_barrier_while_stale_results_lose()
         .expect("fixture barrier committed");
     });
 
-    let cancelled = koduck_ai::application::DurableAttemptTerminal::from_outcome(
-        &koduck_ai::application::ToolExecutionOutcome::Cancelled {
-            effect_state: EffectState::Started,
-        },
-    );
+    // The interruption's own settlement routes through the ownership-flagged
+    // committer path and commits past its barrier...
+    let cancelled_outcome = koduck_ai::application::ToolExecutionOutcome::Cancelled {
+        effect_state: EffectState::Started,
+    };
     assert_eq!(
-        koduck_ai::application::ExecutionAttemptStore::commit_terminal(
-            &mut store, &sealed, &cancelled, 3_000
+        koduck_ai::application::AttemptCommitter::commit_outcome_as_interruption(
+            &mut store,
+            &sealed,
+            &cancelled_outcome
         ),
-        Ok(koduck_ai::application::AttemptTerminalResolution::Won { version: 3 }),
+        Ok(koduck_ai::application::AttemptCommitResult::Won),
         "the interruption-owned cancelled terminal commits past its own barrier"
+    );
+    // ...while the same cancelled outcome on the dispatch-owned path loses,
+    // so a stale executor can no longer win the interruption race by
+    // producing any terminal class (ADR-0003 TC-10/TC-12).
+    assert_eq!(
+        koduck_ai::application::AttemptCommitter::commit_outcome(
+            &mut store,
+            &sealed,
+            &cancelled_outcome
+        ),
+        Ok(koduck_ai::application::AttemptCommitResult::Existing(
+            Box::new(
+                koduck_ai::application::CanonicalAttemptTerminal::from_persistence(
+                    sealed.clone(),
+                    3,
+                    cancelled_outcome,
+                )
+                .expect("canonical terminal validates"),
+            )
+        )),
+        "the dispatch-owned cancelled terminal no longer bypasses the barrier"
     );
 
     // A stale normal result on a second attempt still loses.

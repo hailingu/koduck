@@ -57,37 +57,35 @@ impl SqlxExecutionAttemptStore {
     }
 }
 
-impl ExecutionAttemptStore for SqlxExecutionAttemptStore {
-    fn insert_prepared(
-        &mut self,
-        binding: &ExactActionBinding,
-        prepared_at_millis: u64,
-    ) -> Result<AttemptInsertResolution, AttemptStoreError> {
-        self.wait(prepared_insert::insert_prepared_row(
-            &self.pool,
-            binding,
-            prepared_at_millis,
-        ))
-    }
-
-    fn claim_running(
-        &mut self,
-        binding: &ExactActionBinding,
-        started_at_millis: u64,
-    ) -> Result<DispatchClaimResolution, AttemptStoreError> {
-        self.wait(async {
-            if claim_running_winner(&self.pool, binding, started_at_millis).await? {
-                return Ok(DispatchClaimResolution::Claimed { version: 2 });
-            }
-            resolve_claim_loss(&self.pool, binding).await
-        })
-    }
-
-    fn commit_terminal(
+impl SqlxExecutionAttemptStore {
+    /// Commits a terminal with an explicit interruption-ownership marker:
+    /// only an interruption-owned settlement may commit past the durable
+    /// Turn barrier (ADR-0003 TC-10/TC-12).
+    fn commit_terminal_with_ownership(
         &mut self,
         binding: &ExactActionBinding,
         terminal: &DurableAttemptTerminal,
         terminal_at_millis: u64,
+        interruption_owned: bool,
+    ) -> Result<AttemptTerminalResolution, AttemptStoreError> {
+        Self::commit_terminal_impl(
+            self,
+            binding,
+            terminal,
+            terminal_at_millis,
+            interruption_owned,
+        )
+    }
+
+    /// Shared terminal transition body; `interruption_owned` gates the
+    /// barrier bypass in the winner SQL (ADR-0003 TC-10/TC-12). Defined as
+    /// an inherent method so the trait surface stays minimal.
+    fn commit_terminal_impl(
+        &mut self,
+        binding: &ExactActionBinding,
+        terminal: &DurableAttemptTerminal,
+        terminal_at_millis: u64,
+        interruption_owned: bool,
     ) -> Result<AttemptTerminalResolution, AttemptStoreError> {
         // A cancellation may close a still-prepared attempt only when the
         // executor proves no effect started (a declined, cancelled, or
@@ -115,6 +113,7 @@ impl ExecutionAttemptStore for SqlxExecutionAttemptStore {
                 terminal,
                 terminal_at_millis,
                 &allowed_sources,
+                interruption_owned,
             )
             .await
             {
@@ -148,6 +147,43 @@ impl ExecutionAttemptStore for SqlxExecutionAttemptStore {
             }
         })
     }
+}
+
+impl ExecutionAttemptStore for SqlxExecutionAttemptStore {
+    fn insert_prepared(
+        &mut self,
+        binding: &ExactActionBinding,
+        prepared_at_millis: u64,
+    ) -> Result<AttemptInsertResolution, AttemptStoreError> {
+        self.wait(prepared_insert::insert_prepared_row(
+            &self.pool,
+            binding,
+            prepared_at_millis,
+        ))
+    }
+
+    fn claim_running(
+        &mut self,
+        binding: &ExactActionBinding,
+        started_at_millis: u64,
+    ) -> Result<DispatchClaimResolution, AttemptStoreError> {
+        self.wait(async {
+            if claim_running_winner(&self.pool, binding, started_at_millis).await? {
+                return Ok(DispatchClaimResolution::Claimed { version: 2 });
+            }
+            resolve_claim_loss(&self.pool, binding).await
+        })
+    }
+
+    fn commit_terminal(
+        &mut self,
+        binding: &ExactActionBinding,
+        terminal: &DurableAttemptTerminal,
+        terminal_at_millis: u64,
+    ) -> Result<AttemptTerminalResolution, AttemptStoreError> {
+        Self::commit_terminal_with_ownership(self, binding, terminal, terminal_at_millis, false)
+    }
+
     fn cancel_prepared_attempt(
         &mut self,
         binding: &ExactActionBinding,
@@ -280,6 +316,37 @@ impl DurableAttemptTransitions for SqlxExecutionAttemptStore {
 }
 
 impl AttemptCommitter for SqlxExecutionAttemptStore {
+    fn commit_outcome_as_interruption(
+        &mut self,
+        binding: &ExactActionBinding,
+        outcome: &ToolExecutionOutcome,
+    ) -> Result<AttemptCommitResult, AttemptCommitError> {
+        // The authenticated interruption's own settlement routes through the
+        // ownership-flagged terminal transition (ADR-0003 TC-10/TC-12).
+        let terminal = DurableAttemptTerminal::from_outcome(outcome);
+        let terminal_at_millis = crate::adapters::history::postgres::unix_time_ms();
+        match Self::commit_terminal_with_ownership(
+            self,
+            binding,
+            &terminal,
+            terminal_at_millis,
+            true,
+        ) {
+            Ok(AttemptTerminalResolution::Won { version: 3 }) => Ok(AttemptCommitResult::Won),
+            Ok(AttemptTerminalResolution::Won { .. } | AttemptTerminalResolution::NotFound)
+            | Err(AttemptStoreError::Unavailable | AttemptStoreError::AttemptLimit) => {
+                Err(AttemptCommitError::Unavailable)
+            }
+            Ok(AttemptTerminalResolution::ExistingTerminal(canonical)) => {
+                Ok(AttemptCommitResult::Existing(canonical))
+            }
+            Ok(AttemptTerminalResolution::Fenced) => Err(AttemptCommitError::Fenced),
+            Ok(AttemptTerminalResolution::Conflict) | Err(AttemptStoreError::IdentityConflict) => {
+                Err(AttemptCommitError::Conflict)
+            }
+        }
+    }
+
     fn commit_fenced_after_dispatch(
         &mut self,
         binding: &ExactActionBinding,
@@ -525,6 +592,7 @@ async fn commit_terminal_winner_tx(
     terminal: &DurableAttemptTerminal,
     terminal_at_millis: u64,
     allowed_sources: &[&str],
+    interruption_owned: bool,
 ) -> Result<Option<u64>, AttemptStoreError> {
     let action = binding.action();
     let winner = sqlx::query(
@@ -552,7 +620,8 @@ async fn commit_terminal_winner_tx(
                WHERE barrier.tenant_id = $1 AND barrier.thread_id = $9
                  AND barrier.turn_id = $10
                  AND barrier.status = 'started'
-                 AND (NOT barrier.interrupting OR $3::text IN ('cancelled', 'timed_out'))
+                 AND (NOT barrier.interrupting
+                      OR ($18::boolean AND $3::text IN ('cancelled', 'timed_out')))
                FOR UPDATE
            )
          RETURNING version",
@@ -574,6 +643,7 @@ async fn commit_terminal_winner_tx(
     .bind(hex_digest(binding.action_digest().as_bytes()))
     .bind(binding.profile_id())
     .bind(binding.profile_version())
+    .bind(interruption_owned)
     .fetch_optional(&mut **transaction)
     .await
     .map_err(|_| AttemptStoreError::Unavailable)?;

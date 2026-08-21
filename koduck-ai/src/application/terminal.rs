@@ -32,7 +32,11 @@ where
     /// Cancellation claims this reservation before its external side effect;
     /// dispatch commits use the same path after acquiring it immediately before
     /// their conditional canonical write.
-    pub(super) fn commit_reserved_terminal(
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "each parameter is one independently validated settlement dimension"
+    )]
+    pub(super) fn commit_reserved_terminal_with_ownership(
         &mut self,
         authority: &mut TurnExecutionAuthority,
         attempt: &mut ExecutionAttempt,
@@ -40,80 +44,86 @@ where
         status: ExecutionStatus,
         dispatch_phase: DispatchPhase,
         reservation_failure: TerminalReservationFailure,
+        interruption_owned: bool,
     ) -> Result<ToolExecutionOutcome, ExecutionPending> {
         let binding = attempt.binding().clone();
-        let (result, canonical_terminal_known) =
-            match self.committer.commit_outcome(&binding, &outcome) {
-                Ok(AttemptCommitResult::Won) => (
-                    if authority.mirror_terminal(attempt, status).is_err() {
+        let committer_result = if interruption_owned {
+            self.committer
+                .commit_outcome_as_interruption(&binding, &outcome)
+        } else {
+            self.committer.commit_outcome(&binding, &outcome)
+        };
+        let (result, canonical_terminal_known) = match committer_result {
+            Ok(AttemptCommitResult::Won) => (
+                if authority.mirror_terminal(attempt, status).is_err() {
+                    Err(ExecutionPending::ReconciliationRequired {
+                        code: ExecutionFailure::TerminalConflict,
+                        effect_state: outcome.effect_state(),
+                    })
+                } else {
+                    Ok(outcome)
+                },
+                true,
+            ),
+            Ok(AttemptCommitResult::Existing(existing)) => {
+                if existing.binding() != &binding {
+                    return Err(ExecutionPending::ReconciliationRequired {
+                        code: ExecutionFailure::TerminalConflict,
+                        effect_state: outcome.effect_state(),
+                    });
+                }
+                let persisted_version = existing.version();
+                let existing = existing.outcome().clone();
+                if persisted_version != attempt_version(existing.status()) {
+                    // A replayed or competing-writer terminal whose
+                    // persisted version contradicts the canonical D-7
+                    // transition version is a conflict: projecting it
+                    // would fabricate a canonical version, so
+                    // reconciliation owns the next transition.
+                    return Err(ExecutionPending::ReconciliationRequired {
+                        code: ExecutionFailure::TerminalConflict,
+                        effect_state: existing.effect_state(),
+                    });
+                }
+                (
+                    if authority
+                        .mirror_terminal(attempt, existing.status())
+                        .is_err()
+                    {
                         Err(ExecutionPending::ReconciliationRequired {
-                            code: ExecutionFailure::TerminalConflict,
-                            effect_state: outcome.effect_state(),
-                        })
-                    } else {
-                        Ok(outcome)
-                    },
-                    true,
-                ),
-                Ok(AttemptCommitResult::Existing(existing)) => {
-                    if existing.binding() != &binding {
-                        return Err(ExecutionPending::ReconciliationRequired {
-                            code: ExecutionFailure::TerminalConflict,
-                            effect_state: outcome.effect_state(),
-                        });
-                    }
-                    let persisted_version = existing.version();
-                    let existing = existing.outcome().clone();
-                    if persisted_version != attempt_version(existing.status()) {
-                        // A replayed or competing-writer terminal whose
-                        // persisted version contradicts the canonical D-7
-                        // transition version is a conflict: projecting it
-                        // would fabricate a canonical version, so
-                        // reconciliation owns the next transition.
-                        return Err(ExecutionPending::ReconciliationRequired {
                             code: ExecutionFailure::TerminalConflict,
                             effect_state: existing.effect_state(),
-                        });
-                    }
-                    (
-                        if authority
-                            .mirror_terminal(attempt, existing.status())
-                            .is_err()
-                        {
-                            Err(ExecutionPending::ReconciliationRequired {
-                                code: ExecutionFailure::TerminalConflict,
-                                effect_state: existing.effect_state(),
-                            })
-                        } else {
-                            Ok(existing)
-                        },
-                        true,
-                    )
-                }
-                Err(error) => {
-                    let canonical_terminal_known = matches!(error, AttemptCommitError::Conflict);
-                    (
-                        Err(ExecutionPending::ReconciliationRequired {
-                            code: match error {
-                                AttemptCommitError::Fenced => match dispatch_phase {
-                                    DispatchPhase::BeforeDispatch => {
-                                        ExecutionFailure::OwnerFencedBeforeDispatch
-                                    }
-                                    DispatchPhase::AfterDispatch => {
-                                        ExecutionFailure::OwnerFencedAfterDispatch
-                                    }
-                                },
-                                AttemptCommitError::Unavailable => {
-                                    ExecutionFailure::DurabilityUnavailable
+                        })
+                    } else {
+                        Ok(existing)
+                    },
+                    true,
+                )
+            }
+            Err(error) => {
+                let canonical_terminal_known = matches!(error, AttemptCommitError::Conflict);
+                (
+                    Err(ExecutionPending::ReconciliationRequired {
+                        code: match error {
+                            AttemptCommitError::Fenced => match dispatch_phase {
+                                DispatchPhase::BeforeDispatch => {
+                                    ExecutionFailure::OwnerFencedBeforeDispatch
                                 }
-                                AttemptCommitError::Conflict => ExecutionFailure::TerminalConflict,
+                                DispatchPhase::AfterDispatch => {
+                                    ExecutionFailure::OwnerFencedAfterDispatch
+                                }
                             },
-                            effect_state: outcome.effect_state(),
-                        }),
-                        canonical_terminal_known,
-                    )
-                }
-            };
+                            AttemptCommitError::Unavailable => {
+                                ExecutionFailure::DurabilityUnavailable
+                            }
+                            AttemptCommitError::Conflict => ExecutionFailure::TerminalConflict,
+                        },
+                        effect_state: outcome.effect_state(),
+                    }),
+                    canonical_terminal_known,
+                )
+            }
+        };
         if result.is_err()
             && !canonical_terminal_known
             && matches!(

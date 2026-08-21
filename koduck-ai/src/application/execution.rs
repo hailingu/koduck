@@ -231,6 +231,26 @@ pub trait AttemptCommitter {
         false
     }
 
+    /// Commits a terminal the authenticated interruption owns, which may
+    /// lawfully settle past the Turn's durable interruption barrier.
+    ///
+    /// The default delegates to [`Self::commit_outcome`], so only the
+    /// production store distinguishes interruption-owned settlements; a
+    /// dispatch-owned terminal never uses this path (ADR-0003 TC-10/TC-12).
+    /// Commits a terminal the authenticated interruption owns.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AttemptCommitError`] under the same conditions as
+    /// [`Self::commit_outcome`], which the default delegates to.
+    fn commit_outcome_as_interruption(
+        &mut self,
+        binding: &ExactActionBinding,
+        outcome: &ToolExecutionOutcome,
+    ) -> Result<AttemptCommitResult, AttemptCommitError> {
+        self.commit_outcome(binding, outcome)
+    }
+
     /// Durably commits the canonical `failed/owner_fenced_after_dispatch`
     /// terminal for one running D-7 whose bound lease is definitively fenced.
     ///
@@ -585,6 +605,28 @@ where
         status: ExecutionStatus,
         dispatch_phase: DispatchPhase,
     ) -> Result<ToolExecutionOutcome, ExecutionPending> {
+        self.commit_terminal_with_ownership(
+            authority,
+            attempt,
+            outcome,
+            status,
+            dispatch_phase,
+            false,
+        )
+    }
+
+    /// Commits a terminal with an explicit interruption-ownership marker:
+    /// only the authenticated interruption's own settlements may commit past
+    /// the durable Turn barrier (ADR-0003 TC-10/TC-12).
+    pub(super) fn commit_terminal_with_ownership(
+        &mut self,
+        authority: &mut TurnExecutionAuthority,
+        attempt: &mut ExecutionAttempt,
+        outcome: ToolExecutionOutcome,
+        status: ExecutionStatus,
+        dispatch_phase: DispatchPhase,
+        interruption_owned: bool,
+    ) -> Result<ToolExecutionOutcome, ExecutionPending> {
         if authority.reserve_terminal(attempt).is_err() {
             return Err(ExecutionPending::ReconciliationRequired {
                 code: ExecutionFailure::TerminalConflict,
@@ -604,13 +646,14 @@ where
                 TerminalReservationFailure::HoldForReconciliation
             }
         };
-        self.commit_reserved_terminal(
+        self.commit_reserved_terminal_with_ownership(
             authority,
             attempt,
             outcome,
             status,
             dispatch_phase,
             reservation_failure,
+            interruption_owned,
         )
     }
 }

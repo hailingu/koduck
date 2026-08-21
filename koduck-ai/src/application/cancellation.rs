@@ -478,7 +478,7 @@ where
         }
         let deadline = ActionDeadline::from_started_at(started_at_millis, now());
         if deadline.remaining_millis() == 0 {
-            return self.commit_reserved_terminal(
+            return self.commit_reserved_terminal_with_ownership(
                 authority,
                 attempt,
                 ToolExecutionOutcome::TimedOut {
@@ -487,6 +487,7 @@ where
                 ExecutionStatus::TimedOut,
                 DispatchPhase::AfterDispatch,
                 TerminalReservationFailure::HoldForReconciliation,
+                true,
             );
         }
         let permit = CancelPermit { _private: () };
@@ -512,7 +513,7 @@ where
         // `timed_out/unknown` rather than a `cancelled` terminal whose effect
         // evidence can no longer be trusted relative to the deadline.
         if now().saturating_sub(started_at_millis) >= MAX_ACTION_DURATION_MILLIS {
-            return self.commit_reserved_terminal(
+            return self.commit_reserved_terminal_with_ownership(
                 authority,
                 attempt,
                 ToolExecutionOutcome::TimedOut {
@@ -521,6 +522,7 @@ where
                 ExecutionStatus::TimedOut,
                 DispatchPhase::AfterDispatch,
                 TerminalReservationFailure::HoldForReconciliation,
+                true,
             );
         }
         let outcome = if acknowledged {
@@ -531,13 +533,14 @@ where
             }
         };
         let status = outcome.status();
-        self.commit_reserved_terminal(
+        self.commit_reserved_terminal_with_ownership(
             authority,
             attempt,
             outcome,
             status,
             DispatchPhase::AfterDispatch,
             TerminalReservationFailure::HoldForReconciliation,
+            true,
         )
     }
 }
