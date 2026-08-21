@@ -25,13 +25,14 @@ use sqlx::postgres::{PgPool, PgPoolOptions};
 use tower::ServiceExt;
 use uuid::Uuid;
 
-const MIGRATIONS: [&str; 6] = [
+const MIGRATIONS: [&str; 7] = [
     include_str!("../migrations/0001_cand_1_history.sql"),
     include_str!("../migrations/0002_cand_2_policy_execution.sql"),
     include_str!("../migrations/0003_cand_2_requester_ownership.sql"),
     include_str!("../migrations/0004_cand_2_tool_projections.sql"),
     include_str!("../migrations/0005_cand_2_execution_attempts.sql"),
     include_str!("../migrations/0006_cand_2_interrupt_barrier.sql"),
+    include_str!("../migrations/0007_cand_2_tool_audit.sql"),
 ];
 
 struct Harness {
@@ -53,7 +54,11 @@ fn harness() -> Option<Harness> {
     let pool = runtime
         .block_on(
             PgPoolOptions::new()
-                .max_connections(8)
+                // The decision-race leg runs 32 concurrent route contenders,
+                // each holding one pooled connection across its transaction;
+                // the pool must admit them all so the store's 2-second
+                // deadline measures transition contention, not pool queuing.
+                .max_connections(32)
                 .connect(&database_url),
         )
         .expect("connect to disposable PostgreSQL");
