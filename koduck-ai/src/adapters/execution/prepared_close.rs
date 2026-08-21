@@ -12,10 +12,10 @@ use sqlx::PgPool;
 use crate::application::{AttemptStoreError, PreparedCloseResolution};
 use crate::domain::execution::{ExactActionBinding, ExecutionStatus};
 
-use super::attempts::{
-    bound_lease_is_not_current, effect_code, hex_digest, immutable_fields_match, millis,
-    row_status, row_version,
+use super::attempt_reconciliation::{
+    bound_lease_is_not_current, immutable_fields_match, row_status, row_version,
 };
+use super::attempts::{effect_code, hex_digest, millis};
 
 /// Executes one prepared-only conditional close against the canonical store.
 ///

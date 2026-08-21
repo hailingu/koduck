@@ -7,9 +7,8 @@ use sqlx::{PgPool, Postgres, Transaction};
 use crate::application::{AttemptInsertResolution, AttemptStoreError};
 use crate::domain::execution::ExactActionBinding;
 
-use super::attempts::{
-    effect_code, hex_digest, immutable_fields_match, millis, row_status, row_version,
-};
+use super::attempt_reconciliation::{immutable_fields_match, row_status, row_version};
+use super::attempts::{effect_code, hex_digest, millis};
 
 /// Inserts one canonical prepared D-7 while serializing the Turn attempt budget.
 pub(super) async fn insert_prepared_row(

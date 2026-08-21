@@ -2,6 +2,7 @@
 
 //! Production executor adapter kept fail-closed until a capability is approved.
 
+mod attempt_reconciliation;
 pub mod attempts;
 mod fenced_terminal;
 pub mod lease;

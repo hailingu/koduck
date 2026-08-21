@@ -157,6 +157,23 @@ Substantive opening sentence.
   assert.match(result.stderr, /Context body must contain substantive content/i);
 });
 
+test("rejects a Pending value inside a Markdown table cell", () => {
+  const root = validRepository();
+  acceptedAdr(root, "0092");
+  rewrite(root, "docs/adr/ADR-0092-example.md", (content) => content.replace(
+    "## Context [Required]\nContext.",
+    `## Context [Required]
+| Field | Value |
+| --- | --- |
+| Owner | Pending |
+`,
+  ));
+
+  const result = run(root);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Context body must contain substantive content/i);
+});
+
 test("rejects a standalone Pending placeholder later in a required section", () => {
   const root = validRepository();
   acceptedAdr(root, "0097");

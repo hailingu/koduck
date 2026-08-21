@@ -7,7 +7,8 @@ use sqlx::PgPool;
 
 use crate::application::{AttemptStoreError, AttemptTerminalResolution, EffectState};
 
-use super::attempts::{effect_code, hex_digest, millis, resolve_terminal_loss};
+use super::attempt_reconciliation::resolve_terminal_loss;
+use super::attempts::{effect_code, hex_digest, millis};
 use crate::domain::execution::ExactActionBinding;
 
 /// Commits the fenced post-dispatch failure and classifies its loss.

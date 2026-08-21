@@ -91,6 +91,17 @@ export function createAcceptedRecordValidator(context) {
         .replace(/^[-*_>]+\s*/, "")
         .replace(/^\*\*([^*]*)\*\*\s*:\s*/, "")
         .replace(/^[^:*]{0,80}:\s*/, "");
+      if (/^\|.*\|$/.test(trimmed)) {
+        const cells = trimmed
+          .slice(1, -1)
+          .split("|")
+          .map((cell) => cell.trim());
+        // Two-column field/value tables are narrative section content. Their
+        // values cannot retain a lifecycle placeholder. Structured plan and
+        // acceptance tables have their own status-aware validation below,
+        // where Pending remains valid before a terminal implementation state.
+        return cells.length === 2 && cells.some((cell) => /^Pending\b/.test(cell));
+      }
       return /^Pending\b/.test(stripped);
     });
   }
