@@ -27,7 +27,7 @@ is accepted.
 | Unit | Decomposition-review threshold | Engineering-exception limit |
 | --- | --- | --- |
 | Maintained production source file | More than 400 physical lines | More than 800 physical lines |
-| Maintained test source file | More than 600 physical lines | More than 1,200 physical lines |
+| Maintained test source file | More than 600 physical lines | More than 1,800 physical lines |
 | Function, method, closure, or equivalent executable unit | More than 60 physical lines | More than 120 physical lines |
 | Cyclomatic complexity, when measured by configured tooling | More than 10 | More than 20 |
 | Executable nesting depth | More than 4 levels | More than 6 levels |

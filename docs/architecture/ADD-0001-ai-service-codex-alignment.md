@@ -649,7 +649,7 @@ subtasks and deterministic checks.
 - [x] Cross-cutting concerns, risks, and assumptions are documented with their treatment, and every material question is resolved.
 - [x] Traceability connects every requirement to capabilities and ADR task candidates or records why no runtime candidate applies.
 - [x] Task candidates contain outcomes and boundaries but no source-file or executable implementation design.
-- [x] Every `Selected` or `Complete` candidate has an exact reciprocal ADR path; CAND-1 is `Complete` through `docs/adr/ADR-0001-provider-neutral-turn-kernel.md`, and CAND-2 is `Selected` through `docs/adr/ADR-0003-default-deny-tool-approval-execution-boundary.md`; both ADRs' Architecture Source fields point back to this ADD and the matching candidate ID.
+- [x] Every `Selected` or `Complete` candidate has an exact reciprocal ADR path; CAND-1 is `Complete` through `docs/adr/ADR-0001-provider-neutral-turn-kernel.md`, and CAND-2 is `Complete` through `docs/adr/ADR-0003-default-deny-tool-approval-execution-boundary.md`; both ADRs' Architecture Source fields point back to this ADD and the matching candidate ID.
 - [x] Every required section is complete; every conditional trigger is assessed and completed or marked `N/A — <reason>`; optional content is complete.
 - [x] An eligible non-author approver, approval time, and exact `Approval Evidence: Approve` are recorded before `Current`; no Approval Context Revision is recorded because no immutable revision yet represents the approved uncommitted content.
 
@@ -701,3 +701,4 @@ This section is inactive because Design Status is `Current`. When triggered:
 | 2026-08-20 | Recorded ADR-0003's deliberate AC-1 acceptance-definition revision and its return to `Proposed, Not Started` pending reapproval. | @zcode |
 | 2026-08-20 | Marked CAND-2 `Complete` after `@linhai` reapproved the revision and the linked ADR reached `Accepted, Complete` on `a288abc`; every declared acceptance-check command was re-executed post-reapproval before completion. | @zcode |
 | 2026-08-20 | Recorded CAND-2 `Complete` after the AC-1/AC-11 semantic-method revision was `@linhai`-reapproved at 2026-08-20T10:26:01+08:00 and the revised commands re-executed post-reapproval. | @zcode |
+| 2026-08-21 | Synchronized the Approval And Review Checklist with CAND-2's existing `Complete` status and its Accepted, Complete linked ADR. | @codex |
