@@ -244,10 +244,10 @@ impl SqlxApprovalRecordStore {
             .try_get("status")
             .map_err(|_| ApprovalStoreError::Unavailable)?;
         if status_text == "requested" {
-            // Only a genuinely expired record transitions here. The same
-            // owning-Turn guard as the decision winner protects this fallback:
-            // an authenticated interruption owns the requested D-6 terminal,
-            // so recovery must cancel it rather than allowing expiry to win
+            // Only a genuinely expired record transitions here. An active
+            // authenticated interruption owns the requested D-6 terminal, so
+            // recovery must cancel it rather than allowing expiry to win;
+            // ordinary terminal Turns retain their existing expiry behavior
             // (ADR-0003 TC-10/TC-12).
             let expired = sqlx::query(
                 "UPDATE tool_approvals
@@ -259,7 +259,7 @@ impl SqlxApprovalRecordStore {
                    SELECT 1 FROM turns owner
                    WHERE owner.tenant_id = $1 AND owner.thread_id = $4
                      AND owner.turn_id = tool_approvals.turn_id
-                     AND (owner.status <> 'started' OR owner.interrupting)
+                     AND owner.interrupting
                )
              RETURNING version, thread_id, turn_id, attempt_id, \
                         lease_generation, descriptor_id, descriptor_version, \
@@ -308,7 +308,13 @@ impl SqlxApprovalRecordStore {
             // Another contender won a transition between the read and this
             // write, or the owning Turn guard rejected expiry.
             if self
-                .turn_guard_rejects(pool, tenant_id, requester_subject, thread_id, approval_id)
+                .interruption_owns_approval(
+                    pool,
+                    tenant_id,
+                    requester_subject,
+                    thread_id,
+                    approval_id,
+                )
                 .await?
             {
                 return Ok(ApprovalDecisionResolution::TurnGuardRejected);
@@ -328,9 +334,9 @@ impl SqlxApprovalRecordStore {
         })
     }
 
-    /// Reports whether the owning Turn prevents a D-6 decision or expiry
-    /// transition without changing the still-requested approval.
-    async fn turn_guard_rejects(
+    /// Reports whether an authenticated interruption owns the requested D-6
+    /// terminal without changing the still-requested approval.
+    async fn interruption_owns_approval(
         &self,
         pool: &sqlx::PgPool,
         tenant_id: &TenantId,
@@ -347,7 +353,7 @@ impl SqlxApprovalRecordStore {
                   AND owner.turn_id = approval.turn_id
                  WHERE approval.tenant_id = $1 AND approval.approval_id = $2
                    AND approval.requester_subject = $3 AND approval.thread_id = $4
-                   AND (owner.status <> 'started' OR owner.interrupting)
+                   AND owner.interrupting
              )",
         )
         .bind(tenant_id.as_str())
