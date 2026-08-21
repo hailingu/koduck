@@ -6,7 +6,7 @@
 use super::harness;
 use koduck_ai::adapters::execution::SqlxApprovalRecordStore;
 use koduck_ai::application::TurnHistory;
-use koduck_ai::domain::execution::ExecutionStatus;
+use koduck_ai::domain::execution::{ApprovalStatus, ExecutionStatus};
 use koduck_ai::domain::{ItemPayload, TenantId, ToolEffectState};
 
 #[test]
@@ -767,6 +767,23 @@ fn recovered_interruption_cancels_and_audits_requested_approvals() {
     assert_eq!(
         (status.as_str(), decision.as_deref(), version),
         ("cancelled", None, 2)
+    );
+    let replayed = history
+        .replay(&tenant, turn)
+        .expect("recovered approval projection is replayable");
+    assert!(
+        replayed.iter().any(|item| matches!(
+            &item.payload,
+            ItemPayload::ApprovalStatus {
+                approval_id: projected_approval_id,
+                attempt_id: projected_attempt_id,
+                status: ApprovalStatus::Cancelled,
+                decision: None,
+                version: 2,
+            } if *projected_approval_id == approval_id
+                && projected_attempt_id.as_uuid() == attempt_id
+        )),
+        "interruption recovery appends the D-3 cancellation projection for its closed D-6 approval"
     );
     let audits: Vec<String> = harness
         .runtime

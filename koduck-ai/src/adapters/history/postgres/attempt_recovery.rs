@@ -9,7 +9,7 @@ use sqlx::{PgConnection, Row};
 use crate::application::{
     HistoryError, MAX_ACTION_DURATION_MILLIS, ToolAuditRecord, ToolExecutionOutcome,
 };
-use crate::domain::execution::{ApprovalStatus, AttemptId, ExecutionStatus};
+use crate::domain::execution::{ApprovalId, ApprovalStatus, AttemptId, ExecutionStatus};
 use crate::domain::{Item, ItemPayload, ToolEffectState};
 
 use super::LeaseKey;
@@ -155,13 +155,14 @@ pub(super) async fn close_active_attempts(
 ///
 /// Recovery owns the committed authenticated interruption barrier, not a C-7
 /// approval decision. It records the interruption-owned cancellation without
-/// inventing an approver or decision, and appends the correlated terminal audit
-/// record in the same transaction (ADR-0003 TC-10/TC-14).
+/// inventing an approver or decision, and returns the correlated terminal D-3
+/// projections for the caller to append in the same transaction (ADR-0003
+/// TC-10/TC-14).
 pub(super) async fn cancel_requested_approvals(
     connection: &mut PgConnection,
     key: &LeaseKey,
     terminal_at_millis: u64,
-) -> Result<(), HistoryError> {
+) -> Result<Vec<Item>, HistoryError> {
     let cancelled = sqlx::query(
         "UPDATE tool_approvals
          SET status = 'cancelled', version = version + 1
@@ -177,6 +178,7 @@ pub(super) async fn cancel_requested_approvals(
     .fetch_all(&mut *connection)
     .await
     .map_err(unavailable)?;
+    let mut projections = Vec::with_capacity(cancelled.len());
     for approval in cancelled {
         let approval_id: uuid::Uuid = approval.try_get("approval_id").map_err(unavailable)?;
         let thread_id: uuid::Uuid = approval.try_get("thread_id").map_err(unavailable)?;
@@ -223,6 +225,16 @@ pub(super) async fn cancel_requested_approvals(
         .execute(&mut *connection)
         .await
         .map_err(unavailable)?;
+        projections.push(Item::new(
+            0,
+            ItemPayload::ApprovalStatus {
+                approval_id: ApprovalId::from_uuid(approval_id),
+                attempt_id: AttemptId::from_uuid(attempt_id),
+                status: ApprovalStatus::Cancelled,
+                decision: None,
+                version: u64::try_from(version).map_err(|_| HistoryError::Unavailable)?,
+            },
+        ));
     }
-    Ok(())
+    Ok(projections)
 }

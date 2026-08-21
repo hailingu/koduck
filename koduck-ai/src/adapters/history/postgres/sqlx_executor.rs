@@ -502,8 +502,10 @@ impl SqlxPostgresExecutor {
         };
         let recovered_interruption = interrupt_requested || interrupting;
         if recovered_interruption {
-            super::attempt_recovery::cancel_requested_approvals(&mut transaction, key, now_ms)
-                .await?;
+            recovered_attempt_projections.extend(
+                super::attempt_recovery::cancel_requested_approvals(&mut transaction, key, now_ms)
+                    .await?,
+            );
         }
         let (terminal, terminal_status, outcome) = if recovered_interruption {
             (
