@@ -609,7 +609,7 @@ async fn emit_decision_audit(
         &action_digest,
         u64::try_from(lease_generation).map_err(|_| ApprovalStoreError::Unavailable)?,
         status,
-        decision.unwrap_or(ApprovalDecision::Cancelled),
+        decision,
         version,
         decided_at_millis,
     );

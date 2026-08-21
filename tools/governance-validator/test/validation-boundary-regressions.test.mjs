@@ -109,6 +109,21 @@ Pending — resolution pending
   assert.match(result.stderr, /Assumptions And Open Questions body must contain substantive content/i);
 });
 
+test("accepts a reasoned N/A in a retained optional section", () => {
+  const root = validRepository();
+  acceptedAdr(root, "0094");
+  rewrite(root, "docs/adr/ADR-0094-example.md", (content) => content.replace(
+    "## Change Log [Required]\nInitial.",
+    `## Supporting Notes [Optional]
+N/A — no supporting notes apply to this record
+
+## Change Log [Required]\nInitial.`,
+  ));
+
+  const result = run(root);
+  assert.equal(result.status, 0, `a reasoned N/A optional section passes, found ${result.stderr}`);
+});
+
 test("rejects a bare unreasoned N/A in a retained optional section", () => {
   const root = validRepository();
   acceptedAdr(root, "0095");

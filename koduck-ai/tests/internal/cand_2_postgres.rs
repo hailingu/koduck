@@ -1571,4 +1571,9 @@ fn a_decision_on_a_requested_approval_is_rejected_after_the_turn_terminalizes() 
         "the audit record carries the expired terminal, found {}",
         expiry_audits[0]
     );
+    assert!(
+        expiry_audits[0].contains("\"approval_decision\":null"),
+        "the expired terminal carries no fabricated decision, found {}",
+        expiry_audits[0]
+    );
 }

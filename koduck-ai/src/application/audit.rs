@@ -290,14 +290,14 @@ impl ToolAuditRecord {
         action_digest_hex: &str,
         lease_generation: u64,
         status: ApprovalStatus,
-        decision: ApprovalDecision,
+        decision: Option<ApprovalDecision>,
         version: u64,
         at_millis: u64,
     ) -> Self {
         Self {
             approval_id: Some(approval_id.as_uuid().to_string()),
             approval_status: Some(status.as_str().to_owned()),
-            approval_decision: Some(decision.as_str().to_owned()),
+            approval_decision: decision.map(|decision| decision.as_str().to_owned()),
             approval_version: Some(version),
             attempt_id: Some(attempt_id.as_uuid().to_string()),
             policy_decision: "approval_resolved".to_owned(),
