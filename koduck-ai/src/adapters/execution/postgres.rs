@@ -249,6 +249,10 @@ impl SqlxApprovalRecordStore {
             // recovery must cancel it rather than allowing expiry to win;
             // ordinary terminal Turns retain their existing expiry behavior
             // (ADR-0003 TC-10/TC-12).
+            let mut expiry_transaction = pool
+                .begin()
+                .await
+                .map_err(|_| ApprovalStoreError::Unavailable)?;
             let expired = sqlx::query(
                 "UPDATE tool_approvals
              SET status = 'expired', version = version + 1
@@ -270,20 +274,16 @@ impl SqlxApprovalRecordStore {
             .bind(requester_subject)
             .bind(thread_id.as_uuid())
             .bind(millis(decided_at_millis)?)
-            .fetch_optional(pool)
+            .fetch_optional(&mut *expiry_transaction)
             .await
             .map_err(|_| ApprovalStoreError::Unavailable)?;
             if let Some(expired_row) = &expired {
                 // Every expiry terminal — including this loser-side
                 // transition — appends its correlated audit record
-                // (ADR-0003 TC-14).
+                // atomically with D-6 (ADR-0003 TC-14).
                 let version = row_version(expired_row)?;
-                let mut audit_transaction = pool
-                    .begin()
-                    .await
-                    .map_err(|_| ApprovalStoreError::Unavailable)?;
                 emit_decision_audit(
-                    &mut audit_transaction,
+                    &mut expiry_transaction,
                     approval_id,
                     ApprovalStatus::Expired,
                     None,
@@ -293,18 +293,18 @@ impl SqlxApprovalRecordStore {
                     expired_row,
                 )
                 .await?;
-                audit_transaction
-                    .commit()
-                    .await
-                    .map_err(|_| ApprovalStoreError::Unavailable)?;
-            }
-            if let Some(expired_row) = expired {
+                if expiry_transaction.commit().await.is_err() {
+                    return self
+                        .reread_terminal(approval_id, tenant_id, requester_subject, thread_id)
+                        .await;
+                }
                 return Ok(ApprovalDecisionResolution::ExistingTerminal {
                     decision: None,
                     status: ApprovalStatus::Expired,
-                    version: row_version(&expired_row)?,
+                    version,
                 });
             }
+            drop(expiry_transaction);
             // Another contender won a transition between the read and this
             // write, or the owning Turn guard rejected expiry.
             if self

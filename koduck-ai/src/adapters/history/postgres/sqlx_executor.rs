@@ -487,7 +487,11 @@ impl SqlxPostgresExecutor {
         .execute(&mut *transaction)
         .await
         .map_err(unavailable)?;
-        transaction.commit().await.map_err(unavailable)?;
+        if transaction.commit().await.is_err() {
+            return commit_reconciliation::recovered_expiry_outcome(&self.pool, key)
+                .await?
+                .ok_or(HistoryError::Unavailable);
+        }
         Ok(outcome)
     }
 
