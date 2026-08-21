@@ -43,7 +43,12 @@ fn decode_approval_status(payload: &Value) -> Result<ItemPayload, HistoryError> 
             ApprovalStatus::Requested | ApprovalStatus::Expired => decision.is_none(),
             ApprovalStatus::Accepted => decision == Some(ApprovalDecision::Accepted),
             ApprovalStatus::Declined => decision == Some(ApprovalDecision::Declined),
-            ApprovalStatus::Cancelled => decision == Some(ApprovalDecision::Cancelled),
+            // An authenticated interruption owns this cancellation without
+            // creating a C-7 decision. Existing ordinary C-7 cancellations
+            // keep their explicit `cancelled` decision.
+            ApprovalStatus::Cancelled => {
+                decision.is_none() || decision == Some(ApprovalDecision::Cancelled)
+            }
         };
     if !canonical {
         return Err(HistoryError::Unavailable);

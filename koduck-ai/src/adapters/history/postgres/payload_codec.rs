@@ -398,14 +398,16 @@ mod strict_tool_result_tests {
         // Every canonical D-6 tuple round-trips: the state machine creates
         // `requested` at version 1 and performs exactly one terminal
         // transition to version 2; no decision while requested or expired,
-        // and a terminal status paired with exactly its matching decision
-        // (migration 0002_cand_2_policy_execution CHECK, ADR-0003 TC-06).
+        // or when an authenticated interruption owns cancellation; every
+        // other terminal status carries its matching decision (migration
+        // 0008_cand_2_interruption_approval_cancellation, ADR-0003 TC-06).
         for (status, decision, version) in [
             ("requested", None, 1),
             ("expired", None, 2),
             ("accepted", Some("accepted"), 2),
             ("declined", Some("declined"), 2),
             ("cancelled", Some("cancelled"), 2),
+            ("cancelled", None, 2),
         ] {
             let encoded = serde_json::json!({
                 "approval_id": "00000000-0000-0000-0000-000000000001",

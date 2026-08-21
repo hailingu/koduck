@@ -31,7 +31,13 @@ pub(super) fn validate_canonical_tuple(
                     ApprovalStatus::Requested | ApprovalStatus::Expired => decision.is_none(),
                     ApprovalStatus::Accepted => *decision == Some(ApprovalDecision::Accepted),
                     ApprovalStatus::Declined => *decision == Some(ApprovalDecision::Declined),
-                    ApprovalStatus::Cancelled => *decision == Some(ApprovalDecision::Cancelled),
+                    // An authenticated interruption owns this cancellation
+                    // without becoming a C-7 approval decision. Ordinary
+                    // C-7 cancellation decisions retain their explicit
+                    // `cancelled` value (ADR-0003 TC-06).
+                    ApprovalStatus::Cancelled => {
+                        decision.is_none() || *decision == Some(ApprovalDecision::Cancelled)
+                    }
                 }
         }
         ToolProjection::ToolCall {
@@ -143,4 +149,22 @@ fn measured_bytes(item: &NewItem) -> usize {
     AppendPolicy::cand_1()
         .accumulate_payload_bytes(0, item)
         .expect("one worst-case item fits the buffer")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn interruption_owned_approval_cancellation_is_a_canonical_projection() {
+        let projection = ToolProjection::ApprovalStatus {
+            approval_id: ApprovalId::new(),
+            attempt_id: AttemptId::new(),
+            status: ApprovalStatus::Cancelled,
+            decision: None,
+            version: approval_version(ApprovalStatus::Cancelled),
+        };
+
+        assert_eq!(validate_canonical_tuple(&projection), Ok(()));
+    }
 }

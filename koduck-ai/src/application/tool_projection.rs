@@ -32,7 +32,8 @@ pub enum ToolProjection {
         attempt_id: AttemptId,
         /// Canonical status at this version.
         status: ApprovalStatus,
-        /// Canonical decision, or `None` while requested or expired.
+        /// Canonical decision, or `None` while requested, expired, or
+        /// cancelled by an authenticated interruption.
         decision: Option<ApprovalDecision>,
         /// Canonical D-6 record version.
         version: u64,
