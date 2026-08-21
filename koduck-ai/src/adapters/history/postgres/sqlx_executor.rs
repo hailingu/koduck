@@ -442,6 +442,10 @@ impl SqlxPostgresExecutor {
             .ok_or(HistoryError::Fenced)
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one transaction must lock ownership, terminalize recovered D-6/D-7 state, append the Turn terminal, and fence the lease atomically"
+    )]
     async fn reconcile_expired_async(
         &self,
         key: &LeaseKey,
@@ -489,9 +493,16 @@ impl SqlxPostgresExecutor {
         // the Turn permanently fenced.
         // Every expiry terminal fences this lease permanently. Close any D-7
         // still owned by the Turn before doing so, because no later reconciler
-        // can reach an active attempt beneath a terminal Turn.
+        // can reach an active attempt beneath a terminal Turn. A recovered
+        // interruption also expires its remaining requested D-6 approvals in
+        // this transaction: the barrier makes them permanently unconsumable.
         super::attempt_recovery::close_active_attempts(&mut transaction, key, now_ms).await?;
-        let (terminal, terminal_status, outcome) = if interrupt_requested || interrupting {
+        let recovered_interruption = interrupt_requested || interrupting;
+        if recovered_interruption {
+            super::attempt_recovery::expire_requested_approvals(&mut transaction, key, now_ms)
+                .await?;
+        }
+        let (terminal, terminal_status, outcome) = if recovered_interruption {
             (
                 TerminalOutcome::Interrupted,
                 "interrupted",

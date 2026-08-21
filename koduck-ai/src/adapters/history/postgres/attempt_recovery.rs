@@ -7,6 +7,7 @@
 use sqlx::{PgConnection, Row};
 
 use crate::application::{HistoryError, ToolAuditRecord, ToolExecutionOutcome};
+use crate::domain::execution::ApprovalStatus;
 
 use super::LeaseKey;
 use super::sqlx_executor::{milliseconds_i64, unavailable};
@@ -89,6 +90,82 @@ pub(super) async fn close_active_attempts(
         .bind(record.tenant_id())
         .bind(key.thread_id.as_uuid())
         .bind(key.turn_id.as_uuid())
+        .bind(milliseconds_i64(terminal_at_millis)?)
+        .bind(serialized)
+        .execute(&mut *connection)
+        .await
+        .map_err(unavailable)?;
+    }
+    Ok(())
+}
+
+/// Expires and audits D-6 approvals left requested by a recovered interruption.
+///
+/// Recovery owns the committed interruption barrier, not a human approval
+/// decision. It therefore expires an unconsumed approval without inventing an
+/// approver or a cancellation decision, and appends the correlated terminal
+/// audit record in the same transaction (ADR-0003 TC-10/TC-14).
+pub(super) async fn expire_requested_approvals(
+    connection: &mut PgConnection,
+    key: &LeaseKey,
+    terminal_at_millis: u64,
+) -> Result<(), HistoryError> {
+    let expired = sqlx::query(
+        "UPDATE tool_approvals
+         SET status = 'expired', version = version + 1
+         WHERE tenant_id = $1 AND thread_id = $2 AND turn_id = $3
+           AND status = 'requested'
+         RETURNING approval_id, thread_id, turn_id, attempt_id, descriptor_id,
+                   descriptor_version, profile_id, profile_version, action_digest,
+                   lease_generation, version",
+    )
+    .bind(key.tenant_id.as_str())
+    .bind(key.thread_id.as_uuid())
+    .bind(key.turn_id.as_uuid())
+    .fetch_all(&mut *connection)
+    .await
+    .map_err(unavailable)?;
+    for approval in expired {
+        let approval_id: uuid::Uuid = approval.try_get("approval_id").map_err(unavailable)?;
+        let thread_id: uuid::Uuid = approval.try_get("thread_id").map_err(unavailable)?;
+        let turn_id: uuid::Uuid = approval.try_get("turn_id").map_err(unavailable)?;
+        let attempt_id: uuid::Uuid = approval.try_get("attempt_id").map_err(unavailable)?;
+        let descriptor_id: String = approval.try_get("descriptor_id").map_err(unavailable)?;
+        let descriptor_version: String = approval
+            .try_get("descriptor_version")
+            .map_err(unavailable)?;
+        let profile_id: String = approval.try_get("profile_id").map_err(unavailable)?;
+        let profile_version: String = approval.try_get("profile_version").map_err(unavailable)?;
+        let action_digest: String = approval.try_get("action_digest").map_err(unavailable)?;
+        let lease_generation: i64 = approval.try_get("lease_generation").map_err(unavailable)?;
+        let version: i64 = approval.try_get("version").map_err(unavailable)?;
+        let record = ToolAuditRecord::approval_resolution_from_persisted(
+            &key.tenant_id,
+            crate::domain::ThreadId::from_uuid(thread_id),
+            crate::domain::TurnId::from_uuid(turn_id),
+            &crate::domain::execution::AttemptId::from_uuid(attempt_id),
+            crate::domain::execution::ApprovalId::from_uuid(approval_id),
+            &descriptor_id,
+            &descriptor_version,
+            &profile_id,
+            &profile_version,
+            &action_digest,
+            u64::try_from(lease_generation).map_err(|_| HistoryError::Unavailable)?,
+            ApprovalStatus::Expired,
+            None,
+            u64::try_from(version).map_err(|_| HistoryError::Unavailable)?,
+            terminal_at_millis,
+        );
+        let serialized = crate::adapters::audit::serialize_audit_record(&record)
+            .map_err(|_| HistoryError::Unavailable)?;
+        sqlx::query(
+            "INSERT INTO tool_audit_records \\
+             (tenant_id, thread_id, turn_id, at_millis, record) \\
+             VALUES ($1, $2, $3, $4, $5)",
+        )
+        .bind(record.tenant_id())
+        .bind(record.thread_id())
+        .bind(record.turn_id())
         .bind(milliseconds_i64(terminal_at_millis)?)
         .bind(serialized)
         .execute(&mut *connection)

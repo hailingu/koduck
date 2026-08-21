@@ -640,3 +640,135 @@ fn a_decision_on_a_requested_approval_is_rejected_after_the_turn_terminalizes() 
         "an identical replay under a terminal Turn returns the accepted terminal"
     );
 }
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one durable regression seeds the interruption barrier, requested approval, recovery call, and atomic audit assertions"
+)]
+fn recovered_interruption_expires_and_audits_requested_approvals() {
+    // A process can die after committing the durable interruption barrier but
+    // before it settles the requested D-6. Expiry recovery owns that same
+    // interruption, so it must terminalize and audit the D-6 in the recovery
+    // transaction rather than leave approval state pending forever. Recovery
+    // expires it without fabricating a human cancellation decision (TC-10,
+    // TC-14).
+    let Some(harness) = harness() else {
+        return;
+    };
+    let tenant = TenantId::new("interruption-approval-recovery").expect("valid tenant");
+    let thread = koduck_ai::domain::ThreadId::new();
+    let turn = koduck_ai::domain::TurnId::new();
+    let approval_id = koduck_ai::domain::execution::ApprovalId::new();
+    let attempt_id = uuid::Uuid::new_v4();
+    let digest = "ab".repeat(32);
+    harness.runtime.block_on(async {
+        sqlx::query(
+            "INSERT INTO threads (tenant_id, subject_id, thread_id) \
+             VALUES ($1, 'approver-a', $2)",
+        )
+        .bind(tenant.as_str())
+        .bind(thread.as_uuid())
+        .execute(&harness.pool)
+        .await
+        .expect("fixture thread");
+        sqlx::query(
+            "INSERT INTO turns \
+             (tenant_id, thread_id, turn_id, status, next_sequence, interrupting) \
+             VALUES ($1, $2, $3, 'started', 1, TRUE)",
+        )
+        .bind(tenant.as_str())
+        .bind(thread.as_uuid())
+        .bind(turn.as_uuid())
+        .execute(&harness.pool)
+        .await
+        .expect("fixture interruption barrier");
+        sqlx::query(
+            "INSERT INTO turn_leases \
+             (tenant_id, thread_id, turn_id, generation, renewed_at, expires_at, fenced) \
+             VALUES ($1, $2, $3, 1, CURRENT_TIMESTAMP - INTERVAL '1 hour', \
+                     CURRENT_TIMESTAMP - INTERVAL '55 minutes', FALSE)",
+        )
+        .bind(tenant.as_str())
+        .bind(thread.as_uuid())
+        .bind(turn.as_uuid())
+        .execute(&harness.pool)
+        .await
+        .expect("fixture expired lease");
+        sqlx::query(
+            "INSERT INTO tool_approvals \
+             (tenant_id, approval_id, thread_id, turn_id, attempt_id, lease_generation, \
+              descriptor_id, descriptor_version, effect, action_digest, profile_id, \
+              profile_version, requested_at_millis, expires_at_millis, status, \
+              requester_subject, version) \
+             VALUES ($1, $2, $3, $4, $5, 1, 'fixture.tool', 'v1', 'external_write', $6, \
+                     'profile-default', 'v1', 1, 600000, 'requested', 'approver-a', 1)",
+        )
+        .bind(tenant.as_str())
+        .bind(approval_id.as_uuid())
+        .bind(thread.as_uuid())
+        .bind(turn.as_uuid())
+        .bind(attempt_id)
+        .bind(&digest)
+        .execute(&harness.pool)
+        .await
+        .expect("fixture requested approval");
+    });
+
+    let executor = koduck_ai::adapters::history::postgres::SqlxPostgresExecutor::new(
+        harness.pool.clone(),
+        harness.runtime.handle().clone(),
+    );
+    let key = koduck_ai::adapters::history::postgres::LeaseKey::new(
+        tenant.clone(),
+        thread,
+        turn,
+        koduck_ai::domain::LeaseGeneration::initial(),
+    );
+    let mut history = koduck_ai::adapters::history::postgres::PostgresTurnHistory::new(executor);
+    assert!(matches!(
+        history.reconcile_expired(&key, koduck_ai::adapters::history::postgres::unix_time_ms()),
+        Ok(koduck_ai::adapters::history::postgres::ReconcileOutcome::Interrupted)
+    ));
+
+    let (status, decision, version): (String, Option<String>, i64) = harness
+        .runtime
+        .block_on(async {
+            sqlx::query_as(
+                "SELECT status, decision, version FROM tool_approvals \
+                 WHERE tenant_id = $1 AND approval_id = $2",
+            )
+            .bind(tenant.as_str())
+            .bind(approval_id.as_uuid())
+            .fetch_one(&harness.pool)
+            .await
+        })
+        .expect("approval terminal is readable");
+    assert_eq!(
+        (status.as_str(), decision.as_deref(), version),
+        ("expired", None, 2)
+    );
+    let audits: Vec<String> = harness
+        .runtime
+        .block_on(async {
+            sqlx::query_scalar(
+                "SELECT record FROM tool_audit_records \
+                 WHERE tenant_id = $1 AND thread_id = $2 AND turn_id = $3",
+            )
+            .bind(tenant.as_str())
+            .bind(thread.as_uuid())
+            .bind(turn.as_uuid())
+            .fetch_all(&harness.pool)
+            .await
+        })
+        .expect("approval audit is readable");
+    assert_eq!(
+        audits.len(),
+        1,
+        "the recovered approval has one atomic audit"
+    );
+    assert!(audits[0].contains(&approval_id.as_uuid().to_string()));
+    assert!(audits[0].contains(&attempt_id.to_string()));
+    assert!(audits[0].contains("\"approval_status\":\"expired\""));
+    assert!(audits[0].contains("\"approval_decision\":null"));
+}
