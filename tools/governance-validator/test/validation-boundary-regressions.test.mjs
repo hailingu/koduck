@@ -92,6 +92,39 @@ test("rejects an Accepted OCR with a missing stage actual-result field", () => {
   assert.match(result.stderr, /field Actual result and stable evidence must be present/i);
 });
 
+test("rejects a standalone Pending placeholder later in a conditional section", () => {
+  const root = validRepository();
+  makeCurrentAdd(root);
+  rewrite(root, "docs/architecture/ADD-0001-example.md", (content) => content.replace(
+    "## Assumptions And Open Questions [Conditionally Required — assumptions exist]\nN/A — this fixture has no assumptions or open questions.",
+    `## Assumptions And Open Questions [Conditionally Required — assumptions exist]
+Substantive opening sentence.
+
+Pending — resolution pending
+`,
+  ));
+
+  const result = run(root);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Assumptions And Open Questions body must contain substantive content/i);
+});
+
+test("rejects a bare unreasoned N/A in a retained optional section", () => {
+  const root = validRepository();
+  acceptedAdr(root, "0095");
+  rewrite(root, "docs/adr/ADR-0095-example.md", (content) => content.replace(
+    "## Change Log [Required]\nInitial.",
+    `## Supporting Notes [Optional — informative]
+N/A
+
+## Change Log [Required]\nInitial.`,
+  ));
+
+  const result = run(root);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Supporting Notes.*retained optional section.*complete content/i);
+});
+
 test("rejects a standalone Pending placeholder later in a required section", () => {
   const root = validRepository();
   acceptedAdr(root, "0097");

@@ -95,7 +95,7 @@ export function createAcceptedRecordValidator(context) {
       const raw = sectionContent(markdown, heading);
       if (raw === undefined) continue;
       const body = stripFencedCode(raw).trim();
-      if (!body || containsStandalonePending(body)) {
+      if (!body || containsStandalonePending(body) || /^N\/A\s*(—|$)/.test(body)) {
         errors.push(
           `${path}: ${heading.split("[")[0].trim()} is a retained optional section and must contain complete content`,
         );
@@ -115,7 +115,7 @@ export function createAcceptedRecordValidator(context) {
       const body = stripFencedCode(raw).trim();
       if (
         !body
-        || /^Pending\b/i.test(body)
+        || containsStandalonePending(body)
         || (/^N\/A\b/i.test(body) && !isReasonedNa(body))
       ) {
         errors.push(
