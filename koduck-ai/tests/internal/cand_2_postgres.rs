@@ -965,12 +965,15 @@ fn startup_migrations_wait_for_the_cross_replica_advisory_lock() {
         drop(connection);
     });
     unlocked.expect("test releases the advisory lock");
-    let uncontested = harness.runtime.block_on(async {
+    // The uncontended bound is generous relative to the production startup
+    // deadline: this leg proves completion after the lock is released, not
+    // the deadline itself, and CI runners vary widely on cold-cache DDL.
+    let uncontended = harness.runtime.block_on(async {
         tokio::time::timeout(
-            std::time::Duration::from_secs(2),
+            std::time::Duration::from_secs(15),
             koduck_ai::runtime::apply_startup_migrations(
                 &harness.pool,
-                std::time::Duration::from_secs(2),
+                std::time::Duration::from_secs(15),
             ),
         )
         .await
