@@ -190,8 +190,8 @@ pub(super) async fn cancel_requested_approvals(
              VALUES ($1, $2, $3, $4, $5)",
         )
         .bind(record.tenant_id())
-        .bind(record.thread_id())
-        .bind(record.turn_id())
+        .bind(thread_id)
+        .bind(turn_id)
         .bind(milliseconds_i64(terminal_at_millis)?)
         .bind(serialized)
         .execute(&mut *connection)
