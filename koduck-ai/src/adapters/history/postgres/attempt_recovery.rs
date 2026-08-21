@@ -151,13 +151,13 @@ pub(super) async fn close_active_attempts(
     Ok(Some(projections))
 }
 
-/// Cancels and audits D-6 approvals left requested by a recovered interruption.
+/// Cancels and audits D-6 approvals left requested by a recovered Turn terminal.
 ///
-/// Recovery owns the committed authenticated interruption barrier, not a C-7
-/// approval decision. It records the interruption-owned cancellation without
-/// inventing an approver or decision, and returns the correlated terminal D-3
-/// projections for the caller to append in the same transaction (ADR-0003
-/// TC-10/TC-14).
+/// Recovery owns the terminal transition rather than a C-7 approval decision.
+/// It records the terminal-owned cancellation without inventing an approver or
+/// decision, and returns correlated D-3 projections for the caller to append
+/// before the bound D-7 and Turn terminals in the same transaction (ADR-0003
+/// TC-06/TC-10/TC-14).
 pub(super) async fn cancel_requested_approvals(
     connection: &mut PgConnection,
     key: &LeaseKey,

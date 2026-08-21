@@ -19,6 +19,7 @@ use super::payload_codec::{encode_payload, row_to_item};
 use super::settle_commit_attempt;
 use super::{LeaseKey, LeaseTiming, PostgresExecutor, ReconcileOutcome, RecoveryOutcome};
 
+mod failure_recovery;
 mod interruption_ownership;
 mod projection_batch;
 /// Production `PostgreSQL` executor using one `SQLx` pool and its owning Tokio runtime.
@@ -319,105 +320,6 @@ impl SqlxPostgresExecutor {
         rows.iter().map(row_to_item).collect()
     }
 
-    async fn recover_failed_async(
-        &self,
-        turn: &AcceptedTurn,
-        timing: LeaseTiming,
-    ) -> Result<RecoveryOutcome, HistoryError> {
-        let mut transaction = self.pool.begin().await.map_err(unavailable)?;
-        let ownership = sqlx::query(
-            "SELECT t.status, t.next_sequence, t.interrupt_requested, t.interrupting, l.fenced, \
-             (EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - l.renewed_at)) * 1000)::BIGINT \
-             <= $5 AS within_window FROM turns t \
-             JOIN turn_leases l USING (tenant_id, thread_id, turn_id) \
-             WHERE t.tenant_id = $1 AND t.thread_id = $2 AND t.turn_id = $3 \
-             AND l.generation = $4 FOR UPDATE",
-        )
-        .bind(turn.tenant_id.as_str())
-        .bind(turn.thread_id.as_uuid())
-        .bind(turn.turn_id.as_uuid())
-        .bind(generation_i64(turn.generation)?)
-        .bind(milliseconds_i64(timing.reconcile_after_ms())?)
-        .fetch_optional(&mut *transaction)
-        .await
-        .map_err(unavailable)?
-        .ok_or(HistoryError::Fenced)?;
-        let status: String = ownership.try_get("status").map_err(unavailable)?;
-        if is_terminal_status(&status) {
-            return Err(HistoryError::AlreadyTerminal);
-        }
-        let fenced: bool = ownership.try_get("fenced").map_err(unavailable)?;
-        let within_window: bool = ownership.try_get("within_window").map_err(unavailable)?;
-        if fenced || !within_window {
-            return Err(HistoryError::Fenced);
-        }
-        let interrupt_requested: bool = ownership
-            .try_get("interrupt_requested")
-            .map_err(unavailable)?;
-        let interrupting: bool = ownership.try_get("interrupting").map_err(unavailable)?;
-        if interrupting {
-            return Err(HistoryError::Fenced);
-        }
-        if status == "started" && !interrupt_requested {
-            sqlx::query(
-                "UPDATE turns SET status = 'recovery-pending' \
-                 WHERE tenant_id = $1 AND thread_id = $2 AND turn_id = $3 \
-                 AND status = 'started'",
-            )
-            .bind(turn.tenant_id.as_str())
-            .bind(turn.thread_id.as_uuid())
-            .bind(turn.turn_id.as_uuid())
-            .execute(&mut *transaction)
-            .await
-            .map_err(unavailable)?;
-            transaction.commit().await.map_err(unavailable)?;
-            return Ok(RecoveryOutcome::Pending);
-        }
-        if status != "recovery-pending" && status != "started" {
-            return Err(HistoryError::Fenced);
-        }
-        let sequence: i64 = ownership.try_get("next_sequence").map_err(unavailable)?;
-        let terminal;
-        let terminal_status;
-        if interrupt_requested {
-            terminal = TerminalOutcome::Interrupted;
-            terminal_status = "interrupted";
-        } else {
-            terminal = TerminalOutcome::Failed {
-                code: "DURABILITY_UNAVAILABLE".to_owned(),
-            };
-            terminal_status = "failed";
-        }
-        let item = Item::new(
-            u64::try_from(sequence).map_err(|_| HistoryError::Unavailable)?,
-            ItemPayload::Terminal(terminal),
-        );
-        insert_item(
-            &mut transaction,
-            &turn.tenant_id,
-            turn.thread_id,
-            turn.turn_id,
-            &item,
-        )
-        .await?;
-        sqlx::query(
-            "UPDATE turns SET status = $5, next_sequence = next_sequence + 1 \
-             WHERE tenant_id = $1 AND thread_id = $2 AND turn_id = $3 \
-             AND next_sequence = $4 AND status = $6",
-        )
-        .bind(turn.tenant_id.as_str())
-        .bind(turn.thread_id.as_uuid())
-        .bind(turn.turn_id.as_uuid())
-        .bind(sequence_i64(item.sequence)?)
-        .bind(terminal_status)
-        .bind(status)
-        .execute(&mut *transaction)
-        .await
-        .map_err(unavailable)?;
-        transaction.commit().await.map_err(unavailable)?;
-        Ok(RecoveryOutcome::Failed)
-    }
-
     async fn renew_lease_async(&self, key: &LeaseKey, now_ms: u64) -> Result<(), HistoryError> {
         let result = sqlx::query(
             "UPDATE turn_leases l SET \
@@ -491,22 +393,21 @@ impl SqlxPostgresExecutor {
         // barrier but before it writes the Turn terminal, expiry recovery
         // must finish the same authenticated interruption rather than leave
         // the Turn permanently fenced.
-        // Every expiry terminal fences this lease permanently. Close any D-7
-        // still owned by the Turn before doing so, because no later reconciler
-        // can reach an active attempt beneath a terminal Turn. Recovery waits
-        // for an in-flight D-7 deadline when it has no cancellation evidence.
+        // Every expiry terminal fences this lease permanently. Close every
+        // unresolved D-6 before its bound D-7 and the Turn terminal, because
+        // no later reconciler can reach state beneath a terminal Turn.
+        // Recovery waits for an in-flight D-7 deadline when it has no
+        // cancellation evidence; returning early rolls this transaction back.
+        let mut recovered_approval_projections =
+            super::attempt_recovery::cancel_requested_approvals(&mut transaction, key, now_ms)
+                .await?;
         let Some(mut recovered_attempt_projections) =
             super::attempt_recovery::close_active_attempts(&mut transaction, key, now_ms).await?
         else {
             return Ok(ReconcileOutcome::TooEarly);
         };
         let recovered_interruption = interrupt_requested || interrupting;
-        if recovered_interruption {
-            recovered_attempt_projections.extend(
-                super::attempt_recovery::cancel_requested_approvals(&mut transaction, key, now_ms)
-                    .await?,
-            );
-        }
+        recovered_approval_projections.append(&mut recovered_attempt_projections);
         let (terminal, terminal_status, outcome) = if recovered_interruption {
             (
                 TerminalOutcome::Interrupted,
@@ -529,7 +430,7 @@ impl SqlxPostgresExecutor {
             )
         };
         let mut next_sequence = u64::try_from(sequence).map_err(|_| HistoryError::Unavailable)?;
-        for projection in &mut recovered_attempt_projections {
+        for projection in &mut recovered_approval_projections {
             projection.sequence = next_sequence;
             insert_item(
                 &mut transaction,
@@ -754,7 +655,7 @@ impl PostgresExecutor for SqlxPostgresExecutor {
     }
 }
 
-async fn insert_item(
+pub(super) async fn insert_item(
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     tenant_id: &TenantId,
     thread_id: ThreadId,
@@ -781,15 +682,15 @@ async fn insert_item(
     Ok(())
 }
 
-fn is_terminal_status(status: &str) -> bool {
+pub(super) fn is_terminal_status(status: &str) -> bool {
     matches!(status, "completed" | "failed" | "interrupted" | "cancelled")
 }
 
-fn generation_i64(generation: LeaseGeneration) -> Result<i64, HistoryError> {
+pub(super) fn generation_i64(generation: LeaseGeneration) -> Result<i64, HistoryError> {
     i64::try_from(generation.get()).map_err(|_| HistoryError::Unavailable)
 }
 
-fn sequence_i64(sequence: u64) -> Result<i64, HistoryError> {
+pub(super) fn sequence_i64(sequence: u64) -> Result<i64, HistoryError> {
     i64::try_from(sequence).map_err(|_| HistoryError::Unavailable)
 }
 

@@ -813,6 +813,167 @@ fn recovered_interruption_cancels_and_audits_requested_approvals() {
 #[test]
 #[allow(
     clippy::too_many_lines,
+    reason = "one durable regression seeds the ordinary expiry recovery state and verifies its complete ordered D-6, D-7, and Turn closure"
+)]
+fn ordinary_expiry_cancels_requested_approvals_before_prepared_attempts() {
+    // Any recovered Turn terminal closes the unresolved D-6 it owns.  The
+    // append-only D-3 view preserves the lifecycle order: the approval
+    // cancellation becomes visible before the bound prepared D-7 terminal
+    // and before the recovered Turn terminal (ADR-0003 TC-06/TC-10/TC-14).
+    let Some(harness) = harness() else {
+        return;
+    };
+    let tenant = TenantId::new("ordinary-approval-recovery").expect("valid tenant");
+    let thread = koduck_ai::domain::ThreadId::new();
+    let turn = koduck_ai::domain::TurnId::new();
+    let approval_id = koduck_ai::domain::execution::ApprovalId::new();
+    let attempt_id = uuid::Uuid::new_v4();
+    let digest = "ab".repeat(32);
+    harness.runtime.block_on(async {
+        sqlx::query(
+            "INSERT INTO threads (tenant_id, subject_id, thread_id) \
+             VALUES ($1, 'approver-a', $2)",
+        )
+        .bind(tenant.as_str())
+        .bind(thread.as_uuid())
+        .execute(&harness.pool)
+        .await
+        .expect("fixture thread");
+        sqlx::query(
+            "INSERT INTO turns (tenant_id, thread_id, turn_id, status, next_sequence) \
+             VALUES ($1, $2, $3, 'started', 1)",
+        )
+        .bind(tenant.as_str())
+        .bind(thread.as_uuid())
+        .bind(turn.as_uuid())
+        .execute(&harness.pool)
+        .await
+        .expect("fixture turn");
+        sqlx::query(
+            "INSERT INTO turn_leases \
+             (tenant_id, thread_id, turn_id, generation, renewed_at, expires_at, fenced) \
+             VALUES ($1, $2, $3, 1, CURRENT_TIMESTAMP - INTERVAL '1 hour', \
+                     CURRENT_TIMESTAMP - INTERVAL '55 minutes', FALSE)",
+        )
+        .bind(tenant.as_str())
+        .bind(thread.as_uuid())
+        .bind(turn.as_uuid())
+        .execute(&harness.pool)
+        .await
+        .expect("fixture expired lease");
+        sqlx::query(
+            "INSERT INTO tool_approvals \
+             (tenant_id, approval_id, thread_id, turn_id, attempt_id, lease_generation, \
+              descriptor_id, descriptor_version, effect, action_digest, profile_id, \
+              profile_version, requested_at_millis, expires_at_millis, status, \
+              requester_subject, version) \
+             VALUES ($1, $2, $3, $4, $5, 1, 'fixture.tool', 'v1', 'external_write', $6, \
+                     'profile-default', 'v1', 1, 600000, 'requested', 'approver-a', 1)",
+        )
+        .bind(tenant.as_str())
+        .bind(approval_id.as_uuid())
+        .bind(thread.as_uuid())
+        .bind(turn.as_uuid())
+        .bind(attempt_id)
+        .bind(&digest)
+        .execute(&harness.pool)
+        .await
+        .expect("fixture requested approval");
+        sqlx::query(
+            "INSERT INTO tool_execution_attempts \
+             (tenant_id, attempt_id, thread_id, turn_id, lease_generation, \
+              descriptor_id, descriptor_version, effect, action_digest, profile_id, \
+              profile_version, prepared_at_millis, status, version) \
+             VALUES ($1, $2, $3, $4, 1, 'fixture.tool', 'v1', 'external_write', $5, \
+                     'profile-default', 'v1', 1, 'prepared', 1)",
+        )
+        .bind(tenant.as_str())
+        .bind(attempt_id)
+        .bind(thread.as_uuid())
+        .bind(turn.as_uuid())
+        .bind(&digest)
+        .execute(&harness.pool)
+        .await
+        .expect("fixture prepared attempt");
+    });
+    let executor = koduck_ai::adapters::history::postgres::SqlxPostgresExecutor::new(
+        harness.pool.clone(),
+        harness.runtime.handle().clone(),
+    );
+    let key = koduck_ai::adapters::history::postgres::LeaseKey::new(
+        tenant.clone(),
+        thread,
+        turn,
+        koduck_ai::domain::LeaseGeneration::initial(),
+    );
+    let mut history = koduck_ai::adapters::history::postgres::PostgresTurnHistory::new(executor);
+    assert_eq!(
+        history.reconcile_expired(&key, koduck_ai::adapters::history::postgres::unix_time_ms()),
+        Ok(koduck_ai::adapters::history::postgres::ReconcileOutcome::Cancelled)
+    );
+    let (approval_status, attempt_status): (String, String) = harness
+        .runtime
+        .block_on(async {
+            sqlx::query_as(
+                "SELECT approval.status, attempt.status \
+                 FROM tool_approvals approval \
+                 JOIN tool_execution_attempts attempt USING (tenant_id, thread_id, turn_id) \
+                 WHERE approval.tenant_id = $1 AND approval.approval_id = $2",
+            )
+            .bind(tenant.as_str())
+            .bind(approval_id.as_uuid())
+            .fetch_one(&harness.pool)
+            .await
+        })
+        .expect("recovered terminals are readable");
+    assert_eq!(
+        (approval_status.as_str(), attempt_status.as_str()),
+        ("cancelled", "cancelled")
+    );
+    let replayed = history
+        .replay(&tenant, turn)
+        .expect("recovered terminal projections are replayable");
+    assert!(matches!(
+        replayed.as_slice(),
+        [
+            koduck_ai::domain::Item {
+                sequence: 1,
+                payload: ItemPayload::ApprovalStatus {
+                    approval_id: projected_approval_id,
+                    attempt_id: approval_attempt_id,
+                    status: ApprovalStatus::Cancelled,
+                    decision: None,
+                    version: 2,
+                },
+                ..
+            },
+            koduck_ai::domain::Item {
+                sequence: 2,
+                payload: ItemPayload::ToolResult {
+                    attempt_id: Some(result_attempt_id),
+                    status: ExecutionStatus::Cancelled,
+                    effect_state: Some(ToolEffectState::NotStarted),
+                    code: None,
+                    output_bytes: 0,
+                    output_digest: None,
+                    version: Some(3),
+                },
+                ..
+            },
+            koduck_ai::domain::Item {
+                sequence: 3,
+                payload: ItemPayload::Terminal(koduck_ai::domain::TerminalOutcome::Cancelled),
+                ..
+            },
+        ] if *projected_approval_id == approval_id
+            && approval_attempt_id.as_uuid() == attempt_id
+            && result_attempt_id.as_uuid() == attempt_id
+    ));
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
     reason = "one durable regression seeds the expired lease and live D-7 before asserting recovery defers its terminal"
 )]
 fn lease_recovery_waits_for_a_running_action_deadline() {
