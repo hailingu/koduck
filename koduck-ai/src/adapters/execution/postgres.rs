@@ -123,10 +123,6 @@ impl ApprovalRecordStore for SqlxApprovalRecordStore {
         clippy::too_many_arguments,
         reason = "ownership dimensions are individually conditional lookup keys"
     )]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the winning branch additionally appends the atomic correlated audit record"
-    )]
     fn resolve_decision(
         &mut self,
         approval_id: ApprovalId,
@@ -148,112 +144,6 @@ impl ApprovalRecordStore for SqlxApprovalRecordStore {
                 .begin()
                 .await
                 .map_err(|_| ApprovalStoreError::Unavailable)?;
-            // Lock the owning Turn row unconditionally before deciding, so an
-            // interruption transaction cannot commit its barrier between this
-            // transaction's snapshot and the decision write: the lock
-            // serializes the two orderings canonically (ADR-0003 TC-12).
-            let owner = sqlx::query(
-                "SELECT owner.status, owner.interrupting FROM turns owner \
-                 WHERE owner.tenant_id = $1 AND owner.thread_id = $2 \
-                   AND owner.turn_id = (SELECT turn_id FROM tool_approvals \
-                                        WHERE tenant_id = $1 AND approval_id = $3 \
-                                          AND requester_subject = $4 AND thread_id = $2) \
-                 FOR UPDATE",
-            )
-            .bind(tenant_id.as_str())
-            .bind(thread_id.as_uuid())
-            .bind(approval_id.as_uuid())
-            .bind(requester_subject)
-            .fetch_optional(&mut *transaction)
-            .await
-            .map_err(|_| ApprovalStoreError::Unavailable)?;
-            if let Some(owner_row) = &owner {
-                let owner_status: String = owner_row
-                    .try_get("status")
-                    .map_err(|_| ApprovalStoreError::Unavailable)?;
-                let interrupting: bool = owner_row
-                    .try_get("interrupting")
-                    .map_err(|_| ApprovalStoreError::Unavailable)?;
-                if owner_status != "started" || interrupting {
-                    // The owning Turn is terminal or interrupted: commit no
-                    // decision. An in-window record stays `requested` for the
-                    // Turn's own reconciliation; a record whose deadline
-                    // already passed commits its audited expiry terminal here
-                    // so no pending approval can stay permanently
-                    // `requested` (ADR-0003 D-6 state machine, TC-14).
-                    let deadline_row = sqlx::query(
-                        "SELECT requested_at_millis, expires_at_millis FROM tool_approvals \
-                         WHERE tenant_id = $1 AND approval_id = $2 \
-                           AND requester_subject = $3 AND thread_id = $4 \
-                           AND status = 'requested'",
-                    )
-                    .bind(tenant_id.as_str())
-                    .bind(approval_id.as_uuid())
-                    .bind(requester_subject)
-                    .bind(thread_id.as_uuid())
-                    .fetch_optional(&mut *transaction)
-                    .await
-                    .map_err(|_| ApprovalStoreError::Unavailable)?;
-                    if let Some(record) = deadline_row {
-                        let expires_at: i64 = record
-                            .try_get("expires_at_millis")
-                            .map_err(|_| ApprovalStoreError::Unavailable)?;
-                        if i64::try_from(decided_at_millis)
-                            .map_or(true, |decided| decided >= expires_at)
-                        {
-                            let expired = sqlx::query(
-                                "UPDATE tool_approvals \
-                                 SET status = 'expired', version = version + 1 \
-                                 WHERE tenant_id = $1 AND approval_id = $2 \
-                                   AND requester_subject = $3 AND thread_id = $4 \
-                                   AND status = 'requested' AND expires_at_millis <= $5 \
-                                 RETURNING version, thread_id, turn_id, attempt_id, \
-                                            lease_generation, descriptor_id, \
-                                            descriptor_version, action_digest, profile_id, \
-                                            profile_version",
-                            )
-                            .bind(tenant_id.as_str())
-                            .bind(approval_id.as_uuid())
-                            .bind(requester_subject)
-                            .bind(thread_id.as_uuid())
-                            .bind(millis(decided_at_millis)?)
-                            .fetch_optional(&mut *transaction)
-                            .await
-                            .map_err(|_| ApprovalStoreError::Unavailable)?;
-                            if let Some(row) = &expired {
-                                // The guarded expiry terminal appends its
-                                // correlated audit record atomically, exactly
-                                // like a won decision (ADR-0003 TC-14).
-                                let version = row_version(row)?;
-                                emit_decision_audit(
-                                    &mut transaction,
-                                    approval_id,
-                                    ApprovalStatus::Expired,
-                                    None,
-                                    version,
-                                    decided_at_millis,
-                                    tenant_id,
-                                    row,
-                                )
-                                .await?;
-                            }
-                            transaction
-                                .commit()
-                                .await
-                                .map_err(|_| ApprovalStoreError::Unavailable)?;
-                            return match expired {
-                                Some(row) => Ok(ApprovalDecisionResolution::ExistingTerminal {
-                                    decision: None,
-                                    status: ApprovalStatus::Expired,
-                                    version: row_version(&row)?,
-                                }),
-                                None => Ok(ApprovalDecisionResolution::TurnGuardRejected),
-                            };
-                        }
-                    }
-                    return Ok(ApprovalDecisionResolution::TurnGuardRejected);
-                }
-            }
             let winner = sqlx::query(
                 "UPDATE tool_approvals
                  SET status = $3, decision = $3, approver = $4,
@@ -261,6 +151,12 @@ impl ApprovalRecordStore for SqlxApprovalRecordStore {
                  WHERE tenant_id = $1 AND approval_id = $2
                    AND requester_subject = $6 AND thread_id = $7
                    AND status = 'requested' AND expires_at_millis > $5
+                   AND NOT EXISTS (
+                       SELECT 1 FROM turns owner
+                       WHERE owner.tenant_id = $1 AND owner.thread_id = $7
+                         AND owner.turn_id = tool_approvals.turn_id
+                         AND (owner.status <> 'started' OR owner.interrupting)
+                   )
                  RETURNING version, thread_id, turn_id, attempt_id, \
                             lease_generation, descriptor_id, descriptor_version, \
                             action_digest, profile_id, profile_version",
@@ -294,75 +190,124 @@ impl ApprovalRecordStore for SqlxApprovalRecordStore {
                     .map_err(|_| ApprovalStoreError::Unavailable)?;
                 return Ok(ApprovalDecisionResolution::Won { decision, version });
             }
-            drop(transaction);
-            let existing = sqlx::query(
-                "SELECT status, decision, version FROM tool_approvals
-                 WHERE tenant_id = $1 AND approval_id = $2
-                   AND requester_subject = $3 AND thread_id = $4",
+            self.classify_decision_loss(
+                &self.pool,
+                tenant_id,
+                requester_subject,
+                thread_id,
+                approval_id,
+                decided_at_millis,
             )
-            .bind(tenant_id.as_str())
-            .bind(approval_id.as_uuid())
-            .bind(requester_subject)
-            .bind(thread_id.as_uuid())
-            .fetch_optional(&self.pool)
             .await
-            .map_err(|_| ApprovalStoreError::Unavailable)?;
-            let Some(row) = existing else {
-                return Ok(ApprovalDecisionResolution::NotFound);
-            };
-            let status_text: String = row
-                .try_get("status")
-                .map_err(|_| ApprovalStoreError::Unavailable)?;
-            if status_text == "requested" {
-                // Only a genuinely expired record transitions here: the winner
-                // update can also lose to the Turn guard while the record is
-                // still inside its decision window, and such a rejection must
-                // leave the canonical status untouched (ADR-0003 D-6 state
-                // machine).
-                let expired = sqlx::query(
-                    "UPDATE tool_approvals
-                     SET status = 'expired', version = version + 1
-                     WHERE tenant_id = $1 AND approval_id = $2
-                       AND requester_subject = $3 AND thread_id = $4
-                       AND status = 'requested' AND expires_at_millis <= $5
-                     RETURNING version",
-                )
-                .bind(tenant_id.as_str())
-                .bind(approval_id.as_uuid())
-                .bind(requester_subject)
-                .bind(thread_id.as_uuid())
-                .bind(millis(decided_at_millis)?)
-                .fetch_optional(&self.pool)
-                .await
-                .map_err(|_| ApprovalStoreError::Unavailable)?;
-                return match expired {
-                    Some(expired_row) => Ok(ApprovalDecisionResolution::ExistingTerminal {
-                        decision: None,
-                        status: ApprovalStatus::Expired,
-                        version: row_version(&expired_row)?,
-                    }),
-                    // Another contender won a transition between the read and
-                    // this write; the canonical row is already terminal.
-                    None => {
-                        self.reread_terminal(approval_id, tenant_id, requester_subject, thread_id)
-                            .await
-                    }
-                };
-            }
-            Ok(ApprovalDecisionResolution::ExistingTerminal {
-                decision: row
-                    .try_get::<Option<String>, _>("decision")
-                    .map_err(|_| ApprovalStoreError::Unavailable)?
-                    .as_deref()
-                    .and_then(decision_from_code),
-                status: status_from_code(&status_text).ok_or(ApprovalStoreError::Unavailable)?,
-                version: row_version(&row)?,
-            })
         })
     }
 }
 
 impl SqlxApprovalRecordStore {
+    /// Classifies a lost decision transition: re-reads the canonical record,
+    /// transitions a genuinely expired `requested` row to its terminal, and
+    /// returns the existing terminal otherwise (ADR-0003 TC-12).
+    async fn classify_decision_loss(
+        &self,
+        pool: &sqlx::PgPool,
+        tenant_id: &TenantId,
+        requester_subject: &str,
+        thread_id: crate::domain::ThreadId,
+        approval_id: ApprovalId,
+        decided_at_millis: u64,
+    ) -> Result<ApprovalDecisionResolution, ApprovalStoreError> {
+        let existing = sqlx::query(
+            "SELECT status, decision, version FROM tool_approvals
+         WHERE tenant_id = $1 AND approval_id = $2
+           AND requester_subject = $3 AND thread_id = $4",
+        )
+        .bind(tenant_id.as_str())
+        .bind(approval_id.as_uuid())
+        .bind(requester_subject)
+        .bind(thread_id.as_uuid())
+        .fetch_optional(pool)
+        .await
+        .map_err(|_| ApprovalStoreError::Unavailable)?;
+        let Some(row) = existing else {
+            return Ok(ApprovalDecisionResolution::NotFound);
+        };
+        let status_text: String = row
+            .try_get("status")
+            .map_err(|_| ApprovalStoreError::Unavailable)?;
+        if status_text == "requested" {
+            // Only a genuinely expired record transitions here: the winner
+            // update can also lose to the Turn guard while the record is
+            // still inside its decision window, and such a rejection must
+            // leave the canonical status untouched (ADR-0003 D-6 state
+            // machine).
+            let expired = sqlx::query(
+                "UPDATE tool_approvals
+             SET status = 'expired', version = version + 1
+             WHERE tenant_id = $1 AND approval_id = $2
+               AND requester_subject = $3 AND thread_id = $4
+               AND status = 'requested' AND expires_at_millis <= $5
+             RETURNING version, thread_id, turn_id, attempt_id, \
+                        lease_generation, descriptor_id, descriptor_version, \
+                        action_digest, profile_id, profile_version",
+            )
+            .bind(tenant_id.as_str())
+            .bind(approval_id.as_uuid())
+            .bind(requester_subject)
+            .bind(thread_id.as_uuid())
+            .bind(millis(decided_at_millis)?)
+            .fetch_optional(pool)
+            .await
+            .map_err(|_| ApprovalStoreError::Unavailable)?;
+            if let Some(expired_row) = &expired {
+                // Every expiry terminal — including this loser-side
+                // transition — appends its correlated audit record
+                // (ADR-0003 TC-14).
+                let version = row_version(expired_row)?;
+                let mut audit_transaction = pool
+                    .begin()
+                    .await
+                    .map_err(|_| ApprovalStoreError::Unavailable)?;
+                emit_decision_audit(
+                    &mut audit_transaction,
+                    approval_id,
+                    ApprovalStatus::Expired,
+                    None,
+                    version,
+                    decided_at_millis,
+                    tenant_id,
+                    expired_row,
+                )
+                .await?;
+                audit_transaction
+                    .commit()
+                    .await
+                    .map_err(|_| ApprovalStoreError::Unavailable)?;
+            }
+            return match expired {
+                Some(expired_row) => Ok(ApprovalDecisionResolution::ExistingTerminal {
+                    decision: None,
+                    status: ApprovalStatus::Expired,
+                    version: row_version(&expired_row)?,
+                }),
+                // Another contender won a transition between the read and
+                // this write; the canonical row is already terminal.
+                None => {
+                    self.reread_terminal(approval_id, tenant_id, requester_subject, thread_id)
+                        .await
+                }
+            };
+        }
+        Ok(ApprovalDecisionResolution::ExistingTerminal {
+            decision: row
+                .try_get::<Option<String>, _>("decision")
+                .map_err(|_| ApprovalStoreError::Unavailable)?
+                .as_deref()
+                .and_then(decision_from_code),
+            status: status_from_code(&status_text).ok_or(ApprovalStoreError::Unavailable)?,
+            version: row_version(&row)?,
+        })
+    }
+
     /// Classifies one conflicting canonical row against the replayed record.
     ///
     /// Matching immutable fields yield the row's current canonical projection

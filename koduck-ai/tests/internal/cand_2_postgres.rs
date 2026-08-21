@@ -52,7 +52,11 @@ fn harness() -> Option<Harness> {
     let pool = runtime
         .block_on(
             PgPoolOptions::new()
-                .max_connections(8)
+                // 32 concurrent decision contenders each hold one pooled
+                // connection across their transaction; the pool must admit
+                // them all or the store's 2-second wait deadline fails on
+                // pool queuing rather than transition contention.
+                .max_connections(32)
                 .connect(&database_url),
         )
         .expect("connect to disposable PostgreSQL");
@@ -1575,5 +1579,38 @@ fn a_decision_on_a_requested_approval_is_rejected_after_the_turn_terminalizes() 
         expiry_audits[0].contains("\"approval_decision\":null"),
         "the expired terminal carries no fabricated decision, found {}",
         expiry_audits[0]
+    );
+
+    // An already-terminal approval replays its terminal after the Turn
+    // terminalizes: the Turn guard applies only while the record is still
+    // `requested`, so the lost-response retry observes the same accepted
+    // projection instead of a fabricated conflict (ADR-0003 TC-12).
+    harness.runtime.block_on(async {
+        sqlx::query(
+            "UPDATE tool_approvals SET status = 'accepted', decision = 'accepted', \
+             approver = 'approver-a', decided_at_millis = 1, version = 2 \
+             WHERE tenant_id = $1 AND approval_id = $2",
+        )
+        .bind(tenant.as_str())
+        .bind(approval_id.as_uuid())
+        .execute(&harness.pool)
+        .await
+        .expect("fixture accepted terminal");
+    });
+    let replayed = route.decide(
+        &trust,
+        thread,
+        approval_id,
+        koduck_ai::domain::execution::ApprovalDecision::Accepted,
+        800_000,
+    );
+    assert_eq!(
+        replayed,
+        koduck_ai::application::ApprovalDecisionOutcome::Resolved {
+            status: koduck_ai::domain::execution::ApprovalStatus::Accepted,
+            decision: koduck_ai::domain::execution::ApprovalDecision::Accepted,
+            version: 2,
+        },
+        "an identical replay under a terminal Turn returns the accepted terminal"
     );
 }
