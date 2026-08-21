@@ -136,7 +136,7 @@ pub(super) async fn close_active_attempts(
         .await
         .map_err(unavailable)?;
         projections.push(Item::new(
-            0,
+            1,
             ItemPayload::ToolResult {
                 attempt_id: Some(AttemptId::from_uuid(attempt_id)),
                 status,
@@ -226,7 +226,7 @@ pub(super) async fn cancel_requested_approvals(
         .await
         .map_err(unavailable)?;
         projections.push(Item::new(
-            0,
+            1,
             ItemPayload::ApprovalStatus {
                 approval_id: ApprovalId::from_uuid(approval_id),
                 attempt_id: AttemptId::from_uuid(attempt_id),
