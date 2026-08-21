@@ -184,12 +184,21 @@ impl ApprovalRecordStore for SqlxApprovalRecordStore {
                     &row,
                 )
                 .await?;
-                transaction
-                    .commit()
-                    .await
-                    .map_err(|_| ApprovalStoreError::Unavailable)?;
+                // A failed COMMIT acknowledgement is ambiguous: PostgreSQL
+                // may have durably committed the decision and audit before
+                // the client lost the acknowledgement. Reconcile that
+                // canonical terminal rather than reporting a spurious 503.
+                if transaction.commit().await.is_err() {
+                    return self
+                        .reread_terminal(approval_id, tenant_id, requester_subject, thread_id)
+                        .await;
+                }
                 return Ok(ApprovalDecisionResolution::Won { decision, version });
             }
+            // `classify_decision_loss` uses the pool for its canonical read
+            // or expiry transition. Releasing the losing transaction first
+            // prevents a saturated pool from waiting on its own connection.
+            drop(transaction);
             self.classify_decision_loss(
                 &self.pool,
                 tenant_id,
