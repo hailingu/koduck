@@ -282,10 +282,19 @@ impl ExecutionAttemptInterruptionGuard for SqlxExecutionAttemptStore {
             .await
             .map_err(|_| AttemptStoreError::Unavailable)?;
             if barrier.rows_affected() == 1 {
-                Ok(())
-            } else {
-                Err(AttemptStoreError::Unavailable)
+                return Ok(());
             }
+            if super::interruption_barrier::lost_to_non_dispatchable_turn(
+                &self.pool, tenant_id, thread_id, turn_id,
+            )
+            .await?
+            {
+                // The history boundary owns the precise endpoint result for
+                // a concurrent terminal, fenced, expired, or missing Turn.
+                // It must not be masked as a C-5 storage outage here.
+                return Ok(());
+            }
+            Err(AttemptStoreError::Unavailable)
         })
     }
 }

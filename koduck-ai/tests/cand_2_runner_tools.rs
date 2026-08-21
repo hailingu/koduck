@@ -442,6 +442,7 @@ struct MemoryHistoryState {
     requested_interrupts: Vec<TurnId>,
     interrupt_error: Option<HistoryError>,
     fail_provider_terminal_once: bool,
+    fail_projection_once: bool,
 }
 
 #[derive(Clone, Default)]
@@ -467,6 +468,16 @@ impl MemoryHistory {
             .lock()
             .expect("history lock")
             .fail_provider_terminal_once = true;
+        history
+    }
+
+    fn with_projection_append_failure() -> Self {
+        let history = Self::default();
+        history
+            .state
+            .lock()
+            .expect("history lock")
+            .fail_projection_once = true;
         history
     }
 
@@ -565,11 +576,15 @@ impl TurnHistory for MemoryHistory {
         turn: &AcceptedTurn,
         items: Vec<NewItem>,
     ) -> Result<Vec<Item>, HistoryError> {
+        let mut state = self.state.lock().expect("history lock");
+        if state.fail_projection_once {
+            state.fail_projection_once = false;
+            return Err(HistoryError::Unavailable);
+        }
         let payloads = items
             .into_iter()
             .map(NewItem::into_payload)
             .collect::<Vec<_>>();
-        let mut state = self.state.lock().expect("history lock");
         let persisted = state
             .items
             .get_mut(&turn.turn_id)
@@ -756,6 +771,36 @@ impl ToolCallExecutor for ReconciliationToolExecutor {
     }
 }
 
+/// Executor double that combines a failed D-3 append with an undecidable live
+/// D-7, the ordering edge where reconciliation must keep the Turn open.
+struct FailedProjectionReconciliationToolExecutor;
+
+impl ToolCallExecutor for FailedProjectionReconciliationToolExecutor {
+    fn execute_tool_call(
+        &mut self,
+        _call: koduck_ai::application::ModelToolCall,
+        _context: &ToolCallTurnContext,
+        _trust: &TrustContext,
+        projections: &mut dyn ToolProjectionSink,
+    ) -> Result<ModelToolResult, ToolCallError> {
+        let attempt_id = koduck_ai::domain::execution::AttemptId::new();
+        let _ = projections.append(&ToolProjection::ToolCall {
+            descriptor_id: "fixture.tool".to_owned(),
+            descriptor_version: "v1".to_owned(),
+            target: "fixture-target".to_owned(),
+            attempt_id,
+            status: koduck_ai::domain::execution::ExecutionStatus::Running,
+            version: 2,
+        });
+        Err(ToolCallError::Reconciliation(
+            koduck_ai::application::ExecutionPending::ReconciliationRequired {
+                code: koduck_ai::application::ExecutionFailure::DurabilityUnavailable,
+                effect_state: koduck_ai::application::EffectState::Unknown,
+            },
+        ))
+    }
+}
+
 #[test]
 fn a_reconciliation_tool_failure_keeps_the_turn_open_for_d7_reconciliation() {
     // The C-5 boundary intentionally retains a live D-7 when its canonical
@@ -792,6 +837,32 @@ fn a_reconciliation_tool_failure_keeps_the_turn_open_for_d7_reconciliation() {
         kinds,
         vec!["user_message", "tool_call"],
         "no Turn terminal is committed while the D-7 awaits canonical reconciliation, found {kinds:?}"
+    );
+}
+
+#[test]
+fn a_reconciliation_requirement_outranks_a_failed_projection_append() {
+    let provider = ScriptedProvider::scripted(vec![vec![tool_call_event("fixture.tool")]]);
+    let history = MemoryHistory::with_projection_append_failure();
+    let mut runner = TurnRunner::new(provider, history.clone())
+        .with_tool_executor(FailedProjectionReconciliationToolExecutor);
+
+    let result = runner.execute(command());
+
+    assert!(matches!(
+        result,
+        Err(koduck_ai::application::TurnRunError::Durability(_))
+    ));
+    let recorded = history.state.lock().expect("history lock");
+    let items = recorded
+        .items
+        .values()
+        .next()
+        .expect("the accepted turn exists");
+    assert_eq!(
+        payload_kinds(items),
+        vec!["user_message"],
+        "the undecidable live D-7 keeps the Turn non-terminal even when its projection append failed"
     );
 }
 

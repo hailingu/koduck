@@ -7,14 +7,18 @@ use sqlx::Row;
 use crate::application::{AcceptedTurn, HistoryError};
 use crate::domain::{Item, ItemPayload, TerminalOutcome};
 
-use super::super::{LeaseTiming, RecoveryOutcome};
+use super::super::{LeaseTiming, RecoveryOutcome, attempt_recovery, unix_time_ms};
 use super::{
-    SqlxPostgresExecutor, generation_i64, insert_item, is_terminal_status, milliseconds_i64,
-    sequence_i64, unavailable,
+    LeaseKey, SqlxPostgresExecutor, generation_i64, insert_item, is_terminal_status,
+    milliseconds_i64, sequence_i64, unavailable,
 };
 
 impl SqlxPostgresExecutor {
     /// Commits the terminal outcome for a Turn that entered durable recovery.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one transaction must close foreground-recovered D-6/D-7 state, append their audited projections, and terminalize the Turn atomically"
+    )]
     pub(super) async fn recover_failed_async(
         &self,
         turn: &AcceptedTurn,
@@ -83,10 +87,49 @@ impl SqlxPostgresExecutor {
                 "failed",
             )
         };
-        let item = Item::new(
-            u64::try_from(sequence).map_err(|_| HistoryError::Unavailable)?,
-            ItemPayload::Terminal(terminal),
+        // A foreground durability recovery can be the final opportunity to
+        // close D-6/D-7 beneath this Turn. Keep those transitions, their
+        // audits, and their D-3 projections in the same transaction before
+        // making the Turn terminal; otherwise a terminal Turn would be
+        // excluded from later expiry recovery (ADR-0003 TC-10/TC-14).
+        let key = LeaseKey::new(
+            turn.tenant_id.clone(),
+            turn.thread_id,
+            turn.turn_id,
+            turn.generation,
         );
+        let terminal_at_millis = unix_time_ms();
+        let mut recovered_approval_projections = attempt_recovery::cancel_requested_approvals(
+            &mut transaction,
+            &key,
+            terminal_at_millis,
+        )
+        .await?;
+        let Some(mut recovered_attempt_projections) =
+            attempt_recovery::close_active_attempts(&mut transaction, &key, terminal_at_millis)
+                .await?
+        else {
+            // Dropping the transaction rolls back any tentative D-6 close:
+            // a live D-7 must remain fully reconcilable until its deadline.
+            return Ok(RecoveryOutcome::Pending);
+        };
+        recovered_approval_projections.append(&mut recovered_attempt_projections);
+        let mut next_sequence = u64::try_from(sequence).map_err(|_| HistoryError::Unavailable)?;
+        for projection in &mut recovered_approval_projections {
+            projection.sequence = next_sequence;
+            insert_item(
+                &mut transaction,
+                &turn.tenant_id,
+                turn.thread_id,
+                turn.turn_id,
+                projection,
+            )
+            .await?;
+            next_sequence = next_sequence
+                .checked_add(1)
+                .ok_or(HistoryError::Unavailable)?;
+        }
+        let item = Item::new(next_sequence, ItemPayload::Terminal(terminal));
         insert_item(
             &mut transaction,
             &turn.tenant_id,
@@ -96,15 +139,20 @@ impl SqlxPostgresExecutor {
         )
         .await?;
         sqlx::query(
-            "UPDATE turns SET status = $5, next_sequence = next_sequence + 1 \
+            "UPDATE turns SET status = $5, next_sequence = $6 \
              WHERE tenant_id = $1 AND thread_id = $2 AND turn_id = $3 \
-             AND next_sequence = $4 AND status = $6",
+             AND next_sequence = $4 AND status = $7",
         )
         .bind(turn.tenant_id.as_str())
         .bind(turn.thread_id.as_uuid())
         .bind(turn.turn_id.as_uuid())
         .bind(sequence_i64(item.sequence)?)
         .bind(terminal_status)
+        .bind(sequence_i64(
+            item.sequence
+                .checked_add(1)
+                .ok_or(HistoryError::Unavailable)?,
+        )?)
         .bind(status)
         .execute(&mut *transaction)
         .await

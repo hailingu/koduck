@@ -5,17 +5,18 @@
 
 use super::harness;
 use koduck_ai::adapters::execution::SqlxApprovalRecordStore;
-use koduck_ai::application::TurnHistory;
+use koduck_ai::adapters::history::postgres::PostgresExecutor;
+use koduck_ai::application::{AcceptedTurn, TurnHistory};
 use koduck_ai::domain::execution::{ApprovalStatus, ExecutionStatus};
-use koduck_ai::domain::{ItemPayload, TenantId, ToolEffectState};
+use koduck_ai::domain::{Item, ItemPayload, TenantId, ToolEffectState};
 
 #[test]
 #[allow(
     clippy::too_many_lines,
     reason = "one durable leg seeding every persisted correlation field before the reconciliation and audit assertions"
 )]
-fn lease_expiry_recovery_emits_the_correlated_attempt_audit_records() {
-    // Expiry recovery closing a prepared or running D-7 must also emit its
+fn foreground_recovery_closes_the_correlated_attempt_audit_records() {
+    // Foreground recovery closing a prepared or running D-7 must also emit its
     // bounded correlated audit record in the same transaction — the crash
     // path needing operator evidence cannot be the one path without it
     // (ADR-0003 TC-14).
@@ -77,8 +78,8 @@ fn lease_expiry_recovery_emits_the_correlated_attempt_audit_records() {
         sqlx::query(
             "INSERT INTO turn_leases \
              (tenant_id, thread_id, turn_id, generation, renewed_at, expires_at, fenced) \
-             VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP - INTERVAL '1 hour', \
-                     CURRENT_TIMESTAMP - INTERVAL '55 minutes', FALSE) \
+             VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP, \
+                     CURRENT_TIMESTAMP + INTERVAL '1 hour', FALSE) \
              ON CONFLICT DO NOTHING",
         )
         .bind(tenant.as_str())
@@ -87,7 +88,7 @@ fn lease_expiry_recovery_emits_the_correlated_attempt_audit_records() {
         .bind(1_i64)
         .execute(&harness.pool)
         .await
-        .expect("fixture expired lease");
+        .expect("fixture current lease");
         sqlx::query(
             "INSERT INTO tool_execution_attempts \
              (tenant_id, attempt_id, thread_id, turn_id, lease_generation, \
@@ -111,21 +112,35 @@ fn lease_expiry_recovery_emits_the_correlated_attempt_audit_records() {
         harness.pool.clone(),
         harness.runtime.handle().clone(),
     );
-    let key = koduck_ai::adapters::history::postgres::LeaseKey::new(
+    let history =
+        koduck_ai::adapters::history::postgres::PostgresTurnHistory::new(executor.clone());
+    let accepted = AcceptedTurn::new(
         tenant.clone(),
         thread,
         turn,
         generation,
-    );
-    let mut history = koduck_ai::adapters::history::postgres::PostgresTurnHistory::new(executor);
-    let outcome =
-        history.reconcile_expired(&key, koduck_ai::adapters::history::postgres::unix_time_ms());
-    assert!(
-        matches!(
-            outcome,
-            Ok(koduck_ai::adapters::history::postgres::ReconcileOutcome::Cancelled)
+        Item::new(
+            1,
+            ItemPayload::UserMessage {
+                content: "recovery fixture".to_owned(),
+            },
         ),
-        "the expired Turn cancels, found {outcome:?}"
+    );
+    assert_eq!(
+        executor.recover_failed(
+            &accepted,
+            koduck_ai::adapters::history::postgres::LeaseTiming::cand_1(),
+        ),
+        Ok(koduck_ai::adapters::history::postgres::RecoveryOutcome::Pending),
+        "the first foreground recovery attempt enters recovery-pending"
+    );
+    assert_eq!(
+        executor.recover_failed(
+            &accepted,
+            koduck_ai::adapters::history::postgres::LeaseTiming::cand_1(),
+        ),
+        Ok(koduck_ai::adapters::history::postgres::RecoveryOutcome::Failed),
+        "the foreground recovery closes its active C-5 state before terminalizing"
     );
     let replayed = history
         .replay(&tenant, turn)

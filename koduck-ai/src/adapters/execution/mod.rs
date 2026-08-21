@@ -5,6 +5,7 @@
 mod attempt_reconciliation;
 pub mod attempts;
 mod fenced_terminal;
+mod interruption_barrier;
 pub mod lease;
 pub mod postgres;
 mod prepared_close;

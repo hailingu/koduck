@@ -80,3 +80,33 @@ fn durable_interruption_barrier_keeps_effect_evidence_unknown_for_reconciliation
         "the losing claim must not rewrite the interrupted row"
     );
 }
+
+#[test]
+fn interruption_barrier_loser_defers_a_terminal_turn_to_history_arbitration() {
+    let Some(harness) = harness() else {
+        return;
+    };
+    let binding = prepared_sealed_binding(&harness);
+    harness.runtime.block_on(async {
+        sqlx::query(
+            "UPDATE turns SET status = 'completed' \
+             WHERE tenant_id = $1 AND thread_id = $2 AND turn_id = $3",
+        )
+        .bind(binding.tenant_id().as_str())
+        .bind(binding.thread_id().as_uuid())
+        .bind(binding.turn_id().as_uuid())
+        .execute(&harness.pool)
+        .await
+        .expect("a concurrent terminal wins before the interruption barrier");
+    });
+
+    assert_eq!(
+        attempt_store(harness.pool.clone(), &harness.runtime).begin_interruption(
+            binding.tenant_id(),
+            binding.thread_id(),
+            binding.turn_id(),
+        ),
+        Ok(()),
+        "the C-5 store leaves a terminal race for the history boundary to classify"
+    );
+}

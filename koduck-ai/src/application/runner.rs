@@ -645,6 +645,16 @@ fn handle_tool_call<H: TurnHistory, T: ToolCallExecutor>(
     }
     state.published.extend(durable_items);
     state.observed_len = state.published.len();
+    if matches!(&result, Err(ToolCallError::Reconciliation(_))) {
+        // A C-5 reconciliation requirement proves a canonical D-7 may still
+        // be live. It outranks a failed D-3 append: terminalizing the Turn
+        // would remove it from recovery scans and strand the live effect.
+        return Err(history_failure(
+            HistoryError::Unavailable,
+            true,
+            &state.published,
+        ));
+    }
     if projections_failed {
         // A projection that was rejected or could not be appended durably —
         // a noncanonical tuple, an out-of-contract sequence exceeding the
