@@ -85,6 +85,10 @@ impl koduck_ai::application::ToolAuditTrail for RecordingAudits {
 #[derive(Clone, Copy, Default)]
 struct WinningCommitter;
 
+/// Durable terminal committer whose transaction already contains the audit.
+#[derive(Clone, Copy, Default)]
+struct AtomicAuditCommitter;
+
 impl AttemptCommitter for WinningCommitter {
     fn commit_outcome(
         &mut self,
@@ -92,6 +96,20 @@ impl AttemptCommitter for WinningCommitter {
         _outcome: &ToolExecutionOutcome,
     ) -> Result<AttemptCommitResult, AttemptCommitError> {
         Ok(AttemptCommitResult::Won)
+    }
+}
+
+impl AttemptCommitter for AtomicAuditCommitter {
+    fn commit_outcome(
+        &mut self,
+        binding: &ExactActionBinding,
+        outcome: &ToolExecutionOutcome,
+    ) -> Result<AttemptCommitResult, AttemptCommitError> {
+        WinningCommitter.commit_outcome(binding, outcome)
+    }
+
+    fn appends_terminal_audit_atomically(&self) -> bool {
+        true
     }
 }
 
@@ -120,6 +138,31 @@ impl DurableAttemptTransitions for WinningCommitter {
     }
 }
 
+impl DurableAttemptTransitions for AtomicAuditCommitter {
+    fn insert_prepared(
+        &mut self,
+        binding: &ExactActionBinding,
+        prepared_at_millis: u64,
+    ) -> Result<AttemptInsertResolution, AttemptStoreError> {
+        WinningCommitter.insert_prepared(binding, prepared_at_millis)
+    }
+
+    fn claim_running(
+        &mut self,
+        binding: &ExactActionBinding,
+        started_at_millis: u64,
+    ) -> Result<DispatchClaimResolution, AttemptStoreError> {
+        WinningCommitter.claim_running(binding, started_at_millis)
+    }
+
+    fn cancel_prepared_attempt(
+        &mut self,
+        binding: &ExactActionBinding,
+    ) -> Result<koduck_ai::application::PreparedCloseResolution, AttemptStoreError> {
+        WinningCommitter.cancel_prepared_attempt(binding)
+    }
+}
+
 impl ExecutionAttemptInterruptionGuard for WinningCommitter {
     fn begin_interruption(
         &mut self,
@@ -131,6 +174,17 @@ impl ExecutionAttemptInterruptionGuard for WinningCommitter {
     }
 }
 
+impl ExecutionAttemptInterruptionGuard for AtomicAuditCommitter {
+    fn begin_interruption(
+        &mut self,
+        tenant_id: &TenantId,
+        thread_id: ThreadId,
+        turn_id: TurnId,
+    ) -> Result<koduck_ai::application::InterruptionBarrierResolution, AttemptStoreError> {
+        WinningCommitter.begin_interruption(tenant_id, thread_id, turn_id)
+    }
+}
+
 impl ExecutionAttemptLiveness for WinningCommitter {
     fn has_live_attempt(
         &mut self,
@@ -139,6 +193,17 @@ impl ExecutionAttemptLiveness for WinningCommitter {
         _turn_id: TurnId,
     ) -> Result<bool, AttemptStoreError> {
         Ok(false)
+    }
+}
+
+impl ExecutionAttemptLiveness for AtomicAuditCommitter {
+    fn has_live_attempt(
+        &mut self,
+        tenant_id: &TenantId,
+        thread_id: ThreadId,
+        turn_id: TurnId,
+    ) -> Result<bool, AttemptStoreError> {
+        WinningCommitter.has_live_attempt(tenant_id, thread_id, turn_id)
     }
 }
 
@@ -828,6 +893,62 @@ fn interruption_close_emits_the_cancelled_terminal() {
     assert_eq!(
         fields["attempt_id"],
         sealed.attempt_id().as_uuid().to_string()
+    );
+}
+
+#[test]
+fn interruption_does_not_duplicate_an_atomically_audited_terminal() {
+    let root = ToolExecutionRuntimeRoot::issue();
+    let sealed = koduck_ai::application::ToolAuthorizationService::new(snapshot(Effect::ReadData))
+        .authorize_binding(
+            ExactActionBinding::new(
+                TenantId::new("tenant-a").expect("valid tenant"),
+                ThreadId::new(),
+                TurnId::new(),
+                LeaseGeneration::initial(),
+                ("profile-default", "v1"),
+                AttemptId::new(),
+                Action::new(
+                    "fixture.tool",
+                    "v1",
+                    Effect::ReadData,
+                    "fixture-target",
+                    parse_action_parameters(r"{}").expect("valid parameters"),
+                )
+                .expect("valid action"),
+            )
+            .expect("valid binding"),
+        )
+        .expect("binding is policy-authorized");
+    let mut preparer = root.runtime().preparer(AlwaysCurrentLease);
+    let (_authority, _attempt) = preparer
+        .prepare(sealed.clone())
+        .expect("the attempt prepares locally");
+    let mut coordinator =
+        ExecutionCoordinator::new(SucceedingExecutor, AlwaysCurrentLease, AtomicAuditCommitter);
+    let mut audits = RecordingAudits::default();
+
+    let outcome = root
+        .runtime()
+        .interrupter()
+        .interrupt(
+            &mut coordinator,
+            &mut audits,
+            &mut NoApprovals,
+            sealed.tenant_id(),
+            sealed.thread_id(),
+            sealed.turn_id(),
+            &mut || 1_000,
+        )
+        .expect("the interruption closes the prepared attempt");
+
+    assert!(matches!(
+        outcome,
+        koduck_ai::application::InterruptionOutcome::Closed(ToolExecutionOutcome::Cancelled { .. })
+    ));
+    assert!(
+        audits.serialized().is_empty(),
+        "the durable committer owns the one terminal audit"
     );
 }
 

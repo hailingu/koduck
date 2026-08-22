@@ -88,10 +88,14 @@ pub(super) async fn close_prepared_row(
                 cancelled_at_millis,
             )
             .await?;
-            transaction
-                .commit()
-                .await
-                .map_err(|_| AttemptStoreError::Unavailable)?;
+            if transaction.commit().await.is_err() {
+                // The close and audit may already be durable even though the
+                // client lost the COMMIT acknowledgement. Re-read the exact
+                // canonical terminal before withholding its D-3 projection.
+                return reconcile_ambiguous_prepared_close(
+                    resolve_prepared_close_loss(pool, binding).await,
+                );
+            }
             return Ok(PreparedCloseResolution::Won { version });
         }
         return Err(AttemptStoreError::Unavailable);
@@ -136,4 +140,36 @@ async fn resolve_prepared_close_loss(
         return Ok(PreparedCloseResolution::Fenced);
     }
     Err(AttemptStoreError::Unavailable)
+}
+
+/// Restores an acknowledged prepared close from its exact canonical terminal.
+fn reconcile_ambiguous_prepared_close(
+    result: Result<PreparedCloseResolution, AttemptStoreError>,
+) -> Result<PreparedCloseResolution, AttemptStoreError> {
+    match result {
+        Ok(PreparedCloseResolution::Progressed {
+            status: ExecutionStatus::Cancelled,
+            version: 3,
+        }) => Ok(PreparedCloseResolution::Won { version: 3 }),
+        other => other,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::application::PreparedCloseResolution;
+    use crate::domain::execution::ExecutionStatus;
+
+    use super::reconcile_ambiguous_prepared_close;
+
+    #[test]
+    fn ambiguous_close_acknowledgement_returns_the_canonical_cancelled_terminal() {
+        assert_eq!(
+            reconcile_ambiguous_prepared_close(Ok(PreparedCloseResolution::Progressed {
+                status: ExecutionStatus::Cancelled,
+                version: 3,
+            })),
+            Ok(PreparedCloseResolution::Won { version: 3 }),
+        );
+    }
 }

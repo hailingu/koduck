@@ -99,6 +99,11 @@ pub(crate) trait PendingApprovalCanceller {
 /// executor cancellation client while a dispatched action is still waiting for
 /// its result.
 pub(crate) trait AttemptCancellationService {
+    /// Reports whether durable cancellation commits include the terminal audit.
+    fn appends_terminal_audit_atomically(&self) -> bool {
+        false
+    }
+
     /// Cancels one cataloged prepared D-7 without executor dispatch.
     fn cancel_prepared(
         &mut self,
@@ -274,12 +279,15 @@ impl ExecutionInterrupter {
             };
             match outcome {
                 Ok(value) => {
-                    // Every D-7 terminal an interruption commits emits its
-                    // correlated audit record (TC-14).
-                    record_audit(
-                        audits,
-                        &ToolAuditRecord::execution_terminal(attempt.binding(), &value, now()),
-                    );
+                    // Durable committers append this terminal audit in their
+                    // own transaction; only non-atomic committers need the
+                    // C-5 fallback record (TC-14).
+                    if !cancellations.appends_terminal_audit_atomically() {
+                        record_audit(
+                            audits,
+                            &ToolAuditRecord::execution_terminal(attempt.binding(), &value, now()),
+                        );
+                    }
                     projections.push(super::tool_execution_terminal::tool_result_projection(
                         attempt.binding().attempt_id(),
                         &value,
@@ -320,6 +328,10 @@ where
     L: LeaseValidator,
     C: AttemptCommitter + DurableAttemptTransitions,
 {
+    fn appends_terminal_audit_atomically(&self) -> bool {
+        ExecutionCoordinator::appends_terminal_audit_atomically(self)
+    }
+
     fn cancel_prepared(
         &mut self,
         authority: &mut TurnExecutionAuthority,
