@@ -639,16 +639,12 @@ precondition demonstrably does not apply.
 
 ## Completion Checklist [Required]
 
-**Current status correction (2026-08-19):** The `Complete` evidence below
-remains historical evidence for implementation commit `4eecbe0`. Subsequent
-review corrections change the canonical Turn-terminal probe and withdraw the
-claim that a descriptor-origin switch supplied MCP ingress. The historical
-`Complete`/`Pass` cells for T-1, T-3, AC-1, AC-14, A-2, and A-7 are
-superseded: T-1 and T-3 are `In Progress`; AC-1, AC-14, A-2, and A-7 are
-`Not Started`. The remaining completion evidence must be rerun and recorded
-for the corrected source before this ADR or CAND-2 can return to `Complete`.
-This correction does not change the Accepted decision, scope, contracts, or
-acceptance-check criteria.
+**Historical status correction (2026-08-19):** The earlier incomplete-status
+assessment applied only before the subsequent review corrections and their
+recorded re-verification. It is superseded by the current T-1 through T-3,
+AC-1 through AC-14, and A-2/A-7 evidence below; it carries no active lifecycle
+state. This historical note does not change the Accepted decision, scope,
+contracts, or acceptance-check criteria.
 
 | ID | Item | Completion Criterion | Expected Evidence | Status | Actual Evidence |
 | --- | --- | --- | --- | --- | --- |
@@ -672,13 +668,13 @@ acceptance-check criteria.
 
   | Path | Stable symbol or contract anchor | Key code excerpt, when needed | Purpose | Source revision |
   | --- | --- | --- | --- | --- |
-  | `koduck-ai/src/domain/execution.rs` | `TurnExecutionAuthority::claim_dispatch` | N/A — the stable method identifies the guarded transition | Sole lease- and approval-validating D-7 dispatch claim | Current uncommitted task revision; replace with the implementation commit before completion |
-  | `koduck-ai/src/domain/execution/authority.rs` | `TurnExecutionAuthority::interruption_snapshot`, `TurnExecutionAuthority::reserve_terminal`, `TurnExecutionAuthority::mirror_terminal` | N/A — stable methods identify the authority boundary | Atomic interruption view and terminal reservation/reconciliation ownership | Current uncommitted task revision; replace with the implementation commit before completion |
-  | `koduck-ai/src/application/execution.rs` | `ExecutionCoordinator::execute` | `let deadline = ActionDeadline::from_started_at(started_at_millis, now());` | Converts the C-5 timestamp into a relative executor budget before dispatch | Current uncommitted task revision; replace with the implementation commit before completion |
-  | `koduck-ai/src/application/cancellation.rs` | `ExecutionInterrupter::interrupt`, `ExecutionCoordinator::cancel_running_attempt` | N/A — stable methods identify the ordered cancellation boundary | Prevents partial interruption and reserves a running terminal before the external cancel request | Current uncommitted task revision; replace with the implementation commit before completion |
-  | `koduck-ai/src/application/terminal.rs` | `ExecutionCoordinator::commit_reserved_terminal` | `let canonical_terminal_known = matches!(error, AttemptCommitError::Conflict);` | Retains authority when a canonical terminal already won and requires reconciliation | Current uncommitted task revision; replace with the implementation commit before completion |
-  | `koduck-ai/src/adapters/execution/lease.rs` | `SqlxTurnLeaseValidator::check_current` | N/A — the stable method identifies the durable lease verdict | Durable C-6 generation/fence/expiry validation gating every interruption-path D-7 mutation (TC-07) | Current uncommitted task revision; replace with the implementation commit before completion |
-| `koduck-ai/src/application/tool_execution.rs` | `ToolExecutionDriver::execute` | N/A — the stable method identifies the complete retry sequence | Owns authorize, prepare, approve-or-cancel, dispatch, and the single allowed pre-effect retry | Current uncommitted task revision; replace with the implementation commit before completion |
+  | `koduck-ai/src/domain/execution.rs` | `TurnExecutionAuthority::claim_dispatch` | N/A — the stable method identifies the guarded transition | Sole lease- and approval-validating D-7 dispatch claim | `ce432d2` |
+  | `koduck-ai/src/domain/execution/authority.rs` | `TurnExecutionAuthority::interruption_snapshot`, `TurnExecutionAuthority::reserve_terminal`, `TurnExecutionAuthority::mirror_terminal` | N/A — stable methods identify the authority boundary | Atomic interruption view and terminal reservation/reconciliation ownership | `ce432d2` |
+  | `koduck-ai/src/application/execution.rs` | `ExecutionCoordinator::execute` | `let deadline = ActionDeadline::from_started_at(started_at_millis, now());` | Converts the C-5 timestamp into a relative executor budget before dispatch | `ce432d2` |
+  | `koduck-ai/src/application/cancellation.rs` | `ExecutionInterrupter::interrupt`, `ExecutionCoordinator::cancel_running_attempt` | N/A — stable methods identify the ordered cancellation boundary | Prevents partial interruption and reserves a running terminal before the external cancel request | `ce432d2` |
+  | `koduck-ai/src/application/terminal.rs` | `ExecutionCoordinator::commit_reserved_terminal` | `let canonical_terminal_known = matches!(error, AttemptCommitError::Conflict);` | Retains authority when a canonical terminal already won and requires reconciliation | `ce432d2` |
+  | `koduck-ai/src/adapters/execution/lease.rs` | `SqlxTurnLeaseValidator::check_current` | N/A — the stable method identifies the durable lease verdict | Durable C-6 generation/fence/expiry validation gating every interruption-path D-7 mutation (TC-07) | `ce432d2` |
+| `koduck-ai/src/application/tool_execution.rs` | `ToolExecutionDriver::execute` | N/A — the stable method identifies the complete retry sequence | Owns authorize, prepare, approve-or-cancel, dispatch, and the single allowed pre-effect retry | `ce432d2` |
 
 - Historical point-in-time decomposition review; these
   measurements are review evidence, not equality assertions that the ADR or
