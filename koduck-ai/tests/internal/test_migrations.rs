@@ -12,10 +12,29 @@
 //! The DDL always executes in the caller's runtime context, so no harness
 //! ever nests runtimes or shares a pool across runtimes.
 
+use std::sync::{Arc, LazyLock};
+
 use sqlx::PgPool;
-use tokio::sync::OnceCell;
+use tokio::sync::{OnceCell, OwnedSemaphorePermit, Semaphore};
 
 static MIGRATIONS: OnceCell<()> = OnceCell::const_new();
+static DATABASE_TEST_ACCESS: LazyLock<Arc<Semaphore>> =
+    LazyLock::new(|| Arc::new(Semaphore::new(1)));
+
+/// Reserves the disposable `PostgreSQL` instance for one integration fixture.
+///
+/// The race fixtures deliberately use up to 32 connections, so parallel
+/// fixtures sharing the single CI database can otherwise exhaust its
+/// connection budget and turn a durable conflict into a spurious
+/// `Unavailable` result. Holding the returned permit for the fixture lifetime
+/// preserves each fixture's own multi-instance contention while keeping
+/// independent fixtures isolated.
+pub(crate) async fn reserve_database() -> OwnedSemaphorePermit {
+    Arc::clone(&DATABASE_TEST_ACCESS)
+        .acquire_owned()
+        .await
+        .expect("database test semaphore remains available")
+}
 
 /// Applies the complete production migration list once per test process.
 ///

@@ -344,25 +344,33 @@ impl SqlxApprovalRecordStore {
         thread_id: crate::domain::ThreadId,
         approval_id: ApprovalId,
     ) -> Result<bool, ApprovalStoreError> {
-        sqlx::query_scalar::<_, bool>(
-            "SELECT EXISTS (
-                 SELECT 1 FROM tool_approvals approval
-                 JOIN turns owner
-                   ON owner.tenant_id = approval.tenant_id
-                  AND owner.thread_id = approval.thread_id
-                  AND owner.turn_id = approval.turn_id
-                 WHERE approval.tenant_id = $1 AND approval.approval_id = $2
-                   AND approval.requester_subject = $3 AND approval.thread_id = $4
-                   AND owner.interrupting
-             )",
+        let owner = sqlx::query(
+            "SELECT approval.status, owner.interrupting
+             FROM tool_approvals approval
+             JOIN turns owner
+               ON owner.tenant_id = approval.tenant_id
+              AND owner.thread_id = approval.thread_id
+              AND owner.turn_id = approval.turn_id
+             WHERE approval.tenant_id = $1 AND approval.approval_id = $2
+               AND approval.requester_subject = $3 AND approval.thread_id = $4",
         )
         .bind(tenant_id.as_str())
         .bind(approval_id.as_uuid())
         .bind(requester_subject)
         .bind(thread_id.as_uuid())
-        .fetch_one(pool)
+        .fetch_optional(pool)
         .await
-        .map_err(|_| ApprovalStoreError::Unavailable)
+        .map_err(|_| ApprovalStoreError::Unavailable)?;
+        let Some(owner) = owner else {
+            return Ok(false);
+        };
+        let status: String = owner
+            .try_get("status")
+            .map_err(|_| ApprovalStoreError::Unavailable)?;
+        let interrupting: bool = owner
+            .try_get("interrupting")
+            .map_err(|_| ApprovalStoreError::Unavailable)?;
+        Ok(interruption_owns_requested_approval(&status, interrupting))
     }
 
     /// Classifies one conflicting canonical row against the replayed record.
@@ -554,6 +562,12 @@ fn hex_digest(bytes: &[u8; 32]) -> String {
     text
 }
 
+/// Restricts interruption ownership to the only mutable D-6 state. A resolved
+/// terminal must be re-read so an identical decision replay remains idempotent.
+fn interruption_owns_requested_approval(status: &str, interrupting: bool) -> bool {
+    status == "requested" && interrupting
+}
+
 /// Appends the bounded correlated audit record for one won D-6 decision
 /// inside its resolving transaction (ADR-0003 TC-14).
 #[allow(
@@ -631,4 +645,17 @@ async fn emit_decision_audit(
     .await
     .map_err(|_| ApprovalStoreError::Unavailable)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::interruption_owns_requested_approval;
+
+    #[test]
+    fn interruption_guard_only_owns_a_still_requested_approval() {
+        assert!(interruption_owns_requested_approval("requested", true));
+        assert!(!interruption_owns_requested_approval("accepted", true));
+        assert!(!interruption_owns_requested_approval("expired", true));
+        assert!(!interruption_owns_requested_approval("requested", false));
+    }
 }

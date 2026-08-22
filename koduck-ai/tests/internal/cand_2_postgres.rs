@@ -43,6 +43,8 @@ struct Harness {
     runtime: tokio::runtime::Runtime,
     pool: PgPool,
     store: SqlxApprovalRecordStore,
+    // Retain the exclusive fixture reservation until this harness drops.
+    _database_permit: tokio::sync::OwnedSemaphorePermit,
 }
 
 fn harness() -> Option<Harness> {
@@ -52,6 +54,7 @@ fn harness() -> Option<Harness> {
         .enable_all()
         .build()
         .expect("PostgreSQL test runtime");
+    let database_permit = runtime.block_on(crate::test_migrations::reserve_database());
     let pool = runtime
         .block_on(
             PgPoolOptions::new()
@@ -72,6 +75,7 @@ fn harness() -> Option<Harness> {
         runtime,
         pool,
         store,
+        _database_permit: database_permit,
     })
 }
 
