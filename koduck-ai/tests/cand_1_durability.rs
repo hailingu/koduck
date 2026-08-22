@@ -49,6 +49,7 @@ impl TurnHistory for FaultHistory {
         &mut self,
         _trust: &TrustContext,
         _turn_id: TurnId,
+        _tool_terminals: Vec<koduck_ai::application::NewItem>,
     ) -> Result<(), HistoryError> {
         Err(HistoryError::NotFound)
     }
@@ -387,6 +388,7 @@ impl TurnHistory for RecoverableHistory {
         &mut self,
         _trust: &TrustContext,
         _turn_id: TurnId,
+        _tool_terminals: Vec<koduck_ai::application::NewItem>,
     ) -> Result<(), HistoryError> {
         Err(HistoryError::NotFound)
     }
@@ -535,6 +537,7 @@ impl TurnHistory for HandoffHistory {
         &mut self,
         _trust: &TrustContext,
         _turn_id: TurnId,
+        _tool_terminals: Vec<koduck_ai::application::NewItem>,
     ) -> Result<(), HistoryError> {
         Err(HistoryError::NotFound)
     }

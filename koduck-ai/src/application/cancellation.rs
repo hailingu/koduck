@@ -198,8 +198,28 @@ impl ExecutionInterrupter {
         turn: TurnId,
         now: &mut dyn FnMut() -> u64,
     ) -> Result<InterruptionOutcome, ExecutionPending> {
+        self.interrupt_with_projections(cancellations, audits, approvals, tenant, thread, turn, now)
+            .map(|(outcome, _)| outcome)
+    }
+
+    /// Interrupts live work and returns its canonical terminal projections.
+    #[allow(clippy::collapsible_if)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the cancellation ports, audit trail, and authenticated Turn dimensions are explicit"
+    )]
+    pub(crate) fn interrupt_with_projections(
+        &self,
+        cancellations: &mut dyn AttemptCancellationService,
+        audits: &mut dyn ToolAuditTrail,
+        approvals: &mut dyn PendingApprovalCanceller,
+        tenant: &TenantId,
+        thread: ThreadId,
+        turn: TurnId,
+        now: &mut dyn FnMut() -> u64,
+    ) -> Result<(InterruptionOutcome, Vec<super::ToolProjection>), ExecutionPending> {
         let Some(mut authority) = self.catalog.request_interruption(tenant, thread, turn) else {
-            return Ok(InterruptionOutcome::NoLiveAttempt);
+            return Ok((InterruptionOutcome::NoLiveAttempt, Vec::new()));
         };
         let (mut attempts, terminal_commit_in_flight) = authority.interruption_snapshot();
         if terminal_commit_in_flight {
@@ -209,9 +229,10 @@ impl ExecutionInterrupter {
             });
         }
         if attempts.is_empty() {
-            return Ok(InterruptionOutcome::NoLiveAttempt);
+            return Ok((InterruptionOutcome::NoLiveAttempt, Vec::new()));
         }
         let mut closed = Vec::with_capacity(attempts.len());
+        let mut projections = Vec::with_capacity(attempts.len());
         for attempt in &mut attempts {
             let outcome = match attempt.status() {
                 ExecutionStatus::Prepared => {
@@ -220,7 +241,8 @@ impl ExecutionInterrupter {
                         Some(ApprovalRequirement::Required)
                     ) {
                         if let Err(pending) = approvals.cancel_requested(attempt.binding()) {
-                            return partial_or_error(closed, pending);
+                            return partial_or_error(closed, pending)
+                                .map(|outcome| (outcome, projections));
                         }
                     }
                     match cancellations.cancel_prepared(&mut authority, attempt) {
@@ -236,7 +258,8 @@ impl ExecutionInterrupter {
                                         && candidate.status() == ExecutionStatus::Running
                                 })
                             else {
-                                return partial_or_error(closed, pending);
+                                return partial_or_error(closed, pending)
+                                    .map(|outcome| (outcome, projections));
                             };
                             cancellations.cancel_running(&mut authority, &mut running_attempt, now)
                         }
@@ -257,15 +280,21 @@ impl ExecutionInterrupter {
                         audits,
                         &ToolAuditRecord::execution_terminal(attempt.binding(), &value, now()),
                     );
+                    projections.push(super::tool_execution_terminal::tool_result_projection(
+                        attempt.binding().attempt_id(),
+                        &value,
+                    ));
                     closed.push(value);
                 }
-                Err(pending) => return partial_or_error(closed, pending),
+                Err(pending) => {
+                    return partial_or_error(closed, pending).map(|outcome| (outcome, projections));
+                }
             }
         }
         if closed.len() == 1 {
-            Ok(InterruptionOutcome::Closed(closed.remove(0)))
+            Ok((InterruptionOutcome::Closed(closed.remove(0)), projections))
         } else {
-            Ok(InterruptionOutcome::ClosedMany(closed))
+            Ok((InterruptionOutcome::ClosedMany(closed), projections))
         }
     }
 }

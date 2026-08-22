@@ -133,9 +133,17 @@ where
     ) -> Result<(), TurnRunError> {
         let thread_id = self.history.interruption_thread(trust, turn_id)?;
         if let Some(thread_id) = thread_id {
-            self.tools.request_interrupt(trust, thread_id, turn_id)?;
+            let tool_terminals = self.tools.request_interrupt(trust, thread_id, turn_id)?;
+            // History owns the atomic order: every C-5 D-7 terminal precedes
+            // the Turn terminal, so replay and SSE never strand a running view.
+            let interrupt_result = self
+                .history
+                .request_interrupt(trust, turn_id, tool_terminals);
+            self.notify_terminal(trust, thread_id, turn_id);
+            interrupt_result?;
+            return Ok(());
         }
-        let interrupt_result = self.history.request_interrupt(trust, turn_id);
+        let interrupt_result = self.history.request_interrupt(trust, turn_id, Vec::new());
         // A lost acknowledgement or competing terminal may have committed the
         // durable terminal even when `request_interrupt` reports an error.
         // The boundary's probe decides whether local authority can release.

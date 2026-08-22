@@ -71,6 +71,7 @@ impl TurnHistory for InterruptedHistory {
         &mut self,
         _trust: &TrustContext,
         _turn_id: TurnId,
+        _tool_terminals: Vec<koduck_ai::application::NewItem>,
     ) -> Result<(), HistoryError> {
         Ok(())
     }
@@ -179,6 +180,7 @@ impl TurnHistory for LimitRaceHistory {
         &mut self,
         _trust: &TrustContext,
         _turn_id: TurnId,
+        _tool_terminals: Vec<koduck_ai::application::NewItem>,
     ) -> Result<(), HistoryError> {
         Ok(())
     }
@@ -280,6 +282,7 @@ impl TurnHistory for InterruptArbitratingHistory {
         &mut self,
         _trust: &TrustContext,
         _turn_id: TurnId,
+        _tool_terminals: Vec<koduck_ai::application::NewItem>,
     ) -> Result<(), HistoryError> {
         Ok(())
     }
@@ -375,6 +378,7 @@ impl TurnHistory for ReconciledHistory {
         &mut self,
         _trust: &TrustContext,
         _turn_id: TurnId,
+        _tool_terminals: Vec<koduck_ai::application::NewItem>,
     ) -> Result<(), HistoryError> {
         Ok(())
     }
@@ -477,6 +481,7 @@ impl TurnHistory for AppendFencedHistory {
         &mut self,
         _trust: &TrustContext,
         _turn_id: TurnId,
+        _tool_terminals: Vec<koduck_ai::application::NewItem>,
     ) -> Result<(), HistoryError> {
         Ok(())
     }
@@ -595,6 +600,7 @@ impl TurnHistory for ProviderTerminalFencedHistory {
         &mut self,
         _trust: &TrustContext,
         _turn_id: TurnId,
+        _tool_terminals: Vec<koduck_ai::application::NewItem>,
     ) -> Result<(), HistoryError> {
         Ok(())
     }
@@ -800,6 +806,7 @@ impl TurnHistory for LivenessStartFailingHistory {
         &mut self,
         _trust: &TrustContext,
         _turn_id: TurnId,
+        _tool_terminals: Vec<koduck_ai::application::NewItem>,
     ) -> Result<(), HistoryError> {
         Ok(())
     }

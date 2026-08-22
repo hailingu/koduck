@@ -351,7 +351,7 @@ pub trait ToolCallExecutor {
         projections: &mut dyn ToolProjectionSink,
     ) -> Result<ModelToolResult, super::ToolCallError>;
 
-    /// Cancels live C-5 work for one authenticated Turn interruption.
+    /// Cancels live C-5 work and returns its canonical D-7 terminal items.
     ///
     /// The default is deliberately a no-op because configurations without a
     /// live C-5 boundary have no process-owned execution work to cancel. The
@@ -360,14 +360,15 @@ pub trait ToolCallExecutor {
     /// # Errors
     ///
     /// Returns [`ToolCallError`] when live execution work cannot reach a
-    /// canonical terminal and requires reconciliation.
+    /// canonical terminal and requires reconciliation. Returned items must be
+    /// persisted before the Turn interruption terminal.
     fn request_interrupt(
         &mut self,
         _trust: &TrustContext,
         _thread_id: ThreadId,
         _turn_id: TurnId,
-    ) -> Result<(), super::ToolCallError> {
-        Ok(())
+    ) -> Result<Vec<NewItem>, super::ToolCallError> {
+        Ok(Vec::new())
     }
 
     /// Notifies the boundary that one Turn's durable terminal committed.
@@ -487,16 +488,19 @@ pub trait TurnHistory {
         Ok(Box::new(NoopTurnLiveness))
     }
 
-    /// Records an authenticated interrupt request for an active tenant-owned turn.
+    /// Records D-7 interruption terminals followed by the authenticated Turn
+    /// interruption terminal as one ordered operation.
     ///
     /// # Errors
     ///
     /// Returns [`HistoryError::NotFound`] for unknown or non-owned turns and
-    /// [`HistoryError::AlreadyTerminal`] for a terminal turn.
+    /// [`HistoryError::AlreadyTerminal`] for a terminal turn. Implementations
+    /// must append none of the supplied D-7 items when the Turn terminal loses.
     fn request_interrupt(
         &mut self,
         trust: &TrustContext,
         turn_id: TurnId,
+        tool_terminals: Vec<NewItem>,
     ) -> Result<(), HistoryError>;
 
     /// Resolves the authenticated Turn's Thread for a paired C-5 interruption.

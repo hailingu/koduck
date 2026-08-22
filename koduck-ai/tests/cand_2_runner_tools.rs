@@ -86,12 +86,20 @@ impl ToolCallExecutor for RecordingToolExecutor {
         _trust: &TrustContext,
         thread_id: ThreadId,
         turn_id: TurnId,
-    ) -> Result<(), ToolCallError> {
+    ) -> Result<Vec<NewItem>, ToolCallError> {
         self.interruptions
             .lock()
             .expect("executor interruptions lock")
             .push((thread_id, turn_id));
-        Ok(())
+        Ok(vec![NewItem::ToolResult {
+            attempt_id: Some(koduck_ai::domain::execution::AttemptId::new()),
+            status: koduck_ai::domain::execution::ExecutionStatus::Cancelled,
+            code: None,
+            effect_state: Some(koduck_ai::domain::ToolEffectState::NotStarted),
+            output_bytes: 0,
+            output_digest: None,
+            version: Some(3),
+        }])
     }
 
     fn turn_terminal_committed(
@@ -441,6 +449,7 @@ struct MemoryHistoryState {
     interruption_thread: Option<ThreadId>,
     requested_interrupts: Vec<TurnId>,
     interrupt_error: Option<HistoryError>,
+    interrupt_payloads: Vec<ItemPayload>,
     fail_provider_terminal_once: bool,
     fail_projection_once: bool,
 }
@@ -495,6 +504,14 @@ impl MemoryHistory {
             .requested_interrupts
             .clone()
     }
+
+    fn interrupt_payloads(&self) -> Vec<ItemPayload> {
+        self.state
+            .lock()
+            .expect("history lock")
+            .interrupt_payloads
+            .clone()
+    }
 }
 
 impl TurnHistory for MemoryHistory {
@@ -512,10 +529,20 @@ impl TurnHistory for MemoryHistory {
         &mut self,
         _trust: &TrustContext,
         turn_id: TurnId,
+        tool_terminals: Vec<NewItem>,
     ) -> Result<(), HistoryError> {
         let mut state = self.state.lock().expect("history lock");
         state.requested_interrupts.push(turn_id);
-        state.interrupt_error.clone().map_or(Ok(()), Err)
+        if let Some(error) = state.interrupt_error.clone() {
+            return Err(error);
+        }
+        state
+            .interrupt_payloads
+            .extend(tool_terminals.into_iter().map(NewItem::into_payload));
+        state
+            .interrupt_payloads
+            .push(ItemPayload::Terminal(TerminalOutcome::Interrupted));
+        Ok(())
     }
 
     fn interruption_thread(
@@ -706,6 +733,16 @@ fn authenticated_interrupt_cancels_live_tool_work_before_terminalizing_the_turn(
 
     assert_eq!(executor.interruptions(), vec![(thread_id, turn_id)]);
     assert_eq!(history.requested_interrupts(), vec![turn_id]);
+    assert!(matches!(
+        history.interrupt_payloads().as_slice(),
+        [
+            ItemPayload::ToolResult {
+                status: koduck_ai::domain::execution::ExecutionStatus::Cancelled,
+                ..
+            },
+            ItemPayload::Terminal(TerminalOutcome::Interrupted)
+        ]
+    ));
     // The runner notifies the executor after the durable interrupt terminal,
     // so a C-5 boundary can reclaim its process-local authority against the
     // proven canonical terminal (ADR-0003 T-3).

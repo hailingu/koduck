@@ -119,6 +119,44 @@ impl ExecutionAttemptInterruptionGuard for NonDispatchableTurn {
 
 process_local_durable_claims!(NonDispatchableTurn);
 
+/// Store double whose local prepared D-7 closes durably during interruption.
+#[derive(Clone, Copy, Default)]
+struct LocalPreparedClose;
+
+impl AttemptCommitter for LocalPreparedClose {
+    fn commit_outcome(
+        &mut self,
+        _binding: &ExactActionBinding,
+        _outcome: &ToolExecutionOutcome,
+    ) -> Result<AttemptCommitResult, AttemptCommitError> {
+        Ok(AttemptCommitResult::Won)
+    }
+}
+
+impl ExecutionAttemptLiveness for LocalPreparedClose {
+    fn has_live_attempt(
+        &mut self,
+        _tenant_id: &TenantId,
+        _thread_id: ThreadId,
+        _turn_id: TurnId,
+    ) -> Result<bool, AttemptStoreError> {
+        Ok(false)
+    }
+}
+
+impl ExecutionAttemptInterruptionGuard for LocalPreparedClose {
+    fn begin_interruption(
+        &mut self,
+        _tenant_id: &TenantId,
+        _thread_id: ThreadId,
+        _turn_id: TurnId,
+    ) -> Result<InterruptionBarrierResolution, AttemptStoreError> {
+        Ok(InterruptionBarrierResolution::Established)
+    }
+}
+
+process_local_durable_claims!(LocalPreparedClose);
+
 #[test]
 fn local_close_with_remote_live_attempt_requires_reconciliation() {
     let tenant = TenantId::new("tenant-a").expect("valid tenant");
@@ -169,6 +207,40 @@ fn non_dispatchable_turn_skips_local_cancellation_before_history_reports_it() {
         0,
         "C-5 leaves local D-7 work untouched"
     );
+}
+
+#[test]
+fn foreground_interruption_returns_the_closed_d7_terminal_projection() {
+    let tenant = TenantId::new("tenant-a").expect("valid tenant");
+    let trust = TrustContext::new(tenant.clone(), "subject-a").expect("valid principal");
+    let thread_id = ThreadId::new();
+    let turn_id = TurnId::new();
+    let root = ToolExecutionRuntimeRoot::issue();
+    let harness = Harness::with_runtime(root.runtime(), tenant, thread_id, turn_id);
+    let (_authority, attempt) = harness.prepared();
+    let attempt_id = attempt.binding().attempt_id();
+    let mut executor = BoundaryToolCallExecutor::new(
+        &root,
+        ToolConfigurationSnapshot::empty(),
+        LocalPreparedClose,
+        CurrentLease,
+        koduck_ai::application::NoToolAudits,
+        koduck_ai::application::NoCanonicalTurnTerminal,
+    );
+
+    let terminals = executor
+        .request_interrupt(&trust, thread_id, turn_id)
+        .expect("the prepared D-7 closes");
+
+    assert!(matches!(
+        terminals.as_slice(),
+        [koduck_ai::application::NewItem::ToolResult {
+            attempt_id: Some(projected_id),
+            status: koduck_ai::domain::execution::ExecutionStatus::Cancelled,
+            version: Some(3),
+            ..
+        }] if *projected_id == attempt_id
+    ));
 }
 
 #[test]

@@ -439,6 +439,7 @@ impl TurnHistory for SharedHistory {
         &mut self,
         _trust: &TrustContext,
         _turn_id: TurnId,
+        _tool_terminals: Vec<koduck_ai::application::NewItem>,
     ) -> Result<(), HistoryError> {
         self.state.borrow_mut().interrupt_after_first_delta = true;
         Ok(())

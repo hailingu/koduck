@@ -362,7 +362,7 @@ where
         trust: &TrustContext,
         thread_id: ThreadId,
         turn_id: TurnId,
-    ) -> Result<(), ToolCallError> {
+    ) -> Result<Vec<crate::application::NewItem>, ToolCallError> {
         // Commit the durable dispatch barrier before examining the local
         // catalog. Prepared insertion and dispatch claim lock and check this
         // same Turn state, so no remote instance can create work after a
@@ -380,13 +380,13 @@ where
             // History won the interruption race before C-5 established its
             // barrier. Preserve history's terminal or fencing response and
             // leave local D-7 work untouched.
-            return Ok(());
+            return Ok(Vec::new());
         }
         let mut approvals = UnavailablePendingApprovalCanceller;
         // Both the dispatch and interruption paths validate the bound
         // generation against durable C-6 lease state before any D-7 mutation
         // commits (ADR-0003 TC-07).
-        let outcome = self
+        let (outcome, projections) = self
             .assembly
             .interrupt(
                 DisabledExecutor,
@@ -405,7 +405,10 @@ where
             .committer
             .has_live_attempt(&trust.tenant_id, thread_id, turn_id)
         {
-            Ok(false) => Ok(()),
+            Ok(false) => Ok(projections
+                .into_iter()
+                .flat_map(|projection| projection.d3_items())
+                .collect()),
             // The process-local catalog cannot cancel or reconcile durable
             // work owned by another instance. A local close is not sufficient:
             // do not let the runner write a Turn terminal until every durable

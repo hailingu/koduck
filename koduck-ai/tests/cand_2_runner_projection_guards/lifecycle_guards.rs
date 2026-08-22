@@ -15,8 +15,9 @@ impl TurnHistory for EmptyProjectionAcknowledgementHistory {
         &mut self,
         trust: &TrustContext,
         turn_id: TurnId,
+        tool_terminals: Vec<koduck_ai::application::NewItem>,
     ) -> Result<(), HistoryError> {
-        self.inner.request_interrupt(trust, turn_id)
+        self.inner.request_interrupt(trust, turn_id, tool_terminals)
     }
 
     fn interruption_requested(&self, turn: &AcceptedTurn) -> Result<bool, HistoryError> {

@@ -178,7 +178,7 @@ impl ToolExecutionAssembly {
         thread_id: ThreadId,
         turn_id: crate::domain::TurnId,
         now: &mut dyn FnMut() -> u64,
-    ) -> Result<InterruptionOutcome, ExecutionPending>
+    ) -> Result<(InterruptionOutcome, Vec<super::ToolProjection>), ExecutionPending>
     where
         E: IsolatedExecutor,
         L: LeaseValidator + 'static,
@@ -188,7 +188,7 @@ impl ToolExecutionAssembly {
     {
         let shared_lease = SharedLeaseValidator(Arc::new(Mutex::new(lease)));
         let mut coordinator = ExecutionCoordinator::new(executor, shared_lease, committer);
-        ExecutionInterrupter::interrupt(
+        ExecutionInterrupter::interrupt_with_projections(
             &self.runtime.interrupter(),
             &mut coordinator,
             audits,

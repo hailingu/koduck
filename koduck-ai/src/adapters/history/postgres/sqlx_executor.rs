@@ -552,8 +552,18 @@ async fn append_expiry_terminal(
 }
 
 impl PostgresExecutor for SqlxPostgresExecutor {
-    fn request_interrupt(&self, trust: &TrustContext, turn_id: TurnId) -> Result<(), HistoryError> {
-        self.wait(interruption_ownership::request(&self.pool, trust, turn_id))
+    fn request_interrupt(
+        &self,
+        trust: &TrustContext,
+        turn_id: TurnId,
+        tool_terminals: Vec<NewItem>,
+    ) -> Result<(), HistoryError> {
+        self.wait(interruption_ownership::request(
+            &self.pool,
+            trust,
+            turn_id,
+            tool_terminals,
+        ))
     }
 
     fn interruption_thread(

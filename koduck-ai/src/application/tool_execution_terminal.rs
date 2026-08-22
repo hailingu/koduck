@@ -3,7 +3,7 @@
 //! D-3 projections of the C-5 driver's canonical D-6 requests and committed
 //! D-7 terminals (ADR-0003 TC-06).
 
-use crate::domain::execution::{ApprovalRequest, ExecutionAttempt, ExecutionStatus};
+use crate::domain::execution::{ApprovalRequest, AttemptId, ExecutionAttempt, ExecutionStatus};
 
 use super::execution::ToolExecutionOutcome;
 use super::executor_envelope::ExecutionFailure;
@@ -19,16 +19,24 @@ pub(super) fn emit_tool_result(
 ) {
     emit(
         projections,
-        ToolProjection::ToolResult {
-            attempt_id: attempt.binding().attempt_id(),
-            status: outcome_status(outcome),
-            code: outcome_failure_code(outcome),
-            effect_state: outcome.effect_state(),
-            output_bytes: outcome_output_bytes(outcome),
-            output_digest: outcome_output_digest(outcome),
-            version: attempt_version(outcome_status(outcome)),
-        },
+        tool_result_projection(attempt.binding().attempt_id(), outcome),
     );
+}
+
+/// Builds the canonical D-7 terminal projection for a committed outcome.
+pub(super) fn tool_result_projection(
+    attempt_id: AttemptId,
+    outcome: &ToolExecutionOutcome,
+) -> ToolProjection {
+    ToolProjection::ToolResult {
+        attempt_id,
+        status: outcome_status(outcome),
+        code: outcome_failure_code(outcome),
+        effect_state: outcome.effect_state(),
+        output_bytes: outcome_output_bytes(outcome),
+        output_digest: outcome_output_digest(outcome),
+        version: attempt_version(outcome_status(outcome)),
+    }
 }
 
 /// Appends and publishes the requested canonical D-6 projection.

@@ -387,6 +387,7 @@ impl TurnHistory for ConcurrentHistory {
         &mut self,
         _trust: &TrustContext,
         turn_id: TurnId,
+        _tool_terminals: Vec<koduck_ai::application::NewItem>,
     ) -> Result<(), HistoryError> {
         let mut state = self.state.lock().expect("history state lock");
         if !state.items.contains_key(&turn_id) {

@@ -204,12 +204,18 @@ impl TurnTerminalObserver for NoTurnTerminalObserver {
 /// Implementations must bind every statement by tenant, Thread, Turn, and
 /// generation and use the migration constraints shipped with this crate.
 pub trait PostgresExecutor: Clone {
-    /// Records an authenticated interrupt request conditionally on active ownership.
+    /// Atomically appends D-7 terminal items and the authenticated Turn
+    /// interruption terminal, conditionally on active ownership.
     ///
     /// # Errors
     ///
     /// Returns [`HistoryError`] when the Turn is not active and owned or storage fails.
-    fn request_interrupt(&self, trust: &TrustContext, turn_id: TurnId) -> Result<(), HistoryError>;
+    fn request_interrupt(
+        &self,
+        trust: &TrustContext,
+        turn_id: TurnId,
+        tool_terminals: Vec<NewItem>,
+    ) -> Result<(), HistoryError>;
 
     /// Resolves the owned Thread for a paired C-5 interruption.
     ///
@@ -622,8 +628,10 @@ impl<E: PostgresExecutor + Send + 'static> TurnHistory for PostgresTurnHistory<E
         &mut self,
         trust: &TrustContext,
         turn_id: TurnId,
+        tool_terminals: Vec<NewItem>,
     ) -> Result<(), HistoryError> {
-        self.executor.request_interrupt(trust, turn_id)
+        self.executor
+            .request_interrupt(trust, turn_id, tool_terminals)
     }
 
     fn interruption_thread(

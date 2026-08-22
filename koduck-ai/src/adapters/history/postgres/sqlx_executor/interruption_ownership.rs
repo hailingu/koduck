@@ -6,17 +6,18 @@
 use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
-use crate::application::HistoryError;
+use crate::application::{HistoryError, NewItem};
 use crate::domain::{Item, ItemPayload, TerminalOutcome, ThreadId, TrustContext, TurnId};
 
 use super::{insert_item, is_terminal_status, unavailable};
 
-/// Conditionally records the authenticated interrupt terminal for one active
-/// tenant-owned Turn.
+/// Conditionally records D-7 terminals followed by the authenticated Turn
+/// interruption terminal for one active tenant-owned Turn.
 pub(super) async fn request(
     pool: &PgPool,
     trust: &TrustContext,
     turn_id: TurnId,
+    tool_terminals: Vec<NewItem>,
 ) -> Result<(), HistoryError> {
     let mut transaction = pool.begin().await.map_err(unavailable)?;
     let ownership = sqlx::query(
@@ -46,8 +47,31 @@ pub(super) async fn request(
     }
     let thread_id: Uuid = ownership.try_get("thread_id").map_err(unavailable)?;
     let sequence: i64 = ownership.try_get("next_sequence").map_err(unavailable)?;
+    let first_sequence = u64::try_from(sequence).map_err(|_| HistoryError::Unavailable)?;
+    for (offset, terminal) in tool_terminals.iter().enumerate() {
+        if !matches!(terminal, NewItem::ToolResult { .. }) {
+            return Err(HistoryError::Unavailable);
+        }
+        let item = Item::new(
+            first_sequence
+                .checked_add(offset as u64)
+                .ok_or(HistoryError::Unavailable)?,
+            terminal.clone().into_payload(),
+        );
+        insert_item(
+            &mut transaction,
+            &trust.tenant_id,
+            ThreadId::from_uuid(thread_id),
+            turn_id,
+            &item,
+        )
+        .await?;
+    }
+    let terminal_sequence = first_sequence
+        .checked_add(tool_terminals.len() as u64)
+        .ok_or(HistoryError::Unavailable)?;
     let item = Item::new(
-        u64::try_from(sequence).map_err(|_| HistoryError::Unavailable)?,
+        terminal_sequence,
         ItemPayload::Terminal(TerminalOutcome::Interrupted),
     );
     insert_item(
@@ -60,7 +84,7 @@ pub(super) async fn request(
     .await?;
     sqlx::query(
         "UPDATE turns SET interrupt_requested = TRUE, status = 'interrupted', \
-         next_sequence = next_sequence + 1 \
+         next_sequence = next_sequence + $5 \
          WHERE tenant_id = $1 AND thread_id = $2 AND turn_id = $3 \
          AND next_sequence = $4 AND status = 'started'",
     )
@@ -68,6 +92,7 @@ pub(super) async fn request(
     .bind(thread_id)
     .bind(turn_id.as_uuid())
     .bind(sequence)
+    .bind(i64::try_from(tool_terminals.len() + 1).map_err(|_| HistoryError::Unavailable)?)
     .execute(&mut *transaction)
     .await
     .map_err(unavailable)?;

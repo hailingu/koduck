@@ -8,7 +8,7 @@ use koduck_ai::adapters::history::postgres::{
 use koduck_ai::application::{AcceptedTurn, HistoryError, NewItem, TurnCommand};
 use koduck_ai::domain::execution::{AttemptId, ExecutionStatus};
 use koduck_ai::domain::{
-    ItemPayload, TenantId, TerminalOutcome, ToolEffectState, TrustContext, Usage,
+    Item, ItemPayload, TenantId, TerminalOutcome, ToolEffectState, TrustContext, Usage,
 };
 use sqlx::postgres::{PgPool, PgPoolOptions};
 use tokio::runtime::Runtime;
@@ -161,7 +161,7 @@ fn verify_expired_started_interrupt_is_rejected(
         .expect("expire active fixture");
 
     assert_eq!(
-        executor.request_interrupt(owner, accepted.turn_id),
+        executor.request_interrupt(owner, accepted.turn_id, Vec::new()),
         Err(HistoryError::Fenced),
         "an expired owner must not accept an interrupt after its live stream can end"
     );
@@ -193,7 +193,7 @@ fn verify_recovery_pending_interrupt_is_rejected(
         .expect("enter durable recovery-pending state");
 
     assert_eq!(
-        executor.request_interrupt(owner, accepted.turn_id),
+        executor.request_interrupt(owner, accepted.turn_id, Vec::new()),
         Err(HistoryError::Fenced),
         "a detached recovery-pending turn must not accept an interrupt it cannot stream"
     );
@@ -243,9 +243,52 @@ fn verify_interrupt_terminal_arbitration(
     owner: &TrustContext,
     accepted: &AcceptedTurn,
 ) {
+    let attempt_id = AttemptId::new();
     executor
-        .request_interrupt(owner, accepted.turn_id)
+        .append_tool_projection(
+            accepted,
+            vec![NewItem::ToolCall {
+                descriptor_id: "fixture.interrupt".to_owned(),
+                descriptor_version: "v1".to_owned(),
+                target: "fixture-target".to_owned(),
+                attempt_id: Some(attempt_id),
+                status: Some(ExecutionStatus::Running),
+                version: Some(2),
+            }],
+        )
+        .expect("running D-7 projection commits before interruption");
+    executor
+        .request_interrupt(
+            owner,
+            accepted.turn_id,
+            vec![NewItem::ToolResult {
+                attempt_id: Some(attempt_id),
+                status: ExecutionStatus::Cancelled,
+                code: None,
+                effect_state: Some(ToolEffectState::NotStarted),
+                output_bytes: 0,
+                output_digest: None,
+                version: Some(3),
+            }],
+        )
         .expect("persist accepted interrupt");
+    let replay = executor
+        .replay(tenant, accepted.turn_id)
+        .expect("interrupted D-7 replay");
+    assert!(matches!(
+        replay.as_slice(),
+        [.., Item {
+            payload: ItemPayload::ToolResult {
+                attempt_id: Some(projected_id),
+                status: ExecutionStatus::Cancelled,
+                ..
+            },
+            ..
+        }, Item {
+            payload: ItemPayload::Terminal(TerminalOutcome::Interrupted),
+            ..
+        }] if *projected_id == attempt_id
+    ));
     let completion_executor = executor.clone();
     let completion_turn = accepted.clone();
     let completion = thread::spawn(move || {
