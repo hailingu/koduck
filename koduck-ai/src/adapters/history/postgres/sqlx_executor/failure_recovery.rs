@@ -15,10 +15,6 @@ use super::{
 
 impl SqlxPostgresExecutor {
     /// Commits the terminal outcome for a Turn that entered durable recovery.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one transaction must close foreground-recovered D-6/D-7 state, append their audited projections, and terminalize the Turn atomically"
-    )]
     pub(super) async fn recover_failed_async(
         &self,
         turn: &AcceptedTurn,
@@ -114,53 +110,75 @@ impl SqlxPostgresExecutor {
             return Ok(RecoveryOutcome::Pending);
         };
         recovered_approval_projections.append(&mut recovered_attempt_projections);
-        let mut next_sequence = u64::try_from(sequence).map_err(|_| HistoryError::Unavailable)?;
-        for projection in &mut recovered_approval_projections {
-            projection.sequence = next_sequence;
-            insert_item(
-                &mut transaction,
-                &turn.tenant_id,
-                turn.thread_id,
-                turn.turn_id,
-                projection,
-            )
-            .await?;
-            next_sequence = next_sequence
-                .checked_add(1)
-                .ok_or(HistoryError::Unavailable)?;
-        }
-        let item = Item::new(next_sequence, ItemPayload::Terminal(terminal));
-        insert_item(
+        append_recovered_terminal(
             &mut transaction,
-            &turn.tenant_id,
-            turn.thread_id,
-            turn.turn_id,
-            &item,
+            turn,
+            sequence,
+            &status,
+            terminal_status,
+            terminal,
+            &mut recovered_approval_projections,
         )
         .await?;
-        let turn_update = sqlx::query(
-            "UPDATE turns SET status = $5, next_sequence = $6 \
-             WHERE tenant_id = $1 AND thread_id = $2 AND turn_id = $3 \
-             AND next_sequence = $4 AND status = $7",
-        )
-        .bind(turn.tenant_id.as_str())
-        .bind(turn.thread_id.as_uuid())
-        .bind(turn.turn_id.as_uuid())
-        .bind(sequence)
-        .bind(terminal_status)
-        .bind(sequence_i64(
-            item.sequence
-                .checked_add(1)
-                .ok_or(HistoryError::Unavailable)?,
-        )?)
-        .bind(status)
-        .execute(&mut *transaction)
-        .await
-        .map_err(unavailable)?;
-        if turn_update.rows_affected() != 1 {
-            return Err(HistoryError::Fenced);
-        }
         transaction.commit().await.map_err(unavailable)?;
         Ok(RecoveryOutcome::Failed)
     }
+}
+
+/// Appends recovered D-3 projections and terminalizes their owning Turn atomically.
+async fn append_recovered_terminal(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    turn: &AcceptedTurn,
+    sequence: i64,
+    expected_status: &str,
+    terminal_status: &str,
+    terminal: TerminalOutcome,
+    projections: &mut [Item],
+) -> Result<(), HistoryError> {
+    let mut next_sequence = u64::try_from(sequence).map_err(|_| HistoryError::Unavailable)?;
+    for projection in projections {
+        projection.sequence = next_sequence;
+        insert_item(
+            transaction,
+            &turn.tenant_id,
+            turn.thread_id,
+            turn.turn_id,
+            projection,
+        )
+        .await?;
+        next_sequence = next_sequence
+            .checked_add(1)
+            .ok_or(HistoryError::Unavailable)?;
+    }
+    let item = Item::new(next_sequence, ItemPayload::Terminal(terminal));
+    insert_item(
+        transaction,
+        &turn.tenant_id,
+        turn.thread_id,
+        turn.turn_id,
+        &item,
+    )
+    .await?;
+    let turn_update = sqlx::query(
+        "UPDATE turns SET status = $5, next_sequence = $6 \
+         WHERE tenant_id = $1 AND thread_id = $2 AND turn_id = $3 \
+         AND next_sequence = $4 AND status = $7",
+    )
+    .bind(turn.tenant_id.as_str())
+    .bind(turn.thread_id.as_uuid())
+    .bind(turn.turn_id.as_uuid())
+    .bind(sequence)
+    .bind(terminal_status)
+    .bind(sequence_i64(
+        item.sequence
+            .checked_add(1)
+            .ok_or(HistoryError::Unavailable)?,
+    )?)
+    .bind(expected_status)
+    .execute(&mut **transaction)
+    .await
+    .map_err(unavailable)?;
+    (turn_update.rows_affected() == 1)
+        .then_some(())
+        .ok_or(HistoryError::Fenced)
 }

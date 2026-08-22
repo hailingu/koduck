@@ -10,6 +10,7 @@ pub mod lease;
 pub mod postgres;
 mod prepared_close;
 mod prepared_insert;
+mod running_claim;
 
 pub use attempts::SqlxExecutionAttemptStore;
 pub use lease::SqlxTurnLeaseValidator;

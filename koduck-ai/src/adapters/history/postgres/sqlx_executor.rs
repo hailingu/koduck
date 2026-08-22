@@ -344,10 +344,6 @@ impl SqlxPostgresExecutor {
             .ok_or(HistoryError::Fenced)
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one transaction must lock ownership, terminalize recovered D-6/D-7 state, append the Turn terminal, and fence the lease atomically"
-    )]
     async fn reconcile_expired_async(
         &self,
         key: &LeaseKey,
@@ -429,64 +425,16 @@ impl SqlxPostgresExecutor {
                 ReconcileOutcome::Cancelled,
             )
         };
-        let mut next_sequence = u64::try_from(sequence).map_err(|_| HistoryError::Unavailable)?;
-        for projection in &mut recovered_approval_projections {
-            projection.sequence = next_sequence;
-            insert_item(
-                &mut transaction,
-                &key.tenant_id,
-                key.thread_id,
-                key.turn_id,
-                projection,
-            )
-            .await?;
-            next_sequence = next_sequence
-                .checked_add(1)
-                .ok_or(HistoryError::Unavailable)?;
-        }
-        let item = Item::new(next_sequence, ItemPayload::Terminal(terminal));
-        insert_item(
+        append_expiry_terminal(
             &mut transaction,
-            &key.tenant_id,
-            key.thread_id,
-            key.turn_id,
-            &item,
+            key,
+            sequence,
+            &status,
+            terminal_status,
+            terminal,
+            &mut recovered_approval_projections,
         )
         .await?;
-        let turn_update = sqlx::query(
-            "UPDATE turns SET status = $5, next_sequence = $6 \
-             WHERE tenant_id = $1 AND thread_id = $2 AND turn_id = $3 \
-             AND next_sequence = $4 AND status = $7",
-        )
-        .bind(key.tenant_id.as_str())
-        .bind(key.thread_id.as_uuid())
-        .bind(key.turn_id.as_uuid())
-        .bind(sequence)
-        .bind(terminal_status)
-        .bind(sequence_i64(
-            item.sequence
-                .checked_add(1)
-                .ok_or(HistoryError::Unavailable)?,
-        )?)
-        .bind(status)
-        .execute(&mut *transaction)
-        .await
-        .map_err(unavailable)?;
-        if turn_update.rows_affected() != 1 {
-            return Err(HistoryError::Fenced);
-        }
-        sqlx::query(
-            "UPDATE turn_leases SET fenced = TRUE, generation = generation + 1 \
-             WHERE tenant_id = $1 AND thread_id = $2 AND turn_id = $3 \
-             AND generation = $4 AND NOT fenced",
-        )
-        .bind(key.tenant_id.as_str())
-        .bind(key.thread_id.as_uuid())
-        .bind(key.turn_id.as_uuid())
-        .bind(generation_i64(key.generation)?)
-        .execute(&mut *transaction)
-        .await
-        .map_err(unavailable)?;
         if transaction.commit().await.is_err() {
             return commit_reconciliation::recovered_expiry_outcome(&self.pool, key)
                 .await?
@@ -530,6 +478,77 @@ impl SqlxPostgresExecutor {
             })
             .collect()
     }
+}
+
+/// Appends recovered D-3 projections, terminalizes the Turn, and fences its lease.
+async fn append_expiry_terminal(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    key: &LeaseKey,
+    sequence: i64,
+    expected_status: &str,
+    terminal_status: &str,
+    terminal: TerminalOutcome,
+    projections: &mut [Item],
+) -> Result<(), HistoryError> {
+    let mut next_sequence = u64::try_from(sequence).map_err(|_| HistoryError::Unavailable)?;
+    for projection in projections {
+        projection.sequence = next_sequence;
+        insert_item(
+            transaction,
+            &key.tenant_id,
+            key.thread_id,
+            key.turn_id,
+            projection,
+        )
+        .await?;
+        next_sequence = next_sequence
+            .checked_add(1)
+            .ok_or(HistoryError::Unavailable)?;
+    }
+    let item = Item::new(next_sequence, ItemPayload::Terminal(terminal));
+    insert_item(
+        transaction,
+        &key.tenant_id,
+        key.thread_id,
+        key.turn_id,
+        &item,
+    )
+    .await?;
+    let turn_update = sqlx::query(
+        "UPDATE turns SET status = $5, next_sequence = $6 \
+         WHERE tenant_id = $1 AND thread_id = $2 AND turn_id = $3 \
+         AND next_sequence = $4 AND status = $7",
+    )
+    .bind(key.tenant_id.as_str())
+    .bind(key.thread_id.as_uuid())
+    .bind(key.turn_id.as_uuid())
+    .bind(sequence)
+    .bind(terminal_status)
+    .bind(sequence_i64(
+        item.sequence
+            .checked_add(1)
+            .ok_or(HistoryError::Unavailable)?,
+    )?)
+    .bind(expected_status)
+    .execute(&mut **transaction)
+    .await
+    .map_err(unavailable)?;
+    if turn_update.rows_affected() != 1 {
+        return Err(HistoryError::Fenced);
+    }
+    sqlx::query(
+        "UPDATE turn_leases SET fenced = TRUE, generation = generation + 1 \
+         WHERE tenant_id = $1 AND thread_id = $2 AND turn_id = $3 \
+         AND generation = $4 AND NOT fenced",
+    )
+    .bind(key.tenant_id.as_str())
+    .bind(key.thread_id.as_uuid())
+    .bind(key.turn_id.as_uuid())
+    .bind(generation_i64(key.generation)?)
+    .execute(&mut **transaction)
+    .await
+    .map_err(unavailable)?;
+    Ok(())
 }
 
 impl PostgresExecutor for SqlxPostgresExecutor {
