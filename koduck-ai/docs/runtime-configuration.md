@@ -73,8 +73,12 @@ history schema plus the idempotent ADR-0003 CAND-2 schemas
 (`0002_cand_2_policy_execution.sql`,
 `0003_cand_2_requester_ownership.sql`, `0004_cand_2_tool_projections.sql`,
 `0005_cand_2_execution_attempts.sql`, `0006_cand_2_interrupt_barrier.sql`,
-and `0007_cand_2_tool_audit.sql`), with each startup operation — connection
-plus seven migrations — limited by the 2-second database-attempt deadline,
+`0007_cand_2_tool_audit.sql`, and
+`0008_cand_2_interruption_approval_cancellation.sql`). The runtime applies
+all eight migrations as one serialized transaction under one shared 2-second
+startup-migration deadline; the deadline covers the lock, every migration, and
+the transaction commit rather than applying separately to each migration.
+Connection uses its own 2-second database-attempt deadline. The runtime then
 constructs exactly one `PostgresTurnHistory<SqlxPostgresExecutor>`, one
 `ApprovalDecisionRoute<SqlxApprovalRecordStore>`, and one runner-backed C-5
 tool executor over the shared pool, constructs the configured

@@ -13,7 +13,7 @@ use crate::application::{
     AttemptInsertResolution, AttemptStoreError, AttemptTerminalResolution, CanonicalTurnTerminal,
     DispatchClaimResolution, DurableAttemptTerminal, DurableAttemptTransitions, EffectState,
     ExecutionAttemptInterruptionGuard, ExecutionAttemptLiveness, ExecutionAttemptStore,
-    ExecutionFailure, PreparedCloseResolution, ToolExecutionOutcome,
+    ExecutionFailure, InterruptionBarrierResolution, PreparedCloseResolution, ToolExecutionOutcome,
 };
 use crate::domain::execution::{ExactActionBinding, ExecutionStatus};
 
@@ -246,7 +246,7 @@ impl ExecutionAttemptInterruptionGuard for SqlxExecutionAttemptStore {
         tenant_id: &TenantId,
         thread_id: ThreadId,
         turn_id: TurnId,
-    ) -> Result<(), AttemptStoreError> {
+    ) -> Result<InterruptionBarrierResolution, AttemptStoreError> {
         self.wait(async {
             // Lock the exact same C-5 ownership rows used by prepared and
             // claim transitions. Once this update commits, their conditional
@@ -278,7 +278,9 @@ impl ExecutionAttemptInterruptionGuard for SqlxExecutionAttemptStore {
             .execute(&self.pool)
             .await;
             match barrier {
-                Ok(barrier) if barrier.rows_affected() == 1 => Ok(()),
+                Ok(barrier) if barrier.rows_affected() == 1 => {
+                    Ok(InterruptionBarrierResolution::Established)
+                }
                 Ok(_) => {
                     if super::interruption_barrier::lost_to_non_dispatchable_turn(
                         &self.pool, tenant_id, thread_id, turn_id,
@@ -288,7 +290,7 @@ impl ExecutionAttemptInterruptionGuard for SqlxExecutionAttemptStore {
                         // The history boundary owns the precise endpoint result for
                         // a concurrent terminal, fenced, expired, or missing Turn.
                         // It must not be masked as a C-5 storage outage here.
-                        return Ok(());
+                        return Ok(InterruptionBarrierResolution::NonDispatchable);
                     }
                     Err(AttemptStoreError::Unavailable)
                 }
@@ -301,7 +303,7 @@ impl ExecutionAttemptInterruptionGuard for SqlxExecutionAttemptStore {
                     // An autocommit statement may have committed before its
                     // acknowledgement was lost. The exact canonical barrier
                     // is sufficient to continue C-5 interruption settlement.
-                    Ok(())
+                    Ok(InterruptionBarrierResolution::Established)
                 }
                 Err(_) => Err(AttemptStoreError::Unavailable),
             }

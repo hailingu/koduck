@@ -10,10 +10,11 @@ use crate::application::tool_projection::emit;
 use crate::application::{
     AttemptCommitter, CanonicalTurnTerminal, DenialCode, DurableAttemptTransitions, EffectState,
     ExecutionAttemptInterruptionGuard, ExecutionAttemptLiveness, ExecutionFailure,
-    ExecutionPending, LeaseValidator, ModelToolResult, NoCanonicalTurnTerminal,
-    PendingApprovalCancellation, PendingApprovalCanceller, PolicyDenialContext, ToolAuditRecord,
-    ToolAuditTrail, ToolCallError, ToolCallInputs, ToolCallTurnContext, ToolConfigurationSnapshot,
-    ToolExecutionOutcome, ToolProjection, ToolProjectionSink, record_audit,
+    ExecutionPending, InterruptionBarrierResolution, LeaseValidator, ModelToolResult,
+    NoCanonicalTurnTerminal, PendingApprovalCancellation, PendingApprovalCanceller,
+    PolicyDenialContext, ToolAuditRecord, ToolAuditTrail, ToolCallError, ToolCallInputs,
+    ToolCallTurnContext, ToolConfigurationSnapshot, ToolExecutionOutcome, ToolProjection,
+    ToolProjectionSink, record_audit,
 };
 use crate::domain::execution::{ApprovalDecision, ApprovalRequest, ExactActionBinding};
 use crate::domain::{TenantId, ThreadId, TrustContext, TurnId};
@@ -366,7 +367,8 @@ where
         // catalog. Prepared insertion and dispatch claim lock and check this
         // same Turn state, so no remote instance can create work after a
         // no-live observation but before the runner writes its terminal.
-        self.committer
+        let barrier = self
+            .committer
             .begin_interruption(&trust.tenant_id, thread_id, turn_id)
             .map_err(|_| {
                 ToolCallError::Reconciliation(ExecutionPending::ReconciliationRequired {
@@ -374,6 +376,12 @@ where
                     effect_state: EffectState::Unknown,
                 })
             })?;
+        if barrier == InterruptionBarrierResolution::NonDispatchable {
+            // History won the interruption race before C-5 established its
+            // barrier. Preserve history's terminal or fencing response and
+            // leave local D-7 work untouched.
+            return Ok(());
+        }
         let mut approvals = UnavailablePendingApprovalCanceller;
         // Both the dispatch and interruption paths validate the bound
         // generation against durable C-6 lease state before any D-7 mutation

@@ -463,18 +463,34 @@ pub trait ExecutionAttemptLiveness {
 /// new external work between a local no-live observation and the final Turn
 /// interruption terminal (ADR-0003 TC-10/TC-12).
 pub trait ExecutionAttemptInterruptionGuard {
-    /// Prevents new prepared or running D-7 transitions for this Turn.
+    /// Prevents new prepared or running D-7 transitions for this Turn, or
+    /// reports that history made the Turn ineligible before the barrier won.
     ///
     /// # Errors
     ///
-    /// Returns the unavailable store error when the durable barrier cannot be
-    /// committed while the Turn has a current lease.
+    /// Returns the unavailable store error when the durable answer cannot be
+    /// determined. A [`InterruptionBarrierResolution::NonDispatchable`] answer
+    /// is not an error: callers must skip local D-7 settlement and let the
+    /// history boundary report the canonical terminal or fencing outcome.
     fn begin_interruption(
         &mut self,
         tenant_id: &TenantId,
         thread_id: ThreadId,
         turn_id: TurnId,
-    ) -> Result<(), AttemptStoreError>;
+    ) -> Result<InterruptionBarrierResolution, AttemptStoreError>;
+}
+
+/// Durable outcome of an interruption-barrier request.
+///
+/// The C-5 boundary may cancel local D-7 work only after it owns the durable
+/// barrier. If a concurrent history transition makes the Turn non-dispatchable
+/// first, history remains responsible for the endpoint response.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum InterruptionBarrierResolution {
+    /// The durable barrier is active for this exact Turn.
+    Established,
+    /// The Turn is missing, terminal, fenced, expired, or recovery-pending.
+    NonDispatchable,
 }
 
 /// Consumer-owned proof that one Turn reached its canonical terminal state.

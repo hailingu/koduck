@@ -83,8 +83,8 @@ impl ExecutionAttemptInterruptionGuard for RecordingCommitter {
         _tenant_id: &TenantId,
         _thread_id: ThreadId,
         _turn_id: TurnId,
-    ) -> Result<(), AttemptStoreError> {
-        Ok(())
+    ) -> Result<koduck_ai::application::InterruptionBarrierResolution, AttemptStoreError> {
+        Ok(koduck_ai::application::InterruptionBarrierResolution::Established)
     }
 }
 
@@ -121,8 +121,8 @@ impl ExecutionAttemptInterruptionGuard for RemoteLiveCommitter {
         _tenant_id: &TenantId,
         _thread_id: ThreadId,
         _turn_id: TurnId,
-    ) -> Result<(), AttemptStoreError> {
-        Ok(())
+    ) -> Result<koduck_ai::application::InterruptionBarrierResolution, AttemptStoreError> {
+        Ok(koduck_ai::application::InterruptionBarrierResolution::Established)
     }
 }
 

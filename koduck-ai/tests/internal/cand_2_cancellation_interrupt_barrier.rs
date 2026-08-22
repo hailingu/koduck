@@ -9,9 +9,9 @@ use koduck_ai::adapters::history::postgres::{LeaseKey, ReconcileOutcome};
 use koduck_ai::application::{
     AttemptCommitError, AttemptCommitResult, AttemptCommitter, AttemptInsertResolution,
     AttemptStoreError, DispatchClaimResolution, ExecutionAttemptInterruptionGuard,
-    ExecutionAttemptLiveness, ExecutionAttemptStore, HistoryError, LeaseCheck, LeaseValidator,
-    ToolCallError, ToolCallExecutor, ToolConfigurationSnapshot, ToolExecutionRuntimeRoot,
-    TurnCommand, TurnHistory,
+    ExecutionAttemptLiveness, ExecutionAttemptStore, HistoryError, InterruptionBarrierResolution,
+    LeaseCheck, LeaseValidator, ToolCallError, ToolCallExecutor, ToolConfigurationSnapshot,
+    ToolExecutionRuntimeRoot, TurnCommand, TurnHistory,
 };
 use koduck_ai::domain::{ItemPayload, TenantId, TerminalOutcome, TrustContext, Usage};
 use koduck_ai::runtime::tool_executor::BoundaryToolCallExecutor;
@@ -62,12 +62,62 @@ impl ExecutionAttemptInterruptionGuard for LocalCloseWithRemoteLive {
         _tenant_id: &TenantId,
         _thread_id: ThreadId,
         _turn_id: TurnId,
-    ) -> Result<(), AttemptStoreError> {
-        Ok(())
+    ) -> Result<InterruptionBarrierResolution, AttemptStoreError> {
+        Ok(InterruptionBarrierResolution::Established)
     }
 }
 
 process_local_durable_claims!(LocalCloseWithRemoteLive);
+
+/// Store double reporting that history already made the Turn ineligible for an
+/// interruption barrier. C-5 must leave its prepared work untouched so the
+/// history boundary can report that terminal or fencing outcome precisely.
+#[derive(Clone, Default)]
+struct NonDispatchableTurn {
+    commits: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl NonDispatchableTurn {
+    fn commits(&self) -> usize {
+        self.commits.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+impl AttemptCommitter for NonDispatchableTurn {
+    fn commit_outcome(
+        &mut self,
+        _binding: &ExactActionBinding,
+        _outcome: &ToolExecutionOutcome,
+    ) -> Result<AttemptCommitResult, AttemptCommitError> {
+        self.commits
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(AttemptCommitResult::Won)
+    }
+}
+
+impl ExecutionAttemptLiveness for NonDispatchableTurn {
+    fn has_live_attempt(
+        &mut self,
+        _tenant_id: &TenantId,
+        _thread_id: ThreadId,
+        _turn_id: TurnId,
+    ) -> Result<bool, AttemptStoreError> {
+        panic!("a non-dispatchable Turn must not enter C-5 interruption settlement")
+    }
+}
+
+impl ExecutionAttemptInterruptionGuard for NonDispatchableTurn {
+    fn begin_interruption(
+        &mut self,
+        _tenant_id: &TenantId,
+        _thread_id: ThreadId,
+        _turn_id: TurnId,
+    ) -> Result<InterruptionBarrierResolution, AttemptStoreError> {
+        Ok(InterruptionBarrierResolution::NonDispatchable)
+    }
+}
+
+process_local_durable_claims!(NonDispatchableTurn);
 
 #[test]
 fn local_close_with_remote_live_attempt_requires_reconciliation() {
@@ -90,6 +140,35 @@ fn local_close_with_remote_live_attempt_requires_reconciliation() {
     let result = executor.request_interrupt(&trust, thread_id, turn_id);
 
     assert!(matches!(result, Err(ToolCallError::Reconciliation(_))));
+}
+
+#[test]
+fn non_dispatchable_turn_skips_local_cancellation_before_history_reports_it() {
+    let tenant = TenantId::new("tenant-a").expect("valid tenant");
+    let trust = TrustContext::new(tenant.clone(), "subject-a").expect("valid principal");
+    let thread_id = ThreadId::new();
+    let turn_id = TurnId::new();
+    let root = ToolExecutionRuntimeRoot::issue();
+    let harness = Harness::with_runtime(root.runtime(), tenant, thread_id, turn_id);
+    let _prepared = harness.prepared();
+    let committer = NonDispatchableTurn::default();
+    let mut executor = BoundaryToolCallExecutor::new(
+        &root,
+        ToolConfigurationSnapshot::empty(),
+        committer.clone(),
+        CurrentLease,
+        koduck_ai::application::NoToolAudits,
+        koduck_ai::application::NoCanonicalTurnTerminal,
+    );
+
+    executor
+        .request_interrupt(&trust, thread_id, turn_id)
+        .expect("the history boundary receives the non-dispatchable outcome");
+    assert_eq!(
+        committer.commits(),
+        0,
+        "C-5 leaves local D-7 work untouched"
+    );
 }
 
 #[test]

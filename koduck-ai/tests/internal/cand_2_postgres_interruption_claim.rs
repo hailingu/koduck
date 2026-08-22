@@ -5,7 +5,8 @@
 use koduck_ai::adapters::execution::DisabledExecutor;
 use koduck_ai::application::{
     ExecutionAttemptInterruptionGuard, ExecutionAttemptStore, ExecutionCoordinator,
-    ExecutionFailure, ExecutionPending, LeaseCheck, LeaseValidator, ToolExecutionRuntimeRoot,
+    ExecutionFailure, ExecutionPending, InterruptionBarrierResolution, LeaseCheck, LeaseValidator,
+    ToolExecutionRuntimeRoot,
 };
 use koduck_ai::domain::execution::ExactActionBinding;
 
@@ -106,7 +107,7 @@ fn interruption_barrier_loser_defers_a_terminal_turn_to_history_arbitration() {
             binding.thread_id(),
             binding.turn_id(),
         ),
-        Ok(()),
+        Ok(InterruptionBarrierResolution::NonDispatchable),
         "the C-5 store leaves a terminal race for the history boundary to classify"
     );
 }

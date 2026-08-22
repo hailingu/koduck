@@ -152,7 +152,7 @@ impl ExecutionAttemptInterruptionGuard for PausingLivenessStore {
         tenant_id: &TenantId,
         thread_id: koduck_ai::domain::ThreadId,
         turn_id: koduck_ai::domain::TurnId,
-    ) -> Result<(), AttemptStoreError> {
+    ) -> Result<koduck_ai::application::InterruptionBarrierResolution, AttemptStoreError> {
         self.inner.begin_interruption(tenant_id, thread_id, turn_id)
     }
 }

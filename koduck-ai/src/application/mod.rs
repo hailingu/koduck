@@ -34,7 +34,7 @@ pub use attempt_store::{
     AttemptInsertResolution, AttemptStoreError, AttemptTerminalResolution, CanonicalTurnTerminal,
     DispatchClaimResolution, DurableAttemptTerminal, DurableAttemptTransitions,
     ExecutionAttemptInterruptionGuard, ExecutionAttemptLiveness, ExecutionAttemptStore,
-    NoCanonicalTurnTerminal, PreparedCloseResolution,
+    InterruptionBarrierResolution, NoCanonicalTurnTerminal, PreparedCloseResolution,
 };
 pub(crate) use audit::record_audit;
 pub use audit::{
