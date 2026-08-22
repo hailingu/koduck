@@ -276,22 +276,35 @@ impl ExecutionAttemptInterruptionGuard for SqlxExecutionAttemptStore {
             .bind(thread_id.as_uuid())
             .bind(turn_id.as_uuid())
             .execute(&self.pool)
-            .await
-            .map_err(|_| AttemptStoreError::Unavailable)?;
-            if barrier.rows_affected() == 1 {
-                return Ok(());
+            .await;
+            match barrier {
+                Ok(barrier) if barrier.rows_affected() == 1 => Ok(()),
+                Ok(_) => {
+                    if super::interruption_barrier::lost_to_non_dispatchable_turn(
+                        &self.pool, tenant_id, thread_id, turn_id,
+                    )
+                    .await?
+                    {
+                        // The history boundary owns the precise endpoint result for
+                        // a concurrent terminal, fenced, expired, or missing Turn.
+                        // It must not be masked as a C-5 storage outage here.
+                        return Ok(());
+                    }
+                    Err(AttemptStoreError::Unavailable)
+                }
+                Err(_)
+                    if super::interruption_barrier::committed_active_barrier(
+                        &self.pool, tenant_id, thread_id, turn_id,
+                    )
+                    .await? =>
+                {
+                    // An autocommit statement may have committed before its
+                    // acknowledgement was lost. The exact canonical barrier
+                    // is sufficient to continue C-5 interruption settlement.
+                    Ok(())
+                }
+                Err(_) => Err(AttemptStoreError::Unavailable),
             }
-            if super::interruption_barrier::lost_to_non_dispatchable_turn(
-                &self.pool, tenant_id, thread_id, turn_id,
-            )
-            .await?
-            {
-                // The history boundary owns the precise endpoint result for
-                // a concurrent terminal, fenced, expired, or missing Turn.
-                // It must not be masked as a C-5 storage outage here.
-                return Ok(());
-            }
-            Err(AttemptStoreError::Unavailable)
         })
     }
 }

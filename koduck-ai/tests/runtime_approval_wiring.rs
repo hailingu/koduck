@@ -297,6 +297,27 @@ async fn approval_route_rejects_identity_thread_and_scope_failures_closed() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn approval_route_rejects_duplicate_thread_routing_headers() {
+    // A duplicate routing header is ambiguous client context, even if one
+    // value matches the requested approval. It must be indistinguishable from
+    // an absent or malformed route and cannot authorize a mutation.
+    let (router, store, approval_id, thread) = seeded_router();
+    let request = decision_builder(
+        approval_id,
+        Some(thread.as_uuid().to_string()),
+        "application/json",
+    )
+    .header("x-koduck-thread-id", "not-a-uuid")
+    .body(Body::from(r#"{"decision":"accepted"}"#))
+    .expect("valid request shape");
+
+    let response = router.oneshot(request).await.expect("router response");
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert_eq!(store.mutations(), 0, "ambiguous routing mutates nothing");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn approval_route_rejects_method_and_content_type_before_decision() {
     let (router, store, approval_id, thread) = seeded_router();
 

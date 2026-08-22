@@ -580,9 +580,12 @@ fn header<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
 /// widen what a principal may resolve. The adapter receives only a validated
 /// well-formed Thread identity or none.
 fn trust_thread(headers: &HeaderMap) -> Option<ThreadId> {
-    uuid::Uuid::parse_str(header(headers, THREAD_ROUTING_HEADER)?)
-        .ok()
-        .map(ThreadId::from_uuid)
+    let mut values = headers.get_all(THREAD_ROUTING_HEADER).iter();
+    let value = values.next()?.to_str().ok()?;
+    if values.next().is_some() {
+        return None;
+    }
+    uuid::Uuid::parse_str(value).ok().map(ThreadId::from_uuid)
 }
 
 fn into_axum_response(response: crate::adapters::http::HttpResponse) -> Response {
