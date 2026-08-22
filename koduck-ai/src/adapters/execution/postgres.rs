@@ -145,6 +145,28 @@ impl ApprovalRecordStore for SqlxApprovalRecordStore {
                 .begin()
                 .await
                 .map_err(|_| ApprovalStoreError::Unavailable)?;
+            // Decision and interruption take the same canonical Turn lock
+            // before either transition. The probe is unconditional on the
+            // owner state so a currently dispatchable Turn is still locked;
+            // after any wait, the guarded update observes the winning barrier.
+            let _ = sqlx::query(
+                "SELECT owner.turn_id
+                 FROM turns owner
+                 JOIN tool_approvals approval
+                   ON approval.tenant_id = owner.tenant_id
+                  AND approval.thread_id = owner.thread_id
+                  AND approval.turn_id = owner.turn_id
+                 WHERE approval.tenant_id = $1 AND approval.approval_id = $2
+                   AND approval.requester_subject = $3 AND approval.thread_id = $4
+                 FOR UPDATE OF owner",
+            )
+            .bind(tenant_id.as_str())
+            .bind(approval_id.as_uuid())
+            .bind(requester_subject)
+            .bind(thread_id.as_uuid())
+            .fetch_optional(&mut *transaction)
+            .await
+            .map_err(|_| ApprovalStoreError::Unavailable)?;
             let winner = sqlx::query(
                 "UPDATE tool_approvals
                  SET status = $3, decision = $3, approver = $4,
