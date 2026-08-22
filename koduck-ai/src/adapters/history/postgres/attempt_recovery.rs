@@ -15,6 +15,10 @@ use crate::domain::{Item, ItemPayload, ToolEffectState};
 use super::LeaseKey;
 use super::sqlx_executor::{milliseconds_i64, unavailable};
 
+mod terminal_backfill;
+
+use terminal_backfill::backfill_unrecorded_terminal_attempts;
+
 pub(super) async fn close_active_attempts(
     connection: &mut PgConnection,
     key: &LeaseKey,
@@ -26,8 +30,13 @@ pub(super) async fn close_active_attempts(
     if running_attempt_deadline_pending(connection, key, terminal_at_millis).await? {
         return Ok(None);
     }
+    // An interrupted replica can commit its D-7 terminal and lose the
+    // process-local handoff before history receives the D-3 item. Recover
+    // those already-terminal rows before closing the remaining live attempts:
+    // once the Turn terminal commits, no later recovery may append them.
+    let mut projections = backfill_unrecorded_terminal_attempts(connection, key).await?;
     let closed = close_attempt_rows(connection, key, terminal_at_millis).await?;
-    let mut projections = Vec::with_capacity(closed.len());
+    projections.reserve(closed.len());
     for attempt in closed {
         projections
             .push(record_closed_attempt(connection, key, terminal_at_millis, attempt).await?);

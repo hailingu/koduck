@@ -340,6 +340,83 @@ fn expired_interruption_barrier_recovers_the_turn_as_interrupted() {
 }
 
 #[test]
+fn expiry_recovery_backfills_a_locally_closed_d7_before_its_turn_terminal() {
+    let Some((mut durable, mut history, pool, runtime)) = super::turn_terminal::durable_backends()
+    else {
+        return;
+    };
+    let tenant = TenantId::new("tenant-a").expect("valid tenant");
+    let trust = TrustContext::new(tenant.clone(), "subject-a").expect("valid principal");
+    let accepted = history
+        .accept_initial(
+            &TurnCommand::new(trust.clone(), None, "closed interruption recovery")
+                .expect("command"),
+        )
+        .expect("initial acceptance");
+    let binding = sealed_binding(tenant.clone(), accepted.thread_id, accepted.turn_id);
+    assert_eq!(
+        ExecutionAttemptStore::insert_prepared(&mut durable, &binding, 1_000),
+        Ok(AttemptInsertResolution::Inserted)
+    );
+    durable
+        .begin_interruption(&tenant, accepted.thread_id, accepted.turn_id)
+        .expect("interruption barrier commits before the local terminal");
+    assert_eq!(
+        durable.commit_outcome_as_interruption(
+            &binding,
+            &ToolExecutionOutcome::Cancelled {
+                effect_state: EffectState::NotStarted,
+            },
+        ),
+        Ok(AttemptCommitResult::Won),
+        "the local replica commits D-7 before it loses the history handoff",
+    );
+    runtime.block_on(async {
+        sqlx::query(
+            "UPDATE turn_leases SET renewed_at = CURRENT_TIMESTAMP - INTERVAL '2 minutes', expires_at = CURRENT_TIMESTAMP - INTERVAL '1 minute' WHERE tenant_id = $1 AND thread_id = $2 AND turn_id = $3",
+        )
+        .bind(tenant.as_str())
+        .bind(accepted.thread_id.as_uuid())
+        .bind(accepted.turn_id.as_uuid())
+        .execute(&pool)
+        .await
+        .expect("expire the interrupted owner after its local handoff fails");
+    });
+    let now_millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock is after the Unix epoch")
+        .as_millis()
+        .try_into()
+        .expect("millisecond time fits u64");
+
+    assert_eq!(
+        history.reconcile_expired(
+            &LeaseKey::new(
+                tenant.clone(),
+                accepted.thread_id,
+                accepted.turn_id,
+                accepted.generation,
+            ),
+            now_millis,
+        ),
+        Ok(ReconcileOutcome::Interrupted),
+    );
+    let replayed = history
+        .replay(&tenant, accepted.turn_id)
+        .expect("canonical replay");
+    assert!(matches!(
+        replayed.as_slice(),
+        [.., koduck_ai::domain::Item { payload: ItemPayload::ToolResult {
+            attempt_id: Some(projected_id),
+            status: koduck_ai::domain::execution::ExecutionStatus::Cancelled,
+            version: Some(3),
+            ..
+        }, .. }, koduck_ai::domain::Item { payload: ItemPayload::Terminal(TerminalOutcome::Interrupted), .. }]
+            if *projected_id == binding.attempt_id()
+    ));
+}
+
+#[test]
 fn expired_interruption_barrier_closes_a_running_attempt_before_turn_terminal() {
     let Some((mut durable, mut history, pool, runtime)) = super::turn_terminal::durable_backends()
     else {
