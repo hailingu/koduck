@@ -9,7 +9,8 @@ use koduck_ai::adapters::execution::SqlxApprovalRecordStore;
 use koduck_ai::adapters::tool::{parse_action_parameters, parse_input_schema};
 use koduck_ai::application::{
     ApprovalDecisionResolution, ApprovalInsertResolution, ApprovalRecordStore, ApprovalStoreError,
-    ToolAuthorizationService, ToolPolicyConfiguration,
+    PendingApprovalCancellation, PendingApprovalCanceller, ToolAuthorizationService,
+    ToolPolicyConfiguration,
 };
 use koduck_ai::domain::execution::{
     ApprovalDecision, ApprovalRequest, ApprovalStatus, AttemptId, ExactActionBinding,
@@ -332,6 +333,54 @@ fn terminal_decision_replay_does_not_require_a_second_pool_connection() {
             version: 2,
         })
     );
+}
+
+#[test]
+fn interruption_cancels_the_canonical_requested_approval() {
+    let Some(mut harness) = harness() else {
+        return;
+    };
+    let approval = requested_approval(1_000, 60_000);
+    attempts::seed_owner_rows(
+        &harness,
+        approval.tenant_id(),
+        approval.binding().thread_id(),
+        approval.binding().turn_id(),
+        approval.binding().lease_generation(),
+    );
+    assert_eq!(
+        harness.store.insert_requested(&approval, "requester"),
+        Ok(ApprovalInsertResolution::Inserted),
+    );
+    harness.runtime.block_on(async {
+        sqlx::query(
+            "UPDATE turns SET interrupting = TRUE
+             WHERE tenant_id = $1 AND thread_id = $2 AND turn_id = $3",
+        )
+        .bind(approval.tenant_id().as_str())
+        .bind(approval.binding().thread_id().as_uuid())
+        .bind(approval.binding().turn_id().as_uuid())
+        .execute(&harness.pool)
+        .await
+        .expect("interruption barrier is established");
+    });
+
+    assert_eq!(
+        PendingApprovalCanceller::cancel_requested(&mut harness.store, approval.binding(),),
+        Ok(PendingApprovalCancellation::Cancelled),
+    );
+    let projection: (String, i64) = harness.runtime.block_on(async {
+        sqlx::query_as(
+            "SELECT status, version FROM tool_approvals
+             WHERE tenant_id = $1 AND approval_id = $2",
+        )
+        .bind(approval.tenant_id().as_str())
+        .bind(approval.approval_id().as_uuid())
+        .fetch_one(&harness.pool)
+        .await
+        .expect("cancelled approval is readable")
+    });
+    assert_eq!(projection, ("cancelled".to_owned(), 2));
 }
 
 #[test]

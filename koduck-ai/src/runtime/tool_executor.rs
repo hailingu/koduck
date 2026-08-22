@@ -2,7 +2,7 @@
 
 //! Runtime composition of the runner's C-5 tool-call executor.
 
-use crate::adapters::execution::DisabledExecutor;
+use crate::adapters::execution::{DisabledExecutor, SqlxApprovalRecordStore};
 use crate::adapters::history::postgres::{TurnTerminalObserver, unix_time_ms};
 use crate::adapters::tool::{ConfiguredCapability, translate_native_tool_call};
 use crate::application::tool_boundary::{ToolExecutionAssembly, ToolExecutionRuntimeRoot};
@@ -141,6 +141,8 @@ where
     /// Injected canonical Turn-terminal probe gating authority reclamation;
     /// the fail-closed default retains every Turn's process-local authority.
     terminals: P,
+    /// Canonical D-6 store used to cancel requested approvals during interruption.
+    approvals: Option<SqlxApprovalRecordStore>,
 }
 
 impl<C, L, A, P> BoundaryToolCallExecutor<C, L, A, P>
@@ -172,7 +174,17 @@ where
             lease,
             audits,
             terminals,
+            approvals: None,
         }
+    }
+
+    /// Injects the canonical D-6 store used by authenticated interruption.
+    pub(crate) fn with_pending_approval_canceller(
+        mut self,
+        approvals: SqlxApprovalRecordStore,
+    ) -> Self {
+        self.approvals = Some(approvals);
+        self
     }
 
     /// Builds the pre-attempt audit context for a policy denial decided
@@ -382,7 +394,11 @@ where
             // leave local D-7 work untouched.
             return Ok(Vec::new());
         }
-        let mut approvals = UnavailablePendingApprovalCanceller;
+        let mut unavailable = UnavailablePendingApprovalCanceller;
+        let approvals: &mut dyn PendingApprovalCanceller = match &mut self.approvals {
+            Some(approvals) => approvals,
+            None => &mut unavailable,
+        };
         // Both the dispatch and interruption paths validate the bound
         // generation against durable C-6 lease state before any D-7 mutation
         // commits (ADR-0003 TC-07).
@@ -393,7 +409,7 @@ where
                 self.lease.clone(),
                 self.committer.clone(),
                 &mut self.audits,
-                &mut approvals,
+                approvals,
                 trust,
                 thread_id,
                 turn_id,

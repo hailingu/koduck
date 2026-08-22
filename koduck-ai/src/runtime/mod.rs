@@ -191,8 +191,8 @@ pub async fn run(config: RuntimeConfig) -> Result<(), RuntimeError> {
     let runtime = tokio::runtime::Handle::current();
     // Production canonical D-6 assembly: the authenticated decision route
     // drives the conditional `SQLx` transitions on the same Tokio runtime.
-    let approvals =
-        ApprovalDecisionRoute::new(SqlxApprovalRecordStore::new(pool.clone(), runtime.clone()));
+    let approval_store = SqlxApprovalRecordStore::new(pool.clone(), runtime.clone());
+    let approvals = ApprovalDecisionRoute::new(approval_store.clone());
     // Production canonical D-7 assembly: the runner's C-5 boundary commits
     // every terminal through the durable conditional `SQLx` transitions
     // (ADR-0003 TC-12), so the process-local arbitration catalog is no longer
@@ -223,7 +223,9 @@ pub async fn run(config: RuntimeConfig) -> Result<(), RuntimeError> {
     );
     let provider = OpenAiCompatibleProvider::new(transport);
     let runner = TurnRunner::new(provider, history).with_tool_executor(
-        runtime_state.tool_call_executor(attempts.clone(), lease, audit_trail, attempts),
+        runtime_state
+            .tool_call_executor(attempts.clone(), lease, audit_trail, attempts)
+            .with_pending_approval_canceller(approval_store),
     );
     let listener = tokio::net::TcpListener::bind(config.bind_addr())
         .await

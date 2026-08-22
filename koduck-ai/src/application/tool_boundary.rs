@@ -167,13 +167,13 @@ impl ToolExecutionAssembly {
         clippy::too_many_arguments,
         reason = "the C-5 cancellation ports and authenticated ownership dimensions are explicit"
     )]
-    pub(crate) fn interrupt<E, L, C, P, A>(
+    pub(crate) fn interrupt<E, L, C, P>(
         &self,
         executor: E,
         lease: L,
         committer: C,
         audits: &mut P,
-        approvals: &mut A,
+        approvals: &mut dyn PendingApprovalCanceller,
         trust: &TrustContext,
         thread_id: ThreadId,
         turn_id: crate::domain::TurnId,
@@ -184,7 +184,6 @@ impl ToolExecutionAssembly {
         L: LeaseValidator + 'static,
         C: AttemptCommitter + DurableAttemptTransitions,
         P: ToolAuditTrail,
-        A: PendingApprovalCanceller,
     {
         let shared_lease = SharedLeaseValidator(Arc::new(Mutex::new(lease)));
         let mut coordinator = ExecutionCoordinator::new(executor, shared_lease, committer);

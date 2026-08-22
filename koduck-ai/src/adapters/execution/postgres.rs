@@ -10,7 +10,8 @@ use tokio::runtime::Handle;
 
 use crate::application::{
     AppendPolicy, ApprovalDecisionResolution, ApprovalInsertResolution, ApprovalRecordStore,
-    ApprovalStoreError,
+    ApprovalStoreError, ExecutionFailure, ExecutionPending, PendingApprovalCancellation,
+    PendingApprovalCanceller,
 };
 use crate::domain::TenantId;
 use crate::domain::execution::{
@@ -208,6 +209,109 @@ impl ApprovalRecordStore for SqlxApprovalRecordStore {
                 decided_at_millis,
             )
             .await
+        })
+    }
+}
+
+impl PendingApprovalCanceller for SqlxApprovalRecordStore {
+    fn cancel_requested(
+        &mut self,
+        binding: &crate::domain::execution::ExactActionBinding,
+    ) -> Result<PendingApprovalCancellation, ExecutionPending> {
+        self.wait(async {
+            let mut transaction = self
+                .pool
+                .begin()
+                .await
+                .map_err(|_| ApprovalStoreError::Unavailable)?;
+            let row = sqlx::query(
+                "UPDATE tool_approvals approval
+                 SET status = 'cancelled', version = approval.version + 1
+                 FROM turns owner
+                 WHERE approval.tenant_id = $1 AND approval.thread_id = $2
+                   AND approval.turn_id = $3 AND approval.attempt_id = $4
+                   AND approval.lease_generation = $5
+                   AND approval.descriptor_id = $6 AND approval.descriptor_version = $7
+                   AND approval.effect = $8 AND approval.action_digest = $9
+                   AND approval.profile_id = $10 AND approval.profile_version = $11
+                   AND approval.status = 'requested'
+                   AND owner.tenant_id = approval.tenant_id
+                   AND owner.thread_id = approval.thread_id
+                   AND owner.turn_id = approval.turn_id AND owner.interrupting
+                 RETURNING approval.approval_id, approval.thread_id, approval.turn_id,
+                           approval.attempt_id, approval.lease_generation,
+                           approval.descriptor_id, approval.descriptor_version,
+                           approval.action_digest, approval.profile_id,
+                           approval.profile_version, approval.version",
+            )
+            .bind(binding.tenant_id().as_str())
+            .bind(binding.thread_id().as_uuid())
+            .bind(binding.turn_id().as_uuid())
+            .bind(binding.attempt_id().as_uuid())
+            .bind(millis(binding.lease_generation().get())?)
+            .bind(binding.action().descriptor_id())
+            .bind(binding.action().descriptor_version())
+            .bind(effect_code(binding.action().effect()))
+            .bind(hex_digest(binding.action_digest().as_bytes()))
+            .bind(binding.profile_id())
+            .bind(binding.profile_version())
+            .fetch_optional(&mut *transaction)
+            .await
+            .map_err(|_| ApprovalStoreError::Unavailable)?;
+            let Some(row) = row else {
+                drop(transaction);
+                let status: Option<String> = sqlx::query_scalar(
+                    "SELECT status FROM tool_approvals
+                     WHERE tenant_id = $1 AND thread_id = $2 AND turn_id = $3
+                       AND attempt_id = $4 AND lease_generation = $5
+                       AND descriptor_id = $6 AND descriptor_version = $7
+                       AND effect = $8 AND action_digest = $9
+                       AND profile_id = $10 AND profile_version = $11",
+                )
+                .bind(binding.tenant_id().as_str())
+                .bind(binding.thread_id().as_uuid())
+                .bind(binding.turn_id().as_uuid())
+                .bind(binding.attempt_id().as_uuid())
+                .bind(millis(binding.lease_generation().get())?)
+                .bind(binding.action().descriptor_id())
+                .bind(binding.action().descriptor_version())
+                .bind(effect_code(binding.action().effect()))
+                .bind(hex_digest(binding.action_digest().as_bytes()))
+                .bind(binding.profile_id())
+                .bind(binding.profile_version())
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(|_| ApprovalStoreError::Unavailable)?;
+                return status
+                    .filter(|status| status != "requested")
+                    .map(|_| PendingApprovalCancellation::AlreadyResolved)
+                    .ok_or(ApprovalStoreError::Unavailable);
+            };
+            let approval_id = ApprovalId::from_uuid(
+                row.try_get("approval_id")
+                    .map_err(|_| ApprovalStoreError::Unavailable)?,
+            );
+            let version = row_version(&row)?;
+            emit_decision_audit(
+                &mut transaction,
+                approval_id,
+                ApprovalStatus::Cancelled,
+                None,
+                version,
+                crate::adapters::history::postgres::unix_time_ms(),
+                binding.tenant_id(),
+                &row,
+            )
+            .await?;
+            transaction
+                .commit()
+                .await
+                .map_err(|_| ApprovalStoreError::Unavailable)?;
+            Ok(PendingApprovalCancellation::Cancelled)
+        })
+        .map_err(|_| ExecutionPending::ReconciliationRequired {
+            code: ExecutionFailure::DurabilityUnavailable,
+            effect_state: crate::application::EffectState::Unknown,
         })
     }
 }
