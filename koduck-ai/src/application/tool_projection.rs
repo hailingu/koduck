@@ -16,6 +16,7 @@ mod validation;
 
 use stage::ProjectionStage;
 use validation::validate_canonical_tuple;
+pub(crate) use validation::validate_interruption_terminals;
 
 /// One append-only D-3 view of canonical D-6/D-7 state.
 ///

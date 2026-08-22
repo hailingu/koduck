@@ -2,6 +2,8 @@
 
 //! Canonical D-3 tuple validation and exact lifecycle-reservation measurement.
 
+use std::collections::HashSet;
+
 use crate::application::{AppendPolicy, NewItem};
 use crate::domain::ToolEffectState;
 use crate::domain::execution::{
@@ -84,6 +86,78 @@ pub(super) fn validate_canonical_tuple(
         }
     };
     valid.then_some(()).ok_or(ToolProjectionError::Unavailable)
+}
+
+/// Validates C-5 interruption terminals supplied at the public port before
+/// the history adapter makes them durable. The batch may contain only unique,
+/// canonical D-7 terminals and must fit the remaining CAND-1 Turn budget.
+pub(crate) fn validate_interruption_terminals(
+    items: &[NewItem],
+    mut item_count: usize,
+    mut payload_bytes: usize,
+) -> Result<(), ToolProjectionError> {
+    let mut identities = HashSet::new();
+    let policy = AppendPolicy::cand_1();
+    for item in items {
+        let projection = interruption_terminal_projection(item)?;
+        validate_canonical_tuple(&projection)?;
+        let ToolProjection::ToolResult {
+            attempt_id,
+            version,
+            ..
+        } = projection
+        else {
+            return Err(ToolProjectionError::Unavailable);
+        };
+        if !identities.insert((attempt_id, version)) {
+            return Err(ToolProjectionError::Unavailable);
+        }
+        item_count = item_count
+            .checked_add(1)
+            .ok_or(ToolProjectionError::Unavailable)?;
+        payload_bytes = policy
+            .check_item_count(item_count)
+            .and_then(|()| policy.accumulate_payload_bytes(payload_bytes, item))
+            .map_err(|_| ToolProjectionError::Unavailable)?;
+    }
+    Ok(())
+}
+
+/// Reconstructs the typed projection accepted by the ordinary D-3 sink from
+/// the public interruption-port item shape.
+fn interruption_terminal_projection(item: &NewItem) -> Result<ToolProjection, ToolProjectionError> {
+    let NewItem::ToolResult {
+        attempt_id: Some(attempt_id),
+        status,
+        code,
+        effect_state: Some(effect_state),
+        output_bytes,
+        output_digest,
+        version: Some(version),
+    } = item
+    else {
+        return Err(ToolProjectionError::Unavailable);
+    };
+    let code = match code.as_deref() {
+        Some(code) => {
+            Some(ExecutionFailure::from_stable_code(code).ok_or(ToolProjectionError::Unavailable)?)
+        }
+        None => None,
+    };
+    let effect_state = match effect_state {
+        ToolEffectState::NotStarted => super::super::executor_envelope::EffectState::NotStarted,
+        ToolEffectState::Started => super::super::executor_envelope::EffectState::Started,
+        ToolEffectState::Unknown => super::super::executor_envelope::EffectState::Unknown,
+    };
+    Ok(ToolProjection::ToolResult {
+        attempt_id: *attempt_id,
+        status: *status,
+        code,
+        effect_state,
+        output_bytes: *output_bytes,
+        output_digest: output_digest.clone(),
+        version: *version,
+    })
 }
 
 /// Computes exact serialized bounds for each canonical D-3 view shape.

@@ -48,10 +48,15 @@ pub(super) async fn request(
     let thread_id: Uuid = ownership.try_get("thread_id").map_err(unavailable)?;
     let sequence: i64 = ownership.try_get("next_sequence").map_err(unavailable)?;
     let first_sequence = u64::try_from(sequence).map_err(|_| HistoryError::Unavailable)?;
+    let (item_count, payload_bytes) = interruption_budget(
+        &mut transaction,
+        trust,
+        ThreadId::from_uuid(thread_id),
+        turn_id,
+    )
+    .await?;
+    validate_interruption_terminals(&tool_terminals, item_count, payload_bytes)?;
     for (offset, terminal) in tool_terminals.iter().enumerate() {
-        if !matches!(terminal, NewItem::ToolResult { .. }) {
-            return Err(HistoryError::Unavailable);
-        }
         let item = Item::new(
             first_sequence
                 .checked_add(offset as u64)
@@ -131,6 +136,48 @@ fn committed_interruption_is_recoverable(status: &str) -> bool {
     status == "interrupted"
 }
 
+/// Measures the CAND-1 provider-item budget already consumed by the active
+/// Turn while its row lock prevents a concurrent append from changing it.
+async fn interruption_budget(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    trust: &TrustContext,
+    thread_id: ThreadId,
+    turn_id: TurnId,
+) -> Result<(usize, usize), HistoryError> {
+    let row = sqlx::query(
+        "SELECT COUNT(*) FILTER (WHERE item_type <> 'user_message') AS item_count, \
+                COALESCE(SUM(octet_length(payload)) FILTER (WHERE item_type <> 'user_message'), 0) \
+                    AS payload_bytes \
+         FROM turn_items \
+         WHERE tenant_id = $1 AND thread_id = $2 AND turn_id = $3",
+    )
+    .bind(trust.tenant_id.as_str())
+    .bind(thread_id.as_uuid())
+    .bind(turn_id.as_uuid())
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(unavailable)?;
+    let item_count = row.try_get::<i64, _>("item_count").map_err(unavailable)?;
+    let payload_bytes = row
+        .try_get::<i64, _>("payload_bytes")
+        .map_err(unavailable)?;
+    Ok((
+        usize::try_from(item_count).map_err(|_| HistoryError::Unavailable)?,
+        usize::try_from(payload_bytes).map_err(|_| HistoryError::Unavailable)?,
+    ))
+}
+
+/// Fails closed unless public C-5 interruption items match the canonical D-7
+/// projection tuple and fit the active Turn's remaining CAND-1 budget.
+fn validate_interruption_terminals(
+    items: &[NewItem],
+    item_count: usize,
+    payload_bytes: usize,
+) -> Result<(), HistoryError> {
+    crate::application::validate_interruption_terminals(items, item_count, payload_bytes)
+        .map_err(|_| HistoryError::Unavailable)
+}
+
 /// Resolves the authenticated Turn's owning Thread before the runner enters
 /// the paired C-5 interruption path.
 pub(super) async fn resolve(
@@ -162,12 +209,63 @@ pub(super) async fn resolve(
 
 #[cfg(test)]
 mod tests {
-    use super::committed_interruption_is_recoverable;
+    use super::{committed_interruption_is_recoverable, validate_interruption_terminals};
+    use crate::application::{HistoryError, NewItem};
+    use crate::domain::ToolEffectState;
+    use crate::domain::execution::{AttemptId, ExecutionStatus};
 
     #[test]
     fn a_durable_interrupted_turn_reconciles_a_lost_commit_acknowledgement() {
         assert!(committed_interruption_is_recoverable("interrupted"));
         assert!(!committed_interruption_is_recoverable("started"));
         assert!(!committed_interruption_is_recoverable("failed"));
+    }
+
+    #[test]
+    fn interruption_rejects_a_running_tool_result() {
+        let item = NewItem::ToolResult {
+            attempt_id: Some(AttemptId::new()),
+            status: ExecutionStatus::Running,
+            code: None,
+            effect_state: Some(ToolEffectState::Started),
+            output_bytes: 0,
+            output_digest: None,
+            version: Some(2),
+        };
+
+        assert_eq!(
+            validate_interruption_terminals(&[item], 0, 0),
+            Err(HistoryError::Unavailable),
+        );
+    }
+
+    #[test]
+    fn interruption_rejects_duplicate_terminal_identities() {
+        let terminal = cancelled_terminal();
+
+        assert_eq!(
+            validate_interruption_terminals(&[terminal.clone(), terminal], 0, 0),
+            Err(HistoryError::Unavailable),
+        );
+    }
+
+    #[test]
+    fn interruption_rejects_terminals_past_the_turn_item_budget() {
+        assert_eq!(
+            validate_interruption_terminals(&[cancelled_terminal()], 64, 0),
+            Err(HistoryError::Unavailable),
+        );
+    }
+
+    fn cancelled_terminal() -> NewItem {
+        NewItem::ToolResult {
+            attempt_id: Some(AttemptId::new()),
+            status: ExecutionStatus::Cancelled,
+            code: None,
+            effect_state: Some(ToolEffectState::NotStarted),
+            output_bytes: 0,
+            output_digest: None,
+            version: Some(3),
+        }
     }
 }

@@ -73,6 +73,7 @@ pub(crate) use tool_interruption::{
     ToolInterruptionOutcome, ToolInterruptionRoute, TurnInterruptionOwnership,
     TurnOwnershipValidator,
 };
+pub(crate) use tool_projection::validate_interruption_terminals;
 pub use tool_projection::{
     NoToolProjections, ToolProjection, ToolProjectionError, ToolProjectionSink, output_digest,
 };
