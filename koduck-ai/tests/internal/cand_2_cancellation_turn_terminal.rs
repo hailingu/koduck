@@ -144,6 +144,16 @@ impl ExecutionAttemptLiveness for PausingLivenessStore {
             .expect("test releases the liveness result");
         Ok(live)
     }
+
+    fn unrecorded_terminal_projections(
+        &mut self,
+        tenant_id: &TenantId,
+        thread_id: koduck_ai::domain::ThreadId,
+        turn_id: koduck_ai::domain::TurnId,
+    ) -> Result<Vec<koduck_ai::application::ToolProjection>, AttemptStoreError> {
+        self.inner
+            .unrecorded_terminal_projections(tenant_id, thread_id, turn_id)
+    }
 }
 
 impl ExecutionAttemptInterruptionGuard for PausingLivenessStore {

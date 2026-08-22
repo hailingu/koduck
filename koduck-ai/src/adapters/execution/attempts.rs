@@ -615,4 +615,44 @@ impl ExecutionAttemptLiveness for SqlxExecutionAttemptStore {
             .map_err(|_| AttemptStoreError::Unavailable)
         })
     }
+
+    fn unrecorded_terminal_projections(
+        &mut self,
+        tenant_id: &TenantId,
+        thread_id: ThreadId,
+        turn_id: TurnId,
+    ) -> Result<Vec<crate::application::ToolProjection>, AttemptStoreError> {
+        self.wait(async {
+            // The D-7 row remains the canonical terminal source. The history
+            // anti-join limits recovery to terminals whose D-3 projection is
+            // still absent, so older retry results are never appended twice.
+            let rows = sqlx::query(
+                "SELECT attempts.attempt_id, attempts.status, attempts.version, \
+                        attempts.effect_state, attempts.failure_code, attempts.output \
+                 FROM tool_execution_attempts attempts \
+                 WHERE attempts.tenant_id = $1 \
+                   AND attempts.thread_id = $2 AND attempts.turn_id = $3 \
+                   AND attempts.status IN ('succeeded', 'failed', 'timed_out', 'cancelled') \
+                   AND NOT EXISTS ( \
+                       SELECT 1 FROM turn_items items \
+                       WHERE items.tenant_id = attempts.tenant_id \
+                         AND items.thread_id = attempts.thread_id \
+                         AND items.turn_id = attempts.turn_id \
+                         AND items.item_type = 'tool_result' \
+                         AND items.payload::jsonb ->> 'attempt_id' = attempts.attempt_id::text \
+                         AND items.payload::jsonb ->> 'version' = attempts.version::text \
+                   ) \
+                 ORDER BY attempts.terminal_at_millis, attempts.attempt_id",
+            )
+            .bind(tenant_id.as_str())
+            .bind(thread_id.as_uuid())
+            .bind(turn_id.as_uuid())
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|_| AttemptStoreError::Unavailable)?;
+            rows.iter()
+                .map(super::attempt_reconciliation::terminal_projection)
+                .collect()
+        })
+    }
 }

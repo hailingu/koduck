@@ -4,11 +4,12 @@
 
 use sqlx::{PgPool, Row};
 
+use crate::application::tool_projection::output_digest;
 use crate::application::{
     AttemptStoreError, AttemptTerminalResolution, CanonicalAttemptTerminal, EffectState,
-    ExecutionFailure, ToolExecutionOutcome,
+    ExecutionFailure, ToolExecutionOutcome, ToolProjection,
 };
-use crate::domain::execution::{ExactActionBinding, ExecutionStatus};
+use crate::domain::execution::{AttemptId, ExactActionBinding, ExecutionStatus};
 
 use super::attempts::{effect_code, hex_digest, millis};
 
@@ -154,6 +155,51 @@ fn canonical_outcome(
         // A prepared or running row is not a terminal and carries no outcome.
         ExecutionStatus::Prepared | ExecutionStatus::Running => Err(AttemptStoreError::Unavailable),
     }
+}
+
+/// Rebuilds the D-3 terminal projection from one validated canonical D-7 row.
+pub(super) fn terminal_projection(
+    row: &sqlx::postgres::PgRow,
+) -> Result<ToolProjection, AttemptStoreError> {
+    let status = row_status(row)?;
+    if !matches!(
+        status,
+        ExecutionStatus::Succeeded
+            | ExecutionStatus::Failed
+            | ExecutionStatus::TimedOut
+            | ExecutionStatus::Cancelled
+    ) || row_version(row)? != 3
+    {
+        return Err(AttemptStoreError::Unavailable);
+    }
+    let attempt_id = AttemptId::from_uuid(
+        row.try_get("attempt_id")
+            .map_err(|_| AttemptStoreError::Unavailable)?,
+    );
+    let outcome = canonical_outcome(row, status)?;
+    let (code, effect_state, output_bytes, output_digest) = match outcome {
+        ToolExecutionOutcome::Succeeded {
+            output,
+            effect_state,
+        } => (
+            None,
+            effect_state,
+            u64::try_from(output.len()).map_err(|_| AttemptStoreError::Unavailable)?,
+            Some(output_digest(&output)),
+        ),
+        ToolExecutionOutcome::Failed { code, effect_state } => (Some(code), effect_state, 0, None),
+        ToolExecutionOutcome::TimedOut { effect_state }
+        | ToolExecutionOutcome::Cancelled { effect_state } => (None, effect_state, 0, None),
+    };
+    Ok(ToolProjection::ToolResult {
+        attempt_id,
+        status,
+        code,
+        effect_state,
+        output_bytes,
+        output_digest,
+        version: 3,
+    })
 }
 
 fn canonical_non_negative(

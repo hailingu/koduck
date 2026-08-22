@@ -183,6 +183,56 @@ fn tool_result_of(items: &[NewItem]) -> (&Option<koduck_ai::domain::execution::A
 process_local_durable_claims!(RecordingCommitter);
 process_local_durable_claims!(RemoteLiveCommitter);
 
+/// Store double for a terminal D-7 committed by another replica before that
+/// replica could hand its D-3 projection to history.
+#[derive(Clone)]
+struct RemoteTerminalCommitter {
+    terminal: koduck_ai::application::ToolProjection,
+}
+
+impl AttemptCommitter for RemoteTerminalCommitter {
+    fn commit_outcome(
+        &mut self,
+        _binding: &ExactActionBinding,
+        _outcome: &ToolExecutionOutcome,
+    ) -> Result<AttemptCommitResult, koduck_ai::application::AttemptCommitError> {
+        unreachable!("a remote terminal is already canonical")
+    }
+}
+
+impl ExecutionAttemptLiveness for RemoteTerminalCommitter {
+    fn has_live_attempt(
+        &mut self,
+        _tenant_id: &TenantId,
+        _thread_id: ThreadId,
+        _turn_id: TurnId,
+    ) -> Result<bool, AttemptStoreError> {
+        Ok(false)
+    }
+
+    fn unrecorded_terminal_projections(
+        &mut self,
+        _tenant_id: &TenantId,
+        _thread_id: ThreadId,
+        _turn_id: TurnId,
+    ) -> Result<Vec<koduck_ai::application::ToolProjection>, AttemptStoreError> {
+        Ok(vec![self.terminal.clone()])
+    }
+}
+
+impl ExecutionAttemptInterruptionGuard for RemoteTerminalCommitter {
+    fn begin_interruption(
+        &mut self,
+        _tenant_id: &TenantId,
+        _thread_id: ThreadId,
+        _turn_id: TurnId,
+    ) -> Result<koduck_ai::application::InterruptionBarrierResolution, AttemptStoreError> {
+        Ok(koduck_ai::application::InterruptionBarrierResolution::Established)
+    }
+}
+
+process_local_durable_claims!(RemoteTerminalCommitter);
+
 #[test]
 fn runtime_assembly_denies_every_tool_call_through_the_empty_inventory() {
     let mut executor = RuntimeState::assemble().tool_call_executor(
@@ -231,6 +281,44 @@ fn interruption_with_remote_live_attempt_requires_reconciliation() {
         ),
         "a process-local NoLiveAttempt must not authorize an interrupted Turn terminal"
     );
+}
+
+#[test]
+fn interruption_recovers_a_remote_terminal_projection_before_turn_terminal() {
+    let root = ToolExecutionRuntimeRoot::issue();
+    let attempt_id = koduck_ai::domain::execution::AttemptId::new();
+    let mut executor = BoundaryToolCallExecutor::new(
+        &root,
+        ToolConfigurationSnapshot::empty(),
+        RemoteTerminalCommitter {
+            terminal: koduck_ai::application::ToolProjection::ToolResult {
+                attempt_id,
+                status: koduck_ai::domain::execution::ExecutionStatus::Cancelled,
+                code: None,
+                effect_state: koduck_ai::application::EffectState::NotStarted,
+                output_bytes: 0,
+                output_digest: None,
+                version: 3,
+            },
+        },
+        UnusedInterruptionLease,
+        koduck_ai::application::NoToolAudits,
+        koduck_ai::application::NoCanonicalTurnTerminal,
+    );
+
+    let terminals = executor
+        .request_interrupt(&trust(), ThreadId::new(), TurnId::new())
+        .expect("the persisted remote D-7 terminal is handed to history");
+
+    assert!(matches!(
+        terminals.as_slice(),
+        [NewItem::ToolResult {
+            attempt_id: Some(projected_id),
+            status: koduck_ai::domain::execution::ExecutionStatus::Cancelled,
+            version: Some(3),
+            ..
+        }] if *projected_id == attempt_id
+    ));
 }
 
 #[test]

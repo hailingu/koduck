@@ -142,6 +142,15 @@ impl ExecutionAttemptLiveness for LocalPreparedClose {
     ) -> Result<bool, AttemptStoreError> {
         Ok(false)
     }
+
+    fn unrecorded_terminal_projections(
+        &mut self,
+        _tenant_id: &TenantId,
+        _thread_id: ThreadId,
+        _turn_id: TurnId,
+    ) -> Result<Vec<koduck_ai::application::ToolProjection>, AttemptStoreError> {
+        Ok(Vec::new())
+    }
 }
 
 impl ExecutionAttemptInterruptionGuard for LocalPreparedClose {

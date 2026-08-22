@@ -9,6 +9,7 @@ use crate::domain::{TenantId, ThreadId, TurnId};
 
 use super::execution::{CanonicalAttemptTerminal, ToolExecutionOutcome};
 use super::executor_envelope::{EffectState, ExecutionFailure};
+use super::tool_projection::ToolProjection;
 
 /// A canonical D-7 store operation could not complete or was rejected.
 #[derive(Clone, Copy, Debug, Error, Eq, PartialEq)]
@@ -452,6 +453,31 @@ pub trait ExecutionAttemptLiveness {
         thread_id: ThreadId,
         turn_id: TurnId,
     ) -> Result<bool, AttemptStoreError>;
+
+    /// Returns canonical D-7 terminal projections that still lack their D-3
+    /// history item for this exact Turn.
+    ///
+    /// A `false` answer from [`ExecutionAttemptLiveness::has_live_attempt`]
+    /// proves only that no D-7 remains prepared or running. An interruption
+    /// must recover these canonical terminals before it may write its Turn
+    /// terminal, because another replica can commit D-7 and lose its local
+    /// handoff before it appends the D-3 projection. Implementations exclude
+    /// already-recorded projections so retries do not append a duplicate
+    /// terminal item.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AttemptStoreError::Unavailable`] by default. Implementations
+    /// without a durable D-7/D-3 reconciliation query must fail closed rather
+    /// than authorize an empty interruption handoff.
+    fn unrecorded_terminal_projections(
+        &mut self,
+        _tenant_id: &TenantId,
+        _thread_id: ThreadId,
+        _turn_id: TurnId,
+    ) -> Result<Vec<ToolProjection>, AttemptStoreError> {
+        Err(AttemptStoreError::Unavailable)
+    }
 }
 
 /// Consumer-owned durable barrier that blocks new D-7 dispatch for an

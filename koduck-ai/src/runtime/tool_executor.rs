@@ -405,10 +405,18 @@ where
             .committer
             .has_live_attempt(&trust.tenant_id, thread_id, turn_id)
         {
-            Ok(false) => Ok(projections
-                .into_iter()
-                .flat_map(|projection| projection.d3_items())
-                .collect()),
+            Ok(false) => {
+                let recovered = self
+                    .committer
+                    .unrecorded_terminal_projections(&trust.tenant_id, thread_id, turn_id)
+                    .map_err(|_| {
+                        ToolCallError::Reconciliation(ExecutionPending::ReconciliationRequired {
+                            code: ExecutionFailure::DurabilityUnavailable,
+                            effect_state: EffectState::Unknown,
+                        })
+                    })?;
+                Ok(merge_terminal_items(projections, recovered))
+            }
             // The process-local catalog cannot cancel or reconcile durable
             // work owned by another instance. A local close is not sufficient:
             // do not let the runner write a Turn terminal until every durable
@@ -510,6 +518,37 @@ where
         };
         Ok(recorded_result(&outcome, projections))
     }
+}
+
+/// Combines local C-5 closure projections with canonical terminals recovered
+/// from another replica, retaining one D-3 result per `(attempt, version)`.
+///
+/// The durable lookup excludes projections already present in history. The
+/// local vector can still contain the same just-committed D-7, so this final
+/// boundary-local deduplication prevents a duplicate item in the single
+/// interruption transaction.
+fn merge_terminal_items(
+    local: Vec<ToolProjection>,
+    recovered: Vec<ToolProjection>,
+) -> Vec<crate::application::NewItem> {
+    let mut items = Vec::new();
+    let mut identities = std::collections::HashSet::new();
+    for projection in local.into_iter().chain(recovered) {
+        for item in projection.d3_items() {
+            let identity = match &item {
+                crate::application::NewItem::ToolResult {
+                    attempt_id: Some(attempt_id),
+                    version: Some(version),
+                    ..
+                } => Some((*attempt_id, *version)),
+                _ => None,
+            };
+            if identity.is_none_or(|identity| identities.insert(identity)) {
+                items.push(item);
+            }
+        }
+    }
+    items
 }
 
 /// One pre-driver policy decision for a model Tool call, made before any
