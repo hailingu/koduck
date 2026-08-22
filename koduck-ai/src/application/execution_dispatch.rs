@@ -11,6 +11,7 @@ use crate::domain::execution::{
 use crate::domain::execution::ExecutionError;
 
 use super::attempt_store::DurableAttemptTransitions;
+use super::canonical_dispatch::CanonicalDispatchClaim;
 use super::deadline::{ActionDeadline, MAX_ACTION_DURATION_MILLIS};
 use super::execution::{
     AttemptCommitter, DispatchPermit, DispatchPhase, ExecutionCoordinator, ExecutionPending,
@@ -57,27 +58,26 @@ where
         // guarantees hold across processes; a fenced or concurrent durable
         // slot closes this never-dispatched attempt or defers to
         // reconciliation with zero executor calls.
-        if let Some(cancelled) =
-            self.claim_canonical_dispatch(authority, attempt, started_at_millis)?
-        {
-            return Ok(cancelled);
-        }
+        let canonical_claim =
+            self.claim_canonical_dispatch(authority, attempt, started_at_millis)?;
         // TC-06: the running projection immediately follows the won canonical
         // dispatch claim, before the post-claim lease check and any executor
         // call, so publication can never outrun the canonical running
         // transition and a post-claim fence cannot leave a terminal projection
         // without it.
-        emit(
-            projections,
-            ToolProjection::ToolCall {
-                descriptor_id: binding.action().descriptor_id().to_owned(),
-                descriptor_version: binding.action().descriptor_version().to_owned(),
-                target: binding.action().target().to_owned(),
-                attempt_id: binding.attempt_id(),
-                status: ExecutionStatus::Running,
-                version: attempt_version(ExecutionStatus::Running),
-            },
-        );
+        emit_running_projection(projections, &binding);
+        if matches!(canonical_claim, CanonicalDispatchClaim::ReconciledRunning) {
+            if authority.reserve_terminal(attempt).is_err() {
+                return Err(ExecutionPending::ReconciliationRequired {
+                    code: ExecutionFailure::TerminalConflict,
+                    effect_state: EffectState::Unknown,
+                });
+            }
+            return Err(ExecutionPending::ReconciliationRequired {
+                code: ExecutionFailure::TerminalConflict,
+                effect_state: EffectState::Unknown,
+            });
+        }
         if let Some(cancelled) = self.post_claim_lease(authority, attempt, &binding)? {
             return Ok(cancelled);
         }
@@ -228,9 +228,23 @@ where
                             let _ = authority.mirror_terminal(attempt, ExecutionStatus::Failed);
                         }
                         Ok(super::attempt_store::AttemptTerminalResolution::ExistingTerminal(
-                            _,
+                            canonical,
                         )) => {
-                            authority.release_terminal_reservation(attempt);
+                            if matches!(
+                                canonical.outcome(),
+                                ToolExecutionOutcome::Failed {
+                                    code: ExecutionFailure::OwnerFencedAfterDispatch,
+                                    effect_state: canonical_effect_state,
+                                } if *canonical_effect_state == effect_state
+                            ) {
+                                // A failed COMMIT acknowledgement can hide a
+                                // fenced terminal that is already canonical.
+                                // Mirror only the exact terminal this path
+                                // requested so the caller emits its D-3 view.
+                                let _ = authority.mirror_terminal(attempt, ExecutionStatus::Failed);
+                            } else {
+                                authority.release_terminal_reservation(attempt);
+                            }
                         }
                         _ => {}
                     }
@@ -253,4 +267,19 @@ where
             Err(pending)
         }
     }
+}
+
+/// Appends the durable D-3 running view for a canonical version-two attempt.
+fn emit_running_projection(projections: &mut dyn ToolProjectionSink, binding: &ExactActionBinding) {
+    emit(
+        projections,
+        ToolProjection::ToolCall {
+            descriptor_id: binding.action().descriptor_id().to_owned(),
+            descriptor_version: binding.action().descriptor_version().to_owned(),
+            target: binding.action().target().to_owned(),
+            attempt_id: binding.attempt_id(),
+            status: ExecutionStatus::Running,
+            version: attempt_version(ExecutionStatus::Running),
+        },
+    );
 }

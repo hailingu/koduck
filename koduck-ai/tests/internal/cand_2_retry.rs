@@ -7,12 +7,12 @@ use koduck_ai::adapters::tool::{parse_action_parameters, parse_input_schema};
 use koduck_ai::application::{
     ActionDeadline, ApprovalAuthorizer, ApprovalDecisionService, AttemptCommitError,
     AttemptCommitResult, AttemptCommitter, AttemptTerminalResolution, CancelAcknowledgement,
-    CancelPermit, DispatchPermit, EffectState, ExecutionCoordinator, ExecutionFailure,
-    ExecutionPending, ExecutionPreparationError, ExecutionResponse, ExecutionResponseBuilder,
-    ExecutorError, IsolatedExecutor, LeaseCheck, LeaseValidator, ToolAuthorizationService,
-    ToolCallError, ToolCallInputs, ToolExecutionAuthorityRoot, ToolExecutionDriver,
-    ToolExecutionOutcome, ToolExecutionRuntime, ToolProjection, ToolProjectionError,
-    ToolProjectionSink,
+    CancelPermit, CanonicalAttemptTerminal, DispatchPermit, EffectState, ExecutionCoordinator,
+    ExecutionFailure, ExecutionPending, ExecutionPreparationError, ExecutionResponse,
+    ExecutionResponseBuilder, ExecutorError, IsolatedExecutor, LeaseCheck, LeaseValidator,
+    ToolAuthorizationService, ToolCallError, ToolCallInputs, ToolExecutionAuthorityRoot,
+    ToolExecutionDriver, ToolExecutionOutcome, ToolExecutionRuntime, ToolProjection,
+    ToolProjectionError, ToolProjectionSink,
 };
 use koduck_ai::domain::execution::{
     ApprovalDecision, ApprovalRequest, AttemptId, ExactActionBinding, ExecutionError,
@@ -112,6 +112,12 @@ struct ConflictCommitter;
 /// Committer whose dedicated post-dispatch fenced transition has durably won.
 struct FencedTerminalCommitter;
 
+/// Committer whose ambiguous durable running claim has already committed.
+struct ReconciledRunningCommitter;
+
+/// Committer whose fenced terminal committed before its acknowledgement was lost.
+struct ReconciledFencedTerminalCommitter;
+
 impl AttemptCommitter for ConflictCommitter {
     fn commit_outcome(
         &mut self,
@@ -138,6 +144,46 @@ impl AttemptCommitter for FencedTerminalCommitter {
         _terminal_at_millis: u64,
     ) -> Result<AttemptTerminalResolution, koduck_ai::application::AttemptStoreError> {
         Ok(AttemptTerminalResolution::Won { version: 3 })
+    }
+}
+
+impl AttemptCommitter for ReconciledRunningCommitter {
+    fn commit_outcome(
+        &mut self,
+        _binding: &ExactActionBinding,
+        _outcome: &ToolExecutionOutcome,
+    ) -> Result<AttemptCommitResult, AttemptCommitError> {
+        unreachable!("an ambiguous running claim must not dispatch or terminalize locally")
+    }
+}
+
+impl AttemptCommitter for ReconciledFencedTerminalCommitter {
+    fn commit_outcome(
+        &mut self,
+        _binding: &ExactActionBinding,
+        _outcome: &ToolExecutionOutcome,
+    ) -> Result<AttemptCommitResult, AttemptCommitError> {
+        unreachable!("a post-dispatch fence uses the dedicated terminal transition")
+    }
+
+    fn commit_fenced_after_dispatch(
+        &mut self,
+        binding: &ExactActionBinding,
+        effect_state: EffectState,
+        _terminal_at_millis: u64,
+    ) -> Result<AttemptTerminalResolution, koduck_ai::application::AttemptStoreError> {
+        let canonical = CanonicalAttemptTerminal::from_persistence(
+            binding.clone(),
+            3,
+            ToolExecutionOutcome::Failed {
+                code: ExecutionFailure::OwnerFencedAfterDispatch,
+                effect_state,
+            },
+        )
+        .expect("fixture terminal is canonical");
+        Ok(AttemptTerminalResolution::ExistingTerminal(Box::new(
+            canonical,
+        )))
     }
 }
 
@@ -290,6 +336,44 @@ fn binding_from(inputs: &ToolCallInputs) -> ExactActionBinding {
 
 process_local_durable_claims!(ConflictCommitter);
 process_local_durable_claims!(FencedTerminalCommitter);
+process_local_durable_claims!(ReconciledFencedTerminalCommitter);
+
+impl koduck_ai::application::DurableAttemptTransitions for ReconciledRunningCommitter {
+    fn insert_prepared(
+        &mut self,
+        _binding: &koduck_ai::domain::execution::ExactActionBinding,
+        _prepared_at_millis: u64,
+    ) -> Result<
+        koduck_ai::application::AttemptInsertResolution,
+        koduck_ai::application::AttemptStoreError,
+    > {
+        Ok(koduck_ai::application::AttemptInsertResolution::Inserted)
+    }
+
+    fn claim_running(
+        &mut self,
+        _binding: &koduck_ai::domain::execution::ExactActionBinding,
+        _started_at_millis: u64,
+    ) -> Result<
+        koduck_ai::application::DispatchClaimResolution,
+        koduck_ai::application::AttemptStoreError,
+    > {
+        Ok(koduck_ai::application::DispatchClaimResolution::Existing {
+            status: ExecutionStatus::Running,
+            version: 2,
+        })
+    }
+
+    fn cancel_prepared_attempt(
+        &mut self,
+        _binding: &koduck_ai::domain::execution::ExactActionBinding,
+    ) -> Result<
+        koduck_ai::application::PreparedCloseResolution,
+        koduck_ai::application::AttemptStoreError,
+    > {
+        unreachable!("a reconciled running row is not prepared")
+    }
+}
 
 /// Winning close double whose durable transitions count every canonical
 /// terminal close — a dispatched terminal or a prepared-only cancellation —
@@ -385,6 +469,114 @@ fn fenced_post_dispatch_failure_projects_the_committed_terminal() {
                 effect_state: EffectState::Started,
                 output_bytes: 0,
                 output_digest: None,
+                version: 3,
+                ..
+            }
+        ]
+    ));
+}
+
+#[test]
+fn reconciled_running_claim_projects_without_redispatching() {
+    // A lost acknowledgement can hide the committed prepared -> running
+    // transition. The canonical reread must restore its D-3 running view but
+    // must never call the executor again (ADR-0003 TC-06/TC-12).
+    let inputs = inputs(action_for(Effect::ReadData));
+    let mut preparer = new_runtime().preparer(AlwaysCurrentLease);
+    let mut coordinator = ExecutionCoordinator::new(
+        empty_executor(),
+        AlwaysCurrentLease,
+        ReconciledRunningCommitter,
+    );
+    let mut projections = ProjectionRecorder::default();
+
+    let error = driver(config_for(Effect::ReadData))
+        .execute_projected(
+            &mut preparer,
+            &mut coordinator,
+            &inputs,
+            &trust(),
+            &mut |_| (ApprovalDecision::Cancelled, 0),
+            &mut fixed_clock(1_000),
+            &mut projections,
+            &mut koduck_ai::application::NoToolAudits,
+        )
+        .expect_err("a reconciled running attempt remains owned by reconciliation");
+
+    assert!(matches!(
+        error,
+        ToolCallError::Reconciliation(ExecutionPending::ReconciliationRequired {
+            code: ExecutionFailure::TerminalConflict,
+            effect_state: EffectState::Unknown,
+        })
+    ));
+    assert!(matches!(
+        projections.appended.as_slice(),
+        [ToolProjection::ToolCall {
+            status: ExecutionStatus::Running,
+            version: 2,
+            ..
+        }]
+    ));
+    assert!(
+        coordinator.executor().seen.is_empty(),
+        "a recovered canonical running claim never redispatches its effect"
+    );
+}
+
+#[test]
+fn reconciled_fenced_terminal_projects_after_lost_acknowledgement() {
+    // A committed fenced terminal whose COMMIT acknowledgement was lost is
+    // returned as the canonical terminal. It must still mirror and emit D-3
+    // failed/version-3 before reconciliation returns (ADR-0003 TC-06/TC-07).
+    let inputs = inputs(action_for(Effect::ReadData));
+    let mut preparer = new_runtime().preparer(SequencedLease {
+        decisions: VecDeque::from([true]),
+    });
+    let mut coordinator = ExecutionCoordinator::new(
+        ScriptedExecutor {
+            responses: VecDeque::from([Ok(succeeded(b"effect"))]),
+            seen: Vec::new(),
+        },
+        SequencedLease {
+            decisions: VecDeque::from([true, true, false]),
+        },
+        ReconciledFencedTerminalCommitter,
+    );
+    let mut projections = ProjectionRecorder::default();
+
+    let error = driver(config_for(Effect::ReadData))
+        .execute_projected(
+            &mut preparer,
+            &mut coordinator,
+            &inputs,
+            &trust(),
+            &mut |_| (ApprovalDecision::Cancelled, 0),
+            &mut fixed_clock(1_000),
+            &mut projections,
+            &mut koduck_ai::application::NoToolAudits,
+        )
+        .expect_err("the committed fence terminal still returns reconciliation");
+
+    assert!(matches!(
+        error,
+        ToolCallError::Reconciliation(ExecutionPending::ReconciliationRequired {
+            code: ExecutionFailure::OwnerFencedAfterDispatch,
+            effect_state: EffectState::Started,
+        })
+    ));
+    assert!(matches!(
+        projections.appended.as_slice(),
+        [
+            ToolProjection::ToolCall {
+                status: ExecutionStatus::Running,
+                version: 2,
+                ..
+            },
+            ToolProjection::ToolResult {
+                status: ExecutionStatus::Failed,
+                code: Some(ExecutionFailure::OwnerFencedAfterDispatch),
+                effect_state: EffectState::Started,
                 version: 3,
                 ..
             }

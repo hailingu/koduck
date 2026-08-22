@@ -171,10 +171,18 @@ impl ExecutionAttemptStore for SqlxExecutionAttemptStore {
         started_at_millis: u64,
     ) -> Result<DispatchClaimResolution, AttemptStoreError> {
         self.wait(async {
-            if claim_running_winner(&self.pool, binding, started_at_millis).await? {
-                return Ok(DispatchClaimResolution::Claimed { version: 2 });
+            match claim_running_winner(&self.pool, binding, started_at_millis).await {
+                Ok(true) => Ok(DispatchClaimResolution::Claimed { version: 2 }),
+                // A client-side statement error can arrive after PostgreSQL
+                // committed the autocommit transition. Re-read the exact
+                // canonical row before declaring the claim unavailable, so a
+                // recovered running/version-2 row restores its D-3 view
+                // without permitting a second executor dispatch.
+                Ok(false) | Err(AttemptStoreError::Unavailable) => {
+                    resolve_claim_loss(&self.pool, binding).await
+                }
+                Err(error) => Err(error),
             }
-            resolve_claim_loss(&self.pool, binding).await
         })
     }
 

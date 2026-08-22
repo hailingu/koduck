@@ -11,6 +11,16 @@ use super::attempt_reconciliation::resolve_terminal_loss;
 use super::attempts::{effect_code, hex_digest, millis};
 use crate::domain::execution::ExactActionBinding;
 
+/// Classification of the dedicated fenced terminal transaction.
+enum FencedFailureWrite {
+    /// This transaction's terminal write committed and was acknowledged.
+    Won,
+    /// The conditional terminal update did not win.
+    Lost,
+    /// `PostgreSQL` may have committed, but the client lost its COMMIT acknowledgement.
+    AmbiguousCommit,
+}
+
 /// Commits the fenced post-dispatch failure and classifies its loss.
 ///
 /// The ownership guard inverts the current-generation terminal write: the
@@ -29,10 +39,16 @@ pub(super) async fn commit_fenced_failure(
     if !matches!(effect_state, EffectState::Started | EffectState::Unknown) {
         return Ok(AttemptTerminalResolution::Conflict);
     }
-    if fenced_failure_winner(pool, binding, effect_state, terminal_at_millis).await? {
-        return Ok(AttemptTerminalResolution::Won { version: 3 });
+    match fenced_failure_winner(pool, binding, effect_state, terminal_at_millis).await? {
+        FencedFailureWrite::Won => Ok(AttemptTerminalResolution::Won { version: 3 }),
+        // A conditional loss and a lost COMMIT acknowledgement both require
+        // an exact immutable canonical reread. In the latter case the
+        // reread returns the terminal committed before the client lost its
+        // acknowledgement, allowing the caller to restore its D-3 view.
+        FencedFailureWrite::Lost | FencedFailureWrite::AmbiguousCommit => {
+            resolve_terminal_loss(pool, binding).await
+        }
     }
-    resolve_terminal_loss(pool, binding).await
 }
 
 /// Commits `failed/owner_fenced_after_dispatch` for one running D-7 whose
@@ -48,7 +64,7 @@ async fn fenced_failure_winner(
     binding: &ExactActionBinding,
     effect_state: EffectState,
     terminal_at_millis: u64,
-) -> Result<bool, AttemptStoreError> {
+) -> Result<FencedFailureWrite, AttemptStoreError> {
     // Lock and evaluate the exact bound lease row first, in the same
     // transaction as the failure write: a concurrently renewing heartbeat
     // serializes behind this lock, so a lease that renewed back to current
@@ -112,9 +128,9 @@ async fn fenced_failure_winner(
         )
         .await?;
     }
-    transaction
-        .commit()
-        .await
-        .map_err(|_| AttemptStoreError::Unavailable)?;
-    Ok(winner.is_some())
+    match transaction.commit().await {
+        Ok(()) if winner.is_some() => Ok(FencedFailureWrite::Won),
+        Ok(()) => Ok(FencedFailureWrite::Lost),
+        Err(_) => Ok(FencedFailureWrite::AmbiguousCommit),
+    }
 }

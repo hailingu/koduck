@@ -14,9 +14,19 @@ use super::attempt_store::{
 };
 use super::execution::{
     AttemptCommitter, ExecutionCoordinator, ExecutionPending, IsolatedExecutor, LeaseValidator,
-    ToolExecutionOutcome,
 };
 use super::executor_envelope::{EffectState, ExecutionFailure};
+
+/// The canonical disposition of one local dispatch claim.
+pub(super) enum CanonicalDispatchClaim {
+    /// This coordinator durably changed the attempt from prepared to running.
+    Won,
+    /// A reread found the exact attempt already running at version two.
+    ///
+    /// The caller must restore the durable running view but must not dispatch
+    /// the effect again, because another execution may own that transition.
+    ReconciledRunning,
+}
 
 impl<E, L, C> ExecutionCoordinator<E, L, C>
 where
@@ -147,10 +157,10 @@ where
         authority: &mut TurnExecutionAuthority,
         attempt: &mut ExecutionAttempt,
         started_at_millis: u64,
-    ) -> Result<Option<ToolExecutionOutcome>, ExecutionPending> {
+    ) -> Result<CanonicalDispatchClaim, ExecutionPending> {
         let binding = attempt.binding().clone();
         match self.committer.claim_running(&binding, started_at_millis) {
-            Ok(DispatchClaimResolution::Claimed { .. }) => Ok(None),
+            Ok(DispatchClaimResolution::Claimed { .. }) => Ok(CanonicalDispatchClaim::Won),
             Ok(DispatchClaimResolution::Interrupted) => {
                 // The durable barrier prevents this claim from dispatching,
                 // but this local mirror is not a canonical snapshot: another claimant may
@@ -195,6 +205,16 @@ where
                 Err(ExecutionPending::DispatchRejected {
                     code: ExecutionFailure::ConcurrentAttempt,
                 })
+            }
+            Ok(DispatchClaimResolution::Existing {
+                status: ExecutionStatus::Running,
+                version: 2,
+            }) => {
+                // The conditional update may have committed while its
+                // acknowledgement was lost. Restore the canonical D-3
+                // running view, but keep the local reservation for
+                // reconciliation rather than dispatching an effect twice.
+                Ok(CanonicalDispatchClaim::ReconciledRunning)
             }
             Ok(DispatchClaimResolution::Existing { .. }) => {
                 // The reservation keeps the undecidable attempt away from the
