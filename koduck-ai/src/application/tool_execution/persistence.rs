@@ -64,11 +64,15 @@ where
                 return Ok(outcome);
             }
         };
+        let approval_resolution_store = approval_records
+            .as_mut()
+            .map(|records| &mut **records as &mut dyn ApprovalRecordStore);
         let plan = driver.resolve_plan(
             pre_approval,
             trust,
             inputs.thread_id,
             decision_for,
+            approval_resolution_store,
             projections,
             audits,
             now,

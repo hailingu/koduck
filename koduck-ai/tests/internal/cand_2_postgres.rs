@@ -5,13 +5,14 @@
 use std::sync::Arc;
 use std::sync::Barrier;
 
-use koduck_ai::adapters::execution::SqlxApprovalRecordStore;
+use koduck_ai::adapters::execution::{SqlxApprovalRecordStore, SqlxExecutionAttemptStore};
 use koduck_ai::adapters::history::postgres::{PostgresExecutor, SqlxPostgresExecutor};
 use koduck_ai::adapters::tool::{parse_action_parameters, parse_input_schema};
 use koduck_ai::application::{
     AcceptedTurn, ApprovalDecisionResolution, ApprovalInsertResolution, ApprovalRecordStore,
-    ApprovalStoreError, NewItem, PendingApprovalCancellation, PendingApprovalCanceller,
-    ToolAuthorizationService, ToolPolicyConfiguration,
+    ApprovalStoreError, ExecutionAttemptInterruptionGuard, InterruptionBarrierResolution, NewItem,
+    PendingApprovalCancellation, PendingApprovalCanceller, ToolAuthorizationService,
+    ToolPolicyConfiguration,
 };
 use koduck_ai::domain::execution::{
     ApprovalDecision, ApprovalRequest, ApprovalStatus, AttemptId, ExactActionBinding,
@@ -49,6 +50,84 @@ struct Harness {
     store: SqlxApprovalRecordStore,
     // Retain the exclusive fixture reservation until this harness drops.
     _database_permit: tokio::sync::OwnedSemaphorePermit,
+}
+
+const EXPIRY_GATE: i64 = 7_361_204_112;
+
+/// Installs and holds the test-only advisory gate for an expiry transition.
+fn install_expiry_gate(harness: &Harness) -> sqlx::pool::PoolConnection<sqlx::Postgres> {
+    harness.runtime.block_on(async {
+        sqlx::raw_sql(
+            "CREATE OR REPLACE FUNCTION koduck_test_gate_expiry() RETURNS trigger AS $$
+             BEGIN
+               IF OLD.status = 'requested' AND NEW.status = 'expired' THEN
+                 PERFORM pg_advisory_xact_lock(7361204112);
+               END IF;
+               RETURN NEW;
+             END;
+             $$ LANGUAGE plpgsql;
+             DROP TRIGGER IF EXISTS koduck_test_gate_expiry ON tool_approvals;
+             CREATE TRIGGER koduck_test_gate_expiry
+               BEFORE UPDATE ON tool_approvals
+               FOR EACH ROW EXECUTE FUNCTION koduck_test_gate_expiry();",
+        )
+        .execute(&harness.pool)
+        .await
+        .expect("expiry gate trigger is installed");
+        let mut connection = harness
+            .pool
+            .acquire()
+            .await
+            .expect("expiry gate connection");
+        sqlx::query("SELECT pg_advisory_lock($1)")
+            .bind(EXPIRY_GATE)
+            .execute(&mut *connection)
+            .await
+            .expect("expiry gate is held");
+        connection
+    })
+}
+
+/// Waits until the expiry UPDATE is blocked inside the test-only trigger.
+fn wait_for_expiry_gate(harness: &Harness) {
+    harness.runtime.block_on(async {
+        for _ in 0..50 {
+            let waiting: bool = sqlx::query_scalar(
+                "SELECT EXISTS (
+                   SELECT 1 FROM pg_stat_activity
+                   WHERE wait_event = 'advisory'
+                     AND query LIKE 'UPDATE tool_approvals%'
+                 )",
+            )
+            .fetch_one(&harness.pool)
+            .await
+            .expect("expiry wait state is readable");
+            if waiting {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        panic!("expiry transition did not reach the advisory gate");
+    });
+}
+
+/// Releases and removes the test-only expiry gate under its Tokio runtime.
+fn remove_expiry_gate(harness: &Harness, mut gate: sqlx::pool::PoolConnection<sqlx::Postgres>) {
+    harness.runtime.block_on(async {
+        sqlx::query("SELECT pg_advisory_unlock($1)")
+            .bind(EXPIRY_GATE)
+            .execute(&mut *gate)
+            .await
+            .expect("expiry gate is released");
+        drop(gate);
+        sqlx::raw_sql(
+            "DROP TRIGGER IF EXISTS koduck_test_gate_expiry ON tool_approvals;
+             DROP FUNCTION IF EXISTS koduck_test_gate_expiry();",
+        )
+        .execute(&harness.pool)
+        .await
+        .expect("expiry gate trigger is removed");
+    });
 }
 
 fn harness() -> Option<Harness> {
@@ -580,6 +659,96 @@ fn approval_decision_waits_for_the_turn_lock_before_interruption_guarding() {
     assert_eq!(
         approval_projection(&harness, &approval),
         ("requested".to_owned(), None, 1),
+    );
+}
+
+#[test]
+fn expiry_fallback_holds_the_turn_lock_until_its_terminal_commits() {
+    let Some(mut harness) = harness() else {
+        return;
+    };
+    let approval = requested_approval(1_000, 2_000);
+    let tenant = approval.tenant_id().clone();
+    let thread = approval.binding().thread_id();
+    let turn = approval.binding().turn_id();
+    attempts::seed_owner_rows(
+        &harness,
+        &tenant,
+        thread,
+        turn,
+        approval.binding().lease_generation(),
+    );
+    assert_eq!(
+        harness.store.insert_requested(&approval, "requester"),
+        Ok(ApprovalInsertResolution::Inserted),
+    );
+
+    let gate = install_expiry_gate(&harness);
+
+    let approval_id = approval.approval_id();
+    let mut expiry_store = harness.store.clone();
+    let expiry_tenant = tenant.clone();
+    let (expiry_tx, expiry_rx) = std::sync::mpsc::channel();
+    let expiry = std::thread::spawn(move || {
+        expiry_tx
+            .send(expiry_store.resolve_decision(
+                approval_id,
+                &expiry_tenant,
+                thread,
+                "requester",
+                ApprovalDecision::Accepted,
+                &approver("approver-a"),
+                2_000,
+            ))
+            .expect("expiry resolution is observable");
+    });
+    wait_for_expiry_gate(&harness);
+
+    let mut interruption_store =
+        SqlxExecutionAttemptStore::new(harness.pool.clone(), harness.runtime.handle().clone());
+    let barrier_tenant = tenant.clone();
+    let (barrier_tx, barrier_rx) = std::sync::mpsc::channel();
+    let barrier = std::thread::spawn(move || {
+        barrier_tx
+            .send(interruption_store.begin_interruption(&barrier_tenant, thread, turn))
+            .expect("interruption result is observable");
+    });
+    let early_barrier = barrier_rx.recv_timeout(std::time::Duration::from_millis(250));
+    let barrier_waited = matches!(
+        early_barrier,
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+    );
+
+    remove_expiry_gate(&harness, gate);
+    let expiry_resolution = expiry_rx
+        .recv_timeout(std::time::Duration::from_secs(3))
+        .expect("expiry completes after the gate is released");
+    let barrier_resolution = match early_barrier {
+        Ok(resolution) => resolution,
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => barrier_rx
+            .recv_timeout(std::time::Duration::from_secs(3))
+            .expect("interruption completes after expiry releases the Turn lock"),
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            panic!("interruption contender disconnected")
+        }
+    };
+    expiry.join().expect("expiry contender completes");
+    barrier.join().expect("interruption contender completes");
+    assert!(
+        barrier_waited,
+        "expiry must retain the canonical Turn lock through fallback and commit",
+    );
+    assert_eq!(
+        expiry_resolution,
+        Ok(ApprovalDecisionResolution::ExistingTerminal {
+            decision: None,
+            status: ApprovalStatus::Expired,
+            version: 2,
+        }),
+    );
+    assert_eq!(
+        barrier_resolution,
+        Ok(InterruptionBarrierResolution::Established),
     );
 }
 

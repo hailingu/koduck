@@ -2,6 +2,7 @@
 
 //! `SQLx`-backed canonical D-6 approval-record persistence.
 
+mod decision_loss;
 mod interruption_reconciliation;
 
 use std::future::Future;
@@ -220,19 +221,32 @@ impl ApprovalRecordStore for SqlxApprovalRecordStore {
                 }
                 return Ok(ApprovalDecisionResolution::Won { decision, version });
             }
-            // `classify_decision_loss` uses the pool for its canonical read
-            // or expiry transition. Releasing the losing transaction first
-            // prevents a saturated pool from waiting on its own connection.
-            drop(transaction);
-            self.classify_decision_loss(
-                &self.pool,
+            // The loser classification, including the expiry fallback, stays
+            // inside this transaction so decision, expiry, and interruption
+            // serialize on the same canonical Turn lock.
+            let resolution = decision_loss::classify(
+                &mut transaction,
                 tenant_id,
                 requester_subject,
                 thread_id,
                 approval_id,
                 decided_at_millis,
             )
-            .await
+            .await?;
+            if transaction.commit().await.is_err() {
+                return match resolution {
+                    ApprovalDecisionResolution::ExistingTerminal { .. } => {
+                        self.reread_terminal(approval_id, tenant_id, requester_subject, thread_id)
+                            .await
+                    }
+                    ApprovalDecisionResolution::TurnGuardRejected
+                    | ApprovalDecisionResolution::NotFound
+                    | ApprovalDecisionResolution::Won { .. } => {
+                        Err(ApprovalStoreError::Unavailable)
+                    }
+                };
+            }
+            Ok(resolution)
         })
     }
 }
@@ -340,166 +354,6 @@ impl PendingApprovalCanceller for SqlxApprovalRecordStore {
 }
 
 impl SqlxApprovalRecordStore {
-    /// Classifies a lost decision transition: re-reads the canonical record,
-    /// transitions a genuinely expired `requested` row to its terminal, and
-    /// returns the existing terminal otherwise (ADR-0003 TC-12).
-    async fn classify_decision_loss(
-        &self,
-        pool: &sqlx::PgPool,
-        tenant_id: &TenantId,
-        requester_subject: &str,
-        thread_id: crate::domain::ThreadId,
-        approval_id: ApprovalId,
-        decided_at_millis: u64,
-    ) -> Result<ApprovalDecisionResolution, ApprovalStoreError> {
-        let existing = sqlx::query(
-            "SELECT status, decision, version FROM tool_approvals
-         WHERE tenant_id = $1 AND approval_id = $2
-           AND requester_subject = $3 AND thread_id = $4",
-        )
-        .bind(tenant_id.as_str())
-        .bind(approval_id.as_uuid())
-        .bind(requester_subject)
-        .bind(thread_id.as_uuid())
-        .fetch_optional(pool)
-        .await
-        .map_err(|_| ApprovalStoreError::Unavailable)?;
-        let Some(row) = existing else {
-            return Ok(ApprovalDecisionResolution::NotFound);
-        };
-        let status_text: String = row
-            .try_get("status")
-            .map_err(|_| ApprovalStoreError::Unavailable)?;
-        if status_text == "requested" {
-            // Only a genuinely expired record transitions here. An active
-            // authenticated interruption owns the requested D-6 terminal, so
-            // recovery must cancel it rather than allowing expiry to win;
-            // ordinary terminal Turns retain their existing expiry behavior
-            // (ADR-0003 TC-10/TC-12).
-            let mut expiry_transaction = pool
-                .begin()
-                .await
-                .map_err(|_| ApprovalStoreError::Unavailable)?;
-            let expired = sqlx::query(
-                "UPDATE tool_approvals
-             SET status = 'expired', version = version + 1
-             WHERE tenant_id = $1 AND approval_id = $2
-               AND requester_subject = $3 AND thread_id = $4
-               AND status = 'requested' AND expires_at_millis <= $5
-               AND NOT EXISTS (
-                   SELECT 1 FROM turns owner
-                   WHERE owner.tenant_id = $1 AND owner.thread_id = $4
-                     AND owner.turn_id = tool_approvals.turn_id
-                     AND owner.interrupting
-               )
-             RETURNING version, thread_id, turn_id, attempt_id, \
-                        lease_generation, descriptor_id, descriptor_version, \
-                        action_digest, profile_id, profile_version",
-            )
-            .bind(tenant_id.as_str())
-            .bind(approval_id.as_uuid())
-            .bind(requester_subject)
-            .bind(thread_id.as_uuid())
-            .bind(millis(decided_at_millis)?)
-            .fetch_optional(&mut *expiry_transaction)
-            .await
-            .map_err(|_| ApprovalStoreError::Unavailable)?;
-            if let Some(expired_row) = &expired {
-                // Every expiry terminal — including this loser-side
-                // transition — appends its correlated audit record
-                // atomically with D-6 (ADR-0003 TC-14).
-                let version = row_version(expired_row)?;
-                emit_decision_audit(
-                    &mut expiry_transaction,
-                    approval_id,
-                    ApprovalStatus::Expired,
-                    None,
-                    version,
-                    decided_at_millis,
-                    tenant_id,
-                    expired_row,
-                )
-                .await?;
-                if expiry_transaction.commit().await.is_err() {
-                    return self
-                        .reread_terminal(approval_id, tenant_id, requester_subject, thread_id)
-                        .await;
-                }
-                return Ok(ApprovalDecisionResolution::ExistingTerminal {
-                    decision: None,
-                    status: ApprovalStatus::Expired,
-                    version,
-                });
-            }
-            drop(expiry_transaction);
-            // Another contender won a transition between the read and this
-            // write, or the owning Turn guard rejected expiry.
-            if self
-                .interruption_owns_approval(
-                    pool,
-                    tenant_id,
-                    requester_subject,
-                    thread_id,
-                    approval_id,
-                )
-                .await?
-            {
-                return Ok(ApprovalDecisionResolution::TurnGuardRejected);
-            }
-            return self
-                .reread_terminal(approval_id, tenant_id, requester_subject, thread_id)
-                .await;
-        }
-        Ok(ApprovalDecisionResolution::ExistingTerminal {
-            decision: row
-                .try_get::<Option<String>, _>("decision")
-                .map_err(|_| ApprovalStoreError::Unavailable)?
-                .as_deref()
-                .and_then(decision_from_code),
-            status: status_from_code(&status_text).ok_or(ApprovalStoreError::Unavailable)?,
-            version: row_version(&row)?,
-        })
-    }
-
-    /// Reports whether an authenticated interruption owns the requested D-6
-    /// terminal without changing the still-requested approval.
-    async fn interruption_owns_approval(
-        &self,
-        pool: &sqlx::PgPool,
-        tenant_id: &TenantId,
-        requester_subject: &str,
-        thread_id: crate::domain::ThreadId,
-        approval_id: ApprovalId,
-    ) -> Result<bool, ApprovalStoreError> {
-        let owner = sqlx::query(
-            "SELECT approval.status, owner.interrupting
-             FROM tool_approvals approval
-             JOIN turns owner
-               ON owner.tenant_id = approval.tenant_id
-              AND owner.thread_id = approval.thread_id
-              AND owner.turn_id = approval.turn_id
-             WHERE approval.tenant_id = $1 AND approval.approval_id = $2
-               AND approval.requester_subject = $3 AND approval.thread_id = $4",
-        )
-        .bind(tenant_id.as_str())
-        .bind(approval_id.as_uuid())
-        .bind(requester_subject)
-        .bind(thread_id.as_uuid())
-        .fetch_optional(pool)
-        .await
-        .map_err(|_| ApprovalStoreError::Unavailable)?;
-        let Some(owner) = owner else {
-            return Ok(false);
-        };
-        let status: String = owner
-            .try_get("status")
-            .map_err(|_| ApprovalStoreError::Unavailable)?;
-        let interrupting: bool = owner
-            .try_get("interrupting")
-            .map_err(|_| ApprovalStoreError::Unavailable)?;
-        Ok(interruption_owns_requested_approval(&status, interrupting))
-    }
-
     /// Classifies one conflicting canonical row against the replayed record.
     ///
     /// Matching immutable fields yield the row's current canonical projection
@@ -628,6 +482,28 @@ fn row_version(row: &sqlx::postgres::PgRow) -> Result<u64, ApprovalStoreError> {
         .ok()
         .filter(|version| *version >= 1)
         .ok_or(ApprovalStoreError::Unavailable)
+}
+
+/// Decodes one already-terminal canonical D-6 row after a guarded loser read.
+fn existing_terminal_resolution(
+    row: &sqlx::postgres::PgRow,
+) -> Result<ApprovalDecisionResolution, ApprovalStoreError> {
+    let status_text: String = row
+        .try_get("status")
+        .map_err(|_| ApprovalStoreError::Unavailable)?;
+    let status = status_from_code(&status_text).ok_or(ApprovalStoreError::Unavailable)?;
+    if status == ApprovalStatus::Requested {
+        return Err(ApprovalStoreError::Unavailable);
+    }
+    Ok(ApprovalDecisionResolution::ExistingTerminal {
+        decision: row
+            .try_get::<Option<String>, _>("decision")
+            .map_err(|_| ApprovalStoreError::Unavailable)?
+            .as_deref()
+            .and_then(decision_from_code),
+        status,
+        version: row_version(row)?,
+    })
 }
 
 /// Converts one non-negative millisecond timestamp to its durable binding.

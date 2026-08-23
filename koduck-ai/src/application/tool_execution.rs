@@ -2,6 +2,7 @@
 
 //! C-5 tool-call orchestration with proven-pre-effect retry (TC-08).
 
+mod approval_resolution;
 mod persistence;
 
 use thiserror::Error;
@@ -367,6 +368,7 @@ impl<C, A> ToolExecutionDriver<C, A> {
         trust: &TrustContext,
         thread_id: ThreadId,
         decision_for: &mut dyn FnMut(&ApprovalRequest) -> (ApprovalDecision, u64),
+        approval_records: Option<&mut dyn ApprovalRecordStore>,
         projections: &mut dyn ToolProjectionSink,
         audits: &mut dyn ToolAuditTrail,
         now: &mut dyn FnMut() -> u64,
@@ -385,6 +387,7 @@ impl<C, A> ToolExecutionDriver<C, A> {
                 trust,
                 thread_id,
                 decision_for,
+                approval_records,
                 projections,
                 audits,
                 now,
@@ -465,103 +468,6 @@ impl<C, A> ToolExecutionDriver<C, A> {
             .prepare(sealed)
             .map_err(ToolCallError::Preparation)?;
         Ok((authority, attempt, pre_approval))
-    }
-
-    /// Resolves one pre-validated D-6, or signals cancellation.
-    ///
-    /// The D-7 is prepared before the decision is applied, so a declined,
-    /// cancelled, or expired D-6 returns [`ApprovalPlan::Cancel`] to close the
-    /// prepared D-7. Each D-6 terminal audit record is stamped by one
-    /// controlled-clock read at its emission (TC-14).
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "each parameter is one independently validated approval input plus the audit, projection, and clock sinks"
-    )]
-    fn resolve_validated_approval(
-        &mut self,
-        mut request: ApprovalRequest,
-        trust: &TrustContext,
-        thread_id: ThreadId,
-        decision_for: &mut dyn FnMut(&ApprovalRequest) -> (ApprovalDecision, u64),
-        projections: &mut dyn ToolProjectionSink,
-        audits: &mut dyn ToolAuditTrail,
-        now: &mut dyn FnMut() -> u64,
-    ) -> Result<ApprovalPlan, ToolCallError>
-    where
-        A: ApprovalAuthorizer,
-    {
-        let (decision, decided_at_millis) = decision_for(&request);
-        match self
-            .approval
-            .resolve(&mut request, trust, thread_id, decision, decided_at_millis)
-        {
-            Ok(_) => {
-                // TC-06/TC-14: the resolved D-6 terminal is projected as a
-                // durable view at its canonical version and emits its
-                // correlated audit record.
-                record_audit(
-                    audits,
-                    &ToolAuditRecord::approval_resolution(
-                        request.binding(),
-                        request.approval_id(),
-                        request.status(),
-                        request.decision(),
-                        request.version(),
-                        now(),
-                    ),
-                );
-                emit(
-                    projections,
-                    ToolProjection::ApprovalStatus {
-                        approval_id: request.approval_id(),
-                        attempt_id: request.binding().attempt_id(),
-                        status: request.status(),
-                        decision: request.decision(),
-                        version: request.version(),
-                    },
-                );
-                match decision {
-                    ApprovalDecision::Accepted => Ok(ApprovalPlan::Dispatch {
-                        approval: Some(Box::new(request)),
-                        earliest_start_millis: decided_at_millis,
-                    }),
-                    ApprovalDecision::Declined | ApprovalDecision::Cancelled => {
-                        Ok(ApprovalPlan::Cancel)
-                    }
-                }
-            }
-            // A decision arriving after the D-6 expiry terminalizes the record
-            // as expired; that canonical mutation is projected before the
-            // prepared D-7 is cancelled, so consumers never observe `requested`
-            // followed only by a cancelled tool result.
-            Err(ApprovalError::Expired) => {
-                // The expired D-6 terminal is a canonical resolution and is
-                // audited like every other D-6 terminal (TC-14).
-                record_audit(
-                    audits,
-                    &ToolAuditRecord::approval_resolution(
-                        request.binding(),
-                        request.approval_id(),
-                        request.status(),
-                        request.decision(),
-                        request.version(),
-                        now(),
-                    ),
-                );
-                emit(
-                    projections,
-                    ToolProjection::ApprovalStatus {
-                        approval_id: request.approval_id(),
-                        attempt_id: request.binding().attempt_id(),
-                        status: request.status(),
-                        decision: request.decision(),
-                        version: request.version(),
-                    },
-                );
-                Ok(ApprovalPlan::Cancel)
-            }
-            Err(error) => Err(ToolCallError::Approval(error)),
-        }
     }
 }
 

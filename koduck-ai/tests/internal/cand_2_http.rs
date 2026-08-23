@@ -611,6 +611,27 @@ fn projections_append_before_publish() {
             .contains_key(&("tenant-a".to_owned(), approval_id)),
         "the canonical requested D-6 exists before its projection can publish",
     );
+    let canonical_approval = approval_records
+        .rows
+        .get(&("tenant-a".to_owned(), approval_id))
+        .expect("the canonical D-6 remains readable after execution");
+    assert_eq!(
+        (
+            canonical_approval.status,
+            canonical_approval.decision,
+            canonical_approval.version,
+        ),
+        (
+            ApprovalStatus::Accepted,
+            Some(ApprovalDecision::Accepted),
+            2,
+        ),
+        "the projected terminal must come from the canonical D-6 transition",
+    );
+    assert_eq!(
+        approval_records.mutations, 1,
+        "one canonical terminal transition owns the accepted decision",
+    );
     let attempt_id = match appended.get(2) {
         Some(ToolProjection::ToolCall { attempt_id, .. }) => *attempt_id,
         other => panic!("the third projection is the running D-7 view: {other:?}"),
@@ -996,12 +1017,16 @@ fn late_approval_decision_projects_the_expired_terminal() {
     // The D-6 window opened at 1,000ms and expires at 301,000ms; this
     // decision arrives at 400,000ms and terminalizes the record as expired.
     let mut decision = |_request: &ApprovalRequest| (ApprovalDecision::Accepted, 400_000);
+    let mut approval_records = MemoryApprovals {
+        rows: HashMap::new(),
+        mutations: 0,
+    };
 
     let outcome = ToolExecutionDriver::new(
         ToolAuthorizationService::new(fixture.configuration),
         koduck_ai::application::ApprovalDecisionService::new(AllowApprovals),
     )
-    .execute_projected(
+    .execute_projected_persisted(
         &mut preparer,
         &mut coordinator,
         &fixture.inputs,
@@ -1010,6 +1035,7 @@ fn late_approval_decision_projects_the_expired_terminal() {
         &mut || 1_000,
         &mut projections,
         &mut koduck_ai::application::NoToolAudits,
+        &mut approval_records,
     )
     .expect("a late decision still reaches a terminal outcome");
     assert!(
@@ -1025,6 +1051,19 @@ fn late_approval_decision_projects_the_expired_terminal() {
         ) => (*approval_id, *attempt_id),
         other => panic!("the sequence opens with the D-6 and closes with the D-7: {other:?}"),
     };
+    let canonical_approval = approval_records
+        .rows
+        .get(&("tenant-a".to_owned(), approval_id))
+        .expect("the canonical expired D-6 remains readable");
+    assert_eq!(
+        (
+            canonical_approval.status,
+            canonical_approval.decision,
+            canonical_approval.version,
+        ),
+        (ApprovalStatus::Expired, None, 2),
+        "the late decision must terminalize the canonical D-6 before projection",
+    );
     assert_eq!(
         appended,
         vec![
