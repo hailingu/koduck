@@ -5,6 +5,7 @@ import { relative, resolve, sep } from "node:path";
 import { JSDOM } from "jsdom";
 import { createAcceptedRecordValidator } from "./lib/accepted-records.mjs";
 import { createMermaidValidator } from "./lib/mermaid-validation.mjs";
+import { createMetadataValidator } from "./lib/metadata-validation.mjs";
 import { createRelationshipValidator } from "./lib/relationship-validation.mjs";
 import { resolveRepositoryFile } from "./lib/repository-file.mjs";
 import { createTerminalValidator } from "./lib/terminal-validation.mjs";
@@ -13,6 +14,10 @@ const dom = new JSDOM("<!doctype html><html><body></body></html>");
 globalThis.window = dom.window;
 globalThis.document = dom.window.document;
 const mermaid = (await import("mermaid")).default;
+const { metadata, validateUniqueMetadata } = createMetadataValidator({
+  stripFencedCode,
+  sectionContent,
+});
 
 const ADR_DECISION_STATUSES = new Set([
   "Proposed",
@@ -204,16 +209,6 @@ function hasSection(found, required) {
   return found.some((heading) => accepted.has(heading));
 }
 
-// Metadata is parsed only from the real Metadata section after fenced examples
-// are removed; historical or narrative lookalikes cannot satisfy active fields.
-function metadata(markdown, field) {
-  const escaped = field.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const content = sectionContent(stripFencedCode(markdown), "Metadata") ?? "";
-  return content.match(
-    new RegExp(`^- \\*\\*${escaped}(?: \\[[^\\]]+\\])?\\*\\*:\\s*(.+)$`, "m"),
-  )?.[1].trim();
-}
-
 function validateRequiredSections(path, markdown, required, errors) {
   const found = headings(markdown);
   for (const section of required) {
@@ -224,6 +219,7 @@ function validateRequiredSections(path, markdown, required, errors) {
 }
 
 function validateStatus(root, path, markdown, errors) {
+  validateUniqueMetadata(path, markdown, errors);
   validateRequiredMetadata(path, markdown, errors);
   if (path.includes("/architecture/") && path.split("/").at(-1).startsWith("ADD-")) {
     const status = metadata(markdown, "Design Status");

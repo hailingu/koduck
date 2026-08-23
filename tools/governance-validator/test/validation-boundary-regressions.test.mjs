@@ -26,6 +26,28 @@ function makeCurrentAdd(root) {
   ));
 }
 
+for (const [id, field, canonical, contradictory] of [
+  ["0080", "Decision Status", "Accepted", "Proposed"],
+  ["0081", "Approver", "@linhai", "@codex"],
+  ["0082", "Approval Evidence", "Approve", "Reject"],
+]) {
+  test(`rejects duplicate active ${field} metadata`, () => {
+    const root = validRepository();
+    acceptedAdr(root, id);
+    rewrite(root, `docs/adr/ADR-${id}-example.md`, (content) => content.replace(
+      `- **${field}**: ${canonical}`,
+      `- **${field}**: ${canonical}\n- **${field}**: ${contradictory}`,
+    ));
+
+    const result = run(root);
+    assert.equal(result.status, 1);
+    assert.match(
+      result.stderr,
+      new RegExp(`metadata field ${field} must appear exactly once; found 2`, "i"),
+    );
+  });
+}
+
 test("does not satisfy Accepted approval metadata from Change Log history", () => {
   const root = validRepository();
   acceptedAdr(root, "0099");

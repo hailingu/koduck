@@ -62,9 +62,10 @@ test("rejects an Author approving their own ADR", () => {
     path,
     readFileSync(path, "utf8")
       .replace("Decision Status**: Proposed", "Decision Status**: Accepted")
+      .replace(/- \*\*Author\*\*:[^\n]+/, "- **Author**: @codex")
       .replace(
         "## Metadata [Required]",
-        "## Metadata [Required]\n- **Author**: @codex\n- **Approver**: @codex\n- **Approval Time**: 2026-08-13T00:00:00Z\n- **Approval Evidence**: Approve",
+        "## Metadata [Required]\n- **Approver**: @codex\n- **Approval Time**: 2026-08-13T00:00:00Z\n- **Approval Evidence**: Approve",
       ),
   );
   const indexPath = join(root, "docs/adr/INDEX.md");
@@ -82,9 +83,10 @@ test("rejects an Author approving their own ADD", () => {
     addPath,
     readFileSync(addPath, "utf8")
       .replace("Design Status**: Draft", "Design Status**: Current")
+      .replace(/- \*\*Author\*\*:[^\n]+/, "- **Author**: @codex")
       .replace(
         "## Metadata [Required]",
-        "## Metadata [Required]\n- **Author**: @codex\n- **Approver**: @codex\n- **Approval Time**: 2026-08-13T00:00:00Z\n- **Approval Evidence**: Approve",
+        "## Metadata [Required]\n- **Approver**: @codex\n- **Approval Time**: 2026-08-13T00:00:00Z\n- **Approval Evidence**: Approve",
       ),
   );
   const indexPath = join(root, "docs/architecture/INDEX.md");
@@ -230,8 +232,12 @@ test("rejects a Superseded By target that is not an indexed record", () => {
       .replace("Decision Status**: Proposed", "Decision Status**: Superseded")
       .replace("Implementation Status**: Not Started", "Implementation Status**: Not Applicable")
       .replace(
+        "Superseded By**: None",
+        "Superseded By**: docs/adr/translations/zh-CN/ADR-0001-example.md",
+      )
+      .replace(
         "Architecture Source**: N/A — governance-only example",
-        "Architecture Source**: N/A — governance-only example\n- **Retired By**: @codex\n- **Retirement Time**: 2026-08-13T00:00:00Z\n- **Retirement Evidence**: Supersede\n- **Retirement Reason**: replaced\n- **Superseded By**: docs/adr/translations/zh-CN/ADR-0001-example.md",
+        "Architecture Source**: N/A — governance-only example\n- **Retired By**: @codex\n- **Retirement Time**: 2026-08-13T00:00:00Z\n- **Retirement Evidence**: Supersede\n- **Retirement Reason**: replaced",
       ),
   );
   const indexPath = join(root, "docs/adr/INDEX.md");
