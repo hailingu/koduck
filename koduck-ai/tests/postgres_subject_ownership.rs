@@ -44,13 +44,21 @@ fn production_postgres_contract() {
             .execute(&pool),
         )
         .expect("apply production projection migration");
+    runtime
+        .block_on(
+            sqlx::raw_sql(include_str!(
+                "../migrations/0005_cand_2_execution_attempts.sql"
+            ))
+            .execute(&pool),
+        )
+        .expect("apply production execution-attempt migration");
     let executor = SqlxPostgresExecutor::new(pool.clone(), runtime.handle().clone());
 
     let tenant = TenantId::new(format!("ci-{}", Uuid::new_v4())).expect("unique tenant");
     let owner = TrustContext::new(tenant.clone(), "owner").expect("owner trust context");
     let intruder = TrustContext::new(tenant.clone(), "intruder").expect("intruder trust context");
     let accepted = verify_payload_and_subject_ownership(&executor, &tenant, &owner, &intruder);
-    verify_interrupt_terminal_arbitration(&executor, &tenant, &owner, &accepted);
+    verify_interrupt_terminal_arbitration(&runtime, &pool, &executor, &tenant, &owner, &accepted);
     verify_recovery_pending_interrupt_is_rejected(&runtime, &pool, &executor, &tenant, &owner);
     verify_expired_started_interrupt_is_rejected(&runtime, &pool, &executor, &tenant, &owner);
     verify_tool_projection_batch(&executor, &tenant, &owner);
@@ -238,12 +246,15 @@ fn verify_payload_and_subject_ownership(
 }
 
 fn verify_interrupt_terminal_arbitration(
+    runtime: &Runtime,
+    pool: &PgPool,
     executor: &SqlxPostgresExecutor,
     tenant: &TenantId,
     owner: &TrustContext,
     accepted: &AcceptedTurn,
 ) {
     let attempt_id = AttemptId::new();
+    seed_cancelled_attempt(runtime, pool, tenant, accepted, attempt_id);
     executor
         .append_tool_projection(
             accepted,
@@ -342,6 +353,36 @@ fn verify_interrupt_terminal_arbitration(
         terminal_replay.last().map(|item| &item.payload),
         Some(ItemPayload::Terminal(TerminalOutcome::Interrupted))
     ));
+}
+
+/// Seeds the exact canonical D-7 terminal projected by the interruption
+/// arbitration contract fixture.
+fn seed_cancelled_attempt(
+    runtime: &Runtime,
+    pool: &PgPool,
+    tenant: &TenantId,
+    accepted: &AcceptedTurn,
+    attempt_id: AttemptId,
+) {
+    runtime.block_on(async {
+        sqlx::query(
+            "INSERT INTO tool_execution_attempts
+             (tenant_id, attempt_id, thread_id, turn_id, lease_generation,
+              descriptor_id, descriptor_version, effect, action_digest,
+              profile_id, profile_version, prepared_at_millis, status,
+              effect_state, terminal_at_millis, version)
+             VALUES ($1, $2, $3, $4, 1, 'fixture.interrupt', 'v1', 'read_data',
+                     'fixture-digest', 'profile-default', 'v1', 1000,
+                     'cancelled', 'not_started', 2000, 3)",
+        )
+        .bind(tenant.as_str())
+        .bind(attempt_id.as_uuid())
+        .bind(accepted.thread_id.as_uuid())
+        .bind(accepted.turn_id.as_uuid())
+        .execute(pool)
+        .await
+        .expect("canonical cancelled D-7 fixture");
+    });
 }
 
 fn verify_stale_generation_fencing(

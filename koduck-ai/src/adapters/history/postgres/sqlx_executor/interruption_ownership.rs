@@ -7,7 +7,9 @@ use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
 use crate::application::{HistoryError, NewItem};
-use crate::domain::{Item, ItemPayload, TerminalOutcome, ThreadId, TrustContext, TurnId};
+use crate::domain::{
+    Item, ItemPayload, TenantId, TerminalOutcome, ThreadId, ToolEffectState, TrustContext, TurnId,
+};
 
 use super::{insert_item, is_terminal_status, unavailable};
 
@@ -56,6 +58,14 @@ pub(super) async fn request(
     )
     .await?;
     validate_interruption_terminals(&tool_terminals, item_count, payload_bytes)?;
+    validate_canonical_interruption_terminals(
+        &mut transaction,
+        &trust.tenant_id,
+        ThreadId::from_uuid(thread_id),
+        turn_id,
+        &tool_terminals,
+    )
+    .await?;
     for (offset, terminal) in tool_terminals.iter().enumerate() {
         let item = Item::new(
             first_sequence
@@ -176,6 +186,100 @@ fn validate_interruption_terminals(
 ) -> Result<(), HistoryError> {
     crate::application::validate_interruption_terminals(items, item_count, payload_bytes)
         .map_err(|_| HistoryError::Unavailable)
+}
+
+/// Locks and verifies every supplied interruption terminal against the exact
+/// canonical D-7 row owned by this tenant, Thread, and Turn.
+async fn validate_canonical_interruption_terminals(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    tenant_id: &TenantId,
+    thread_id: ThreadId,
+    turn_id: TurnId,
+    items: &[NewItem],
+) -> Result<(), HistoryError> {
+    for item in items {
+        let NewItem::ToolResult {
+            attempt_id: Some(attempt_id),
+            ..
+        } = item
+        else {
+            return Err(HistoryError::Unavailable);
+        };
+        let row = sqlx::query(
+            "SELECT status, effect_state, failure_code, output, version
+             FROM tool_execution_attempts
+             WHERE tenant_id = $1 AND thread_id = $2 AND turn_id = $3
+               AND attempt_id = $4
+             FOR UPDATE",
+        )
+        .bind(tenant_id.as_str())
+        .bind(thread_id.as_uuid())
+        .bind(turn_id.as_uuid())
+        .bind(attempt_id.as_uuid())
+        .fetch_optional(&mut **transaction)
+        .await
+        .map_err(unavailable)?;
+        let Some(row) = row else {
+            return Err(HistoryError::Unavailable);
+        };
+        if !canonical_terminal_matches(item, &row)? {
+            return Err(HistoryError::Unavailable);
+        }
+    }
+    Ok(())
+}
+
+/// Compares one public D-3 terminal tuple with its locked canonical D-7 row.
+fn canonical_terminal_matches(
+    item: &NewItem,
+    row: &sqlx::postgres::PgRow,
+) -> Result<bool, HistoryError> {
+    let NewItem::ToolResult {
+        status,
+        code,
+        effect_state: Some(effect_state),
+        output_bytes,
+        output_digest,
+        version: Some(version),
+        ..
+    } = item
+    else {
+        return Ok(false);
+    };
+    let output = row
+        .try_get::<Option<Vec<u8>>, _>("output")
+        .map_err(unavailable)?;
+    let canonical_output_bytes = output
+        .as_ref()
+        .map_or(Ok(0), |bytes| u64::try_from(bytes.len()))
+        .map_err(|_| HistoryError::Unavailable)?;
+    let canonical_output_digest = output.as_deref().map(crate::application::output_digest);
+    let canonical_version = u64::try_from(row.try_get::<i64, _>("version").map_err(unavailable)?)
+        .map_err(|_| HistoryError::Unavailable)?;
+    Ok(
+        row.try_get::<String, _>("status").map_err(unavailable)? == status.as_str()
+            && row
+                .try_get::<Option<String>, _>("effect_state")
+                .map_err(unavailable)?
+                .as_deref()
+                == Some(effect_state_code(*effect_state))
+            && row
+                .try_get::<Option<String>, _>("failure_code")
+                .map_err(unavailable)?
+                == *code
+            && canonical_output_bytes == *output_bytes
+            && canonical_output_digest == *output_digest
+            && canonical_version == *version,
+    )
+}
+
+/// Returns the stable D-7 representation of one public Tool effect state.
+const fn effect_state_code(effect_state: ToolEffectState) -> &'static str {
+    match effect_state {
+        ToolEffectState::NotStarted => "not_started",
+        ToolEffectState::Started => "started",
+        ToolEffectState::Unknown => "unknown",
+    }
 }
 
 /// Resolves the authenticated Turn's owning Thread before the runner enters

@@ -34,6 +34,42 @@ impl ModelProvider for NoopProvider {
     }
 }
 
+/// Alternate public Tool boundary that fabricates one well-shaped terminal
+/// without proving its identity and tuple against the canonical D-7 store.
+struct ForgedInterruptionTerminal {
+    attempt_id: koduck_ai::domain::execution::AttemptId,
+}
+
+impl koduck_ai::application::ToolCallExecutor for ForgedInterruptionTerminal {
+    fn execute_tool_call(
+        &mut self,
+        _call: koduck_ai::application::ModelToolCall,
+        _context: &koduck_ai::application::ToolCallTurnContext,
+        _trust: &koduck_ai::domain::TrustContext,
+        _projections: &mut dyn koduck_ai::application::ToolProjectionSink,
+    ) -> Result<koduck_ai::application::ModelToolResult, koduck_ai::application::ToolCallError>
+    {
+        unreachable!("the interruption-only path never executes a Tool call")
+    }
+
+    fn request_interrupt(
+        &mut self,
+        _trust: &koduck_ai::domain::TrustContext,
+        _thread_id: koduck_ai::domain::ThreadId,
+        _turn_id: koduck_ai::domain::TurnId,
+    ) -> Result<Vec<koduck_ai::application::NewItem>, koduck_ai::application::ToolCallError> {
+        Ok(vec![koduck_ai::application::NewItem::ToolResult {
+            attempt_id: Some(self.attempt_id),
+            status: koduck_ai::domain::execution::ExecutionStatus::Cancelled,
+            code: None,
+            effect_state: Some(koduck_ai::domain::ToolEffectState::NotStarted),
+            output_bytes: 0,
+            output_digest: None,
+            version: Some(3),
+        }])
+    }
+}
+
 /// Connects the durable D-7 store and the production canonical history over a
 /// disposable `PostgreSQL`, or `None` when no test database is configured. The
 /// raw pool accompanies them so stale-ownership legs can fence or expire the
@@ -239,6 +275,113 @@ fn interruption_leaves_one_durable_turn_terminal_and_replay() {
 
     // The interrupted D-7's own Turn keeps exactly one durable terminal.
     assert_single_arbitrated_turn_terminal(&mut history, &trust, &accepted);
+}
+
+#[test]
+fn interruption_rejects_a_terminal_without_a_canonical_d7() {
+    let Some((_durable, mut history, _pool, _runtime)) = durable_backends() else {
+        return;
+    };
+    let tenant = TenantId::new("phantom-terminal-tenant").expect("valid tenant");
+    let trust = koduck_ai::domain::TrustContext::new(tenant, "subject-a").expect("valid principal");
+    let accepted = history
+        .accept_initial(
+            &TurnCommand::new(trust.clone(), None, "reject phantom terminal")
+                .expect("valid command"),
+        )
+        .expect("initial acceptance");
+    let phantom_attempt = koduck_ai::domain::execution::AttemptId::new();
+    let mut runner = TurnRunner::new(NoopProvider, history.clone()).with_tool_executor(
+        ForgedInterruptionTerminal {
+            attempt_id: phantom_attempt,
+        },
+    );
+
+    let interrupted = runner.request_interrupt(&trust, accepted.turn_id);
+
+    assert!(
+        matches!(
+            interrupted,
+            Err(koduck_ai::application::TurnRunError::History(
+                HistoryError::Unavailable
+            ))
+        ),
+        "an unbound public Tool terminal must fail closed, found {interrupted:?}"
+    );
+    let replayed = history
+        .replay(&trust.tenant_id, accepted.turn_id)
+        .expect("canonical replay remains readable");
+    assert!(
+        !replayed.iter().any(|item| {
+            matches!(
+                item.payload,
+                ItemPayload::ToolResult {
+                    attempt_id: Some(attempt_id),
+                    ..
+                } if attempt_id == phantom_attempt
+            )
+        }),
+        "the rejected phantom terminal must not enter canonical history"
+    );
+    assert!(
+        !replayed
+            .iter()
+            .any(|item| matches!(item.payload, ItemPayload::Terminal(_))),
+        "the rejected batch must not terminalize the Turn"
+    );
+}
+
+#[test]
+fn interruption_rejects_a_terminal_that_mismatches_its_canonical_d7() {
+    let Some((mut durable, mut history, _pool, _runtime)) = durable_backends() else {
+        return;
+    };
+    let tenant = TenantId::new("mismatched-terminal-tenant").expect("valid tenant");
+    let trust =
+        koduck_ai::domain::TrustContext::new(tenant.clone(), "subject-a").expect("valid principal");
+    let accepted = history
+        .accept_initial(
+            &TurnCommand::new(trust.clone(), None, "reject mismatched terminal")
+                .expect("valid command"),
+        )
+        .expect("initial acceptance");
+    let binding = sealed_binding(tenant, accepted.thread_id, accepted.turn_id);
+    assert_eq!(
+        ExecutionAttemptStore::insert_prepared(&mut durable, &binding, 1_000),
+        Ok(AttemptInsertResolution::Inserted),
+    );
+    let mut runner = TurnRunner::new(NoopProvider, history.clone()).with_tool_executor(
+        ForgedInterruptionTerminal {
+            attempt_id: binding.attempt_id(),
+        },
+    );
+
+    let interrupted = runner.request_interrupt(&trust, accepted.turn_id);
+
+    assert!(
+        matches!(
+            interrupted,
+            Err(koduck_ai::application::TurnRunError::History(
+                HistoryError::Unavailable
+            ))
+        ),
+        "a terminal that disagrees with canonical prepared/version-1 D-7 must fail closed, found {interrupted:?}"
+    );
+    let replayed = history
+        .replay(&trust.tenant_id, accepted.turn_id)
+        .expect("canonical replay remains readable");
+    assert!(
+        !replayed.iter().any(|item| {
+            matches!(
+                item.payload,
+                ItemPayload::ToolResult {
+                    attempt_id: Some(attempt_id),
+                    ..
+                } if attempt_id == binding.attempt_id()
+            )
+        }),
+        "the mismatched terminal must not enter canonical history"
+    );
 }
 
 #[test]
