@@ -571,11 +571,15 @@ fn projections_append_before_publish() {
         CurrentLease,
         WinningCommitter { calls: 0 },
     );
+    let mut approval_records = MemoryApprovals {
+        rows: HashMap::new(),
+        mutations: 0,
+    };
     let outcome = ToolExecutionDriver::new(
         ToolAuthorizationService::new(configuration),
         koduck_ai::application::ApprovalDecisionService::new(AllowApprovals),
     )
-    .execute_projected(
+    .execute_projected_persisted(
         &mut preparer,
         &mut coordinator,
         &inputs,
@@ -584,6 +588,7 @@ fn projections_append_before_publish() {
         &mut || 1_000,
         &mut projections,
         &mut koduck_ai::application::NoToolAudits,
+        &mut approval_records,
     )
     .expect("the approval-required call completes");
     assert!(matches!(outcome, ToolExecutionOutcome::Succeeded { .. }));
@@ -600,6 +605,12 @@ fn projections_append_before_publish() {
         Some(ToolProjection::ApprovalStatus { approval_id, .. }) => *approval_id,
         other => panic!("the first projection is the requested D-6 view: {other:?}"),
     };
+    assert!(
+        approval_records
+            .rows
+            .contains_key(&("tenant-a".to_owned(), approval_id)),
+        "the canonical requested D-6 exists before its projection can publish",
+    );
     let attempt_id = match appended.get(2) {
         Some(ToolProjection::ToolCall { attempt_id, .. }) => *attempt_id,
         other => panic!("the third projection is the running D-7 view: {other:?}"),

@@ -502,17 +502,29 @@ where
         // preparation and dispatch halves of the boundary, so a fenced or
         // expired servicing generation fails closed before any D-7
         // allocation or dispatch (ADR-0003 TC-07).
-        let outcome = match self
-            .assembly
-            .boundary(DisabledExecutor, self.lease.clone(), self.committer.clone())
-            .execute_projected(
+        let mut boundary =
+            self.assembly
+                .boundary(DisabledExecutor, self.lease.clone(), self.committer.clone());
+        let execution = match &mut self.approvals {
+            Some(approval_records) => boundary.execute_projected_persisted(
                 &inputs,
                 trust,
                 &mut decision,
                 &mut unix_time_ms,
                 projections,
                 &mut self.audits,
-            ) {
+                approval_records,
+            ),
+            None => boundary.execute_projected(
+                &inputs,
+                trust,
+                &mut decision,
+                &mut unix_time_ms,
+                projections,
+                &mut self.audits,
+            ),
+        };
+        let outcome = match execution {
             Ok(outcome) => outcome,
             // Every policy denial — stale, disabled, incompatible,
             // conflicting, unknown-effect, or out-of-profile descriptors, and

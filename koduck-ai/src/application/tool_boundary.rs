@@ -304,4 +304,33 @@ where
             audits,
         )
     }
+
+    /// Executes a projected call while persisting requested approvals before
+    /// their append-only D-3 views cross the production boundary.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the canonical D-6 store is an explicit production boundary input"
+    )]
+    pub(crate) fn execute_projected_persisted(
+        &mut self,
+        inputs: &ToolCallInputs,
+        trust: &TrustContext,
+        decision_for: &mut dyn FnMut(&ApprovalRequest) -> (ApprovalDecision, u64),
+        now: &mut dyn FnMut() -> u64,
+        projections: &mut dyn super::tool_projection::ToolProjectionSink,
+        audits: &mut dyn super::audit::ToolAuditTrail,
+        approval_records: &mut dyn super::ApprovalRecordStore,
+    ) -> Result<ToolExecutionOutcome, ToolCallError> {
+        self.driver.execute_projected_persisted(
+            &mut self.preparer,
+            &mut self.coordinator,
+            inputs,
+            trust,
+            decision_for,
+            now,
+            projections,
+            audits,
+            approval_records,
+        )
+    }
 }

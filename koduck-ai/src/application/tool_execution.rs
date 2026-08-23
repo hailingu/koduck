@@ -2,6 +2,8 @@
 
 //! C-5 tool-call orchestration with proven-pre-effect retry (TC-08).
 
+mod persistence;
+
 use thiserror::Error;
 
 use crate::domain::execution::{
@@ -11,6 +13,7 @@ use crate::domain::execution::{
 use crate::domain::tool::Action;
 use crate::domain::{LeaseGeneration, TenantId, ThreadId, TrustContext, TurnId};
 
+use super::approval_store::{ApprovalInsertResolution, ApprovalRecordStore};
 use super::attempt_store::DurableAttemptTransitions;
 use super::audit::{PolicyDenialContext, ToolAuditRecord, ToolAuditTrail, record_audit};
 use super::execution::{
@@ -193,86 +196,57 @@ impl<C, A> ToolExecutionDriver<C, A> {
         L: LeaseValidator,
         Co: AttemptCommitter + DurableAttemptTransitions,
     {
-        if inputs.tenant_id != trust.tenant_id {
-            return Err(ToolCallError::TenantMismatch);
-        }
-        let mut retried = false;
-        loop {
-            let (mut authority, mut attempt, pre_approval) = match self.open_pass(
-                preparer,
-                coordinator,
-                inputs,
-                trust,
-                retried,
-                projections,
-                audits,
-                now,
-            )? {
-                OpenedPass::Recorded {
-                    authority,
-                    attempt,
-                    pre_approval,
-                } => (authority, attempt, pre_approval),
-                OpenedPass::Exhausted(outcome) => {
-                    // The delivered failed/attempt_limit terminal allocates no
-                    // new D-6/D-7, so its correlated audit record carries the
-                    // exact action without any attempt or approval identity
-                    // (ADR-0003 TC-08/TC-14).
-                    record_audit(
-                        audits,
-                        &ToolAuditRecord::budget_exhausted(&denial_context(inputs), now()),
-                    );
-                    return Ok(outcome);
-                }
-            };
-            let plan = self.resolve_plan(
-                pre_approval,
-                trust,
-                inputs.thread_id,
-                decision_for,
-                projections,
-                audits,
-                now,
-            )?;
-            let outcome = dispatch(
-                coordinator,
-                &mut authority,
-                &mut attempt,
-                plan,
-                now,
-                projections,
-                audits,
-            )?;
-            // TC-06: the terminal-result projection is a durable view of the
-            // committed D-7 terminal; a failed append suppresses publication
-            // but changes no canonical state, and `emit` reports the failure
-            // as a structured diagnostic.
-            emit_tool_result(&attempt, &outcome, projections);
-            // Every committed D-7 execution terminal emits one correlated,
-            // bounded audit record. The production durable committer appends
-            // it atomically inside its terminal transaction, so the driver
-            // emits only for committers without that capability (TC-14).
-            if !coordinator.appends_terminal_audit_atomically() {
-                record_audit(
-                    audits,
-                    &ToolAuditRecord::execution_terminal(attempt.binding(), &outcome, now()),
-                );
-            }
-            // Retry only on a committed executor pre-effect failure (TC-08); a
-            // cancellation or success never retries even when it reports NotStarted.
-            if matches!(
-                outcome,
-                ToolExecutionOutcome::Failed {
-                    effect_state: EffectState::NotStarted,
-                    ..
-                }
-            ) && !retried
-            {
-                retried = true;
-                continue;
-            }
-            return Ok(outcome);
-        }
+        persistence::execute(
+            self,
+            preparer,
+            coordinator,
+            inputs,
+            trust,
+            decision_for,
+            now,
+            projections,
+            audits,
+            None,
+        )
+    }
+
+    /// Executes one projected call while persisting every requested D-6
+    /// through the canonical record store before its D-3 view is appended.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the durable D-6 port is explicit alongside the existing orchestration inputs"
+    )]
+    pub(crate) fn execute_projected_persisted<E, L, Co>(
+        &mut self,
+        preparer: &mut ExecutionPreparer<L>,
+        coordinator: &mut ExecutionCoordinator<E, L, Co>,
+        inputs: &ToolCallInputs,
+        trust: &TrustContext,
+        decision_for: &mut dyn FnMut(&ApprovalRequest) -> (ApprovalDecision, u64),
+        now: &mut dyn FnMut() -> u64,
+        projections: &mut dyn ToolProjectionSink,
+        audits: &mut dyn ToolAuditTrail,
+        approval_records: &mut dyn ApprovalRecordStore,
+    ) -> Result<ToolExecutionOutcome, ToolCallError>
+    where
+        C: ToolPolicyConfiguration,
+        A: ApprovalAuthorizer,
+        E: IsolatedExecutor,
+        L: LeaseValidator,
+        Co: AttemptCommitter + DurableAttemptTransitions,
+    {
+        persistence::execute(
+            self,
+            preparer,
+            coordinator,
+            inputs,
+            trust,
+            decision_for,
+            now,
+            projections,
+            audits,
+            Some(approval_records),
+        )
     }
 
     /// Opens one execution pass: authorize policy, pre-validate C-7, prepare
@@ -294,6 +268,7 @@ impl<C, A> ToolExecutionDriver<C, A> {
         coordinator: &mut ExecutionCoordinator<E, L, Co>,
         inputs: &ToolCallInputs,
         trust: &TrustContext,
+        approval_records: &mut Option<&mut dyn ApprovalRecordStore>,
         retried: bool,
         projections: &mut dyn ToolProjectionSink,
         audits: &mut dyn ToolAuditTrail,
@@ -353,6 +328,22 @@ impl<C, A> ToolExecutionDriver<C, A> {
             return Err(map_preparation_record_error(pending));
         }
         if let PreApproval::Validated(request) = &pre_approval {
+            if let Some(records) = approval_records.as_deref_mut() {
+                let resolution = records
+                    .insert_requested(request, trust.subject_id.as_str())
+                    .map_err(|_| durability_reconciliation())?;
+                if !matches!(
+                    resolution,
+                    ApprovalInsertResolution::Inserted
+                        | ApprovalInsertResolution::Existing {
+                            status: crate::domain::execution::ApprovalStatus::Requested,
+                            decision: None,
+                            version: 1,
+                        }
+                ) {
+                    return Err(durability_reconciliation());
+                }
+            }
             emit_requested_approval(request, projections);
         }
         Ok(OpenedPass::Recorded {
@@ -572,6 +563,15 @@ impl<C, A> ToolExecutionDriver<C, A> {
             Err(error) => Err(ToolCallError::Approval(error)),
         }
     }
+}
+
+/// Maps an undecidable canonical D-6 persistence result onto the existing
+/// fail-closed execution reconciliation surface.
+fn durability_reconciliation() -> ToolCallError {
+    ToolCallError::Reconciliation(ExecutionPending::ReconciliationRequired {
+        code: ExecutionFailure::DurabilityUnavailable,
+        effect_state: EffectState::Unknown,
+    })
 }
 
 /// Executes one resolved approval plan through the coordinator.

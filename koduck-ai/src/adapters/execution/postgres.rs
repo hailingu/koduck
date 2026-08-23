@@ -2,6 +2,8 @@
 
 //! `SQLx`-backed canonical D-6 approval-record persistence.
 
+mod interruption_reconciliation;
+
 use std::future::Future;
 use std::time::Duration;
 
@@ -325,10 +327,9 @@ impl PendingApprovalCanceller for SqlxApprovalRecordStore {
                 &row,
             )
             .await?;
-            transaction
-                .commit()
-                .await
-                .map_err(|_| ApprovalStoreError::Unavailable)?;
+            if transaction.commit().await.is_err() {
+                return interruption_reconciliation::reread(&self.pool, binding, approval_id).await;
+            }
             Ok(PendingApprovalCancellation::Cancelled)
         })
         .map_err(|_| ExecutionPending::ReconciliationRequired {
