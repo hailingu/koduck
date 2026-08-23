@@ -30,10 +30,14 @@ pub(super) async fn insert_prepared_row(
             .ok_or(AttemptStoreError::Unavailable);
     }
     if insert_locked_attempt(&mut transaction, binding, prepared_at_millis).await? {
-        transaction
-            .commit()
-            .await
-            .map_err(|_| AttemptStoreError::Unavailable)?;
+        if transaction.commit().await.is_err() {
+            // PostgreSQL may have committed the exact prepared row even when
+            // the client loses the COMMIT acknowledgement. Re-read and verify
+            // every immutable field before withholding the canonical D-7.
+            return reconcile_ambiguous_insert(
+                replay_prepared_from_pool(pool, binding, prepared_at_millis).await,
+            );
+        }
         return Ok(AttemptInsertResolution::Inserted);
     }
     replay_prepared_from_transaction(&mut transaction, binding, prepared_at_millis)
@@ -163,4 +167,40 @@ async fn replay_prepared(
         status: row_status(&row)?,
         version: row_version(&row)?,
     }))
+}
+
+/// Restores a verified canonical D-7 after an ambiguous COMMIT acknowledgement.
+fn reconcile_ambiguous_insert(
+    result: Result<Option<AttemptInsertResolution>, AttemptStoreError>,
+) -> Result<AttemptInsertResolution, AttemptStoreError> {
+    result?.ok_or(AttemptStoreError::Unavailable)
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::application::{AttemptInsertResolution, AttemptStoreError};
+    use crate::domain::execution::ExecutionStatus;
+
+    use super::reconcile_ambiguous_insert;
+
+    #[test]
+    fn lost_commit_acknowledgement_returns_the_verified_canonical_attempt() {
+        let canonical = AttemptInsertResolution::Existing {
+            status: ExecutionStatus::Prepared,
+            version: 1,
+        };
+
+        assert_eq!(
+            reconcile_ambiguous_insert(Ok(Some(canonical))),
+            Ok(canonical),
+        );
+    }
+
+    #[test]
+    fn lost_commit_acknowledgement_without_a_canonical_attempt_is_unavailable() {
+        assert_eq!(
+            reconcile_ambiguous_insert(Ok(None)),
+            Err(AttemptStoreError::Unavailable),
+        );
+    }
 }
