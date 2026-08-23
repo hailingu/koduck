@@ -7,11 +7,9 @@ use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
 use crate::application::{HistoryError, NewItem};
-use crate::domain::{
-    Item, ItemPayload, TenantId, TerminalOutcome, ThreadId, ToolEffectState, TrustContext, TurnId,
-};
+use crate::domain::{TenantId, ThreadId, ToolEffectState, TrustContext, TurnId};
 
-use super::{insert_item, is_terminal_status, unavailable};
+use super::{interruption_approval, interruption_commit, is_terminal_status, unavailable};
 
 /// Conditionally records D-7 terminals followed by the authenticated Turn
 /// interruption terminal for one active tenant-owned Turn.
@@ -57,6 +55,15 @@ pub(super) async fn request(
         turn_id,
     )
     .await?;
+    let approval_cancellations = interruption_approval::unprojected_cancellations(
+        &mut transaction,
+        &trust.tenant_id,
+        ThreadId::from_uuid(thread_id),
+        turn_id,
+    )
+    .await?;
+    let (item_count, payload_bytes) =
+        interruption_approval::consume_budget(&approval_cancellations, item_count, payload_bytes)?;
     validate_interruption_terminals(&tool_terminals, item_count, payload_bytes)?;
     validate_canonical_interruption_terminals(
         &mut transaction,
@@ -66,35 +73,14 @@ pub(super) async fn request(
         &tool_terminals,
     )
     .await?;
-    for (offset, terminal) in tool_terminals.iter().enumerate() {
-        let item = Item::new(
-            first_sequence
-                .checked_add(offset as u64)
-                .ok_or(HistoryError::Unavailable)?,
-            terminal.clone().into_payload(),
-        );
-        insert_item(
-            &mut transaction,
-            &trust.tenant_id,
-            ThreadId::from_uuid(thread_id),
-            turn_id,
-            &item,
-        )
-        .await?;
-    }
-    let terminal_sequence = first_sequence
-        .checked_add(tool_terminals.len() as u64)
-        .ok_or(HistoryError::Unavailable)?;
-    let item = Item::new(
-        terminal_sequence,
-        ItemPayload::Terminal(TerminalOutcome::Interrupted),
-    );
-    insert_item(
+    let projection_count = interruption_commit::append_items(
         &mut transaction,
         &trust.tenant_id,
         ThreadId::from_uuid(thread_id),
         turn_id,
-        &item,
+        first_sequence,
+        &approval_cancellations,
+        &tool_terminals,
     )
     .await?;
     sqlx::query(
@@ -107,7 +93,7 @@ pub(super) async fn request(
     .bind(thread_id)
     .bind(turn_id.as_uuid())
     .bind(sequence)
-    .bind(i64::try_from(tool_terminals.len() + 1).map_err(|_| HistoryError::Unavailable)?)
+    .bind(i64::try_from(projection_count + 1).map_err(|_| HistoryError::Unavailable)?)
     .execute(&mut *transaction)
     .await
     .map_err(unavailable)?;

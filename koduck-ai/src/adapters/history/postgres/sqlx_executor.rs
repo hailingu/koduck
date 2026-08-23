@@ -20,6 +20,8 @@ use super::settle_commit_attempt;
 use super::{LeaseKey, LeaseTiming, PostgresExecutor, ReconcileOutcome, RecoveryOutcome};
 
 mod failure_recovery;
+mod interruption_approval;
+mod interruption_commit;
 mod interruption_ownership;
 mod projection_batch;
 /// Production `PostgreSQL` executor using one `SQLx` pool and its owning Tokio runtime.

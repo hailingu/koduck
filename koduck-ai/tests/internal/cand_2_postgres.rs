@@ -6,11 +6,12 @@ use std::sync::Arc;
 use std::sync::Barrier;
 
 use koduck_ai::adapters::execution::SqlxApprovalRecordStore;
+use koduck_ai::adapters::history::postgres::{PostgresExecutor, SqlxPostgresExecutor};
 use koduck_ai::adapters::tool::{parse_action_parameters, parse_input_schema};
 use koduck_ai::application::{
-    ApprovalDecisionResolution, ApprovalInsertResolution, ApprovalRecordStore, ApprovalStoreError,
-    PendingApprovalCancellation, PendingApprovalCanceller, ToolAuthorizationService,
-    ToolPolicyConfiguration,
+    AcceptedTurn, ApprovalDecisionResolution, ApprovalInsertResolution, ApprovalRecordStore,
+    ApprovalStoreError, NewItem, PendingApprovalCancellation, PendingApprovalCanceller,
+    ToolAuthorizationService, ToolPolicyConfiguration,
 };
 use koduck_ai::domain::execution::{
     ApprovalDecision, ApprovalRequest, ApprovalStatus, AttemptId, ExactActionBinding,
@@ -18,7 +19,9 @@ use koduck_ai::domain::execution::{
 use koduck_ai::domain::tool::{
     Action, CapabilityDescriptor, DescriptorState, Effect, PermissionProfile,
 };
-use koduck_ai::domain::{LeaseGeneration, TenantId};
+use koduck_ai::domain::{
+    Item, ItemPayload, LeaseGeneration, TenantId, TerminalOutcome, TrustContext,
+};
 use sqlx::postgres::{PgPool, PgPoolOptions};
 use uuid::Uuid;
 
@@ -352,6 +355,32 @@ fn interruption_cancels_the_canonical_requested_approval() {
         harness.store.insert_requested(&approval, "requester"),
         Ok(ApprovalInsertResolution::Inserted),
     );
+    let executor =
+        SqlxPostgresExecutor::new(harness.pool.clone(), harness.runtime.handle().clone());
+    let accepted = AcceptedTurn::new(
+        approval.tenant_id().clone(),
+        approval.binding().thread_id(),
+        approval.binding().turn_id(),
+        approval.binding().lease_generation(),
+        Item::new(
+            1,
+            ItemPayload::UserMessage {
+                content: "approval interruption fixture".to_owned(),
+            },
+        ),
+    );
+    executor
+        .append_tool_projection(
+            &accepted,
+            vec![NewItem::ApprovalStatus {
+                approval_id: approval.approval_id(),
+                attempt_id: approval.binding().attempt_id(),
+                status: ApprovalStatus::Requested,
+                decision: None,
+                version: 1,
+            }],
+        )
+        .expect("requested approval projection is durable");
     harness.runtime.block_on(async {
         sqlx::query(
             "UPDATE turns SET interrupting = TRUE
@@ -381,6 +410,53 @@ fn interruption_cancels_the_canonical_requested_approval() {
         .expect("cancelled approval is readable")
     });
     assert_eq!(projection, ("cancelled".to_owned(), 2));
+
+    let trust = TrustContext::new(approval.tenant_id().clone(), "d7-attempt-fixture")
+        .expect("valid fixture owner");
+    assert_eq!(
+        executor.request_interrupt(&trust, approval.binding().turn_id(), Vec::new()),
+        Ok(()),
+    );
+    let replay = executor
+        .replay(approval.tenant_id(), approval.binding().turn_id())
+        .expect("interrupted Turn history is readable");
+    assert_cancelled_approval_precedes_terminal(&replay, &approval);
+}
+
+/// Proves replay keeps the requested view but resolves it with the canonical
+/// interruption-owned cancellation before the Turn becomes terminal.
+fn assert_cancelled_approval_precedes_terminal(replay: &[Item], approval: &ApprovalRequest) {
+    assert!(
+        matches!(
+            replay,
+            [
+                requested,
+                item,
+                terminal
+            ] if matches!(
+                requested.payload,
+                ItemPayload::ApprovalStatus {
+                    approval_id,
+                    attempt_id,
+                    status: ApprovalStatus::Requested,
+                    decision: None,
+                    version: 1,
+                } if approval_id == approval.approval_id()
+                    && attempt_id == approval.binding().attempt_id()
+            ) && matches!(
+                item.payload,
+                ItemPayload::ApprovalStatus {
+                    approval_id,
+                    attempt_id,
+                    status: ApprovalStatus::Cancelled,
+                    decision: None,
+                    version: 2,
+                } if approval_id == approval.approval_id()
+                    && attempt_id == approval.binding().attempt_id()
+            ) && terminal.payload == ItemPayload::Terminal(TerminalOutcome::Interrupted)
+        ),
+        "the canonical cancelled D-6 projection precedes the Turn terminal: {replay:?}",
+    );
 }
 
 /// Reads the durable status tuple used by interruption race assertions.
