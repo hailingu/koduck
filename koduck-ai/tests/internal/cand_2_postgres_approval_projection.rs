@@ -178,3 +178,97 @@ fn foreground_interruption_backfills_a_committed_approval_terminal() {
         .expect("interrupted Turn history is readable");
     assert_accepted_projection_precedes(&replay, &approval, &TerminalOutcome::Interrupted);
 }
+
+#[test]
+fn approval_insertion_waits_for_the_turn_barrier_and_loses_after_interruption() {
+    // Removing the canonical Turn lock lets this requested D-6 insert finish
+    // while interruption still owns the Turn lock, leaving an unreachable
+    // approval behind the committed barrier.
+    let Some(harness) = harness() else {
+        return;
+    };
+    let approval = requested_approval(1_000, 60_000);
+    attempts::seed_owner_rows(
+        &harness,
+        approval.tenant_id(),
+        approval.binding().thread_id(),
+        approval.binding().turn_id(),
+        approval.binding().lease_generation(),
+    );
+    let mut owner = harness.runtime.block_on(async {
+        let mut transaction = harness.pool.begin().await.expect("owner transaction");
+        sqlx::query(
+            "SELECT turn_id FROM turns
+             WHERE tenant_id = $1 AND thread_id = $2 AND turn_id = $3
+             FOR UPDATE",
+        )
+        .bind(approval.tenant_id().as_str())
+        .bind(approval.binding().thread_id().as_uuid())
+        .bind(approval.binding().turn_id().as_uuid())
+        .fetch_one(&mut *transaction)
+        .await
+        .expect("interruption owns the Turn lock");
+        transaction
+    });
+    let tenant = approval.tenant_id().clone();
+    let thread = approval.binding().thread_id();
+    let turn = approval.binding().turn_id();
+    let approval_id = approval.approval_id();
+    let mut store = harness.store.clone();
+    let (started_tx, started_rx) = std::sync::mpsc::channel();
+    let (insert_tx, insert_rx) = std::sync::mpsc::channel();
+    let contender = std::thread::spawn(move || {
+        started_tx.send(()).expect("insert contender starts");
+        insert_tx
+            .send(store.insert_requested(&approval, "requester"))
+            .expect("insert result is observable");
+    });
+    started_rx.recv().expect("insert contender started");
+    let early = insert_rx.recv_timeout(std::time::Duration::from_millis(250));
+    let waited_for_turn_lock = matches!(early, Err(std::sync::mpsc::RecvTimeoutError::Timeout));
+    harness.runtime.block_on(async {
+        sqlx::query(
+            "UPDATE turns SET interrupting = TRUE
+             WHERE tenant_id = $1 AND thread_id = $2 AND turn_id = $3",
+        )
+        .bind(tenant.as_str())
+        .bind(thread.as_uuid())
+        .bind(turn.as_uuid())
+        .execute(&mut *owner)
+        .await
+        .expect("interruption barrier is established");
+        owner.commit().await.expect("interruption barrier commits");
+    });
+    let inserted = match early {
+        Ok(result) => result,
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => insert_rx
+            .recv_timeout(std::time::Duration::from_secs(3))
+            .expect("insert completes after the Turn lock is released"),
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            panic!("insert contender disconnected")
+        }
+    };
+    contender.join().expect("insert contender completes");
+    assert!(
+        waited_for_turn_lock,
+        "approval insertion must wait for the canonical Turn lock"
+    );
+    assert_eq!(
+        inserted,
+        Err(koduck_ai::application::ApprovalStoreError::Unavailable)
+    );
+    let approval_exists: bool = harness.runtime.block_on(async {
+        sqlx::query_scalar(
+            "SELECT EXISTS(
+                SELECT 1 FROM tool_approvals
+                WHERE tenant_id = $1 AND approval_id = $2
+             )",
+        )
+        .bind(tenant.as_str())
+        .bind(approval_id.as_uuid())
+        .fetch_one(&harness.pool)
+        .await
+        .expect("approval absence is readable")
+    });
+    assert!(!approval_exists, "no D-6 is created behind interruption");
+}

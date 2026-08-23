@@ -347,6 +347,22 @@ mod tests {
         );
     }
 
+    #[test]
+    fn interruption_reserves_one_item_for_its_turn_terminal() {
+        assert_eq!(
+            validate_interruption_terminals(&[], 64, 0),
+            Err(HistoryError::Unavailable),
+        );
+    }
+
+    #[test]
+    fn interruption_reserves_payload_bytes_for_its_turn_terminal() {
+        assert_eq!(
+            validate_interruption_terminals(&[], 0, 1_048_575),
+            Err(HistoryError::Unavailable),
+        );
+    }
+
     fn cancelled_terminal() -> NewItem {
         NewItem::ToolResult {
             attempt_id: Some(AttemptId::new()),

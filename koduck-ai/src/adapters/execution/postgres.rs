@@ -4,6 +4,7 @@
 
 mod decision_loss;
 mod interruption_reconciliation;
+mod requested_insert;
 
 use std::future::Future;
 use std::time::Duration;
@@ -64,67 +65,11 @@ impl ApprovalRecordStore for SqlxApprovalRecordStore {
         request: &ApprovalRequest,
         requester_subject: &str,
     ) -> Result<ApprovalInsertResolution, ApprovalStoreError> {
-        let binding = request.binding();
-        let action = binding.action();
-        self.wait(async {
-            // ON CONFLICT DO NOTHING keeps a lost-acknowledgement replay from
-            // becoming an error: the conflict branch below then verifies the
-            // immutable fields against the committed canonical row, so the
-            // caller reconciles the record instead of retrying blind.
-            let outcome = sqlx::query(
-                "INSERT INTO tool_approvals (
-                    tenant_id, approval_id, requester_subject, thread_id, turn_id,
-                    attempt_id, lease_generation, descriptor_id, descriptor_version,
-                    effect, action_digest, profile_id, profile_version,
-                    requested_at_millis, expires_at_millis,
-                    status, version
-                ) VALUES (
-                    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, 'requested', 1
-                )
-                ON CONFLICT (tenant_id, approval_id) DO NOTHING",
-            )
-            .bind(binding.tenant_id().as_str())
-            .bind(request.approval_id().as_uuid())
-            .bind(requester_subject)
-            .bind(binding.thread_id().as_uuid())
-            .bind(binding.turn_id().as_uuid())
-            .bind(binding.attempt_id().as_uuid())
-            .bind(millis(binding.lease_generation().get())?)
-            .bind(action.descriptor_id())
-            .bind(action.descriptor_version())
-            .bind(effect_code(action.effect()))
-            .bind(hex_digest(binding.action_digest().as_bytes()))
-            .bind(binding.profile_id())
-            .bind(binding.profile_version())
-            .bind(millis(request.requested_at_millis())?)
-            .bind(millis(request.expires_at_millis())?)
-            .execute(&self.pool)
-            .await
-            .map_err(|_| ApprovalStoreError::Unavailable)?;
-            if outcome.rows_affected() == 1 {
-                return Ok(ApprovalInsertResolution::Inserted);
-            }
-            let existing = sqlx::query(
-                "SELECT requester_subject, thread_id, turn_id, attempt_id,
-                        lease_generation, descriptor_id, descriptor_version, effect,
-                        action_digest, profile_id, profile_version,
-                        requested_at_millis, expires_at_millis,
-                        status, decision, version
-                 FROM tool_approvals
-                 WHERE tenant_id = $1 AND approval_id = $2",
-            )
-            .bind(binding.tenant_id().as_str())
-            .bind(request.approval_id().as_uuid())
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(|_| ApprovalStoreError::Unavailable)?;
-            let Some(row) = existing else {
-                // DO NOTHING reported a conflict the same transaction cannot
-                // observe again; treat undecidable durable state as unavailable.
-                return Err(ApprovalStoreError::Unavailable);
-            };
-            Self::conflict_resolution(&row, request, requester_subject)
-        })
+        self.wait(requested_insert::insert(
+            &self.pool,
+            request,
+            requester_subject,
+        ))
     }
 
     #[allow(

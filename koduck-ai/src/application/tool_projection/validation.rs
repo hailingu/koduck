@@ -5,7 +5,6 @@
 use std::collections::HashSet;
 
 use crate::application::{AppendPolicy, NewItem};
-use crate::domain::ToolEffectState;
 use crate::domain::execution::{
     ApprovalDecision, ApprovalId, ApprovalStatus, AttemptId, ExecutionStatus,
 };
@@ -13,6 +12,7 @@ use crate::domain::tool::{
     MAX_ACTION_TARGET_BYTES, MAX_DESCRIPTOR_ID_BYTES, MAX_DESCRIPTOR_VERSION_BYTES,
     validate_action_target, validate_descriptor_id, validate_descriptor_version,
 };
+use crate::domain::{TerminalOutcome, ToolEffectState};
 
 use super::super::executor_envelope::{ExecutionFailure, MAX_EXECUTOR_OUTPUT_BYTES};
 use super::{ToolProjection, ToolProjectionError, approval_version, attempt_version};
@@ -120,6 +120,18 @@ pub(crate) fn validate_interruption_terminals(
             .and_then(|()| policy.accumulate_payload_bytes(payload_bytes, item))
             .map_err(|_| ToolProjectionError::Unavailable)?;
     }
+    let terminal = NewItem::Terminal(TerminalOutcome::Interrupted);
+    item_count = item_count
+        .checked_add(1)
+        .ok_or(ToolProjectionError::Unavailable)?;
+    policy
+        .check_item_count(item_count)
+        .and_then(|()| {
+            policy
+                .accumulate_payload_bytes(payload_bytes, &terminal)
+                .map(|_| ())
+        })
+        .map_err(|_| ToolProjectionError::Unavailable)?;
     Ok(())
 }
 

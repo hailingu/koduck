@@ -226,6 +226,17 @@ fn approver(id: &str) -> koduck_ai::domain::execution::ApproverId {
         .expect("scoped principal yields an approver identity")
 }
 
+/// Seeds the exact active Turn/lease authority required by requested D-6 insertion.
+fn seed_approval_owner(harness: &Harness, approval: &ApprovalRequest) {
+    attempts::seed_owner_rows(
+        harness,
+        approval.tenant_id(),
+        approval.binding().thread_id(),
+        approval.binding().turn_id(),
+        approval.binding().lease_generation(),
+    );
+}
+
 struct FixturePolicyConfiguration {
     descriptor: CapabilityDescriptor,
     profile: PermissionProfile,
@@ -271,6 +282,7 @@ fn migration_is_idempotent_and_decisions_are_single_winner() {
 
     let approval = requested_approval(1_000, 60_000);
     let tenant = approval.tenant_id().clone();
+    seed_approval_owner(&harness, &approval);
     assert_eq!(
         harness.store.insert_requested(&approval, "requester"),
         Ok(ApprovalInsertResolution::Inserted)
@@ -382,6 +394,7 @@ fn terminal_decision_replay_does_not_require_a_second_pool_connection() {
     let mut store = SqlxApprovalRecordStore::new(pool, harness.runtime.handle().clone());
     let approval = requested_approval(1_000, 60_000);
     let tenant = approval.tenant_id().clone();
+    seed_approval_owner(&harness, &approval);
     assert_eq!(
         store.insert_requested(&approval, "requester"),
         Ok(ApprovalInsertResolution::Inserted)
@@ -762,6 +775,7 @@ fn thirty_two_competing_decisions_commit_exactly_one_terminal() {
 
     let approval = requested_approval(1_000, 60_000);
     let tenant = approval.tenant_id().clone();
+    seed_approval_owner(&harness, &approval);
     assert_eq!(
         harness.store.insert_requested(&approval, "requester"),
         Ok(ApprovalInsertResolution::Inserted)
@@ -839,6 +853,7 @@ fn decision_at_or_after_expiry_commits_no_decision() {
     // requested_at 1_000 with a 2_000 Turn deadline yields a 2_000 expiry.
     let approval = requested_approval(1_000, 2_000);
     let tenant = approval.tenant_id().clone();
+    seed_approval_owner(&harness, &approval);
     assert_eq!(
         harness.store.insert_requested(&approval, "requester"),
         Ok(ApprovalInsertResolution::Inserted)
@@ -878,6 +893,7 @@ fn decision_at_or_after_expiry_commits_no_decision() {
     // A still-timely decision before the window closes succeeds, proving the
     // expiry transition is not applied to in-window records.
     let timely_approval = requested_approval(1_000, 60_000);
+    seed_approval_owner(&harness, &timely_approval);
     assert_eq!(
         harness
             .store
@@ -914,19 +930,15 @@ fn interruption_barrier_owns_an_expired_requested_approval() {
     let tenant = approval.tenant_id().clone();
     let thread_id = approval.binding().thread_id();
     let turn_id = approval.binding().turn_id();
+    seed_approval_owner(&harness, &approval);
+    assert_eq!(
+        harness.store.insert_requested(&approval, "requester"),
+        Ok(ApprovalInsertResolution::Inserted)
+    );
     harness.runtime.block_on(async {
         sqlx::query(
-            "INSERT INTO threads (tenant_id, subject_id, thread_id) VALUES ($1, 'requester', $2)",
-        )
-        .bind(tenant.as_str())
-        .bind(thread_id.as_uuid())
-        .execute(&harness.pool)
-        .await
-        .expect("fixture thread");
-        sqlx::query(
-            "INSERT INTO turns \
-             (tenant_id, thread_id, turn_id, status, next_sequence, interrupting) \
-             VALUES ($1, $2, $3, 'started', 1, TRUE)",
+            "UPDATE turns SET interrupting = TRUE
+             WHERE tenant_id = $1 AND thread_id = $2 AND turn_id = $3",
         )
         .bind(tenant.as_str())
         .bind(thread_id.as_uuid())
@@ -935,10 +947,6 @@ fn interruption_barrier_owns_an_expired_requested_approval() {
         .await
         .expect("fixture interruption barrier");
     });
-    assert_eq!(
-        harness.store.insert_requested(&approval, "requester"),
-        Ok(ApprovalInsertResolution::Inserted)
-    );
 
     let resolution = harness
         .store
@@ -1261,6 +1269,7 @@ fn insert_replay_after_a_terminal_transition_returns_the_canonical_state() {
         return;
     };
     let approval = requested_approval(1_000, 60_000);
+    seed_approval_owner(&harness, &approval);
     assert_eq!(
         harness.store.insert_requested(&approval, "requester"),
         Ok(ApprovalInsertResolution::Inserted)
@@ -1290,6 +1299,7 @@ fn insert_replay_after_a_terminal_transition_returns_the_canonical_state() {
 
     // The same holds after the expiry transition closed another record.
     let expired = requested_approval(1_000, 2_000);
+    seed_approval_owner(&harness, &expired);
     assert_eq!(
         harness.store.insert_requested(&expired, "requester"),
         Ok(ApprovalInsertResolution::Inserted)
