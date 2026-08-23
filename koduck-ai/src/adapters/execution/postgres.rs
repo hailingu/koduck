@@ -55,6 +55,10 @@ impl SqlxApprovalRecordStore {
 }
 
 impl ApprovalRecordStore for SqlxApprovalRecordStore {
+    fn appends_terminal_audit_atomically(&self) -> bool {
+        true
+    }
+
     fn insert_requested(
         &mut self,
         request: &ApprovalRequest,

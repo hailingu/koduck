@@ -87,6 +87,16 @@ pub enum ApprovalDecisionResolution {
 /// record's expiry commits no decision; the still-requested record transitions
 /// to `expired` and is reported as an existing terminal.
 pub trait ApprovalRecordStore {
+    /// Reports whether a won or expiry terminal commits its audit atomically.
+    ///
+    /// Stores returning `true` own the single durable D-6 resolution audit;
+    /// the application still emits the D-3 projection but must not append a
+    /// second fallback audit, including when replaying an existing terminal.
+    #[must_use]
+    fn appends_terminal_audit_atomically(&self) -> bool {
+        false
+    }
+
     /// Durably inserts one newly created requested D-6, idempotently.
     ///
     /// A replay of the same immutable record — including after a lost

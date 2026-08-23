@@ -26,6 +26,8 @@ use koduck_ai::domain::{
 use sqlx::postgres::{PgPool, PgPoolOptions};
 use uuid::Uuid;
 
+#[path = "cand_2_postgres_approval_projection.rs"]
+mod approval_projection;
 #[path = "cand_2_postgres_attempt_limits.rs"]
 mod attempt_limits;
 #[path = "cand_2_postgres_attempts.rs"]

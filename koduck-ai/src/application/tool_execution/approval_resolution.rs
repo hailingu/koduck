@@ -77,6 +77,7 @@ where
         audits: &mut dyn ToolAuditTrail,
         now: &mut dyn FnMut() -> u64,
     ) -> Result<ApprovalPlan, ToolCallError> {
+        let audit_owned_atomically = records.appends_terminal_audit_atomically();
         let approver = ApproverId::from_authenticated(trust).ok_or(ToolCallError::Approval(
             crate::domain::execution::ApprovalError::NotAuthorized,
         ))?;
@@ -139,6 +140,7 @@ where
             status,
             canonical_decision,
             version,
+            audit_owned_atomically,
             projections,
             audits,
             now,
@@ -179,6 +181,7 @@ where
                     request.status(),
                     request.decision(),
                     request.version(),
+                    false,
                     projections,
                     audits,
                     now,
@@ -199,6 +202,7 @@ where
                     request.status(),
                     request.decision(),
                     request.version(),
+                    false,
                     projections,
                     audits,
                     now,
@@ -220,21 +224,24 @@ fn emit_terminal(
     status: ApprovalStatus,
     decision: Option<ApprovalDecision>,
     version: u64,
+    audit_owned_atomically: bool,
     projections: &mut dyn ToolProjectionSink,
     audits: &mut dyn ToolAuditTrail,
     now: &mut dyn FnMut() -> u64,
 ) {
-    record_audit(
-        audits,
-        &ToolAuditRecord::approval_resolution(
-            request.binding(),
-            request.approval_id(),
-            status,
-            decision,
-            version,
-            now(),
-        ),
-    );
+    if !audit_owned_atomically {
+        record_audit(
+            audits,
+            &ToolAuditRecord::approval_resolution(
+                request.binding(),
+                request.approval_id(),
+                status,
+                decision,
+                version,
+                now(),
+            ),
+        );
+    }
     emit(
         projections,
         ToolProjection::ApprovalStatus {

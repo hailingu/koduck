@@ -397,7 +397,7 @@ impl SqlxPostgresExecutor {
         // Recovery waits for an in-flight D-7 deadline when it has no
         // cancellation evidence; returning early rolls this transaction back.
         let mut recovered_approval_projections =
-            super::attempt_recovery::cancel_requested_approvals(&mut transaction, key, now_ms)
+            super::attempt_recovery::recover_approval_terminals(&mut transaction, key, now_ms)
                 .await?;
         let Some(mut recovered_attempt_projections) =
             super::attempt_recovery::close_active_attempts(&mut transaction, key, now_ms).await?

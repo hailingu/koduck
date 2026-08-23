@@ -9,7 +9,7 @@ use sqlx::{PgConnection, Row};
 use crate::application::{
     HistoryError, MAX_ACTION_DURATION_MILLIS, ToolAuditRecord, ToolExecutionOutcome,
 };
-use crate::domain::execution::{ApprovalId, ApprovalStatus, AttemptId, ExecutionStatus};
+use crate::domain::execution::{ApprovalStatus, AttemptId, ExecutionStatus};
 use crate::domain::{Item, ItemPayload, ToolEffectState};
 
 use super::LeaseKey;
@@ -184,14 +184,16 @@ async fn record_closed_attempt(
     ))
 }
 
-/// Cancels and audits D-6 approvals left requested by a recovered Turn terminal.
+/// Cancels requested D-6 records and recovers every missing terminal projection.
 ///
 /// Recovery owns the terminal transition rather than a C-7 approval decision.
 /// It records the terminal-owned cancellation without inventing an approver or
-/// decision, and returns correlated D-3 projections for the caller to append
-/// before the bound D-7 and Turn terminals in the same transaction (ADR-0003
-/// TC-06/TC-10/TC-14).
-pub(super) async fn cancel_requested_approvals(
+/// decision. After that transition it locks every canonical D-6 terminal and
+/// returns each exact version that is still absent from D-3, including a
+/// decision or expiry that committed before its process lost the projection
+/// handoff. The caller appends those views before the bound D-7 and Turn
+/// terminals in the same transaction (ADR-0003 TC-06/TC-10/TC-14).
+pub(super) async fn recover_approval_terminals(
     connection: &mut PgConnection,
     key: &LeaseKey,
     terminal_at_millis: u64,
@@ -211,7 +213,6 @@ pub(super) async fn cancel_requested_approvals(
     .fetch_all(&mut *connection)
     .await
     .map_err(unavailable)?;
-    let mut projections = Vec::with_capacity(cancelled.len());
     for approval in cancelled {
         let approval_id: uuid::Uuid = approval.try_get("approval_id").map_err(unavailable)?;
         let thread_id: uuid::Uuid = approval.try_get("thread_id").map_err(unavailable)?;
@@ -258,16 +259,18 @@ pub(super) async fn cancel_requested_approvals(
         .execute(&mut *connection)
         .await
         .map_err(unavailable)?;
-        projections.push(Item::new(
-            1,
-            ItemPayload::ApprovalStatus {
-                approval_id: ApprovalId::from_uuid(approval_id),
-                attempt_id: AttemptId::from_uuid(attempt_id),
-                status: ApprovalStatus::Cancelled,
-                decision: None,
-                version: u64::try_from(version).map_err(|_| HistoryError::Unavailable)?,
-            },
-        ));
     }
-    Ok(projections)
+    super::approval_terminal_backfill::unprojected_terminals(
+        connection,
+        &key.tenant_id,
+        key.thread_id,
+        key.turn_id,
+    )
+    .await
+    .map(|projections| {
+        projections
+            .into_iter()
+            .map(|projection| Item::new(1, projection.into_payload()))
+            .collect()
+    })
 }

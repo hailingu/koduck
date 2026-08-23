@@ -15,6 +15,7 @@ use crate::domain::{
     Item, LeaseGeneration, TenantId, TerminalOutcome, ThreadId, TrustContext, TurnId,
 };
 
+mod approval_terminal_backfill;
 mod attempt_recovery;
 mod commit_reconciliation;
 mod payload_codec;

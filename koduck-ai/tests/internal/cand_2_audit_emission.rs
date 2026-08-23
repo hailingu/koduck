@@ -10,6 +10,7 @@ use koduck_ai::application::attempt_store::{
     AttemptInsertResolution, AttemptStoreError, DispatchClaimResolution,
 };
 use koduck_ai::application::{
+    ApprovalDecisionResolution, ApprovalInsertResolution, ApprovalRecordStore, ApprovalStoreError,
     AttemptCommitError, AttemptCommitResult, AttemptCommitter, CancelAcknowledgement, CancelPermit,
     DispatchPermit, DurableAttemptTransitions, EffectState, ExecutionAttemptInterruptionGuard,
     ExecutionAttemptLiveness, ExecutionCoordinator, ExecutionPending, ExecutionResponse,
@@ -19,7 +20,7 @@ use koduck_ai::application::{
     ToolExecutionAssembly, ToolExecutionOutcome, ToolExecutionRuntimeRoot,
 };
 use koduck_ai::domain::execution::{
-    ApprovalDecision, ApprovalRequest, AttemptId, ExactActionBinding,
+    ApprovalDecision, ApprovalId, ApprovalRequest, AttemptId, ExactActionBinding,
 };
 use koduck_ai::domain::tool::{
     Action, CapabilityDescriptor, DescriptorState, Effect, PermissionProfile,
@@ -88,6 +89,43 @@ struct WinningCommitter;
 /// Durable terminal committer whose transaction already contains the audit.
 #[derive(Clone, Copy, Default)]
 struct AtomicAuditCommitter;
+
+/// Canonical D-6 store double that records its own atomic terminal audit.
+#[derive(Default)]
+struct AtomicallyAuditedApprovals {
+    atomic_audits: usize,
+}
+
+impl ApprovalRecordStore for AtomicallyAuditedApprovals {
+    fn appends_terminal_audit_atomically(&self) -> bool {
+        true
+    }
+
+    fn insert_requested(
+        &mut self,
+        _request: &ApprovalRequest,
+        _requester_subject: &str,
+    ) -> Result<ApprovalInsertResolution, ApprovalStoreError> {
+        Ok(ApprovalInsertResolution::Inserted)
+    }
+
+    fn resolve_decision(
+        &mut self,
+        _approval_id: ApprovalId,
+        _tenant_id: &TenantId,
+        _thread_id: ThreadId,
+        _requester_subject: &str,
+        decision: ApprovalDecision,
+        _approver: &koduck_ai::domain::execution::ApproverId,
+        _decided_at_millis: u64,
+    ) -> Result<ApprovalDecisionResolution, ApprovalStoreError> {
+        self.atomic_audits += 1;
+        Ok(ApprovalDecisionResolution::Won {
+            decision,
+            version: 2,
+        })
+    }
+}
 
 impl AttemptCommitter for WinningCommitter {
     fn commit_outcome(
@@ -616,6 +654,41 @@ fn accepted_and_declined_approvals_emit_resolution_and_terminal_records() {
     assert_eq!(resolution["approval_decision"], "declined");
     let terminal = recorded_json_fields(&audits.serialized()[1]);
     assert_eq!(terminal["execution_status"], "cancelled");
+}
+
+#[test]
+fn persisted_resolution_does_not_duplicate_its_store_owned_atomic_audit() {
+    // Removing the application/store ownership gate adds a second
+    // approval_resolved record after the canonical store already committed
+    // that audit in the same transaction as the D-6 terminal.
+    let root = ToolExecutionRuntimeRoot::issue();
+    let assembly = ToolExecutionAssembly::new(&root, snapshot(Effect::ExternalWrite));
+    let mut boundary = assembly.boundary(SucceedingExecutor, AlwaysCurrentLease, WinningCommitter);
+    let mut approvals = AtomicallyAuditedApprovals::default();
+    let mut audits = RecordingAudits::default();
+    let outcome = boundary
+        .execute_projected_persisted(
+            &inputs(Effect::ExternalWrite, u64::MAX),
+            &scoped_trust(),
+            &mut |request: &ApprovalRequest| {
+                (ApprovalDecision::Accepted, request.expires_at_millis() - 1)
+            },
+            &mut || 1_000,
+            &mut NoToolProjections,
+            &mut audits,
+            &mut approvals,
+        )
+        .expect("the atomically audited approval dispatches");
+    assert!(matches!(outcome, ToolExecutionOutcome::Succeeded { .. }));
+    assert_eq!(
+        approvals.atomic_audits, 1,
+        "the canonical store owns one audit"
+    );
+    assert_eq!(
+        recorded_policy_decisions(&audits),
+        vec!["executed".to_owned()],
+        "the application emits only the independently owned D-7 audit"
+    );
 }
 
 #[test]

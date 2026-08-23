@@ -95,7 +95,7 @@ impl SqlxPostgresExecutor {
             turn.generation,
         );
         let terminal_at_millis = unix_time_ms();
-        let mut recovered_approval_projections = attempt_recovery::cancel_requested_approvals(
+        let mut recovered_approval_projections = attempt_recovery::recover_approval_terminals(
             &mut transaction,
             &key,
             terminal_at_millis,

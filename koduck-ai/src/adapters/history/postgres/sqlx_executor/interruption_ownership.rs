@@ -55,7 +55,7 @@ pub(super) async fn request(
         turn_id,
     )
     .await?;
-    let approval_cancellations = interruption_approval::unprojected_cancellations(
+    let approval_cancellations = interruption_approval::unprojected_terminals(
         &mut transaction,
         &trust.tenant_id,
         ThreadId::from_uuid(thread_id),
