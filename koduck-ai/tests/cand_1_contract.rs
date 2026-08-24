@@ -1,10 +1,15 @@
 // ADR: docs/adr/ADR-0001-provider-neutral-turn-kernel.md
+// ADR: docs/adr/ADR-0004-provider-stream-completion-normalization.md
 
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use koduck_ai::adapters::http::{HttpAdapter, HttpMethod, HttpRequest, ServiceError, TurnService};
+use koduck_ai::adapters::provider::{
+    OpenAiCompatibleProvider, OpenAiFrame, OpenAiFrameStream, OpenAiProtocolTransport,
+    OpenAiTransportError,
+};
 use koduck_ai::application::{
     AcceptedTurn, HistoryError, ModelInput, ModelProvider, NewItem, ProviderError, ProviderEvent,
     ProviderStream, TurnCommand, TurnHistory, TurnResult, TurnRunner,
@@ -620,4 +625,133 @@ fn http_adapter_executes_the_provider_neutral_kernel() {
 
     assert_eq!(response.status, 200);
     assert!(response.body.contains("\"status\":\"completed\""));
+}
+
+/// Deterministic fixture sentinel standing in for one explicit transport
+/// clean end (ADR-0004 PSC-1); appended after the final `data:` frame of a
+/// scripted stream, it yields the ordered `OpenAiFrame::CleanEnd`.
+const CLEAN_END: &str = "\u{0}clean-end";
+
+/// Transport stub serving one scripted OpenAI-compatible frame stream per
+/// request (ADR-0004).
+#[derive(Clone, Default)]
+struct OpenAiFrameTransport {
+    scripts: Rc<RefCell<Vec<Vec<String>>>>,
+}
+
+impl OpenAiFrameTransport {
+    fn scripted(scripts: Vec<Vec<&str>>) -> Self {
+        Self {
+            scripts: Rc::new(RefCell::new(
+                scripts
+                    .into_iter()
+                    .map(|frames| frames.into_iter().map(str::to_owned).collect())
+                    .collect(),
+            )),
+        }
+    }
+}
+
+impl OpenAiProtocolTransport for OpenAiFrameTransport {
+    fn chat_completion_frames(
+        &mut self,
+        _input: &ModelInput,
+    ) -> Result<OpenAiFrameStream, OpenAiTransportError> {
+        // One scripted frame stream per provider request; `remove` panics on
+        // an exhausted script, mirroring the fixture contract.
+        let frames = self.scripts.borrow_mut().remove(0);
+        Ok(Box::new(frames.into_iter().map(|frame| {
+            if frame == CLEAN_END {
+                Ok(OpenAiFrame::CleanEnd)
+            } else {
+                Ok(OpenAiFrame::Data(frame))
+            }
+        })))
+    }
+}
+
+/// `ModelProvider` running the production Chat Completions protocol
+/// translation over scripted frame streams (ADR-0004).
+#[derive(Clone)]
+struct FrameScriptedProvider {
+    inner: OpenAiCompatibleProvider<OpenAiFrameTransport>,
+}
+
+impl ModelProvider for FrameScriptedProvider {
+    fn stream(&mut self, input: ModelInput) -> Result<ProviderStream<'_>, ProviderError> {
+        self.inner.stream(input)
+    }
+}
+
+#[test]
+fn provider_completion_normalization_preserves_v1_delivery() {
+    // ADR-0004 PSC-3/PSC-7: a `stop` finish plus optional usage and an
+    // explicit clean end produces the exact existing synchronous completed v1
+    // response, while an unannounced stream end retains the provider-failure
+    // delivery mapping with no public field change.
+    let transport = OpenAiFrameTransport::scripted(vec![vec![
+        r#"data: {"choices":[{"delta":{"content":"A"},"finish_reason":"stop"}]}"#,
+        r#"data: {"choices":[],"usage":{"prompt_tokens":3,"completion_tokens":1,"total_tokens":4}}"#,
+        CLEAN_END,
+    ]]);
+    let mut adapter = HttpAdapter::new(TurnRunner::new(
+        FrameScriptedProvider {
+            inner: OpenAiCompatibleProvider::new(transport),
+        },
+        SharedHistory::default(),
+    ));
+
+    let response = adapter.handle(post(
+        "/api/v1/ai/chat",
+        r#"{"input":"hello"}"#,
+        Some(trust()),
+    ));
+
+    assert_eq!(response.status, 200);
+    assert_eq!(response.header("Content-Type"), Some("application/json"));
+    let value: serde_json::Value =
+        serde_json::from_str(&response.body).expect("the completed body is JSON");
+    let thread_id = value["thread_id"].as_str().expect("thread id").to_owned();
+    let turn_id = value["turn_id"].as_str().expect("turn id").to_owned();
+    let item_id = value["items"][0]["item_id"]
+        .as_str()
+        .expect("item id")
+        .to_owned();
+    let normalized = response
+        .body
+        .replace(&thread_id, "{{thread_id}}")
+        .replace(&turn_id, "{{turn_id}}")
+        .replace(&item_id, "{{item_id}}")
+        .replace("\"input_tokens\":3", "\"input_tokens\":{{input_tokens}}")
+        .replace("\"output_tokens\":1", "\"output_tokens\":{{output_tokens}}")
+        .replace("\"total_tokens\":4", "\"total_tokens\":{{total_tokens}}");
+    assert_eq!(
+        normalized,
+        include_str!("fixtures/sync-chat-v1.json").trim(),
+        "the normalized clean-end completion equals the existing v1 golden fixture"
+    );
+
+    let transport = OpenAiFrameTransport::scripted(vec![vec![
+        r#"data: {"choices":[{"delta":{"content":"A"},"finish_reason":"stop"}]}"#,
+        r#"data: {"choices":[],"usage":{"prompt_tokens":3,"completion_tokens":1,"total_tokens":4}}"#,
+        // No `[DONE]` and no explicit clean end: the stream ends unannounced.
+    ]]);
+    let mut adapter = HttpAdapter::new(TurnRunner::new(
+        FrameScriptedProvider {
+            inner: OpenAiCompatibleProvider::new(transport),
+        },
+        SharedHistory::default(),
+    ));
+
+    let response = adapter.handle(post(
+        "/api/v1/ai/chat",
+        r#"{"input":"hello"}"#,
+        Some(trust()),
+    ));
+
+    assert_eq!(response.status, 503);
+    assert!(
+        response.body.contains("\"code\":\"provider-unavailable\""),
+        "an unannounced stream end retains the provider-failure delivery mapping"
+    );
 }
