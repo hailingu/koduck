@@ -650,6 +650,7 @@ fn handle_tool_call<H: TurnHistory, T: ToolCallExecutor>(
     // so no durable projection stays invisible past this call boundary.
     projections.drain_unpublished();
     let projections_failed = projections.is_failed();
+    let terminal_recovery_required = projections.terminal_recovery_required();
     let lifecycle_complete = projections.is_lifecycle_complete();
     let matches_committed_result = result
         .as_ref()
@@ -697,6 +698,13 @@ fn handle_tool_call<H: TurnHistory, T: ToolCallExecutor>(
         // terminalizes through the owned limit/recovery path rather than
         // recording a normal tool-error terminal over incomplete history
         // (ADR-0001 exact buffer contract, ADR-0003 TC-06).
+        if terminal_recovery_required {
+            // Production commits D-7 before emitting its terminal D-3 view.
+            // A failed terminal projection therefore keeps the Turn
+            // recovery-pending: closing it here would exclude it from the
+            // only scan that can backfill that canonical terminal.
+            return Err(recover_append_failure(state, HistoryError::Unavailable));
+        }
         return terminalize_from_limit(history, accepted, state);
     }
     let result = match result {

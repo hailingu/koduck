@@ -703,24 +703,51 @@ impl ToolCallExecutor for MismatchedApprovedAttemptToolExecutor {
 #[derive(Default)]
 struct MemoryHistoryState {
     items: BTreeMap<TurnId, Vec<Item>>,
+    projection_batches: usize,
 }
 
 #[derive(Clone, Default)]
 struct MemoryHistory {
     state: Arc<Mutex<MemoryHistoryState>>,
-    fail_projection_batch: bool,
+    fail_projection_batch_number: Option<usize>,
+    fail_append_after_projection: bool,
+    defer_failed_recovery: bool,
 }
 
 impl MemoryHistory {
     fn failing_second_projection_append() -> Self {
         Self {
             state: Arc::new(Mutex::new(MemoryHistoryState::default())),
-            fail_projection_batch: true,
+            fail_projection_batch_number: Some(1),
+            fail_append_after_projection: true,
+            defer_failed_recovery: false,
+        }
+    }
+
+    fn failing_terminal_projection_append() -> Self {
+        Self {
+            state: Arc::new(Mutex::new(MemoryHistoryState::default())),
+            fail_projection_batch_number: Some(2),
+            fail_append_after_projection: false,
+            defer_failed_recovery: true,
         }
     }
 }
 
 impl TurnHistory for MemoryHistory {
+    fn schedule_failed_recovery(&mut self, turn: &AcceptedTurn) -> Result<(), HistoryError> {
+        if self.defer_failed_recovery {
+            return Ok(());
+        }
+        self.append(
+            turn,
+            NewItem::Terminal(TerminalOutcome::Failed {
+                code: "DURABILITY_UNAVAILABLE".to_owned(),
+            }),
+        )?;
+        Ok(())
+    }
+
     fn request_interrupt(
         &mut self,
         _trust: &TrustContext,
@@ -770,7 +797,7 @@ impl TurnHistory for MemoryHistory {
             .items
             .get_mut(&turn.turn_id)
             .ok_or(HistoryError::NotFound)?;
-        if self.fail_projection_batch && items.len() >= 2 {
+        if self.fail_append_after_projection && items.len() >= 2 {
             return Err(HistoryError::Unavailable);
         }
         let durable = Item::new(items.len() as u64 + 1, item.into_payload());
@@ -788,11 +815,13 @@ impl TurnHistory for MemoryHistory {
             .map(NewItem::into_payload)
             .collect::<Vec<_>>();
         let mut state = self.state.lock().expect("history lock");
+        state.projection_batches += 1;
+        let projection_batch = state.projection_batches;
         let persisted = state
             .items
             .get_mut(&turn.turn_id)
             .ok_or(HistoryError::NotFound)?;
-        if self.fail_projection_batch {
+        if self.fail_projection_batch_number == Some(projection_batch) {
             return Err(HistoryError::Unavailable);
         }
         let first_sequence = persisted.len() as u64 + 1;
@@ -1181,6 +1210,32 @@ fn a_failed_multi_item_projection_leaves_no_durable_prefix() {
         payload_kinds(items),
         ["user_message", "failed"],
         "a failed denial batch leaves neither its ToolCall nor ToolResult durable before recovery"
+    );
+}
+
+#[test]
+fn a_terminal_projection_outage_keeps_the_turn_open_for_d7_recovery() {
+    // Production commits the canonical D-7 terminal before emitting its D-3
+    // ToolResult. If that second projection append is unavailable, a failed
+    // Turn terminal would remove the Turn from every recovery scan and strand
+    // replay at the preceding running view.
+    let provider = ScriptedProvider::scripted(vec![vec![tool_call_event("fixture.tool")]]);
+    let history = MemoryHistory::failing_terminal_projection_append();
+    let mut runner =
+        TurnRunner::new(provider, history.clone()).with_tool_executor(ExecutionToolExecutor);
+
+    let result = runner.execute(command());
+
+    assert!(matches!(
+        result,
+        Err(koduck_ai::application::TurnRunError::Durability(_))
+    ));
+    let state = history.state.lock().expect("history lock");
+    let items = state.items.values().next().expect("accepted turn exists");
+    assert_eq!(
+        payload_kinds(items),
+        ["user_message", "tool_call"],
+        "the missing D-7 terminal projection must be recovered before any Turn terminal",
     );
 }
 

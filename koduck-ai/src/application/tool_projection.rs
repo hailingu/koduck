@@ -343,6 +343,7 @@ pub struct TurnProjectionSink<'a, H> {
     committed_result: Option<CommittedProjectionResult>,
     opaque_success_summary: bool,
     failed: bool,
+    terminal_recovery_required: bool,
 }
 
 /// The final durable outcome that constrains the result handed back to the
@@ -388,6 +389,7 @@ where
             committed_result: None,
             opaque_success_summary: false,
             failed: false,
+            terminal_recovery_required: false,
         }
     }
 
@@ -395,6 +397,20 @@ where
     #[must_use]
     pub fn is_failed(&self) -> bool {
         self.failed
+    }
+
+    /// Reports that a canonical terminal `ToolResult` failed after its D-7 may
+    /// already have committed and must be recovered before the Turn closes.
+    #[must_use]
+    pub(in crate::application) fn terminal_recovery_required(&self) -> bool {
+        self.terminal_recovery_required
+    }
+
+    /// Marks the sink failed and retains whether D-7 recovery must precede the Turn terminal.
+    fn fail_projection(&mut self, terminal_recovery_required: bool) -> ToolProjectionError {
+        self.failed = true;
+        self.terminal_recovery_required = terminal_recovery_required;
+        ToolProjectionError::Unavailable
     }
 
     /// Reports whether the executor durably completed a canonical lifecycle.
@@ -504,9 +520,9 @@ where
             .ok()
             .and_then(|()| self.stage.plan(projection))
         else {
-            self.failed = true;
-            return Err(ToolProjectionError::Unavailable);
+            return Err(self.fail_projection(false));
         };
+        let terminal_projection = matches!(projection, ToolProjection::ToolResult { .. });
         // Preflight the projection's complete item sequence plus the held and
         // newly opened lifecycle reservations against the cumulative per-Turn
         // budgets before any part is appended: no partial prefix and no
@@ -521,8 +537,7 @@ where
                 .check_item_count(next_count)
                 .and_then(|()| policy.accumulate_payload_bytes(next_bytes, item))
             else {
-                self.failed = true;
-                return Err(ToolProjectionError::Unavailable);
+                return Err(self.fail_projection(terminal_projection));
             };
             next_bytes = checked_bytes;
         }
@@ -537,8 +552,7 @@ where
         if policy.check_item_count(total_items).is_err()
             || policy.check_payload_bytes(total_bytes).is_err()
         {
-            self.failed = true;
-            return Err(ToolProjectionError::Unavailable);
+            return Err(self.fail_projection(terminal_projection));
         }
         let planned_payloads = items
             .iter()
@@ -546,12 +560,10 @@ where
             .map(crate::application::NewItem::into_payload)
             .collect::<Vec<_>>();
         let Ok(durable_items) = self.history.append_tool_projection(self.accepted, items) else {
-            self.failed = true;
-            return Err(ToolProjectionError::Unavailable);
+            return Err(self.fail_projection(terminal_projection));
         };
         if !matches_projection_acknowledgement(&durable_items, &planned_payloads) {
-            self.failed = true;
-            return Err(ToolProjectionError::Unavailable);
+            return Err(self.fail_projection(terminal_projection));
         }
         self.durable.extend(durable_items);
         self.item_count = next_count;
