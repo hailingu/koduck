@@ -15,7 +15,6 @@ use crate::application::{ModelInput, ModelProvider, ProviderError, ProviderStrea
 
 mod messages;
 mod stream_state;
-mod unique_json;
 
 use messages::provider_messages;
 use stream_state::StreamState;
