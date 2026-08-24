@@ -19,6 +19,17 @@ test("rejects a record missing a required section", () => {
   assert.match(result.stderr, /missing required section.*Decision/i);
 });
 
+test("rejects a duplicated normalized required section", () => {
+  const root = validRepository();
+  const path = join(root, "docs/adr/ADR-0001-example.md");
+  const content = `${readFileSync(path, "utf8")}\n## Decision [Required]\nContradictory duplicate.\n`;
+  writeFileSync(path, content);
+
+  const result = run(root);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /duplicate required section.*Decision/i);
+});
+
 test("rejects a required section without a requirement-level label", () => {
   const root = validRepository();
   const path = join(root, "docs/adr/ADR-0001-example.md");

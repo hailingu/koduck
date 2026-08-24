@@ -260,16 +260,19 @@ const SECTION_ALIASES = {
   Context: ["Context And Problem Statement"],
 };
 
-function hasSection(found, required) {
+function sectionCount(found, required) {
   const accepted = new Set([required, ...(SECTION_ALIASES[required] ?? [])]);
-  return found.some((heading) => accepted.has(heading));
+  return found.filter((heading) => accepted.has(heading)).length;
 }
 
 function validateRequiredSections(path, markdown, required, errors) {
   const found = headings(markdown);
   for (const section of required) {
-    if (!hasSection(found, section)) {
+    const count = sectionCount(found, section);
+    if (count === 0) {
       errors.push(`${path}: missing required section ${section}`);
+    } else if (count > 1) {
+      errors.push(`${path}: duplicate required section ${section}`);
     }
   }
 }

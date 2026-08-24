@@ -1,3 +1,5 @@
+// ADR: docs/adr/ADR-0003-default-deny-tool-approval-execution-boundary.md
+
 //! Stateful parsing and bounded assembly for one provider stream.
 
 use std::collections::VecDeque;
