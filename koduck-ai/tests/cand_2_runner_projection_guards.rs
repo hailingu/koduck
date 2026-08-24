@@ -535,7 +535,7 @@ impl ToolCallExecutor for PersistentAfterFailureToolExecutor {
             decision: None,
             version: 1,
         };
-        // Over the cumulative budget: the lifecycle reservation fails.
+        // The fixture history refuses this first projection append.
         if projections.append(&requested).is_ok() {
             projections.publish(&requested);
         }
@@ -728,6 +728,15 @@ impl MemoryHistory {
         Self {
             state: Arc::new(Mutex::new(MemoryHistoryState::default())),
             fail_projection_batch_number: Some(2),
+            fail_append_after_projection: false,
+            defer_failed_recovery: true,
+        }
+    }
+
+    fn failing_initial_projection_before_terminal_recovery() -> Self {
+        Self {
+            state: Arc::new(Mutex::new(MemoryHistoryState::default())),
+            fail_projection_batch_number: Some(1),
             fail_append_after_projection: false,
             defer_failed_recovery: true,
         }
@@ -1236,6 +1245,32 @@ fn a_terminal_projection_outage_keeps_the_turn_open_for_d7_recovery() {
         payload_kinds(items),
         ["user_message", "tool_call"],
         "the missing D-7 terminal projection must be recovered before any Turn terminal",
+    );
+}
+
+#[test]
+fn a_terminal_attempt_after_an_earlier_projection_failure_still_requires_recovery() {
+    // A D-6 projection outage can mark the sink failed before production
+    // commits a canonical D-7 cancellation and attempts its terminal D-3
+    // view. The already-failed guard must still retain the terminal recovery
+    // requirement so the Turn remains eligible for canonical backfill.
+    let provider = ScriptedProvider::scripted(vec![vec![tool_call_event("fixture.tool")]]);
+    let history = MemoryHistory::failing_initial_projection_before_terminal_recovery();
+    let mut runner = TurnRunner::new(provider, history.clone())
+        .with_tool_executor(PersistentAfterFailureToolExecutor);
+
+    let result = runner.execute(command());
+
+    assert!(matches!(
+        result,
+        Err(koduck_ai::application::TurnRunError::Durability(_))
+    ));
+    let state = history.state.lock().expect("history lock");
+    let items = state.items.values().next().expect("accepted turn exists");
+    assert_eq!(
+        payload_kinds(items),
+        ["user_message"],
+        "a terminal attempted after an earlier sink failure must keep the Turn open for recovery",
     );
 }
 

@@ -409,7 +409,7 @@ where
     /// Marks the sink failed and retains whether D-7 recovery must precede the Turn terminal.
     fn fail_projection(&mut self, terminal_recovery_required: bool) -> ToolProjectionError {
         self.failed = true;
-        self.terminal_recovery_required = terminal_recovery_required;
+        self.terminal_recovery_required |= terminal_recovery_required;
         ToolProjectionError::Unavailable
     }
 
@@ -506,11 +506,15 @@ where
     H: crate::application::TurnHistory,
 {
     fn append(&mut self, projection: &ToolProjection) -> Result<(), ToolProjectionError> {
+        let terminal_projection = matches!(projection, ToolProjection::ToolResult { .. });
         // Once any projection was rejected or failed to append, the sink
         // stays failed: no later append may resume an incomplete lifecycle
-        // and publish views whose earlier transitions never became durable
+        // and publish views whose earlier transitions never became durable.
+        // A later terminal attempt still proves canonical D-7 may need
+        // backfill, so retain that recovery requirement before returning
         // (projection contract, ADR-0003 TC-06).
         if self.failed {
+            self.terminal_recovery_required |= terminal_projection;
             return Err(ToolProjectionError::Unavailable);
         }
         // The port is untrusted: reject noncanonical tuples and out-of-order
@@ -522,7 +526,6 @@ where
         else {
             return Err(self.fail_projection(false));
         };
-        let terminal_projection = matches!(projection, ToolProjection::ToolResult { .. });
         // Preflight the projection's complete item sequence plus the held and
         // newly opened lifecycle reservations against the cumulative per-Turn
         // budgets before any part is appended: no partial prefix and no
