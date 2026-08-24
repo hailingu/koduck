@@ -18,7 +18,7 @@ use super::execution::{
     IsolatedExecutor, LeaseValidator, ToolExecutionOutcome, rejected_start,
 };
 use super::executor_envelope::{EffectState, ExecutionFailure};
-use super::tool_projection::{ToolProjection, ToolProjectionSink, attempt_version, emit};
+use super::tool_projection::{ToolProjection, ToolProjectionSink, attempt_version};
 
 impl<E, L, C> ExecutionCoordinator<E, L, C>
 where
@@ -65,7 +65,7 @@ where
         // call, so publication can never outrun the canonical running
         // transition and a post-claim fence cannot leave a terminal projection
         // without it.
-        emit_running_projection(projections, &binding);
+        emit_running_projection(projections, &binding)?;
         if matches!(canonical_claim, CanonicalDispatchClaim::ReconciledRunning) {
             if authority.reserve_terminal(attempt).is_err() {
                 return Err(ExecutionPending::ReconciliationRequired {
@@ -269,17 +269,26 @@ where
     }
 }
 
-/// Appends the durable D-3 running view for a canonical version-two attempt.
-fn emit_running_projection(projections: &mut dyn ToolProjectionSink, binding: &ExactActionBinding) {
-    emit(
-        projections,
-        ToolProjection::ToolCall {
-            descriptor_id: binding.action().descriptor_id().to_owned(),
-            descriptor_version: binding.action().descriptor_version().to_owned(),
-            target: binding.action().target().to_owned(),
-            attempt_id: binding.attempt_id(),
-            status: ExecutionStatus::Running,
-            version: attempt_version(ExecutionStatus::Running),
-        },
-    );
+/// Appends the durable D-3 running view before executor dispatch is permitted.
+fn emit_running_projection(
+    projections: &mut dyn ToolProjectionSink,
+    binding: &ExactActionBinding,
+) -> Result<(), ExecutionPending> {
+    let projection = ToolProjection::ToolCall {
+        descriptor_id: binding.action().descriptor_id().to_owned(),
+        descriptor_version: binding.action().descriptor_version().to_owned(),
+        target: binding.action().target().to_owned(),
+        attempt_id: binding.attempt_id(),
+        status: ExecutionStatus::Running,
+        version: attempt_version(ExecutionStatus::Running),
+    };
+    projections.append(&projection).map_err(|error| {
+        eprintln!("event=tool_projection_append_failed error={error} projection_type=tool_call");
+        ExecutionPending::ReconciliationRequired {
+            code: ExecutionFailure::DurabilityUnavailable,
+            effect_state: EffectState::NotStarted,
+        }
+    })?;
+    projections.publish(&projection);
+    Ok(())
 }

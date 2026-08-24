@@ -24,6 +24,7 @@ mod interruption_approval;
 mod interruption_commit;
 mod interruption_ownership;
 mod projection_batch;
+mod recovery_budget;
 /// Production `PostgreSQL` executor using one `SQLx` pool and its owning Tokio runtime.
 #[derive(Clone)]
 pub struct SqlxPostgresExecutor {
@@ -492,6 +493,15 @@ async fn append_expiry_terminal(
     terminal: TerminalOutcome,
     projections: &mut [Item],
 ) -> Result<(), HistoryError> {
+    recovery_budget::validate(
+        transaction,
+        &key.tenant_id,
+        key.thread_id,
+        key.turn_id,
+        projections,
+        &terminal,
+    )
+    .await?;
     let mut next_sequence = u64::try_from(sequence).map_err(|_| HistoryError::Unavailable)?;
     for projection in projections {
         projection.sequence = next_sequence;

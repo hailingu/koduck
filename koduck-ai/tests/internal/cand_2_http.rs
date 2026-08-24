@@ -1278,7 +1278,7 @@ fn replayed_terminal_must_carry_the_canonical_transition_version() {
 }
 
 #[test]
-fn unavailable_projection_append_suppresses_publish_without_changing_the_outcome() {
+fn unavailable_running_projection_stops_before_executor_dispatch() {
     let fixture = driver_fixture();
     let mut projections = UnavailableProjections::default();
     let mut preparer =
@@ -1304,14 +1304,21 @@ fn unavailable_projection_append_suppresses_publish_without_changing_the_outcome
         &mut || 1_000,
         &mut projections,
         &mut koduck_ai::application::NoToolAudits,
-    )
-    .expect("a failed projection append never blocks the canonical outcome");
+    );
 
-    assert!(matches!(outcome, ToolExecutionOutcome::Succeeded { .. }));
+    assert!(matches!(
+        outcome,
+        Err(ToolCallError::Reconciliation(
+            ExecutionPending::ReconciliationRequired {
+                code: ExecutionFailure::DurabilityUnavailable,
+                effect_state: EffectState::NotStarted,
+            }
+        ))
+    ));
     assert_eq!(
         projections.publishes, 0,
         "nothing is published without a durable append"
     );
-    assert_eq!(coordinator.executor().calls, 1);
-    assert_eq!(coordinator.committer().calls, 1);
+    assert_eq!(coordinator.executor().calls, 0);
+    assert_eq!(coordinator.committer().calls, 0);
 }

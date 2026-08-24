@@ -14,6 +14,7 @@ use koduck_ai::application::{
     ExecutionResponseBuilder, ExecutorError, IsolatedExecutor, LeaseCheck, LeaseValidator,
     PolicyDecision, PreparedCloseResolution, ToolAuthorizationService, ToolExecutionAuthorityRoot,
     ToolExecutionOutcome, ToolExecutionRuntime, ToolPolicy, ToolPolicyConfiguration,
+    ToolProjection, ToolProjectionError, ToolProjectionSink,
 };
 use koduck_ai::domain::execution::{
     ApprovalDecision, ApprovalError, ApprovalRequest, ApprovalStatus, AttemptId,
@@ -53,6 +54,18 @@ impl IsolatedExecutor for RecordingExecutor {
 struct RecordingCommitter {
     calls: usize,
     result: Result<AttemptCommitResult, AttemptCommitError>,
+}
+
+struct FailingProjectionSink;
+
+impl ToolProjectionSink for FailingProjectionSink {
+    fn append(&mut self, _projection: &ToolProjection) -> Result<(), ToolProjectionError> {
+        Err(ToolProjectionError::Unavailable)
+    }
+
+    fn publish(&mut self, _projection: &ToolProjection) {
+        panic!("a failed projection append must never publish");
+    }
 }
 
 impl AttemptCommitter for RecordingCommitter {
@@ -251,6 +264,37 @@ fn fencing_before_dispatch_makes_no_executor_call() {
         })
     );
     assert_eq!(coordinator.executor().calls, 0);
+}
+
+#[test]
+fn running_projection_failure_stops_before_executor_dispatch() {
+    let (binding, approval) = accepted();
+    let (mut authority, mut attempt) = prepared(binding);
+    let executor = RecordingExecutor {
+        calls: 0,
+        response: Ok(response(EffectState::Started, b"result")),
+    };
+    let lease = SequencedLease {
+        decisions: VecDeque::from([true, true, true]),
+    };
+    let mut coordinator = ExecutionCoordinator::new(executor, lease, committer(Ok(())));
+
+    assert_eq!(
+        coordinator.execute_projected(
+            &mut authority,
+            Some(&approval),
+            &mut attempt,
+            2,
+            &mut || 2,
+            &mut FailingProjectionSink,
+        ),
+        Err(ExecutionPending::ReconciliationRequired {
+            code: ExecutionFailure::DurabilityUnavailable,
+            effect_state: EffectState::NotStarted,
+        })
+    );
+    assert_eq!(coordinator.executor().calls, 0);
+    assert_eq!(attempt.status(), ExecutionStatus::Running);
 }
 
 #[test]

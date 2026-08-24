@@ -6,7 +6,7 @@
 use super::harness;
 use koduck_ai::adapters::execution::SqlxApprovalRecordStore;
 use koduck_ai::adapters::history::postgres::PostgresExecutor;
-use koduck_ai::application::{AcceptedTurn, TurnHistory};
+use koduck_ai::application::{AcceptedTurn, HistoryError, TurnHistory};
 use koduck_ai::domain::execution::{ApprovalStatus, ExecutionStatus};
 use koduck_ai::domain::{Item, ItemPayload, TenantId, ToolEffectState};
 
@@ -1103,4 +1103,163 @@ fn lease_recovery_waits_for_a_running_action_deadline() {
         (turn_status.as_str(), attempt_status.as_str()),
         ("started", "running")
     );
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one regression exercises both terminal-recovery owners against the same atomic item-budget boundary"
+)]
+fn terminal_recovery_rejects_a_batch_beyond_the_turn_item_budget() {
+    // Both recovery owners must preflight the complete missing D-3 batch plus
+    // the mandatory Turn terminal. With 63 existing provider items, one
+    // recovered D-7 projection and the terminal would total 65 and must roll
+    // back atomically rather than bypass the CAND-1 64-item cap.
+    let Some(harness) = harness() else {
+        return;
+    };
+    for (suffix, turn_status, expired) in [
+        ("expiry", "started", true),
+        ("foreground", "recovery-pending", false),
+    ] {
+        let tenant = TenantId::new(format!("recovery-budget-{suffix}-{}", uuid::Uuid::new_v4()))
+            .expect("valid unique tenant");
+        let thread = koduck_ai::domain::ThreadId::new();
+        let turn = koduck_ai::domain::TurnId::new();
+        let attempt_id = uuid::Uuid::new_v4();
+        harness.runtime.block_on(async {
+            sqlx::query(
+                "INSERT INTO threads (tenant_id, subject_id, thread_id) VALUES ($1, $2, $3)",
+            )
+            .bind(tenant.as_str())
+            .bind(format!("recovery-budget-{suffix}"))
+            .bind(thread.as_uuid())
+            .execute(&harness.pool)
+            .await
+            .expect("fixture thread");
+            sqlx::query(
+                "INSERT INTO turns (tenant_id, thread_id, turn_id, status, next_sequence) \
+                 VALUES ($1, $2, $3, $4, 64)",
+            )
+            .bind(tenant.as_str())
+            .bind(thread.as_uuid())
+            .bind(turn.as_uuid())
+            .bind(turn_status)
+            .execute(&harness.pool)
+            .await
+            .expect("fixture budget-bound turn");
+            let lease_times = if expired {
+                ("1 hour", "55 minutes")
+            } else {
+                ("0 seconds", "1 hour")
+            };
+            sqlx::query(
+                "INSERT INTO turn_leases \
+                 (tenant_id, thread_id, turn_id, generation, renewed_at, expires_at, fenced) \
+                 VALUES ($1, $2, $3, 1, CURRENT_TIMESTAMP - $4::INTERVAL, \
+                         CURRENT_TIMESTAMP + $5::INTERVAL, FALSE)",
+            )
+            .bind(tenant.as_str())
+            .bind(thread.as_uuid())
+            .bind(turn.as_uuid())
+            .bind(lease_times.0)
+            .bind(lease_times.1)
+            .execute(&harness.pool)
+            .await
+            .expect("fixture lease");
+            for sequence in 1_i64..=63 {
+                sqlx::query(
+                    "INSERT INTO turn_items \
+                     (tenant_id, thread_id, turn_id, sequence, item_id, item_type, payload) \
+                     VALUES ($1, $2, $3, $4, $5, 'agent_message_delta', '{\"content\":\"x\"}')",
+                )
+                .bind(tenant.as_str())
+                .bind(thread.as_uuid())
+                .bind(turn.as_uuid())
+                .bind(sequence)
+                .bind(uuid::Uuid::new_v4())
+                .execute(&harness.pool)
+                .await
+                .expect("fixture provider item");
+            }
+            sqlx::query(
+                "INSERT INTO tool_execution_attempts \
+                 (tenant_id, attempt_id, thread_id, turn_id, lease_generation, \
+                  descriptor_id, descriptor_version, effect, action_digest, profile_id, \
+                  profile_version, prepared_at_millis, status, version) \
+                 VALUES ($1, $2, $3, $4, 1, 'fixture.tool', 'v1', 'external_write', \
+                         'ab', 'profile-default', 'v1', 1, 'prepared', 1)",
+            )
+            .bind(tenant.as_str())
+            .bind(attempt_id)
+            .bind(thread.as_uuid())
+            .bind(turn.as_uuid())
+            .execute(&harness.pool)
+            .await
+            .expect("fixture prepared attempt");
+        });
+        let executor = koduck_ai::adapters::history::postgres::SqlxPostgresExecutor::new(
+            harness.pool.clone(),
+            harness.runtime.handle().clone(),
+        );
+        let outcome = if expired {
+            let key = koduck_ai::adapters::history::postgres::LeaseKey::new(
+                tenant.clone(),
+                thread,
+                turn,
+                koduck_ai::domain::LeaseGeneration::initial(),
+            );
+            executor
+                .reconcile_expired(
+                    &key,
+                    koduck_ai::adapters::history::postgres::unix_time_ms(),
+                    koduck_ai::adapters::history::postgres::LeaseTiming::cand_1(),
+                )
+                .map(|_| ())
+        } else {
+            let accepted = AcceptedTurn::new(
+                tenant.clone(),
+                thread,
+                turn,
+                koduck_ai::domain::LeaseGeneration::initial(),
+                Item::new(
+                    1,
+                    ItemPayload::UserMessage {
+                        content: "recovery budget fixture".to_owned(),
+                    },
+                ),
+            );
+            executor
+                .recover_failed(
+                    &accepted,
+                    koduck_ai::adapters::history::postgres::LeaseTiming::cand_1(),
+                )
+                .map(|_| ())
+        };
+        assert_eq!(outcome, Err(HistoryError::Unavailable));
+        let (persisted_turn_status, persisted_attempt_status, item_count): (String, String, i64) =
+            harness
+                .runtime
+                .block_on(async {
+                    sqlx::query_as(
+                        "SELECT turn.status, attempt.status, COUNT(item.item_id) \
+                     FROM turns turn \
+                     JOIN tool_execution_attempts attempt \
+                       USING (tenant_id, thread_id, turn_id) \
+                     LEFT JOIN turn_items item \
+                       USING (tenant_id, thread_id, turn_id) \
+                     WHERE turn.tenant_id = $1 AND turn.thread_id = $2 AND turn.turn_id = $3 \
+                     GROUP BY turn.status, attempt.status",
+                    )
+                    .bind(tenant.as_str())
+                    .bind(thread.as_uuid())
+                    .bind(turn.as_uuid())
+                    .fetch_one(&harness.pool)
+                    .await
+                })
+                .expect("rolled-back recovery state is readable");
+        assert_eq!(persisted_turn_status, turn_status);
+        assert_eq!(persisted_attempt_status, "prepared");
+        assert_eq!(item_count, 63);
+    }
 }

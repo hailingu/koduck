@@ -10,7 +10,7 @@ use crate::domain::{Item, ItemPayload, TerminalOutcome};
 use super::super::{LeaseTiming, RecoveryOutcome, attempt_recovery, unix_time_ms};
 use super::{
     LeaseKey, SqlxPostgresExecutor, generation_i64, insert_item, is_terminal_status,
-    milliseconds_i64, sequence_i64, unavailable,
+    milliseconds_i64, recovery_budget, sequence_i64, unavailable,
 };
 
 impl SqlxPostgresExecutor {
@@ -135,6 +135,15 @@ async fn append_recovered_terminal(
     terminal: TerminalOutcome,
     projections: &mut [Item],
 ) -> Result<(), HistoryError> {
+    recovery_budget::validate(
+        transaction,
+        &turn.tenant_id,
+        turn.thread_id,
+        turn.turn_id,
+        projections,
+        &terminal,
+    )
+    .await?;
     let mut next_sequence = u64::try_from(sequence).map_err(|_| HistoryError::Unavailable)?;
     for projection in projections {
         projection.sequence = next_sequence;

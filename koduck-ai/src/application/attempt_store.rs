@@ -175,7 +175,12 @@ impl DurableAttemptTerminal {
         match self.status {
             ExecutionStatus::Cancelled => match status {
                 ExecutionStatus::Prepared => self.effect_state == EffectState::NotStarted,
-                ExecutionStatus::Running => true,
+                ExecutionStatus::Running => {
+                    matches!(
+                        self.effect_state,
+                        EffectState::NotStarted | EffectState::Started
+                    )
+                }
                 _ => false,
             },
             ExecutionStatus::Succeeded | ExecutionStatus::Failed | ExecutionStatus::TimedOut => {

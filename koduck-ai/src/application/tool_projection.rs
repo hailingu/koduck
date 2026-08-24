@@ -97,9 +97,10 @@ pub enum ToolProjectionError {
 ///
 /// `append` performs the durable append; `publish` makes the projection
 /// externally visible and MAY be called only after `append` reported success
-/// for the same value. A failed append suppresses publication but changes no
-/// canonical D-6/D-7 state: the projection is a view, so authority and
-/// dispatch decisions never depend on it (ADR-0003 TC-06).
+/// for the same value. A failed append suppresses publication and changes no
+/// canonical D-6/D-7 state. Callers that require a durable running view before
+/// dispatch must propagate that failure and withhold the executor permit
+/// (ADR-0003 TC-06).
 pub trait ToolProjectionSink {
     /// Durably appends one projection.
     ///

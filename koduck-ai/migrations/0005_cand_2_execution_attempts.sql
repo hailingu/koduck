@@ -86,6 +86,9 @@ CREATE TABLE IF NOT EXISTS tool_execution_attempts (
             AND (started_at_millis IS NULL OR terminal_at_millis >= started_at_millis)
             AND (status = 'failed' OR failure_code IS NULL)
             AND (status <> 'failed' OR failure_code ~ '[^[:space:]]')
+            -- Unknown effect evidence cannot prove cancellation. Retain that
+            -- indeterminate dispatched effect as failed or timed_out instead.
+            AND (status <> 'cancelled' OR effect_state <> 'unknown')
             AND (status = 'succeeded' OR output IS NULL)
             AND (status <> 'succeeded' OR output IS NOT NULL)
         )

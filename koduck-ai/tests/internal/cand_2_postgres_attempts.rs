@@ -484,12 +484,16 @@ fn terminal_legality_mirrors_the_prepared_cancellation_invariant() {
     });
     assert!(not_started.legal_from(ExecutionStatus::Prepared));
     assert!(not_started.legal_from(ExecutionStatus::Running));
-    for effect_state in [EffectState::Started, EffectState::Unknown] {
-        let terminal =
-            DurableAttemptTerminal::from_outcome(&ToolExecutionOutcome::Cancelled { effect_state });
-        assert!(!terminal.legal_from(ExecutionStatus::Prepared));
-        assert!(terminal.legal_from(ExecutionStatus::Running));
-    }
+    let started = DurableAttemptTerminal::from_outcome(&ToolExecutionOutcome::Cancelled {
+        effect_state: EffectState::Started,
+    });
+    assert!(!started.legal_from(ExecutionStatus::Prepared));
+    assert!(started.legal_from(ExecutionStatus::Running));
+    let unknown = DurableAttemptTerminal::from_outcome(&ToolExecutionOutcome::Cancelled {
+        effect_state: EffectState::Unknown,
+    });
+    assert!(!unknown.legal_from(ExecutionStatus::Prepared));
+    assert!(!unknown.legal_from(ExecutionStatus::Running));
     assert!(!succeeded_terminal().legal_from(ExecutionStatus::Prepared));
     assert!(succeeded_terminal().legal_from(ExecutionStatus::Running));
     assert!(!not_started.legal_from(ExecutionStatus::Succeeded));
@@ -969,7 +973,7 @@ fn illegal_tuple_insert() -> &'static str {
 /// decided by its targeted condition alone. Tuple fields are (`status`,
 /// `started_at`, `effect_state`, `failure_code`, `output`, `terminal_at`,
 /// `version`).
-fn legal_terminal_tuples() -> [IllegalTuple<'static>; 2] {
+fn legal_terminal_tuples() -> [IllegalTuple<'static>; 3] {
     [
         (
             "succeeded",
@@ -990,6 +994,16 @@ fn legal_terminal_tuples() -> [IllegalTuple<'static>; 2] {
             Some(2_000),
             3,
         ),
+        // A dispatched cancellation may carry positive started evidence.
+        (
+            "cancelled",
+            Some(2_000),
+            Some("started"),
+            None,
+            None,
+            Some(2_000),
+            3,
+        ),
     ]
 }
 
@@ -997,7 +1011,7 @@ fn legal_terminal_tuples() -> [IllegalTuple<'static>; 2] {
 /// `tool_execution_attempts` schema while otherwise satisfying its status
 /// arm, mirroring the D-6 illegal-terminal table: they must be rejected by
 /// the database itself.
-fn illegal_terminal_tuples(over_limit_output: &[u8]) -> [IllegalTuple<'_>; 9] {
+fn illegal_terminal_tuples(over_limit_output: &[u8]) -> [IllegalTuple<'_>; 10] {
     [
         // Running requires a started-at timestamp.
         ("running", None, None, None, None, None, 2),
@@ -1067,6 +1081,18 @@ fn illegal_terminal_tuples(over_limit_output: &[u8]) -> [IllegalTuple<'_>; 9] {
         (
             "cancelled",
             None,
+            Some("unknown"),
+            None,
+            None,
+            Some(2_000),
+            3,
+        ),
+        // Unknown effect evidence cannot establish a canonical cancellation,
+        // even after dispatch; reconciliation must retain an indeterminate
+        // effect as a failure or timeout instead.
+        (
+            "cancelled",
+            Some(2_000),
             Some("unknown"),
             None,
             None,
