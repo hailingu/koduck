@@ -573,6 +573,23 @@ fn invalid_clean_end_sequences_fail_closed() {
             "INVALID_FINISH_FRAME",
         ),
         (
+            "conflicting finish reasons within one multi-choice frame",
+            vec![
+                r#"data: {"choices":[{"delta":{},"finish_reason":"stop"},{"delta":{},"finish_reason":"length"}]}"#,
+                usage,
+                CLEAN_END,
+            ],
+            "INVALID_FRAME",
+        ),
+        (
+            "a multi-choice frame without any finish is out of contract",
+            vec![
+                r#"data: {"choices":[{"delta":{"content":"A"}},{"delta":{"content":"B"}}]}"#,
+                CLEAN_END,
+            ],
+            "INVALID_FRAME",
+        ),
+        (
             "tool output after a finish frame",
             vec![stop, tool_fragment, CLEAN_END],
             "INVALID_FINISH_FRAME",

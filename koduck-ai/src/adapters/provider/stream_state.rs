@@ -138,9 +138,17 @@ impl StreamState {
             self.usage_seen = true;
             return Ok(Some(ProviderEvent::Usage(usage)));
         }
-        let choice = document
-            .pointer("/choices/0")
+        let choices = document
+            .get("choices")
+            .and_then(Value::as_array)
             .ok_or_else(|| protocol_error("INVALID_FRAME"))?;
+        if choices.len() != 1 {
+            // One request selects exactly one choice; additional choices carry
+            // unvalidated, potentially conflicting terminal evidence that
+            // must fail closed instead of completing (ADR-0004 PSC-3/PSC-5).
+            return Err(protocol_error("INVALID_FRAME"));
+        }
+        let choice = &choices[0];
         let finish_before_frame = self.finish.is_some();
         match choice.get("finish_reason") {
             None | Some(Value::Null) => {}
