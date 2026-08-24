@@ -170,6 +170,12 @@ impl StreamState {
         }
         let finishes_tool_calls = self.finish.as_deref() == Some("tool_calls");
         let delta = choice.get("delta").unwrap_or(&Value::Null);
+        if !matches!(delta, Value::Null | Value::Object(_)) {
+            // A malformed delta envelope must fail closed before its finish
+            // is trusted: clean-end completion is authorized only by a
+            // validated stop frame (ADR-0004 PSC-3).
+            return Err(protocol_error("INVALID_DELTA_FRAME"));
+        }
         let content = match delta.get("content") {
             Some(Value::String(content)) if !content.is_empty() => Some(content.clone()),
             None | Some(Value::Null | Value::String(_)) => None,

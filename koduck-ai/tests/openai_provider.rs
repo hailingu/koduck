@@ -590,6 +590,19 @@ fn invalid_clean_end_sequences_fail_closed() {
             "INVALID_FRAME",
         ),
         (
+            "a non-object delta with a stop finish fails closed",
+            vec![
+                r#"data: {"choices":[{"delta":"corrupt","finish_reason":"stop"}]}"#,
+                CLEAN_END,
+            ],
+            "INVALID_DELTA_FRAME",
+        ),
+        (
+            "a non-object delta without any finish fails closed",
+            vec![r#"data: {"choices":[{"delta":"corrupt"}]}"#, CLEAN_END],
+            "INVALID_DELTA_FRAME",
+        ),
+        (
             "tool output after a finish frame",
             vec![stop, tool_fragment, CLEAN_END],
             "INVALID_FINISH_FRAME",
