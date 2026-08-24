@@ -1,3 +1,5 @@
+// ADR: docs/adr/ADR-0002-required-ai-ci-postgres-verification.md
+
 import { existsSync, realpathSync, statSync } from "node:fs";
 import { relative, resolve, sep } from "node:path";
 

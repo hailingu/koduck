@@ -1,3 +1,5 @@
+// ADR: docs/adr/ADR-0002-required-ai-ci-postgres-verification.md
+
 // Builds terminal ADR and OCR evidence validators from shared lifecycle and
 // Markdown table helpers.
 export function createTerminalValidator(context) {

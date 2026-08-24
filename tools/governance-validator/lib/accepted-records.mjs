@@ -1,3 +1,5 @@
+// ADR: docs/adr/ADR-0002-required-ai-ci-postgres-verification.md
+
 // Builds the accepted-stage ADR, OCR, and ADD content validator from shared
 // Markdown parsing and lifecycle helpers.
 export function createAcceptedRecordValidator(context) {

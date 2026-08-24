@@ -1,3 +1,5 @@
+// ADR: docs/adr/ADR-0002-required-ai-ci-postgres-verification.md
+
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";

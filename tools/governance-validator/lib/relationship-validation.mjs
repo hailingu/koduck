@@ -1,3 +1,5 @@
+// ADR: docs/adr/ADR-0002-required-ai-ci-postgres-verification.md
+
 // Builds record-index and reciprocal-link validators from filesystem and
 // Markdown parsing dependencies supplied by the CLI entry point.
 export function createRelationshipValidator(context) {

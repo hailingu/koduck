@@ -1,3 +1,5 @@
+// ADR: docs/adr/ADR-0002-required-ai-ci-postgres-verification.md
+
 // Builds the Mermaid syntax and ADD diagram-completeness validator from the
 // configured parser and shared Markdown helpers.
 export function createMermaidValidator(context) {
