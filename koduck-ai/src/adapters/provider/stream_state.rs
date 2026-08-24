@@ -1,4 +1,5 @@
 // ADR: docs/adr/ADR-0003-default-deny-tool-approval-execution-boundary.md
+// ADR: docs/adr/ADR-0004-provider-stream-completion-normalization.md
 
 //! Stateful parsing and bounded assembly for one provider stream.
 
@@ -30,6 +31,10 @@ pub(super) struct StreamState {
     /// The stream finished a Tool-call round, so its end is not a Turn
     /// completion: the runner continues the model with the committed results.
     served_tool_round: bool,
+    /// The one finish reason validated so far, when any. `stop` and
+    /// `tool_calls` carry terminal semantics; every other value fails closed
+    /// at explicit clean end (ADR-0004 PSC-3/PSC-4/PSC-5).
+    finish: Option<String>,
 }
 
 /// One Tool call whose streamed fragments are still being assembled.
@@ -55,6 +60,17 @@ impl StreamState {
             let frame = frames.next()?;
             match frame {
                 Ok(OpenAiFrame::Pending) => return Some(ProviderEvent::Pending),
+                Ok(OpenAiFrame::CleanEnd) => match self.clean_end() {
+                    Ok(Some(event)) => {
+                        self.ready.push_back(event);
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        self.terminated = true;
+                        self.ready.clear();
+                        return Some(ProviderEvent::Error { code: error.code });
+                    }
+                },
                 Ok(OpenAiFrame::Data(frame)) => match self.parse_frame(&frame) {
                     Ok(Some(event)) => {
                         self.ready.push_back(event);
@@ -80,22 +96,7 @@ impl StreamState {
             .strip_prefix("data: ")
             .ok_or_else(|| protocol_error("INVALID_FRAME"))?;
         if data == "[DONE]" {
-            if !self.assembled.is_empty() {
-                // Tool-call fragments were accumulated but the provider ended
-                // the stream without `finish_reason: "tool_calls"`; accepting
-                // completion would silently drop the requested action, so the
-                // malformed sequence fails closed instead.
-                return Err(protocol_error("INVALID_TOOL_CALL_FRAME"));
-            }
-            if self.served_tool_round {
-                // A Tool-call round's stream end carries no Turn completion:
-                // the runner starts the continuation request carrying the
-                // committed results and accepts completion only from that
-                // continuation (ADR-0003 TC-11).
-                self.terminated = true;
-                return Ok(None);
-            }
-            return Ok(Some(ProviderEvent::Completed));
+            return self.done_sentinel();
         }
         let document: Value =
             serde_json::from_str(data).map_err(|_| protocol_error("INVALID_FRAME"))?;
@@ -108,6 +109,11 @@ impl StreamState {
             return Err(protocol_error(code));
         }
         if let Some(error) = document.get("error").filter(|error| !error.is_null()) {
+            if self.finish.is_some() {
+                // Error output after a finish frame is late output
+                // (ADR-0004 PSC-5).
+                return Err(protocol_error("INVALID_FINISH_FRAME"));
+            }
             let code = error
                 .get("code")
                 .and_then(Value::as_str)
@@ -117,37 +123,33 @@ impl StreamState {
             }));
         }
         if let Some(usage_value) = document.get("usage").filter(|usage| !usage.is_null()) {
-            let Some(choices) = document.get("choices").and_then(Value::as_array) else {
-                return Err(protocol_error("INVALID_USAGE_FRAME"));
-            };
-            if !choices.is_empty() {
-                return Err(protocol_error("INVALID_USAGE_FRAME"));
-            }
-            let input_tokens = usage_value
-                .get("prompt_tokens")
-                .and_then(Value::as_u64)
-                .ok_or_else(|| protocol_error("INVALID_USAGE_FRAME"))?;
-            let output_tokens = usage_value
-                .get("completion_tokens")
-                .and_then(Value::as_u64)
-                .ok_or_else(|| protocol_error("INVALID_USAGE_FRAME"))?;
-            let total_tokens = usage_value
-                .get("total_tokens")
-                .and_then(Value::as_u64)
-                .ok_or_else(|| protocol_error("INVALID_USAGE_FRAME"))?;
-            let usage = Usage::new(input_tokens, output_tokens)
-                .map_err(|_| protocol_error("INVALID_USAGE_FRAME"))?;
-            if usage.total_tokens != total_tokens {
-                return Err(protocol_error("INVALID_USAGE_FRAME"));
-            }
+            let usage = Self::parse_usage_frame(&document, usage_value)?;
             self.usage_seen = true;
             return Ok(Some(ProviderEvent::Usage(usage)));
         }
         let choice = document
             .pointer("/choices/0")
             .ok_or_else(|| protocol_error("INVALID_FRAME"))?;
-        let finishes_tool_calls =
-            choice.get("finish_reason").and_then(Value::as_str) == Some("tool_calls");
+        let finish_before_frame = self.finish.is_some();
+        match choice.get("finish_reason") {
+            None | Some(Value::Null) => {}
+            Some(Value::String(reason)) => {
+                if finish_before_frame {
+                    // A repeated or conflicting finish reason is late output
+                    // (ADR-0004 PSC-5).
+                    return Err(protocol_error("INVALID_FINISH_FRAME"));
+                }
+                self.finish = Some(reason.clone());
+            }
+            Some(_) => return Err(protocol_error("INVALID_FRAME")),
+        }
+        if finish_before_frame {
+            // Only an optional valid usage frame may follow a finish frame
+            // before `[DONE]` or explicit clean end; later content, Tool
+            // fragments, or empty deltas are late output (ADR-0004 PSC-5).
+            return Err(protocol_error("INVALID_FINISH_FRAME"));
+        }
+        let finishes_tool_calls = self.finish.as_deref() == Some("tool_calls");
         let delta = choice.get("delta").unwrap_or(&Value::Null);
         let content = match delta.get("content") {
             Some(Value::String(content)) if !content.is_empty() => Some(content.clone()),
@@ -180,6 +182,83 @@ impl StreamState {
             return Ok(None);
         }
         Ok(content.map(ProviderEvent::Delta))
+    }
+
+    /// Applies the `[DONE]` sentinel: it is terminal evidence by
+    /// itself and does not require an earlier finish reason (ADR-0004 PSC-2).
+    /// Terminating on the sentinel also keeps the transport's trailing
+    /// clean-end frame from producing a second completion.
+    fn done_sentinel(&mut self) -> Result<Option<ProviderEvent>, ProviderError> {
+        if !self.assembled.is_empty() {
+            // Tool-call fragments were accumulated but the provider ended
+            // the stream without `finish_reason: "tool_calls"`; accepting
+            // completion would silently drop the requested action, so the
+            // malformed sequence fails closed instead.
+            return Err(protocol_error("INVALID_TOOL_CALL_FRAME"));
+        }
+        if self.served_tool_round {
+            // A Tool-call round's stream end carries no Turn completion:
+            // the runner starts the continuation request carrying the
+            // committed results and accepts completion only from that
+            // continuation (ADR-0003 TC-11).
+            self.terminated = true;
+            return Ok(None);
+        }
+        self.terminated = true;
+        Ok(Some(ProviderEvent::Completed))
+    }
+
+    /// Validates one final usage frame (ADR-0001): it carries no choices and
+    /// its counters form exactly one owned `Usage`.
+    fn parse_usage_frame(document: &Value, usage_value: &Value) -> Result<Usage, ProviderError> {
+        let Some(choices) = document.get("choices").and_then(Value::as_array) else {
+            return Err(protocol_error("INVALID_USAGE_FRAME"));
+        };
+        if !choices.is_empty() {
+            return Err(protocol_error("INVALID_USAGE_FRAME"));
+        }
+        let input_tokens = usage_value
+            .get("prompt_tokens")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| protocol_error("INVALID_USAGE_FRAME"))?;
+        let output_tokens = usage_value
+            .get("completion_tokens")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| protocol_error("INVALID_USAGE_FRAME"))?;
+        let total_tokens = usage_value
+            .get("total_tokens")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| protocol_error("INVALID_USAGE_FRAME"))?;
+        let usage = Usage::new(input_tokens, output_tokens)
+            .map_err(|_| protocol_error("INVALID_USAGE_FRAME"))?;
+        if usage.total_tokens != total_tokens {
+            return Err(protocol_error("INVALID_USAGE_FRAME"));
+        }
+        Ok(usage)
+    }
+
+    /// Applies the explicit transport clean end (ADR-0004 PSC-3/PSC-4/PSC-5):
+    /// only a previously validated `stop` finish may complete the Turn, a
+    /// served Tool-call round ends without Turn completion so the runner
+    /// continues under ADR-0003, and every other terminal state fails closed
+    /// with a typed provider error.
+    fn clean_end(&mut self) -> Result<Option<ProviderEvent>, ProviderError> {
+        if !self.assembled.is_empty() {
+            // Fragments were accumulated without `finish_reason:
+            // "tool_calls"`; accepting completion would silently drop the
+            // requested action, so the same fail-closed rule as `[DONE]`
+            // applies (ADR-0004 PSC-5).
+            return Err(protocol_error("INVALID_TOOL_CALL_FRAME"));
+        }
+        if self.served_tool_round {
+            self.terminated = true;
+            return Ok(None);
+        }
+        if self.finish.as_deref() == Some("stop") {
+            self.terminated = true;
+            return Ok(Some(ProviderEvent::Completed));
+        }
+        Err(protocol_error("OPENAI_UNEXPECTED_EOF"))
     }
 
     /// Merges one frame of streamed Tool-call fragments into the assembly.

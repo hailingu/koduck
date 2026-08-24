@@ -1,4 +1,5 @@
 // ADR: docs/adr/ADR-0001-provider-neutral-turn-kernel.md
+// ADR: docs/adr/ADR-0004-provider-stream-completion-normalization.md
 
 //! OpenAI-compatible protocol translation into provider-neutral application events.
 
@@ -74,6 +75,10 @@ pub enum OpenAiFrame {
     Data(String),
     /// No frame arrived during the bounded control-poll interval.
     Pending,
+    /// Explicit clean end: the HTTP response body reached a successful EOF
+    /// after every buffered byte was decoded (ADR-0004 PSC-1). Emitted at
+    /// most once per stream, ordered after every decoded data frame.
+    CleanEnd,
 }
 
 /// A lazy sequence of OpenAI-compatible SSE frames and idle polls.
@@ -240,7 +245,14 @@ async fn pump_response(
         let _ = sender
             .send(Err(transport_error("OPENAI_EMPTY_STREAM")))
             .await;
+        return;
     }
+    // Successful decoded body EOF emits the one explicit clean-end frame,
+    // ordered after every decoded data frame (ADR-0004 PSC-1). Response-header
+    // and stream-idle timeouts, total timeout, body-read failures, oversized
+    // frames, and consumer cancellation all return before this point, so they
+    // never emit clean end; a closed channel drops the send without an error.
+    let _ = sender.send(Ok(OpenAiFrame::CleanEnd)).await;
 }
 
 async fn consume_chunk(

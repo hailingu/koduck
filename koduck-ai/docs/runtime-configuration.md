@@ -1,5 +1,6 @@
 <!-- ADR: docs/adr/ADR-0001-provider-neutral-turn-kernel.md -->
 <!-- ADR: docs/adr/ADR-0003-default-deny-tool-approval-execution-boundary.md -->
+<!-- ADR: docs/adr/ADR-0004-provider-stream-completion-normalization.md -->
 
 # Koduck AI Runtime Configuration
 
@@ -115,6 +116,15 @@ unavailable probe retains that authority.
 
 ## Operational Bounds
 
+- An OpenAI-compatible Chat Completions stream completes a Turn on either the
+  `data: [DONE]` sentinel or exactly one validated `finish_reason: "stop"`
+  followed only by an optional valid usage frame and the transport's explicit
+  clean end after successful body EOF. A `finish_reason: "tool_calls"` clean
+  end finishes only that model round and continues through the Tool-call
+  boundary. Every other ending — including no finish reason, unsupported or
+  repeated finish reasons, late output, timeout, body failure, cancellation,
+  or truncation — remains a typed provider failure; no provider hostname,
+  model, or credential selects completion semantics (ADR-0004).
 - Provider connection establishment is limited to 5 seconds, response headers
   to 30 seconds, inactivity between response body chunks to 30 seconds, and
   total response processing to 120 seconds. A deadline produces a provider

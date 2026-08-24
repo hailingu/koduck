@@ -1,4 +1,5 @@
 // ADR: docs/adr/ADR-0001-provider-neutral-turn-kernel.md
+// ADR: docs/adr/ADR-0004-provider-stream-completion-normalization.md
 
 use koduck_ai::adapters::provider::{
     OpenAiCompatibleProvider, OpenAiFrame, OpenAiFrameStream, OpenAiProtocolTransport,
@@ -6,6 +7,12 @@ use koduck_ai::adapters::provider::{
 };
 use koduck_ai::application::{ModelInput, ModelProvider, ProviderEvent};
 use koduck_ai::domain::{TenantId, ThreadId, TurnId, Usage};
+
+/// Deterministic fixture sentinel standing in for one explicit transport
+/// clean end (ADR-0004 PSC-1): appended after the final `data:` frame, it
+/// yields the production transport's ordered `OpenAiFrame::CleanEnd`. The
+/// NUL byte cannot collide with a `data: ` frame.
+const CLEAN_END: &str = "\u{0}clean-end";
 
 struct DeterministicProtocolServer {
     frames: Vec<String>,
@@ -16,13 +23,13 @@ impl OpenAiProtocolTransport for DeterministicProtocolServer {
         &mut self,
         _input: &ModelInput,
     ) -> Result<OpenAiFrameStream, OpenAiTransportError> {
-        Ok(Box::new(
-            self.frames
-                .clone()
-                .into_iter()
-                .map(OpenAiFrame::Data)
-                .map(Ok),
-        ))
+        Ok(Box::new(self.frames.clone().into_iter().map(|frame| {
+            if frame == CLEAN_END {
+                Ok(OpenAiFrame::CleanEnd)
+            } else {
+                Ok(OpenAiFrame::Data(frame))
+            }
+        })))
     }
 }
 
@@ -427,4 +434,164 @@ fn done_with_unfinished_tool_call_fragments_fails_closed() {
         }],
         "[DONE] with unfinished Tool-call fragments must fail closed"
     );
+}
+
+#[test]
+fn completion_variants_map_to_the_same_owned_events() {
+    // ADR-0004 PSC-2/PSC-3: the `[DONE]` sentinel and one validated
+    // `finish_reason: "stop"` followed by optional usage and an explicit
+    // clean end are equivalent terminal evidence.
+    let server = DeterministicProtocolServer {
+        frames: vec![
+            r#"data: {"choices":[{"delta":{"content":"A"}}]}"#.to_owned(),
+            r#"data: {"choices":[],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}"#.to_owned(),
+            "data: [DONE]".to_owned(),
+        ],
+    };
+    let mut sentinel_provider = OpenAiCompatibleProvider::new(server);
+    let sentinel_events = sentinel_provider
+        .stream(model_input())
+        .expect("protocol stream opens")
+        .collect::<Vec<_>>();
+    assert_eq!(
+        sentinel_events,
+        vec![
+            ProviderEvent::Delta("A".to_owned()),
+            ProviderEvent::Usage(Usage::new(3, 2).expect("valid usage")),
+            ProviderEvent::Completed,
+        ]
+    );
+
+    let server = DeterministicProtocolServer {
+        frames: vec![
+            r#"data: {"choices":[{"delta":{"content":"A"},"finish_reason":"stop"}]}"#.to_owned(),
+            r#"data: {"choices":[],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}"#.to_owned(),
+            CLEAN_END.to_owned(),
+        ],
+    };
+    let mut clean_end_provider = OpenAiCompatibleProvider::new(server);
+    let clean_end_events = clean_end_provider
+        .stream(model_input())
+        .expect("protocol stream opens")
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        clean_end_events, sentinel_events,
+        "the clean-end stop variant owns the same ordered Delta, Usage, and exactly one Completed event"
+    );
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one exhaustive fail-closed table is the contract's cohesive unit (ADR-0004 PSC-5)"
+)]
+fn invalid_clean_end_sequences_fail_closed() {
+    // ADR-0004 PSC-5: every ambiguous, unsupported, repeated, or late-output
+    // clean-end sequence emits its declared typed error and never completes.
+    let stop = r#"data: {"choices":[{"delta":{"content":"A"},"finish_reason":"stop"}]}"#;
+    let usage = r#"data: {"choices":[],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}"#;
+    let tool_fragment = r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"fixture.tool","arguments":"{\"va"}}]}}]}"#;
+    let cases: Vec<(&str, Vec<&str>, &str)> = vec![
+        (
+            "clean end without any finish reason",
+            vec![
+                r#"data: {"choices":[{"delta":{"content":"A"}}]}"#,
+                CLEAN_END,
+            ],
+            "OPENAI_UNEXPECTED_EOF",
+        ),
+        (
+            "clean end after an unsupported finish reason",
+            vec![
+                r#"data: {"choices":[{"delta":{"content":"A"},"finish_reason":"length"}]}"#,
+                usage,
+                CLEAN_END,
+            ],
+            "OPENAI_UNEXPECTED_EOF",
+        ),
+        (
+            "repeated stop finish",
+            vec![
+                stop,
+                r#"data: {"choices":[{"delta":{},"finish_reason":"stop"}]}"#,
+                CLEAN_END,
+            ],
+            "INVALID_FINISH_FRAME",
+        ),
+        (
+            "conflicting finish reasons",
+            vec![
+                stop,
+                r#"data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}"#,
+                CLEAN_END,
+            ],
+            "INVALID_FINISH_FRAME",
+        ),
+        (
+            "content output after a finish frame",
+            vec![
+                stop,
+                r#"data: {"choices":[{"delta":{"content":"late"}}]}"#,
+                CLEAN_END,
+            ],
+            "INVALID_FINISH_FRAME",
+        ),
+        (
+            "tool output after a finish frame",
+            vec![stop, tool_fragment, CLEAN_END],
+            "INVALID_FINISH_FRAME",
+        ),
+        (
+            "error output after a finish frame",
+            vec![
+                stop,
+                r#"data: {"error":{"code":"UPSTREAM_RESET"}}"#,
+                CLEAN_END,
+            ],
+            "INVALID_FINISH_FRAME",
+        ),
+        (
+            "duplicate usage after a finish frame",
+            vec![stop, usage, usage, CLEAN_END],
+            "DUPLICATE_USAGE_FRAME",
+        ),
+        (
+            "invalid usage after a finish frame",
+            vec![
+                stop,
+                r#"data: {"choices":[],"usage":{"completion_tokens":2,"total_tokens":5}}"#,
+                CLEAN_END,
+            ],
+            "INVALID_USAGE_FRAME",
+        ),
+        (
+            "unfinished tool fragments at clean end",
+            vec![tool_fragment, CLEAN_END],
+            "INVALID_TOOL_CALL_FRAME",
+        ),
+    ];
+    for (case, frames, expected_code) in cases {
+        let server = DeterministicProtocolServer {
+            frames: frames.into_iter().map(str::to_owned).collect(),
+        };
+        let mut provider = OpenAiCompatibleProvider::new(server);
+        let events = provider
+            .stream(model_input())
+            .expect("protocol stream opens")
+            .collect::<Vec<_>>();
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, ProviderEvent::Completed)),
+            "case {case}: zero Completed events"
+        );
+        assert_eq!(
+            events.last(),
+            Some(&ProviderEvent::Error {
+                code: expected_code.to_owned(),
+            }),
+            "case {case}: the declared typed error terminates the stream"
+        );
+    }
 }

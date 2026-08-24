@@ -1,4 +1,5 @@
 // ADR: docs/adr/ADR-0001-provider-neutral-turn-kernel.md
+// ADR: docs/adr/ADR-0004-provider-stream-completion-normalization.md
 
 use std::io::{Read, Write};
 use std::net::TcpListener;
@@ -72,6 +73,12 @@ struct FrameUpstream {
 
 impl FrameUpstream {
     fn start(frame: Vec<u8>) -> Self {
+        Self::start_chunked(vec![frame])
+    }
+
+    /// Serves the chunks in order and then closes the chunked body cleanly,
+    /// so the production transport observes a decoded EOF (ADR-0004 PSC-1).
+    fn start_chunked(chunks: Vec<Vec<u8>>) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind test upstream");
         let base_url = format!(
             "http://{}",
@@ -86,10 +93,13 @@ impl FrameUpstream {
                     b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n",
                 )
                 .expect("write provider headers");
-            write!(stream, "{:X}\r\n", frame.len()).expect("write provider chunk size");
-            stream.write_all(&frame).expect("write provider frame");
+            for chunk in chunks {
+                write!(stream, "{:X}\r\n", chunk.len()).expect("write provider chunk size");
+                stream.write_all(&chunk).expect("write provider chunk");
+                stream.write_all(b"\r\n").expect("terminate provider chunk");
+            }
             stream
-                .write_all(b"\r\n0\r\n\r\n")
+                .write_all(b"0\r\n\r\n")
                 .expect("finish provider body");
         });
         Self {
@@ -326,4 +336,85 @@ async fn exact_limit_item_payload_allows_the_provider_envelope() {
     AppendPolicy::cand_1()
         .check_item(&NewItem::AgentMessageDelta { content })
         .expect("the decoded serialized Item payload is exactly within the contract limit");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reqwest_clean_eof_is_ordered_after_decoded_frames() {
+    // ADR-0004 PSC-1: the production transport emits exactly one explicit
+    // clean-end frame, ordered after every decoded data frame, when the HTTP
+    // response body reaches a successful EOF — here with the terminal and
+    // usage frames split across chunk boundaries and no `data: [DONE]`.
+    let terminal_line = format!(
+        "{}\n",
+        r#"data: {"choices":[{"delta":{"content":"A"},"finish_reason":"stop"}]}"#
+    );
+    let usage_line = format!(
+        "{}\n",
+        r#"data: {"choices":[],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}"#
+    );
+    let terminal_split = terminal_line.len() / 2;
+    let usage_split = usage_line.len() / 2;
+    let upstream = FrameUpstream::start_chunked(vec![
+        terminal_line.as_bytes()[..terminal_split].to_vec(),
+        terminal_line.as_bytes()[terminal_split..].to_vec(),
+        usage_line.as_bytes()[..usage_split].to_vec(),
+        usage_line.as_bytes()[usage_split..].to_vec(),
+    ]);
+    let runtime = tokio::runtime::Handle::current();
+    let base_url = upstream.base_url.clone();
+    let observed = tokio::time::timeout(
+        Duration::from_secs(5),
+        tokio::task::spawn_blocking(move || {
+            let mut transport = ReqwestOpenAiTransport::new(
+                reqwest::Client::new(),
+                runtime,
+                &base_url,
+                "test-model",
+                "test-key",
+            );
+            let frames = transport
+                .chat_completion_frames(&model_input())
+                .expect("provider stream setup succeeds");
+            let mut observed = Vec::new();
+            for frame in frames {
+                observed.push(frame);
+            }
+            observed
+        }),
+    )
+    .await
+    .expect("provider frame consumption is bounded")
+    .expect("provider frame consumer joins");
+
+    let meaningful: Vec<_> = observed
+        .into_iter()
+        .filter(|frame| {
+            !matches!(
+                frame,
+                Ok(koduck_ai::adapters::provider::OpenAiFrame::Pending)
+            )
+        })
+        .collect();
+    assert_eq!(
+        meaningful.len(),
+        3,
+        "two decoded data frames then exactly one clean-end frame, nothing else"
+    );
+    assert!(
+        matches!(&meaningful[0], Ok(koduck_ai::adapters::provider::OpenAiFrame::Data(frame))
+            if frame.ends_with(r#""finish_reason":"stop"}]}"#)),
+        "the reassembled terminal data frame precedes clean end: {:?}",
+        meaningful[0]
+    );
+    assert!(
+        matches!(&meaningful[1], Ok(koduck_ai::adapters::provider::OpenAiFrame::Data(frame))
+            if frame.contains(r#""usage""#)),
+        "the reassembled usage data frame precedes clean end: {:?}",
+        meaningful[1]
+    );
+    assert_eq!(
+        meaningful[2],
+        Ok(koduck_ai::adapters::provider::OpenAiFrame::CleanEnd),
+        "clean end is the final frame after successful decoded body EOF"
+    );
 }

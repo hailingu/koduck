@@ -1,10 +1,15 @@
 // ADR: docs/adr/ADR-0003-default-deny-tool-approval-execution-boundary.md
+// ADR: docs/adr/ADR-0004-provider-stream-completion-normalization.md
 
 //! Black-box runner integration harness for C-5 tool-call servicing.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
+use koduck_ai::adapters::provider::{
+    OpenAiCompatibleProvider, OpenAiFrame, OpenAiFrameStream, OpenAiProtocolTransport,
+    OpenAiTransportError,
+};
 use koduck_ai::application::{
     AcceptedTurn, HistoryError, ModelInput, ModelProvider, ModelToolResult, NewItem, ProviderError,
     ProviderEvent, ProviderStream, ToolCallError, ToolCallExecutor, ToolCallTurnContext,
@@ -1367,4 +1372,136 @@ fn usage_counter_overflow_fails_closed() {
         panic!("the turn terminal is the usage-overflow failure");
     };
     assert_eq!(code, "PROVIDER_USAGE_OVERFLOW");
+}
+
+/// Deterministic fixture sentinel standing in for one explicit transport
+/// clean end (ADR-0004 PSC-1); appended after the final `data:` frame of a
+/// scripted stream, it yields the ordered `OpenAiFrame::CleanEnd`.
+const CLEAN_END: &str = "\u{0}clean-end";
+
+/// Transport stub serving one scripted OpenAI-compatible frame stream per
+/// request and recording every request input (ADR-0004).
+#[derive(Clone, Default)]
+struct OpenAiFrameTransport {
+    scripts: Arc<Mutex<VecDeque<Vec<String>>>>,
+    inputs: Arc<Mutex<Vec<ModelInput>>>,
+}
+
+impl OpenAiFrameTransport {
+    fn scripted(scripts: Vec<Vec<&str>>) -> Self {
+        Self {
+            scripts: Arc::new(Mutex::new(
+                scripts
+                    .into_iter()
+                    .map(|frames| frames.into_iter().map(str::to_owned).collect())
+                    .collect(),
+            )),
+            inputs: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+}
+
+impl OpenAiProtocolTransport for OpenAiFrameTransport {
+    fn chat_completion_frames(
+        &mut self,
+        input: &ModelInput,
+    ) -> Result<OpenAiFrameStream, OpenAiTransportError> {
+        self.inputs
+            .lock()
+            .expect("frame inputs lock")
+            .push(input.clone());
+        let frames = self
+            .scripts
+            .lock()
+            .expect("frame scripts lock")
+            .pop_front()
+            .expect("one scripted frame stream per provider request");
+        Ok(Box::new(frames.into_iter().map(|frame| {
+            if frame == CLEAN_END {
+                Ok(OpenAiFrame::CleanEnd)
+            } else {
+                Ok(OpenAiFrame::Data(frame))
+            }
+        })))
+    }
+}
+
+/// `ModelProvider` running the production Chat Completions protocol
+/// translation over scripted frame streams (ADR-0004).
+#[derive(Clone)]
+struct FrameScriptedProvider {
+    inner: OpenAiCompatibleProvider<OpenAiFrameTransport>,
+}
+
+impl ModelProvider for FrameScriptedProvider {
+    fn stream(&mut self, input: ModelInput) -> Result<ProviderStream<'_>, ProviderError> {
+        self.inner.stream(input)
+    }
+}
+
+#[test]
+fn clean_eof_tool_round_continues_once() {
+    // ADR-0004 PSC-4: a validated `finish_reason: "tool_calls"` followed by
+    // optional usage and an explicit clean end ends only the model round; the
+    // runner starts exactly one continuation carrying the committed result and
+    // accepts the sole Turn completion from that continuation.
+    let transport = OpenAiFrameTransport::scripted(vec![
+        vec![
+            r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"fixture.tool","arguments":"{}"}}]}}]}"#,
+            r#"data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}"#,
+            r#"data: {"choices":[],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}"#,
+            CLEAN_END,
+        ],
+        vec![
+            r#"data: {"choices":[{"delta":{"content":"Done."},"finish_reason":"stop"}]}"#,
+            CLEAN_END,
+        ],
+    ]);
+    let inputs = Arc::clone(&transport.inputs);
+    let provider = FrameScriptedProvider {
+        inner: OpenAiCompatibleProvider::new(transport),
+    };
+    let executor = RecordingToolExecutor::default();
+    let mut runner =
+        TurnRunner::new(provider, MemoryHistory::default()).with_tool_executor(executor.clone());
+
+    let result = runner
+        .execute(command())
+        .expect("the turn completes through its continuation");
+
+    assert_eq!(result.status, TurnStatus::Completed);
+    assert_eq!(
+        executor
+            .calls
+            .lock()
+            .expect("executor calls lock")
+            .as_slice(),
+        ["fixture.tool"],
+        "the clean-end Tool round emitted exactly one assembled Tool call"
+    );
+    let recorded = inputs.lock().expect("frame inputs lock").clone();
+    assert_eq!(
+        recorded.len(),
+        2,
+        "the clean-end Tool round ends the model round and starts exactly one continuation"
+    );
+    assert_eq!(recorded[1].tool_rounds.len(), 1);
+    let round = &recorded[1].tool_rounds[0];
+    assert_eq!(round.calls.len(), 1);
+    assert_eq!(round.calls[0].call.name, "fixture.tool");
+    assert_eq!(round.calls[0].call.arguments, "{}");
+    assert_eq!(round.calls[0].result.content, "ok");
+    assert!(!round.calls[0].result.is_error);
+    assert_eq!(
+        result
+            .replay
+            .iter()
+            .filter(|item| matches!(
+                item.payload,
+                ItemPayload::Terminal(TerminalOutcome::Completed { .. })
+            ))
+            .count(),
+        1,
+        "the continuation supplies the sole Turn completion"
+    );
 }
