@@ -1,8 +1,9 @@
 // ADR: docs/adr/ADR-0003-default-deny-tool-approval-execution-boundary.md
 // ADR: docs/adr/ADR-0004-provider-stream-completion-normalization.md
 
-//! Duplicate-member rejection for untrusted JSON, shared by the tool and
-//! provider adapters (originated in the C-5 JSON adapter, ADR-0003).
+//! Duplicate-member rejection for provider JSON frames, provider-local so the
+//! change stays inside this boundary (ADR-0004); mirrors the C-5 JSON
+//! adapter's duplicate-property rejection (ADR-0003).
 
 use serde::Deserialize;
 use serde::de::{self, MapAccess, SeqAccess, Visitor};
@@ -19,7 +20,7 @@ use serde::de::{self, MapAccess, SeqAccess, Visitor};
 /// Returns the underlying deserialization error, including the
 /// duplicate-member diagnostic, when the document is malformed or contains
 /// duplicate object members.
-pub(crate) fn ensure_unique(serialized: &str) -> Result<(), serde_json::Error> {
+pub(super) fn ensure_unique(serialized: &str) -> Result<(), serde_json::Error> {
     serde_json::from_str::<UniqueJson>(serialized).map(|_| ())
 }
 

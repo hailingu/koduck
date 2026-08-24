@@ -418,3 +418,70 @@ async fn reqwest_clean_eof_is_ordered_after_decoded_frames() {
         "clean end is the final frame after successful decoded body EOF"
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unterminated_final_frame_fails_closed_before_clean_end() {
+    // ADR-0004 PSC-1: a successful body EOF with buffered, newline-less
+    // trailing bytes is an unterminated frame, not decoded evidence — the
+    // transport must fail closed and never emit clean end for it.
+    let terminal =
+        r#"data: {"choices":[{"delta":{"content":"A"},"finish_reason":"stop"}]}"#.to_owned();
+    let upstream = FrameUpstream::start_chunked(vec![terminal.into_bytes()]);
+    let runtime = tokio::runtime::Handle::current();
+    let base_url = upstream.base_url.clone();
+    let outcome = tokio::time::timeout(
+        Duration::from_secs(5),
+        tokio::task::spawn_blocking(move || {
+            let mut transport = ReqwestOpenAiTransport::new(
+                reqwest::Client::new(),
+                runtime,
+                &base_url,
+                "test-model",
+                "test-key",
+            );
+            let frames = transport
+                .chat_completion_frames(&model_input())
+                .expect("provider stream setup succeeds");
+            let mut saw_clean_end = false;
+            let terminal =
+                frames
+                    .filter(|frame| {
+                        !matches!(
+                            frame,
+                            Ok(koduck_ai::adapters::provider::OpenAiFrame::Pending)
+                        )
+                    })
+                    .find_map(
+                        |frame| -> Option<
+                            Result<(), koduck_ai::adapters::provider::OpenAiTransportError>,
+                        > {
+                            match frame {
+                                Err(error) => Some(Err(error)),
+                                Ok(koduck_ai::adapters::provider::OpenAiFrame::CleanEnd) => {
+                                    saw_clean_end = true;
+                                    None
+                                }
+                                Ok(_) => None,
+                            }
+                        },
+                    );
+            (terminal, saw_clean_end)
+        }),
+    )
+    .await
+    .expect("provider frame consumption is bounded")
+    .expect("provider frame consumer joins");
+
+    let (terminal, saw_clean_end) = outcome;
+    assert_eq!(
+        terminal,
+        Some(Err(koduck_ai::adapters::provider::OpenAiTransportError {
+            code: "OPENAI_BODY_FAILED".to_owned(),
+        })),
+        "an unterminated final frame fails closed as a body failure"
+    );
+    assert!(
+        !saw_clean_end,
+        "no clean end follows an unterminated trailing frame"
+    );
+}

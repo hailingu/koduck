@@ -7,10 +7,10 @@ use std::collections::VecDeque;
 
 use serde_json::Value;
 
-use crate::adapters::unique_json;
 use crate::application::{ProviderError, ProviderEvent};
 use crate::domain::Usage;
 
+use super::unique_json;
 use super::{OpenAiFrame, OpenAiTransportError};
 
 /// Canonical per-action serialized input bound (ADR-0003): one assembled

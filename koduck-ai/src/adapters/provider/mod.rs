@@ -15,6 +15,7 @@ use crate::application::{ModelInput, ModelProvider, ProviderError, ProviderStrea
 
 mod messages;
 mod stream_state;
+mod unique_json;
 
 use messages::provider_messages;
 use stream_state::StreamState;
@@ -235,7 +236,10 @@ async fn pump_response(
             }
         }
     }
-    if !pending.is_empty() && send_frame(&sender, pending, &mut saw_frame).await.is_err() {
+    if !pending.is_empty() {
+        // Buffered bytes without a terminating newline are an unterminated
+        // frame, not decoded evidence: a truncated final line fails closed
+        // and never receives clean end (ADR-0004 PSC-1).
         let _ = sender
             .send(Err(transport_error("OPENAI_BODY_FAILED")))
             .await;
