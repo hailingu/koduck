@@ -103,6 +103,12 @@ impl StreamState {
         if self.usage_seen {
             let code = if document.get("usage").is_some_and(|usage| !usage.is_null()) {
                 "DUPLICATE_USAGE_FRAME"
+            } else if self.finish.is_some() {
+                // Non-usage output after a finish frame is late output even
+                // when a valid usage frame already intervened;
+                // `INVALID_USAGE_FRAME` stays reserved for invalid
+                // post-finish usage (ADR-0004 PSC-5).
+                "INVALID_FINISH_FRAME"
             } else {
                 "INVALID_USAGE_FRAME"
             };

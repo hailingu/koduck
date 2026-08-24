@@ -538,6 +538,41 @@ fn invalid_clean_end_sequences_fail_closed() {
             "INVALID_FINISH_FRAME",
         ),
         (
+            "content output after post-finish usage",
+            vec![
+                stop,
+                usage,
+                r#"data: {"choices":[{"delta":{"content":"late"}}]}"#,
+                CLEAN_END,
+            ],
+            "INVALID_FINISH_FRAME",
+        ),
+        (
+            "tool output after post-finish usage",
+            vec![stop, usage, tool_fragment, CLEAN_END],
+            "INVALID_FINISH_FRAME",
+        ),
+        (
+            "error output after post-finish usage",
+            vec![
+                stop,
+                usage,
+                r#"data: {"error":{"code":"UPSTREAM_RESET"}}"#,
+                CLEAN_END,
+            ],
+            "INVALID_FINISH_FRAME",
+        ),
+        (
+            "repeated finish after post-finish usage",
+            vec![
+                stop,
+                usage,
+                r#"data: {"choices":[{"delta":{},"finish_reason":"stop"}]}"#,
+                CLEAN_END,
+            ],
+            "INVALID_FINISH_FRAME",
+        ),
+        (
             "tool output after a finish frame",
             vec![stop, tool_fragment, CLEAN_END],
             "INVALID_FINISH_FRAME",
