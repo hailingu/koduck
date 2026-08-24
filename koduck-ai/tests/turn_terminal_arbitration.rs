@@ -1,5 +1,6 @@
 // ADR: docs/adr/ADR-0001-provider-neutral-turn-kernel.md
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use koduck_ai::application::{
@@ -366,6 +367,103 @@ impl ModelProvider for PendingProvider {
     fn stream(&mut self, _input: ModelInput) -> Result<ProviderStream<'_>, ProviderError> {
         Ok(Box::new([ProviderEvent::Pending].into_iter()))
     }
+}
+
+struct BurstPendingProvider;
+
+impl ModelProvider for BurstPendingProvider {
+    fn stream(&mut self, _input: ModelInput) -> Result<ProviderStream<'_>, ProviderError> {
+        Ok(Box::new(
+            [
+                ProviderEvent::Pending,
+                ProviderEvent::Pending,
+                ProviderEvent::Pending,
+                ProviderEvent::Completed,
+            ]
+            .into_iter(),
+        ))
+    }
+}
+
+struct CountingPollHistory {
+    items: Vec<Item>,
+    polls: Arc<AtomicUsize>,
+}
+
+impl TurnHistory for CountingPollHistory {
+    fn request_interrupt(
+        &mut self,
+        _trust: &TrustContext,
+        _turn_id: TurnId,
+        _tool_terminals: Vec<NewItem>,
+    ) -> Result<(), HistoryError> {
+        Ok(())
+    }
+
+    fn interruption_requested(&self, _turn: &AcceptedTurn) -> Result<bool, HistoryError> {
+        self.polls.fetch_add(1, Ordering::Relaxed);
+        Ok(false)
+    }
+
+    fn prior_thread_items(
+        &self,
+        _trust: &TrustContext,
+        _thread_id: ThreadId,
+    ) -> Result<Vec<Item>, HistoryError> {
+        Ok(Vec::new())
+    }
+
+    fn accept_initial(&mut self, command: &TurnCommand) -> Result<AcceptedTurn, HistoryError> {
+        let input = Item::new(
+            1,
+            ItemPayload::UserMessage {
+                content: command.input.clone(),
+            },
+        );
+        self.items.push(input.clone());
+        Ok(AcceptedTurn::new(
+            command.trust.tenant_id.clone(),
+            ThreadId::new(),
+            TurnId::new(),
+            LeaseGeneration::initial(),
+            input,
+        ))
+    }
+
+    fn append(&mut self, _turn: &AcceptedTurn, item: NewItem) -> Result<Item, HistoryError> {
+        let durable = Item::new(self.items.len() as u64 + 1, item.into_payload());
+        self.items.push(durable.clone());
+        Ok(durable)
+    }
+
+    fn replay(&self, _tenant_id: &TenantId, _turn_id: TurnId) -> Result<Vec<Item>, HistoryError> {
+        Ok(self.items.clone())
+    }
+}
+
+#[test]
+fn provider_burst_polls_persisted_interruption_once_per_bounded_window() {
+    let polls = Arc::new(AtomicUsize::new(0));
+    let history = CountingPollHistory {
+        items: Vec::new(),
+        polls: Arc::clone(&polls),
+    };
+    let trust = TrustContext::new(
+        TenantId::new("tenant-a").expect("valid tenant"),
+        "subject-a",
+    )
+    .expect("valid trust context");
+
+    let result = TurnRunner::new(BurstPendingProvider, history)
+        .execute(TurnCommand::new(trust, None, "hello").expect("valid command"))
+        .expect("bounded control polling preserves provider completion");
+
+    assert_eq!(result.status, TurnStatus::Completed);
+    assert_eq!(
+        polls.load(Ordering::Relaxed),
+        2,
+        "one fast provider burst performs one stream-control query plus the mandatory terminal-arbitration query"
+    );
 }
 
 #[derive(Default)]

@@ -2,6 +2,8 @@
 
 //! Provider-neutral lifecycle orchestration and durable-before-visible ordering.
 
+use std::time::{Duration, Instant};
+
 use crate::domain::{Item, TenantId, TerminalOutcome, ThreadId, TrustContext, Turn, TurnId, Usage};
 
 use super::MAX_EXECUTOR_OUTPUT_BYTES;
@@ -24,6 +26,9 @@ use super::runner_terminals::{
     append_provider_terminal, append_provider_terminal_observed, append_terminal,
     event_terminal_or_recover, observe_item, publish_replayed_terminal,
 };
+
+/// Maximum frequency of persisted interruption checks during provider streams.
+const INTERRUPTION_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 /// Owns provider-neutral lifecycle transitions and durable-before-visible ordering.
 ///
@@ -420,8 +425,23 @@ fn drive_stream<H: TurnHistory, T: ToolCallExecutor>(
     observer: &mut dyn FnMut(TurnStreamEvent),
     cancelled: &dyn Fn() -> bool,
 ) -> Result<bool, TurnRunError> {
+    let mut last_interruption_poll = None;
     for event in stream {
-        if terminalize_from_control(history, accepted, state, observer, cancelled)? {
+        let interruption_poll_due = last_interruption_poll
+            .is_none_or(|last: Instant| last.elapsed() >= INTERRUPTION_POLL_INTERVAL);
+        if interruption_poll_due {
+            last_interruption_poll = Some(Instant::now());
+        }
+        // Persisted interruption is polled at most once per bounded window;
+        // the durable append paths still arbitrate any interrupt that commits
+        // between polls. Consumer cancellation remains an in-process check on
+        // every iteration and performs no database query.
+        if interruption_poll_due
+            && terminalize_from_persisted_interruption(history, accepted, state, observer)?
+        {
+            return Ok(true);
+        }
+        if terminalize_from_cancellation(history, accepted, state, observer, cancelled)? {
             return Ok(true);
         }
         let event_result = handle_event(history, tools, accepted, trust, state, event, observer);
@@ -434,19 +454,15 @@ fn drive_stream<H: TurnHistory, T: ToolCallExecutor>(
         if event_terminal_or_recover(history, accepted, state, event_result, observer)? {
             return Ok(true);
         }
-        if terminalize_from_control(history, accepted, state, observer, cancelled)? {
-            return Ok(true);
-        }
     }
     Ok(false)
 }
 
-fn terminalize_from_control<H: TurnHistory>(
+fn terminalize_from_persisted_interruption<H: TurnHistory>(
     history: &mut H,
     accepted: &AcceptedTurn,
     state: &mut ExecutionState,
     observer: &mut dyn FnMut(TurnStreamEvent),
-    cancelled: &dyn Fn() -> bool,
 ) -> Result<bool, TurnRunError> {
     match history.interruption_requested(accepted) {
         Ok(true) => {
@@ -469,16 +485,6 @@ fn terminalize_from_control<H: TurnHistory>(
             state.lifecycle = state.lifecycle.interrupt()?;
             Ok(true)
         }
-        Ok(false) if cancelled() => {
-            append_terminal_or_replay_fenced(
-                history,
-                accepted,
-                state,
-                TerminalOutcome::Cancelled,
-                observer,
-            )?;
-            Ok(true)
-        }
         Ok(false) => Ok(false),
         Err(HistoryError::Fenced | HistoryError::AlreadyTerminal) => {
             publish_replayed_terminal(history, accepted, state, observer)?;
@@ -486,6 +492,26 @@ fn terminalize_from_control<H: TurnHistory>(
         }
         Err(error) => Err(recover_append_failure(state, error)),
     }
+}
+
+fn terminalize_from_cancellation<H: TurnHistory>(
+    history: &mut H,
+    accepted: &AcceptedTurn,
+    state: &mut ExecutionState,
+    observer: &mut dyn FnMut(TurnStreamEvent),
+    cancelled: &dyn Fn() -> bool,
+) -> Result<bool, TurnRunError> {
+    if !cancelled() {
+        return Ok(false);
+    }
+    append_terminal_or_replay_fenced(
+        history,
+        accepted,
+        state,
+        TerminalOutcome::Cancelled,
+        observer,
+    )?;
+    Ok(true)
 }
 
 fn handle_event<H: TurnHistory, T: ToolCallExecutor>(
