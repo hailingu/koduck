@@ -12,13 +12,13 @@
 - **Approver [Conditionally Required — Decision Status is or has been `Accepted`]**: @linhai
 - **Approval Time [Conditionally Required — Decision Status is or has been `Accepted`]**: 2026-08-24T09:46:58Z
 - **Approval Evidence [Conditionally Required — Decision Status is or has been `Accepted`]**: Approve
-- **Rejector [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is `Proposed`
-- **Rejection Time [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is `Proposed`
-- **Rejection Evidence [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is `Proposed`
-- **Retired By [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — Decision Status is `Proposed`; the record is active
-- **Retirement Time [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — Decision Status is `Proposed`; the record is active
-- **Retirement Evidence [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — Decision Status is `Proposed`; the record is active
-- **Retirement Reason [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — Decision Status is `Proposed`; the record is active
+- **Rejector [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is `Accepted`
+- **Rejection Time [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is `Accepted`
+- **Rejection Evidence [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is `Accepted`
+- **Retired By [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — Decision Status is `Accepted`
+- **Retirement Time [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — Decision Status is `Accepted`
+- **Retirement Evidence [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — Decision Status is `Accepted`
+- **Retirement Reason [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — Decision Status is `Accepted`
 - **Blocked From [Conditionally Required — Implementation Status is `Blocked`]**: N/A — Implementation Status is `Complete`
 - **Blocker And Evidence [Conditionally Required — Implementation Status is `Blocked`]**: N/A — Implementation Status is `Complete`
 - **Blocker Owner [Conditionally Required — Implementation Status is `Blocked`]**: N/A — Implementation Status is `Complete`
@@ -482,6 +482,7 @@ implementation completion. When triggered:
 
 | Date | Change | Author |
 | --- | --- | --- |
+| 2026-08-24 | Aligned the inactive rejection and retirement `N/A` reasons with the `Accepted` status after the pull-request-4 automated review finding; approval-preserving metadata maintenance with no decision-content change. | @zcode |
 | 2026-08-24 | Implemented T-1 test-first (RED observed for AC-1 through AC-5 before the production change) and recorded completion: T-1 `Complete`, AC-1 through AC-7 `Pass`, all five risk rows `Pass`, Implementation Status `Complete` at tested commit `6f5aa2c5edf7e63495204d5a2673eca21235f289`; added the post-implementation decomposition review to Supporting Notes. No approved decision content changed. | @zcode |
 | 2026-08-24 | Accepted: Decision Status `Proposed` → `Accepted` after @linhai's exact `Approve` response identifying this record; Implementation Status remains `Not Started`. | @linhai |
 | 2026-08-24 | Made the intentional `[DONE]` versus clean-end evidence asymmetry explicit and added the implementation-time governed-file marker requirement to the constraints and routed acceptance check. | @codex |
