@@ -595,3 +595,35 @@ fn invalid_clean_end_sequences_fail_closed() {
         );
     }
 }
+
+#[test]
+fn provider_error_frame_terminates_the_stream_before_clean_end() {
+    // A provider `error` frame is terminal evidence (ADR-0004 PSC-5): the
+    // transport's following clean end must not synthesize a second failure,
+    // and a late `finish_reason: "stop"` frame must not turn the failed
+    // stream into a completion.
+    for frames in [
+        vec![r#"data: {"error":{"code":"UPSTREAM_RESET"}}"#, CLEAN_END],
+        vec![
+            r#"data: {"error":{"code":"UPSTREAM_RESET"}}"#,
+            r#"data: {"choices":[{"delta":{"content":"late"},"finish_reason":"stop"}]}"#,
+            CLEAN_END,
+        ],
+    ] {
+        let server = DeterministicProtocolServer {
+            frames: frames.into_iter().map(str::to_owned).collect(),
+        };
+        let mut provider = OpenAiCompatibleProvider::new(server);
+        let events = provider
+            .stream(model_input())
+            .expect("protocol stream opens")
+            .collect::<Vec<_>>();
+        assert_eq!(
+            events,
+            vec![ProviderEvent::Error {
+                code: "UPSTREAM_RESET".to_owned(),
+            }],
+            "the provider error remains the sole terminal outcome with its original code"
+        );
+    }
+}

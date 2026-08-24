@@ -118,6 +118,11 @@ impl StreamState {
                 .get("code")
                 .and_then(Value::as_str)
                 .ok_or_else(|| protocol_error("INVALID_ERROR_FRAME"))?;
+            // The provider error frame is terminal evidence: terminating here
+            // keeps the transport's trailing clean end from synthesizing a
+            // second failure and a late stop finish from completing the
+            // already-failed stream (ADR-0004 PSC-5).
+            self.terminated = true;
             return Ok(Some(ProviderEvent::Error {
                 code: code.to_owned(),
             }));
