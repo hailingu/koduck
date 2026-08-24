@@ -7,9 +7,9 @@
 //! or terminalized this exact identity keeps its canonical state — and its
 //! truthful result — untouched (ADR-0003 TC-10/TC-12).
 
-use sqlx::PgPool;
+use sqlx::{PgPool, Row};
 
-use crate::application::{AttemptStoreError, PreparedCloseResolution};
+use crate::application::{AttemptStoreError, EffectState, PreparedCloseResolution};
 use crate::domain::execution::{ExactActionBinding, ExecutionStatus};
 
 use super::attempt_reconciliation::{
@@ -92,27 +92,42 @@ pub(super) async fn close_prepared_row(
                 // The close and audit may already be durable even though the
                 // client lost the COMMIT acknowledgement. Re-read the exact
                 // canonical terminal before withholding its D-3 projection.
-                return reconcile_ambiguous_prepared_close(
-                    resolve_prepared_close_loss(pool, binding).await,
-                );
+                return resolve_prepared_close_loss(pool, binding)
+                    .await
+                    .map(|observation| reconcile_ambiguous_prepared_close(&observation));
             }
             return Ok(PreparedCloseResolution::Won { version });
         }
         return Err(AttemptStoreError::Unavailable);
     }
     drop(transaction);
-    resolve_prepared_close_loss(pool, binding).await
+    resolve_prepared_close_loss(pool, binding)
+        .await
+        .map(|observation| observation.resolution)
+}
+
+/// One canonical row observation used to reconcile an ambiguous prepared close.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct PreparedCloseObservation {
+    resolution: PreparedCloseResolution,
+    effect_state: Option<EffectState>,
+    started_at_millis: Option<u64>,
+    terminal_at_millis: Option<u64>,
+    failure_code: Option<String>,
+    output: Option<Vec<u8>>,
 }
 
 /// Classifies a lost prepared-only close without changing canonical state.
 async fn resolve_prepared_close_loss(
     pool: &PgPool,
     binding: &ExactActionBinding,
-) -> Result<PreparedCloseResolution, AttemptStoreError> {
+) -> Result<PreparedCloseObservation, AttemptStoreError> {
     let existing = sqlx::query(
         "SELECT thread_id, turn_id, lease_generation, descriptor_id,
                 descriptor_version, effect, action_digest, profile_id,
-                profile_version, prepared_at_millis, status, version
+                profile_version, prepared_at_millis, status, version,
+                started_at_millis, effect_state, failure_code, output,
+                terminal_at_millis
          FROM tool_execution_attempts
          WHERE tenant_id = $1 AND attempt_id = $2",
     )
@@ -131,45 +146,121 @@ async fn resolve_prepared_close_loss(
     if status != ExecutionStatus::Prepared {
         // Another owner claimed or terminalized this exact identity: its
         // canonical state must survive untouched.
-        return Ok(PreparedCloseResolution::Progressed {
-            status,
-            version: row_version(&row)?,
-        });
+        return prepared_close_observation(
+            &row,
+            PreparedCloseResolution::Progressed {
+                status,
+                version: row_version(&row)?,
+            },
+        );
     }
     if bound_lease_is_not_current(pool, binding).await? {
-        return Ok(PreparedCloseResolution::Fenced);
+        return prepared_close_observation(&row, PreparedCloseResolution::Fenced);
     }
     Err(AttemptStoreError::Unavailable)
 }
 
+/// Decodes the canonical fields that distinguish a prepared-only close from a later cancellation.
+fn prepared_close_observation(
+    row: &sqlx::postgres::PgRow,
+    resolution: PreparedCloseResolution,
+) -> Result<PreparedCloseObservation, AttemptStoreError> {
+    let effect_state = match row
+        .try_get::<Option<String>, _>("effect_state")
+        .map_err(|_| AttemptStoreError::Unavailable)?
+    {
+        Some(code) => Some(EffectState::from_code(&code).ok_or(AttemptStoreError::Unavailable)?),
+        None => None,
+    };
+    Ok(PreparedCloseObservation {
+        resolution,
+        effect_state,
+        started_at_millis: optional_non_negative(row, "started_at_millis")?,
+        terminal_at_millis: optional_non_negative(row, "terminal_at_millis")?,
+        failure_code: row
+            .try_get("failure_code")
+            .map_err(|_| AttemptStoreError::Unavailable)?,
+        output: row
+            .try_get("output")
+            .map_err(|_| AttemptStoreError::Unavailable)?,
+    })
+}
+
+/// Decodes one nullable, non-negative canonical millisecond value.
+fn optional_non_negative(
+    row: &sqlx::postgres::PgRow,
+    column: &str,
+) -> Result<Option<u64>, AttemptStoreError> {
+    row.try_get::<Option<i64>, _>(column)
+        .map_err(|_| AttemptStoreError::Unavailable)?
+        .map(u64::try_from)
+        .transpose()
+        .map_err(|_| AttemptStoreError::Unavailable)
+}
+
 /// Restores an acknowledged prepared close from its exact canonical terminal.
 fn reconcile_ambiguous_prepared_close(
-    result: Result<PreparedCloseResolution, AttemptStoreError>,
-) -> Result<PreparedCloseResolution, AttemptStoreError> {
-    match result {
-        Ok(PreparedCloseResolution::Progressed {
-            status: ExecutionStatus::Cancelled,
-            version: 3,
-        }) => Ok(PreparedCloseResolution::Won { version: 3 }),
-        other => other,
+    observation: &PreparedCloseObservation,
+) -> PreparedCloseResolution {
+    match observation {
+        PreparedCloseObservation {
+            resolution:
+                PreparedCloseResolution::Progressed {
+                    status: ExecutionStatus::Cancelled,
+                    version: 3,
+                },
+            effect_state: Some(EffectState::NotStarted),
+            started_at_millis: None,
+            terminal_at_millis: Some(_),
+            failure_code: None,
+            output: None,
+        } => PreparedCloseResolution::Won { version: 3 },
+        PreparedCloseObservation { resolution, .. } => *resolution,
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::application::PreparedCloseResolution;
+    use crate::application::{EffectState, PreparedCloseResolution};
     use crate::domain::execution::ExecutionStatus;
 
-    use super::reconcile_ambiguous_prepared_close;
+    use super::{PreparedCloseObservation, reconcile_ambiguous_prepared_close};
+
+    fn cancelled_observation(
+        effect_state: EffectState,
+        started_at_millis: Option<u64>,
+    ) -> PreparedCloseObservation {
+        PreparedCloseObservation {
+            resolution: PreparedCloseResolution::Progressed {
+                status: ExecutionStatus::Cancelled,
+                version: 3,
+            },
+            effect_state: Some(effect_state),
+            started_at_millis,
+            terminal_at_millis: Some(2_000),
+            failure_code: None,
+            output: None,
+        }
+    }
 
     #[test]
     fn ambiguous_close_acknowledgement_returns_the_canonical_cancelled_terminal() {
         assert_eq!(
-            reconcile_ambiguous_prepared_close(Ok(PreparedCloseResolution::Progressed {
-                status: ExecutionStatus::Cancelled,
-                version: 3,
-            })),
-            Ok(PreparedCloseResolution::Won { version: 3 }),
+            reconcile_ambiguous_prepared_close(&cancelled_observation(
+                EffectState::NotStarted,
+                None,
+            )),
+            PreparedCloseResolution::Won { version: 3 },
+        );
+    }
+
+    #[test]
+    fn ambiguous_close_does_not_restore_another_owners_started_cancellation() {
+        let canonical = cancelled_observation(EffectState::Started, Some(1_500));
+
+        assert_eq!(
+            reconcile_ambiguous_prepared_close(&canonical),
+            canonical.resolution,
         );
     }
 }

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// ADR: docs/adr/ADR-0002-required-ai-ci-postgres-verification.md
 
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { relative, resolve, sep } from "node:path";
