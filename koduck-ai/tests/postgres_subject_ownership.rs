@@ -6,7 +6,10 @@ use koduck_ai::adapters::history::postgres::{
     LeaseTiming, PostgresExecutor, RecoveryOutcome, SqlxPostgresExecutor,
 };
 use koduck_ai::application::{AcceptedTurn, HistoryError, NewItem, TurnCommand};
-use koduck_ai::domain::{ItemPayload, TenantId, TerminalOutcome, TrustContext, Usage};
+use koduck_ai::domain::execution::{AttemptId, ExecutionStatus};
+use koduck_ai::domain::{
+    Item, ItemPayload, TenantId, TerminalOutcome, ToolEffectState, TrustContext, Usage,
+};
 use sqlx::postgres::{PgPool, PgPoolOptions};
 use tokio::runtime::Runtime;
 use uuid::Uuid;
@@ -33,18 +36,110 @@ fn production_postgres_contract() {
             sqlx::raw_sql(include_str!("../migrations/0001_cand_1_history.sql")).execute(&pool),
         )
         .expect("apply production migration");
+    runtime
+        .block_on(
+            sqlx::raw_sql(include_str!(
+                "../migrations/0004_cand_2_tool_projections.sql"
+            ))
+            .execute(&pool),
+        )
+        .expect("apply production projection migration");
+    runtime
+        .block_on(
+            sqlx::raw_sql(include_str!(
+                "../migrations/0005_cand_2_execution_attempts.sql"
+            ))
+            .execute(&pool),
+        )
+        .expect("apply production execution-attempt migration");
     let executor = SqlxPostgresExecutor::new(pool.clone(), runtime.handle().clone());
 
     let tenant = TenantId::new(format!("ci-{}", Uuid::new_v4())).expect("unique tenant");
     let owner = TrustContext::new(tenant.clone(), "owner").expect("owner trust context");
     let intruder = TrustContext::new(tenant.clone(), "intruder").expect("intruder trust context");
     let accepted = verify_payload_and_subject_ownership(&executor, &tenant, &owner, &intruder);
-    verify_interrupt_terminal_arbitration(&executor, &tenant, &owner, &accepted);
+    verify_interrupt_terminal_arbitration(&runtime, &pool, &executor, &tenant, &owner, &accepted);
     verify_recovery_pending_interrupt_is_rejected(&runtime, &pool, &executor, &tenant, &owner);
     verify_expired_started_interrupt_is_rejected(&runtime, &pool, &executor, &tenant, &owner);
+    verify_tool_projection_batch(&executor, &tenant, &owner);
     verify_stale_generation_fencing(&runtime, &pool, &executor, &tenant, owner);
 
     runtime.block_on(pool.close());
+}
+
+fn verify_tool_projection_batch(
+    executor: &SqlxPostgresExecutor,
+    tenant: &TenantId,
+    owner: &TrustContext,
+) {
+    let command = TurnCommand::new(owner.clone(), None, "projection batch")
+        .expect("valid projection command");
+    let accepted = executor
+        .accept_initial(&command)
+        .expect("accept projection fixture");
+    let attempt_id = AttemptId::new();
+    let appended = executor
+        .append_tool_projection(
+            &accepted,
+            vec![
+                NewItem::ToolCall {
+                    descriptor_id: "fixture.tool".to_owned(),
+                    descriptor_version: "v1".to_owned(),
+                    target: "fixture-target".to_owned(),
+                    attempt_id: Some(attempt_id),
+                    status: Some(ExecutionStatus::Running),
+                    version: Some(2),
+                },
+                NewItem::ToolResult {
+                    attempt_id: Some(attempt_id),
+                    status: ExecutionStatus::Succeeded,
+                    code: None,
+                    effect_state: Some(ToolEffectState::Started),
+                    output_bytes: 2,
+                    output_digest: Some(koduck_ai::application::output_digest(b"ok")),
+                    version: Some(3),
+                },
+            ],
+        )
+        .expect("production projection batch commits");
+    assert_eq!(appended.len(), 2);
+    assert_eq!(appended[0].sequence + 1, appended[1].sequence);
+    let replay = executor
+        .replay(tenant, accepted.turn_id)
+        .expect("production projection replay");
+    assert_eq!(&replay[1..], appended.as_slice());
+
+    let rejected_command = TurnCommand::new(owner.clone(), None, "projection rollback")
+        .expect("valid rollback command");
+    let rejected = executor
+        .accept_initial(&rejected_command)
+        .expect("accept rollback fixture");
+    assert_eq!(
+        executor.append_tool_projection(
+            &rejected,
+            vec![
+                NewItem::ToolCall {
+                    descriptor_id: "fixture.tool".to_owned(),
+                    descriptor_version: "v1".to_owned(),
+                    target: "fixture-target".to_owned(),
+                    attempt_id: Some(AttemptId::new()),
+                    status: Some(ExecutionStatus::Running),
+                    version: Some(2),
+                },
+                NewItem::Terminal(TerminalOutcome::Cancelled),
+            ],
+        ),
+        Err(HistoryError::Unavailable),
+        "a rejected D-3 batch rolls back every earlier item"
+    );
+    assert_eq!(
+        executor
+            .replay(tenant, rejected.turn_id)
+            .expect("replay rollback fixture")
+            .len(),
+        1,
+        "the rejected transaction left only the initial user item"
+    );
 }
 
 fn verify_expired_started_interrupt_is_rejected(
@@ -74,7 +169,7 @@ fn verify_expired_started_interrupt_is_rejected(
         .expect("expire active fixture");
 
     assert_eq!(
-        executor.request_interrupt(owner, accepted.turn_id),
+        executor.request_interrupt(owner, accepted.turn_id, Vec::new()),
         Err(HistoryError::Fenced),
         "an expired owner must not accept an interrupt after its live stream can end"
     );
@@ -106,7 +201,7 @@ fn verify_recovery_pending_interrupt_is_rejected(
         .expect("enter durable recovery-pending state");
 
     assert_eq!(
-        executor.request_interrupt(owner, accepted.turn_id),
+        executor.request_interrupt(owner, accepted.turn_id, Vec::new()),
         Err(HistoryError::Fenced),
         "a detached recovery-pending turn must not accept an interrupt it cannot stream"
     );
@@ -151,14 +246,60 @@ fn verify_payload_and_subject_ownership(
 }
 
 fn verify_interrupt_terminal_arbitration(
+    runtime: &Runtime,
+    pool: &PgPool,
     executor: &SqlxPostgresExecutor,
     tenant: &TenantId,
     owner: &TrustContext,
     accepted: &AcceptedTurn,
 ) {
+    let attempt_id = AttemptId::new();
+    seed_cancelled_attempt(runtime, pool, tenant, accepted, attempt_id);
     executor
-        .request_interrupt(owner, accepted.turn_id)
+        .append_tool_projection(
+            accepted,
+            vec![NewItem::ToolCall {
+                descriptor_id: "fixture.interrupt".to_owned(),
+                descriptor_version: "v1".to_owned(),
+                target: "fixture-target".to_owned(),
+                attempt_id: Some(attempt_id),
+                status: Some(ExecutionStatus::Running),
+                version: Some(2),
+            }],
+        )
+        .expect("running D-7 projection commits before interruption");
+    executor
+        .request_interrupt(
+            owner,
+            accepted.turn_id,
+            vec![NewItem::ToolResult {
+                attempt_id: Some(attempt_id),
+                status: ExecutionStatus::Cancelled,
+                code: None,
+                effect_state: Some(ToolEffectState::NotStarted),
+                output_bytes: 0,
+                output_digest: None,
+                version: Some(3),
+            }],
+        )
         .expect("persist accepted interrupt");
+    let replay = executor
+        .replay(tenant, accepted.turn_id)
+        .expect("interrupted D-7 replay");
+    assert!(matches!(
+        replay.as_slice(),
+        [.., Item {
+            payload: ItemPayload::ToolResult {
+                attempt_id: Some(projected_id),
+                status: ExecutionStatus::Cancelled,
+                ..
+            },
+            ..
+        }, Item {
+            payload: ItemPayload::Terminal(TerminalOutcome::Interrupted),
+            ..
+        }] if *projected_id == attempt_id
+    ));
     let completion_executor = executor.clone();
     let completion_turn = accepted.clone();
     let completion = thread::spawn(move || {
@@ -212,6 +353,36 @@ fn verify_interrupt_terminal_arbitration(
         terminal_replay.last().map(|item| &item.payload),
         Some(ItemPayload::Terminal(TerminalOutcome::Interrupted))
     ));
+}
+
+/// Seeds the exact canonical D-7 terminal projected by the interruption
+/// arbitration contract fixture.
+fn seed_cancelled_attempt(
+    runtime: &Runtime,
+    pool: &PgPool,
+    tenant: &TenantId,
+    accepted: &AcceptedTurn,
+    attempt_id: AttemptId,
+) {
+    runtime.block_on(async {
+        sqlx::query(
+            "INSERT INTO tool_execution_attempts
+             (tenant_id, attempt_id, thread_id, turn_id, lease_generation,
+              descriptor_id, descriptor_version, effect, action_digest,
+              profile_id, profile_version, prepared_at_millis, status,
+              effect_state, terminal_at_millis, version)
+             VALUES ($1, $2, $3, $4, 1, 'fixture.interrupt', 'v1', 'read_data',
+                     'fixture-digest', 'profile-default', 'v1', 1000,
+                     'cancelled', 'not_started', 2000, 3)",
+        )
+        .bind(tenant.as_str())
+        .bind(attempt_id.as_uuid())
+        .bind(accepted.thread_id.as_uuid())
+        .bind(accepted.turn_id.as_uuid())
+        .execute(pool)
+        .await
+        .expect("canonical cancelled D-7 fixture");
+    });
 }
 
 fn verify_stale_generation_fencing(

@@ -2,6 +2,8 @@
 
 //! Owned HTTP/SSE v1 presentation contract around the application turn kernel.
 
+pub mod approvals;
+
 mod wire;
 
 use std::collections::BTreeMap;
@@ -10,8 +12,8 @@ use thiserror::Error;
 use uuid::Uuid;
 
 use crate::application::{
-    HistoryError, ModelProvider, TurnCommand, TurnHistory, TurnResult, TurnRunError, TurnRunner,
-    TurnStreamEvent,
+    HistoryError, ModelProvider, ToolCallExecutor, TurnCommand, TurnHistory, TurnResult,
+    TurnRunError, TurnRunner, TurnStreamEvent,
 };
 use crate::domain::{TrustContext, TurnId};
 
@@ -140,10 +142,11 @@ pub trait TurnService {
     fn interrupt(&mut self, trust: &TrustContext, turn_id: TurnId) -> Result<(), ServiceError>;
 }
 
-impl<P, H> TurnService for TurnRunner<P, H>
+impl<P, H, T> TurnService for TurnRunner<P, H, T>
 where
     P: ModelProvider,
     H: TurnHistory,
+    T: ToolCallExecutor,
 {
     fn execute(&mut self, command: TurnCommand) -> Result<TurnResult, ServiceError> {
         TurnRunner::execute(self, command).map_err(|error| map_turn_run_error(&error))
@@ -339,9 +342,9 @@ fn map_service_error(error: &ServiceError) -> HttpResponse {
 
 fn map_turn_run_error(error: &TurnRunError) -> ServiceError {
     match error {
-        TurnRunError::Durability(_) | TurnRunError::History(HistoryError::Unavailable) => {
-            ServiceError::DurabilityUnavailable
-        }
+        TurnRunError::Durability(_)
+        | TurnRunError::History(HistoryError::Unavailable)
+        | TurnRunError::Tool(_) => ServiceError::DurabilityUnavailable,
         TurnRunError::History(HistoryError::NotFound | HistoryError::Fenced) => {
             ServiceError::NotFound
         }

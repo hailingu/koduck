@@ -9,6 +9,7 @@ use crate::application::{AcceptedTurn, HistoryError, TurnCommand};
 use crate::domain::{Item, LeaseGeneration, ThreadId, TurnId};
 
 use super::payload_codec::row_to_item;
+use super::{LeaseKey, ReconcileOutcome};
 
 const MAX_PROVIDER_HISTORY_BYTES: usize = 1_048_576;
 pub(super) const MAX_PROVIDER_HISTORY_ITEMS: usize = 4_096;
@@ -74,6 +75,95 @@ pub(super) async fn appended_item(
     row.as_ref().map(row_to_item).transpose()
 }
 
+/// Reconstructs a complete D-3 projection only when every preallocated Item
+/// identity from the atomic batch is durably present in its original order.
+pub(super) async fn appended_projection(
+    pool: &PgPool,
+    turn: &AcceptedTurn,
+    planned: Vec<Item>,
+) -> Result<Option<Vec<Item>>, HistoryError> {
+    let Some(operation) = planned.first() else {
+        return Err(HistoryError::Unavailable);
+    };
+    let mut transaction = pool.begin().await.map_err(unavailable)?;
+    lock_operation(&mut transaction, operation.item_id.as_uuid()).await?;
+    let mut durable = Vec::with_capacity(planned.len());
+    let mut missing = 0_usize;
+    for expected in &planned {
+        let row = sqlx::query(
+            "SELECT item_id, sequence, item_type, payload FROM turn_items \
+             WHERE tenant_id = $1 AND thread_id = $2 AND turn_id = $3 \
+             AND item_id = $4",
+        )
+        .bind(turn.tenant_id.as_str())
+        .bind(turn.thread_id.as_uuid())
+        .bind(turn.turn_id.as_uuid())
+        .bind(expected.item_id.as_uuid())
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(unavailable)?;
+        let Some(row) = row else {
+            missing = missing.saturating_add(1);
+            continue;
+        };
+        let item = row_to_item(&row)?;
+        if item.item_id != expected.item_id || item.payload != expected.payload {
+            return Err(HistoryError::Unavailable);
+        }
+        durable.push(item);
+    }
+    if missing == planned.len() {
+        return Ok(None);
+    }
+    if missing != 0
+        || durable.windows(2).any(|pair| {
+            pair[0]
+                .sequence
+                .checked_add(1)
+                .is_none_or(|next| pair[1].sequence != next)
+        })
+    {
+        return Err(HistoryError::Unavailable);
+    }
+    Ok(Some(durable))
+}
+
+/// Reconstructs an expiry-recovery terminal after its `COMMIT` acknowledgement
+/// becomes ambiguous.
+///
+/// The durable Turn terminal and the one-step fenced lease generation prove
+/// that this exact recovery key committed; a different generation or a
+/// non-terminal Turn remains undecidable (ADR-0003 TC-10).
+pub(super) async fn recovered_expiry_outcome(
+    pool: &PgPool,
+    key: &LeaseKey,
+) -> Result<Option<ReconcileOutcome>, HistoryError> {
+    let generation = i64::try_from(key.generation.get()).map_err(|_| HistoryError::Unavailable)?;
+    let status = sqlx::query_scalar::<_, String>(
+        "SELECT t.status FROM turns t JOIN turn_leases l \
+         USING (tenant_id, thread_id, turn_id) \
+         WHERE t.tenant_id = $1 AND t.thread_id = $2 AND t.turn_id = $3 \
+           AND l.fenced AND l.generation = $4 + 1",
+    )
+    .bind(key.tenant_id.as_str())
+    .bind(key.thread_id.as_uuid())
+    .bind(key.turn_id.as_uuid())
+    .bind(generation)
+    .fetch_optional(pool)
+    .await
+    .map_err(unavailable)?;
+    Ok(status.as_deref().and_then(recovered_outcome_for_status))
+}
+
+fn recovered_outcome_for_status(status: &str) -> Option<ReconcileOutcome> {
+    match status {
+        "cancelled" => Some(ReconcileOutcome::Cancelled),
+        "failed" => Some(ReconcileOutcome::Failed),
+        "interrupted" => Some(ReconcileOutcome::Interrupted),
+        _ => None,
+    }
+}
+
 /// Adds one decoded history item without exceeding the aggregate context budget.
 pub(super) fn push_bounded_history(
     history: &mut Vec<Item>,
@@ -127,7 +217,27 @@ mod tests {
     use crate::application::HistoryError;
     use crate::domain::{Item, ItemPayload};
 
-    use super::{MAX_PROVIDER_HISTORY_ITEMS, lock_operation, push_bounded_history};
+    use super::{
+        MAX_PROVIDER_HISTORY_ITEMS, lock_operation, push_bounded_history,
+        recovered_outcome_for_status,
+    };
+
+    #[test]
+    fn only_recovery_terminal_statuses_reconcile_a_lost_commit_acknowledgement() {
+        assert_eq!(
+            recovered_outcome_for_status("cancelled"),
+            Some(crate::adapters::history::postgres::ReconcileOutcome::Cancelled)
+        );
+        assert_eq!(
+            recovered_outcome_for_status("failed"),
+            Some(crate::adapters::history::postgres::ReconcileOutcome::Failed)
+        );
+        assert_eq!(
+            recovered_outcome_for_status("interrupted"),
+            Some(crate::adapters::history::postgres::ReconcileOutcome::Interrupted)
+        );
+        assert_eq!(recovered_outcome_for_status("started"), None);
+    }
 
     #[tokio::test]
     async fn reconciliation_waits_for_the_matching_writer_identity() {

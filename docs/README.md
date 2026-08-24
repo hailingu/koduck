@@ -115,6 +115,34 @@ becomes review-ready, all required CI must be green on its latest commit, every
 applicable matrix row must be `Pass`, and no actionable non-outdated P0/P1/P2
 review thread may remain unresolved.
 
+Source and configuration ADRs first drafted or changed in an
+approval-invalidating way under the current rule identify implementation
+evidence with repository-relative paths and stable fully qualified symbols or
+contract anchors. When a symbol cannot express the decisive constraint, include
+a short key code excerpt. Physical line counts, line numbers, function
+arrangement, and ordinary wording are point-in-time review context and are never
+maintained as source-to-ADR equality assertions; unchanged Accepted records are
+not retroactively invalidated.
+
+## Governance Validation
+
+The independent validator lives in `tools/governance-validator/`. Run:
+
+```sh
+npm test --prefix tools/governance-validator
+npm run validate --prefix tools/governance-validator
+```
+
+It deterministically checks required sections, lifecycle statuses, template
+variables, index paths and status agreement, reciprocal ADD/ADR links, and
+Mermaid syntax and table-ID coverage. CI runs the same commands for governance
+changes. These checks validate document contracts; they do not impose
+Red-Green-Refactor on pure ADR, ADD, `AGENTS.md`, template, index, or other
+documentation-only edits. Structured semantic review remains required because
+syntax and cross-reference checks cannot determine whether a decision or design
+is correct. Changes to the validator are source changes and are developed
+test-first.
+
 ## Development Standards
 
 Before writing, modifying, or reviewing source code or infrastructure

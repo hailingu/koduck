@@ -1,0 +1,13 @@
+{
+  "name": "@koduck/governance-validator",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "validate": "node validate.mjs --root ../.."
+  },
+  "dependencies": {
+    "jsdom": "26.1.0",
+    "mermaid": "11.16.1"
+  }
+}

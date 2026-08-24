@@ -4,11 +4,11 @@
 
 - **Design Status**: Current
 - **Date**: 2026-08-10
-- **Author**: Codex
+- **Author**: @codex
 - **Architecture Owner**: @linhai
 - **Required Approver**: @linhai
 - **Approver [Conditionally Required — Design Status is or has been `Current`]**: @linhai
-- **Approval Time [Conditionally Required — Design Status is or has been `Current`]**: 2026-08-11T10:37:34+08:00
+- **Approval Time [Conditionally Required — Design Status is or has been `Current`]**: 2026-08-18T21:54:39+08:00
 - **Approval Evidence [Conditionally Required — Design Status is or has been `Current`]**: Approve
 - **Retired By [Conditionally Required — Design Status is `Deprecated` or `Superseded`]**: N/A — Design Status is `Current`; the document has not been retired
 - **Retirement Time [Conditionally Required — Design Status is `Deprecated` or `Superseded`]**: N/A — Design Status is `Current`; the document has not been retired
@@ -18,7 +18,7 @@
 - **Scope**: The future Koduck AI runtime and its contracts with API clients, model providers, authentication, memory, tool execution, background work, and extension providers
 - **Trello Sources**: [Koduck card 4WI4sszw](https://trello.com/c/4WI4sszw/2-%E8%B0%83%E7%A0%94-adr-%E6%98%8E%E7%A1%AE-ai-%E6%9C%8D%E5%8A%A1%E9%87%8D%E6%9E%84%E8%BE%B9%E7%95%8C%E4%B8%8E-codex-%E5%AF%B9%E9%BD%90%E7%9B%AE%E6%A0%87)
 - **Figma Sources [Conditionally Required — UI is in scope]**: N/A — this design covers service and protocol boundaries and does not change a Web or native UI
-- **Related**: [Chinese translation](translations/zh-CN/ADD-0001-ai-service-codex-alignment.md); [Koduck predecessor baseline](https://github.com/hailingu/koduck-quant/tree/c414ddccdbc45a99fcd3d606ca0fe1f75730b7fe/koduck-ai); [OpenAI Codex reference baseline](https://github.com/openai/codex/tree/3c60d4da648bfa98e3c51c5161ac2720519c733e)
+- **Related**: [Koduck predecessor baseline](https://github.com/hailingu/koduck-quant/tree/c414ddccdbc45a99fcd3d606ca0fe1f75730b7fe/koduck-ai); [OpenAI Codex reference baseline](https://github.com/openai/codex/tree/3c60d4da648bfa98e3c51c5161ac2720519c733e)
 - **Supersedes [Conditionally Required — this ADD replaces another]**: None
 - **Superseded By [Conditionally Required — this ADD is replaced]**: None
 
@@ -93,7 +93,6 @@ executable build, test, deployment, or rollback commands.
 | ID | Trello source | Requirement baseline | Acceptance outcome | Priority and constraints | Last checked |
 | --- | --- | --- | --- | --- | --- |
 | R-1 | [Card 4WI4sszw](https://trello.com/c/4WI4sszw/2-%E8%B0%83%E7%A0%94-adr-%E6%98%8E%E7%A1%AE-ai-%E6%9C%8D%E5%8A%A1%E9%87%8D%E6%9E%84%E8%BE%B9%E7%95%8C%E4%B8%8E-codex-%E5%AF%B9%E9%BD%90%E7%9B%AE%E6%A0%87) | Research the current AI-service baseline against public OpenAI Codex and establish an auditable target boundary and migration direction. | A traceable gap matrix, adoption decisions with reasons, external-contract and security boundaries, dependency-ordered migration slices with validation and rollback boundaries, and a project Full ADR proposal after ADD approval. | Highest board position. No source, configuration, dependency, build, release, or deployment work before an eligible approver accepts the governing ADR. Trello is coordination context, not decision authority. | 2026-08-10 |
-| R-2 | N/A — user instruction in the active Codex task, not a Trello card | Provide an additional Chinese version of the ADD. | A complete Chinese translation exists and identifies the English ADD as authoritative. | The translation must not create a second decision identity or diverge from the indexed ADD. | 2026-08-10 |
 
 ## Goals And Non-Goals [Required]
 
@@ -105,7 +104,6 @@ Goals:
 - Preserve the predecessor's functional intent as research scenarios while defining new owned Koduck contracts without wire-parity or runtime-fallback obligations.
 - Define least-privilege, approval, isolation, audit, cancellation, and recovery boundaries before tool execution expands.
 - Provide ordered, independently reviewable ADR candidates with binary architecture-level acceptance context.
-- Provide a synchronized Chinese translation for reviewers who prefer Chinese.
 
 Non-goals:
 
@@ -127,7 +125,6 @@ Non-goals:
 | F-5 | Thread-store adapter | Thread state changes | Persist canonical thread/turn/item history and metadata through an owned store port backed by an AI-owned durable store. | One canonical owner per datum; appends are ordered and idempotent; local caches are reconstructable and never silently become truth. Semantic Memory and background Multitask integrations do not own canonical turn history. | R-1 |
 | F-6 | Extension owner | Instructions, skills, plugins, or MCP capabilities change | Load validated, provenance-bearing extension metadata without changing core orchestration code. | Precedence is deterministic; invalid extensions fail visibly; tenant and thread isolation is preserved; extensions cannot widen permissions by declaration. | R-1 |
 | F-7 | Operator or reviewer | A privileged action, failure, or recovery occurs | Observe structured lifecycle, policy, approval, execution, and recovery evidence without exposing secrets or sensitive prompt content. | Content logging is minimized and redacted; correlation IDs connect events; audit evidence distinguishes request, decision, attempt, and result. | R-1 |
-| F-8 | Chinese-speaking reviewer | The ADD is reviewed | Read a synchronized Chinese translation while retaining one English authoritative identity. | Status, IDs, evidence baselines, candidates, and normative meaning must match the English ADD; conflicts resolve to the English ADD. | R-2 |
 
 ## Data Model Design [Conditionally Required — data is created, updated, deleted, transferred, retained, or changes ownership, classification, lifecycle, relationships, or invariants]
 
@@ -387,10 +384,10 @@ sequenceDiagram
     Store-->>Core: Durable state, checkpoint, or typed failure
     alt Storage unavailable
       alt No durable started turn exists
-        Core-->>C1: Reject operation; no turn was accepted
+        Core-->>C1: Reject operation, no turn was accepted
         C1-->>Client: Durability-unavailable rejection with no side effect
       else Durable started turn exists
-        Core-->>C1: Stop work; no unpersisted item is publishable
+        Core-->>C1: Stop work, no unpersisted item is publishable
         C1-->>Client: Out-of-band durability-unavailable notification
         opt C-6 recovers
           Core->>Store: Append failed terminal for recovery-pending turn
@@ -438,7 +435,7 @@ sequenceDiagram
       C1->>Identity: Validate approver identity and scope
       Identity-->>C1: Immutable approver trust context or rejection
       alt Approver identity rejected
-        C1-->>Approver: Typed rejection; request remains pending until expiry
+        C1-->>Approver: Typed rejection, request remains pending until expiry
       else Approver identity valid
         C1->>Policy: Validated decision for exact D-6 identity
         alt Approver accepts exact scope
@@ -517,7 +514,6 @@ sequenceDiagram
 | Q-1 | What is the AI-service research baseline when this repository has no service code? | @linhai | Resolved | Use the predecessor `koduck-quant` `koduck-ai` tree at commit `c414ddccdbc45a99fcd3d606ca0fe1f75730b7fe` only for functional research. The current repository [README](../../README.md) identifies Koduck as a from-scratch rebuild with no service, and repository-owner direction on 2026-08-11 confirms the predecessor infrastructure is removed and is not an operating baseline. |
 | Q-2 | Which Codex revision is the comparison baseline? | @linhai | Resolved | Use public `openai/codex` commit `3c60d4da648bfa98e3c51c5161ac2720519c733e`, observed from `refs/heads/main` on 2026-08-10. The 2026-08-10 ADD review by @linhai confirmed the immutable evidence baseline. |
 | Q-3 | Does “align with Codex” mean fork it or reproduce all product behavior? | @linhai | Resolved | No. The Trello outcome asks for boundaries and a migration proposal, and this ADD selects conceptual alignment with owned Koduck contracts. Forking and parity are explicit non-goals subject to approval with this ADD. |
-| Q-4 | Which document is authoritative when the English and Chinese files differ? | @linhai | Resolved | The indexed English file `docs/architecture/ADD-0001-ai-service-codex-alignment.md` is authoritative; the Chinese file is a non-authoritative synchronized translation. |
 | Q-5 | What operating model applies when the predecessor infrastructure has been removed? | @linhai | Resolved | Repository-owner direction in the active Codex task on 2026-08-11 establishes a greenfield model: new implementation contracts are authoritative; the old baseline is functional research evidence only; no predecessor artifact, APISIX route, shared history, fallback, or route-back gate applies. |
 
 No material question remains open for approval of this design. An approver may
@@ -546,8 +542,8 @@ Allowed task-candidate statuses: `Ready`, `Selected`, `Complete`, or `Deferred`.
 
 | ID | Complete outcome | Scope boundary | Dependencies | Acceptance context | Recommended ADR type | Status | Status reason or evidence | ADR path |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| CAND-1 | A provider-neutral thread/turn/item orchestration kernel can execute one authenticated, tool-free turn through a new versioned REST/SSE boundary with durable ordered history and explicit completion, failure, interruption, durability-outage, and foreground-owner-loss outcomes. | Includes the owned lifecycle model, core ports, new REST/SSE v1 contract, one provider path, and an AI-owned durable C-6 adapter sufficient for append-before-publish, replay, and fenced foreground liveness leases; excludes semantic Memory integration, background Multitask integration, forks/checkpoints, privileged tools, extensions, deployment, and any legacy compatibility or fallback path. | This ADD must be `Current`; the new REST/SSE v1 and TurnHistory contracts, trust-context handoff, and AI-owned durable-store boundary must be complete and deterministic before ADR acceptance. | Binary contract checks for one non-tool turn; deterministic state, Resume-as-new-Turn, append-before-publish, bounded append/backpressure and liveness windows, replay, provider/store failure, process crash, lease expiry, stale-owner fencing, concurrent-reconciler idempotency, and exactly-one orphan `cancelled` terminal. | Full | Complete | Completed by the Accepted, Complete project Full ADR at `docs/adr/ADR-0001-provider-neutral-turn-kernel.md`; implementation source is commit `08cc1b3`, review corrections are commits `56073a0`, `df49b69`, `11b5ea2`, `fe3beb9`, `a7258bc`, `a7b6faa`, `31ef43f`, and `d444cf3`, and all 14 ADR checks pass | `docs/adr/ADR-0001-provider-neutral-turn-kernel.md` |
-| CAND-2 | Every tool and MCP invocation passes through one default-deny policy and isolated D-7 execution boundary; any required approval uses one canonical exact-action D-6 record, with cancellation, timeout, output-cap, lease fencing, and an auditable terminal result. | Includes C-1/C-7 approval transport, C-5 authority, C-6 foreground-lease validation, D-3 status projections, and new Tool/MCP adapters; excludes reusable session/turn grants, UI design, and expansion of allowed privileged capabilities. | CAND-1 complete; authenticated approval protocol and intended tool-effect inventory available. | Checks cover allow without approval, deny, invalid approver identity, decline, cancel, expiry, scope/attempt/lease drift, stale-owner dispatch and result rejection, pre-effect retry reapproval, timeout, cancellation, and untrusted output; recovery disables or reverts the unpromoted dispatcher and leaves tools unavailable rather than invoking a legacy path. | Full | Ready | N/A — Ready; dependency prevents selection before CAND-1 completes | None |
+| CAND-1 | A provider-neutral thread/turn/item orchestration kernel can execute one authenticated, tool-free turn through a new versioned REST/SSE boundary with durable ordered history and explicit completion, failure, interruption, durability-outage, and foreground-owner-loss outcomes. | Includes the owned lifecycle model, core ports, new REST/SSE v1 contract, one provider path, and an AI-owned durable C-6 adapter sufficient for append-before-publish, replay, and fenced foreground liveness leases; excludes semantic Memory integration, background Multitask integration, forks/checkpoints, privileged tools, extensions, deployment, and any legacy compatibility or fallback path. | This ADD must be `Current`; the new REST/SSE v1 and TurnHistory contracts, trust-context handoff, and AI-owned durable-store boundary must be complete and deterministic before ADR acceptance. | Binary contract checks for one non-tool turn; deterministic state, Resume-as-new-Turn, append-before-publish, bounded append/backpressure and liveness windows, replay, provider/store failure, process crash, lease expiry, stale-owner fencing, concurrent-reconciler idempotency, and exactly-one orphan `cancelled` terminal. | Full | Complete | Completed by the Accepted, Complete project Full ADR at `docs/adr/ADR-0001-provider-neutral-turn-kernel.md`; implementation source is commit `08cc1b3`, review corrections are commits `56073a0`, `df49b69`, `11b5ea2`, `fe3beb9`, `a7258bc`, `a7b6faa`, `31ef43f`, and `d444cf3`, and all 14 ADR checks pass; the 2026-08-17 wire-contract reconciliation enumerating the SSE `error` diagnostic event was reapproved by `@linhai` at `2026-08-17T08:57:39Z` with revised checks re-executed and passing | `docs/adr/ADR-0001-provider-neutral-turn-kernel.md` |
+| CAND-2 | Every tool and MCP invocation passes through one default-deny policy and isolated D-7 execution boundary; any required approval uses one canonical exact-action D-6 record, with cancellation, timeout, output-cap, lease fencing, and an auditable terminal result. | Includes C-1/C-7 approval transport, C-5 authority, C-6 foreground-lease validation, D-3 status projections, and new Tool/MCP adapters; excludes reusable session/turn grants, UI design, and expansion of allowed privileged capabilities. | CAND-1 complete; authenticated approval protocol and intended tool-effect inventory available. | Checks cover allow without approval, deny, invalid approver identity, decline, cancel, expiry, scope/attempt/lease drift, stale-owner dispatch and result rejection, pre-effect retry reapproval, timeout, cancellation, and untrusted output; recovery disables or reverts the unpromoted dispatcher and leaves tools unavailable rather than invoking a legacy path. | Full | Complete | Complete through the Accepted, Complete project Full ADR at `docs/adr/ADR-0003-default-deny-tool-approval-execution-boundary.md`; AC-1/AC-11 verification methods were revised under the adopted test standard and reapproved on 2026-08-20 | `docs/adr/ADR-0003-default-deny-tool-approval-execution-boundary.md` |
 | CAND-3 | The AI-owned store port expands to canonical lineage, checkpoints, and idempotency while Memory and Multitask integrate through separate versioned semantic-memory and background-work contracts without process-local truth. | Extends CAND-1 history/liveness ownership with fork, checkpoint, background-resume, projection, and integration semantics; excludes unrelated memory ranking and deployment. Memory and Multitask do not replace AI ownership of canonical Thread/Turn/Item. | CAND-1 complete; Memory and Multitask contract owners participate. | Replay/order/append-only-correction/lease-fencing/tenant-isolation and duplicate-submission checks; schema evolution preserves CAND-1 history and terminal semantics, while rollback uses the last verified new schema/artifact and discards only reconstructable projections. | Full | Ready | N/A — Ready; dependency prevents selection before CAND-1 completes | None |
 | CAND-4 | Repository instructions, agent profiles, skills, plugins, and MCP descriptors load through one provenance-bearing extension boundary and cannot widen execution permissions. | Includes discovery, validation, precedence, snapshots, diagnostics, and current extension adapters; excludes marketplace UI, remote installation, and new privileged tools. | CAND-1 and CAND-2 complete; CAND-3 storage snapshot semantics available where persistence is required. | Deterministic precedence, invalid-extension, source-loss, stale-policy, isolation, snapshot-consistency, and permission-non-escalation checks; rollback disables the new registry and retains static known-safe configuration. | Full | Ready | N/A — Ready; dependencies prevent early selection | None |
 | CAND-5 | Foreground and background model turns use the new core across supported providers and satisfy the owned REST/SSE, lifecycle, recovery, and service-readiness contracts for first production promotion. | Includes provider adapters, background lifecycle integration, consumer readiness, SLO evidence, and first-release readiness; excludes new product features and UI redesign. | CAND-1 through CAND-4 complete and verified; intended consumer inventory complete. | Provider/stream/background contract, recovery, SLO, error-budget, and promotion-stop checks; before first promotion failure quarantines the candidate, and later rollback may target only a last verified new artifact under an OCR. | Full | Ready | N/A — Ready; final readiness candidate | None |
@@ -558,7 +554,6 @@ Allowed task-candidate statuses: `Ready`, `Selected`, `Complete`, or `Deferred`.
 | Requirement | Capabilities | Data entities | Components | Control / interaction flows | ADR task candidates |
 | --- | --- | --- | --- | --- | --- |
 | R-1 | F-1, F-2, F-3, F-4, F-5, F-6, F-7 | D-1 through D-8 | C-1 through C-8 | CF-1 through CF-5; IX-1 through IX-3 | CAND-1 through CAND-6 |
-| R-2 | F-8 | N/A — translation creates no runtime data entity | N/A — translation adds no runtime component | N/A — documentation review only | N/A — fulfilled by the synchronized translation, not an implementation ADR |
 
 ## Supporting Material [Optional]
 
@@ -654,7 +649,7 @@ subtasks and deterministic checks.
 - [x] Cross-cutting concerns, risks, and assumptions are documented with their treatment, and every material question is resolved.
 - [x] Traceability connects every requirement to capabilities and ADR task candidates or records why no runtime candidate applies.
 - [x] Task candidates contain outcomes and boundaries but no source-file or executable implementation design.
-- [x] Every `Selected` or `Complete` candidate has an exact reciprocal ADR path; CAND-1 is `Complete` through `docs/adr/ADR-0001-provider-neutral-turn-kernel.md`, whose Architecture Source points back to this ADD and candidate ID.
+- [x] Every `Selected` or `Complete` candidate has an exact reciprocal ADR path; CAND-1 is `Complete` through `docs/adr/ADR-0001-provider-neutral-turn-kernel.md`, and CAND-2 is `Complete` through `docs/adr/ADR-0003-default-deny-tool-approval-execution-boundary.md`; both ADRs' Architecture Source fields point back to this ADD and the matching candidate ID.
 - [x] Every required section is complete; every conditional trigger is assessed and completed or marked `N/A — <reason>`; optional content is complete.
 - [x] An eligible non-author approver, approval time, and exact `Approval Evidence: Approve` are recorded before `Current`; no Approval Context Revision is recorded because no immutable revision yet represents the approved uncommitted content.
 
@@ -696,3 +691,14 @@ This section is inactive because Design Status is `Current`. When triggered:
 | 2026-08-11 | Added sixth review-correction evidence commit `a7b6faa` for serialized-payload accounting, provider-pump cancellation, and non-blocking renewal-guard shutdown; the candidate remains `Complete` and its accepted outcome and scope are unchanged. | @codex |
 | 2026-08-11 | Added seventh review-correction evidence commit `31ef43f` for interruptible provider request establishment and a 1-MiB unterminated-frame cap; the candidate remains `Complete` and its accepted outcome and scope are unchanged. | @codex |
 | 2026-08-11 | Added eighth review-correction evidence commit `d444cf3` for Turn-contiguous concurrent Thread history and owned oversized-body/method-rejection problems; the candidate remains `Complete` and its accepted outcome and scope are unchanged. | @codex |
+| 2026-08-12 | Selected CAND-2 through the Proposed, Not Started project Full ADR at `docs/adr/ADR-0003-default-deny-tool-approval-execution-boundary.md` and synchronized the reciprocal path. | @codex |
+| 2026-08-12 | Synchronized CAND-2 evidence after `@linhai` accepted its linked ADR at `docs/adr/ADR-0003-default-deny-tool-approval-execution-boundary.md`; the candidate remains `Selected` while the ADR is `Accepted`, `Not Started`. | @codex |
+| 2026-08-12 | Synchronized CAND-2 when its linked Accepted ADR entered `In Progress` for test-first T-1 implementation. | @codex |
+| 2026-08-17 | Synchronized CAND-1 after the linked ADR returned to `Proposed`, `Not Started` for the approval-invalidating wire-contract reconciliation that enumerates the in-band SSE `error` transport-diagnostic event; the candidate is `Selected` again and its historical completion evidence is retained pending ADR reapproval and re-verification. | @kimi |
+| 2026-08-17 | Synchronized CAND-1 to `Complete` after `@linhai` reapproved the linked ADR at `2026-08-17T08:57:39Z` and the revised acceptance checks were re-executed and passed; the linked ADR is `Accepted`, `Complete`. | @kimi |
+| 2026-08-18 | Approval-invalidating revision at `2026-08-18T21:52:09+08:00` removed the non-authoritative Chinese translation at `docs/architecture/translations/zh-CN/ADD-0001-ai-service-codex-alignment.md` and its translation-scoped baseline content — requirement R-2, capability F-8, resolved question Q-4, the synchronized-translation goal, the R-2 traceability row, and the Related translation link — by repository-owner direction in the active task, ending per-change translation synchronization; the indexed English document remains the sole design identity. Preserved prior approval history: Approver `@linhai`, Approval Time `2026-08-11T10:37:34+08:00`, Approval Evidence `Approve`, no Approval Context Revision. Reset Design Status to `Draft` and the approval fields to `Pending — reapproval required`. CAND-1 `Complete` and CAND-2 `Selected` candidate statuses, their reciprocal ADR links, and ADR-0003's `Accepted`, `In Progress` state are unchanged; no new candidate may be selected until this ADD is `Current` again. | @zcode |
+| 2026-08-18 | Reapproved the translation-removal revision after repository owner `@linhai` identified ADD-0001 in the active task and supplied exact `Approve`; recorded Approval Time `2026-08-18T21:54:39+08:00` and returned Design Status to `Current`. No Approval Context Revision is recorded because the approved content is not yet represented by an immutable commit. | @linhai |
+| 2026-08-20 | Recorded ADR-0003's deliberate AC-1 acceptance-definition revision and its return to `Proposed, Not Started` pending reapproval. | @zcode |
+| 2026-08-20 | Marked CAND-2 `Complete` after `@linhai` reapproved the revision and the linked ADR reached `Accepted, Complete` on `a288abc`; every declared acceptance-check command was re-executed post-reapproval before completion. | @zcode |
+| 2026-08-20 | Recorded CAND-2 `Complete` after the AC-1/AC-11 semantic-method revision was `@linhai`-reapproved at 2026-08-20T10:26:01+08:00 and the revised commands re-executed post-reapproval. | @zcode |
+| 2026-08-21 | Synchronized the Approval And Review Checklist with CAND-2's existing `Complete` status and its Accepted, Complete linked ADR. | @codex |

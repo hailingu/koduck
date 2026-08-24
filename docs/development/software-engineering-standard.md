@@ -27,7 +27,7 @@ is accepted.
 | Unit | Decomposition-review threshold | Engineering-exception limit |
 | --- | --- | --- |
 | Maintained production source file | More than 400 physical lines | More than 800 physical lines |
-| Maintained test source file | More than 600 physical lines | More than 1,200 physical lines |
+| Maintained test source file | More than 600 physical lines | More than 1,800 physical lines |
 | Function, method, closure, or equivalent executable unit | More than 60 physical lines | More than 120 physical lines |
 | Cyclomatic complexity, when measured by configured tooling | More than 10 | More than 20 |
 | Executable nesting depth | More than 4 levels | More than 6 levels |
@@ -37,6 +37,12 @@ Apply the guardrails as follows:
 - Count the physical span, including comments and documentation, because that
   is the amount a reviewer must navigate. Use configured tool output for
   complexity when available; do not add a dependency solely to obtain a metric.
+- Treat every measurement as point-in-time evidence for the inspected source
+  revision. A decision record may cite that revision and the measured result,
+  but no test may require the record to mirror later physical line counts,
+  function layout, or ordinary source wording. Re-run the review when an
+  affected change crosses a threshold; do not continuously rewrite historical
+  evidence after unrelated edits.
 - Generated, vendored, lock, machine-produced schema, snapshot, fixture-data,
   and immutable migration-history files are excluded from the numeric limits.
   Their source or generating workflow remains subject to review.
@@ -159,9 +165,28 @@ the stated problem and forces, not by matching a class diagram mechanically.
 
 ## Testing And Change Design
 
+- Develop source-code features and reproducible defect fixes with
+  Red-Green-Refactor: first add the smallest focused test for the missing
+  behavior, observe the expected failure, then implement and keep focused and
+  routed suites green. Pure ADR, ADD, agent-guide, template, index, or other
+  documentation-only edits do not manufacture a failing source test; they use
+  the repository's deterministic governance validator and structured document
+  review. The governance validator itself is maintained source and follows the
+  source-code rule.
 - Test observable behavior and stable contracts. Avoid tests coupled to private
   call order, framework internals, or incidental data structures unless that
   detail is itself the contract.
+- Do not inspect repository-versioned source or documentation as opaque text to
+  assert ordinary prose, exact phrasing, substring presence or occurrence
+  counts, physical line counts, formatting, section placement, or
+  implementation layout. Use the language/compiler or the configured parser or
+  validator to verify semantics. Exact text may be asserted only when its form
+  is an authoritative contract, such as a stable clause ID, required heading,
+  wire or golden fixture, schema token, command contract, or machine-readable
+  diagnostic code, and the test must cite that contract. Parser and validator
+  fixtures may contain exact grammar examples, but their assertions should
+  target semantic outcomes or stable diagnostic codes instead of ordinary
+  wording.
 - For maintained source work, use the governing ADR's
   Contract-To-Check Traceability table and Risk Coverage Matrix as required by
   the root `AGENTS.md`. Every normative contract clause must be exercised by an

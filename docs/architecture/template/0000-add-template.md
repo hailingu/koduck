@@ -363,6 +363,7 @@ Allowed task-candidate statuses: `Ready`, `Selected`, `Complete`, or `Deferred`.
 - [ ] Task candidates contain outcomes and boundaries but no implementation details; every source or configuration candidate fits one independently reviewable implementation pull request, with larger work split into dependency-ordered candidates.
 - [ ] Every `Selected` or `Complete` candidate has an exact ADR path, and that ADR's `Architecture Source` points back to this ADD path and candidate ID.
 - [ ] Every required section is complete; every conditional trigger is assessed and completed or marked `N/A — <reason>`; optional sections are complete or removed.
+- [ ] `npm run validate --prefix tools/governance-validator` passes, including template-field, status, index, reciprocal-link, Mermaid syntax, and diagram/table ID checks.
 - [ ] An eligible non-author approver, approval time, and exact `Approval Evidence: Approve` are recorded before `Current`; any optional Approval Context Revision is informational, non-binding, and exactly represents the approved document.
 
 ## Archival [Conditionally Required — Design Status is `Deprecated` or `Superseded`]

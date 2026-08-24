@@ -27,6 +27,24 @@ use tokio::time::timeout;
 use tokio_stream::StreamExt;
 use tower::ServiceExt;
 
+/// Turn-only router fixture: no approval transport is configured, so any
+/// approval-decision request observes the owned unavailability outcome.
+#[derive(Clone)]
+struct ApprovalsUnavailable;
+
+impl koduck_ai::adapters::http::approvals::ApprovalDecisionTransport for ApprovalsUnavailable {
+    fn decide(
+        &mut self,
+        _trust: &TrustContext,
+        _thread_id: ThreadId,
+        _approval_id: koduck_ai::domain::execution::ApprovalId,
+        _decision: koduck_ai::domain::execution::ApprovalDecision,
+        _decided_at_millis: u64,
+    ) -> koduck_ai::application::ApprovalDecisionOutcome {
+        koduck_ai::application::ApprovalDecisionOutcome::Unavailable
+    }
+}
+
 fn complete_environment() -> BTreeMap<String, String> {
     BTreeMap::from([
         (
@@ -135,7 +153,7 @@ impl TurnService for StubService {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn axum_router_hands_validated_identity_to_owned_http_adapter() {
-    let router = build_router(StubService);
+    let router = build_router(StubService, ApprovalsUnavailable);
     let missing_identity = router
         .clone()
         .oneshot(
@@ -173,7 +191,7 @@ async fn invalid_utf8_request_body_is_rejected() {
     body.push(0xff);
     body.extend_from_slice(br#"lo"}"#);
 
-    let response = build_router(StubService)
+    let response = build_router(StubService, ApprovalsUnavailable)
         .oneshot(
             Request::post("/api/v1/ai/chat")
                 .header("content-type", "application/json")
@@ -187,7 +205,7 @@ async fn invalid_utf8_request_body_is_rejected() {
 
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 
-    let missing_identity = build_router(StubService)
+    let missing_identity = build_router(StubService, ApprovalsUnavailable)
         .oneshot(
             Request::post("/api/v1/ai/chat")
                 .header("content-type", "application/json")
@@ -226,7 +244,7 @@ impl TurnService for MidTurnFailureService {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn mid_turn_failure_is_reported_inside_an_started_sse_stream() {
-    let response = build_router(MidTurnFailureService)
+    let response = build_router(MidTurnFailureService, ApprovalsUnavailable)
         .oneshot(chat_request("/api/v1/ai/chat/stream"))
         .await
         .expect("stream response");
@@ -291,7 +309,7 @@ impl TurnService for BlockingService {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn interrupt_bypasses_an_active_turn() {
     let service = BlockingService::default();
-    let router = build_router(service.clone());
+    let router = build_router(service.clone(), ApprovalsUnavailable);
     let chat = tokio::spawn(router.clone().oneshot(chat_request("/api/v1/ai/chat")));
     tokio::task::spawn_blocking({
         let service = service.clone();
@@ -369,6 +387,7 @@ impl TurnHistory for ConcurrentHistory {
         &mut self,
         _trust: &TrustContext,
         turn_id: TurnId,
+        _tool_terminals: Vec<koduck_ai::application::NewItem>,
     ) -> Result<(), HistoryError> {
         let mut state = self.state.lock().expect("history state lock");
         if !state.items.contains_key(&turn_id) {
@@ -497,7 +516,7 @@ impl ModelProvider for BackpressuredProvider {
     fn stream(&mut self, _input: ModelInput) -> Result<ProviderStream<'_>, ProviderError> {
         let mut delta_count = 0;
         Ok(Box::new(std::iter::from_fn(move || {
-            if delta_count < 64 {
+            if delta_count < 63 {
                 delta_count += 1;
                 Some(ProviderEvent::Delta("A".to_owned()))
             } else {
@@ -511,7 +530,10 @@ impl ModelProvider for BackpressuredProvider {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn unread_sse_backpressure_does_not_block_interrupt_terminalization() {
     let history = ConcurrentHistory::default();
-    let router = build_router(TurnRunner::new(BackpressuredProvider, history.clone()));
+    let router = build_router(
+        TurnRunner::new(BackpressuredProvider, history.clone()),
+        ApprovalsUnavailable,
+    );
     let response = router
         .clone()
         .oneshot(chat_request("/api/v1/ai/chat/stream"))
@@ -520,12 +542,12 @@ async fn unread_sse_backpressure_does_not_block_interrupt_terminalization() {
     let turn_id = history.accepted_turn_id();
 
     timeout(Duration::from_millis(500), async {
-        while history.item_count(turn_id) < 65 {
+        while history.item_count(turn_id) < 64 {
             tokio::time::sleep(Duration::from_millis(1)).await;
         }
     })
     .await
-    .expect("all 64 provider deltas become durable without reading the SSE body");
+    .expect("all 63 provider deltas become durable without consuming the terminal reserve");
 
     let interrupt = router
         .oneshot(interrupt_request(turn_id))
@@ -555,10 +577,10 @@ async fn streaming_response_starts_before_provider_completion() {
     let provider = GatedProvider {
         gate: Arc::new((Mutex::new(false), Condvar::new())),
     };
-    let router = build_router(TurnRunner::new(
-        provider.clone(),
-        ConcurrentHistory::default(),
-    ));
+    let router = build_router(
+        TurnRunner::new(provider.clone(), ConcurrentHistory::default()),
+        ApprovalsUnavailable,
+    );
     let mut response_task = tokio::spawn(router.oneshot(chat_request("/api/v1/ai/chat/stream")));
 
     let response = if let Ok(joined) = timeout(Duration::from_millis(250), &mut response_task).await
@@ -657,10 +679,10 @@ async fn interrupt_is_observed_while_the_provider_stream_is_idle() {
         "test-key",
     );
     let history = ConcurrentHistory::default();
-    let router = build_router(TurnRunner::new(
-        OpenAiCompatibleProvider::new(transport),
-        history.clone(),
-    ));
+    let router = build_router(
+        TurnRunner::new(OpenAiCompatibleProvider::new(transport), history.clone()),
+        ApprovalsUnavailable,
+    );
     let response = router
         .clone()
         .oneshot(chat_request("/api/v1/ai/chat/stream"))
@@ -700,10 +722,10 @@ async fn dropping_an_idle_sse_body_cancels_the_durable_turn() {
         "test-key",
     );
     let history = ConcurrentHistory::default();
-    let router = build_router(TurnRunner::new(
-        OpenAiCompatibleProvider::new(transport),
-        history.clone(),
-    ));
+    let router = build_router(
+        TurnRunner::new(OpenAiCompatibleProvider::new(transport), history.clone()),
+        ApprovalsUnavailable,
+    );
     let response = router
         .oneshot(chat_request("/api/v1/ai/chat/stream"))
         .await

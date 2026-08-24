@@ -1,6 +1,12 @@
 // ADR: docs/adr/ADR-0001-provider-neutral-turn-kernel.md
+// ADR: docs/adr/ADR-0003-default-deny-tool-approval-execution-boundary.md
 
 //! Domain-owned lifecycle rules for a foreground model turn.
+
+pub mod execution;
+pub mod tool;
+
+use std::collections::BTreeSet;
 
 use thiserror::Error;
 use uuid::Uuid;
@@ -42,6 +48,35 @@ impl TenantId {
     }
 }
 
+/// C-7-validated approval scopes for one authenticated principal.
+///
+/// Construction is crate-internal: only the configured authenticated trust
+/// adapter may seal scopes it has validated, so no external caller can mint
+/// `ai.tool.approve` or any other approval scope (ADR-0003 TC-05).
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ApprovalScopes {
+    scopes: BTreeSet<String>,
+}
+
+impl ApprovalScopes {
+    /// Wraps scopes the configured C-7 boundary has already validated.
+    pub(crate) fn from_validated<I, S>(scopes: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        Self {
+            scopes: scopes.into_iter().map(Into::into).collect(),
+        }
+    }
+
+    /// Reports whether the validated identity carries one exact scope.
+    #[must_use]
+    pub fn contains(&self, scope: &str) -> bool {
+        self.scopes.contains(scope)
+    }
+}
+
 /// Immutable identity information supplied by the configured trust boundary.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TrustContext {
@@ -49,10 +84,17 @@ pub struct TrustContext {
     pub tenant_id: TenantId,
     /// Authenticated subject within the tenant.
     pub subject_id: String,
+    /// C-7-validated approval scopes; empty until the authenticated adapter
+    /// supplies them, so an unscoped principal can never resolve an approval.
+    approval_scopes: ApprovalScopes,
 }
 
 impl TrustContext {
     /// Creates a trust context from already validated identity components.
+    ///
+    /// The returned context carries no approval scopes; use
+    /// [`TrustContext::with_approval_scopes`] only with scopes the configured
+    /// C-7 boundary has already validated.
     ///
     /// # Errors
     ///
@@ -70,8 +112,25 @@ impl TrustContext {
             Ok(Self {
                 tenant_id,
                 subject_id,
+                approval_scopes: ApprovalScopes::default(),
             })
         }
+    }
+
+    /// Returns a copy of this context carrying already-validated scopes.
+    ///
+    /// Only the sealed [`ApprovalScopes`] capability can enter this method, so
+    /// request, Tool, and MCP content can never attach approval scope.
+    #[must_use]
+    pub fn with_approval_scopes(mut self, scopes: ApprovalScopes) -> Self {
+        self.approval_scopes = scopes;
+        self
+    }
+
+    /// Reports whether the validated identity carries one exact approval scope.
+    #[must_use]
+    pub fn has_approval_scope(&self, scope: &str) -> bool {
+        self.approval_scopes.contains(scope)
     }
 }
 
@@ -174,6 +233,26 @@ impl Usage {
             total_tokens: 0,
         }
     }
+
+    /// Returns the combined counters of two requests with checked overflow.
+    ///
+    /// Each continuation request of one Turn reports its own counters, so the
+    /// Turn terminal must carry their sum (ADR-0003 TC-11).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DomainValueError::UsageOverflow`] when any counter sum
+    /// overflows.
+    pub fn checked_accumulate(&self, other: &Self) -> Result<Self, DomainValueError> {
+        Self::new(
+            self.input_tokens
+                .checked_add(other.input_tokens)
+                .ok_or(DomainValueError::UsageOverflow)?,
+            self.output_tokens
+                .checked_add(other.output_tokens)
+                .ok_or(DomainValueError::UsageOverflow)?,
+        )
+    }
 }
 
 /// The durable reason a turn stopped producing output.
@@ -198,8 +277,76 @@ pub enum ItemPayload {
     AgentMessageDelta { content: String },
     /// Provider token accounting observed before completion.
     Usage(Usage),
+    /// Append-only D-3 view of one canonical D-6 approval status (ADR-0003
+    /// TC-06). Carries canonical identity and version; never authority.
+    ApprovalStatus {
+        /// Canonical D-6 identity.
+        approval_id: execution::ApprovalId,
+        /// Exact D-7 identity bound by the canonical D-6 record.
+        attempt_id: execution::AttemptId,
+        /// Canonical status at this version.
+        status: execution::ApprovalStatus,
+        /// Canonical decision, or `None` while requested or expired.
+        decision: Option<execution::ApprovalDecision>,
+        /// Canonical D-6 record version.
+        version: u64,
+    },
+    /// Append-only D-3 view of one model-originated Tool call (ADR-0003
+    /// TC-06). A projection of the requested action and its canonical D-7
+    /// dispatch transition; never authority.
+    ToolCall {
+        /// Descriptor identity the call addressed.
+        descriptor_id: String,
+        /// Descriptor version the call addressed.
+        descriptor_version: String,
+        /// Exact target the call addressed.
+        target: String,
+        /// Canonical D-7 identity of the dispatch view, or `None` when
+        /// policy denied before any D-7 existed.
+        attempt_id: Option<execution::AttemptId>,
+        /// Canonical D-7 lifecycle phase of the dispatch view, or `None`
+        /// for a pre-D-7 denial record.
+        status: Option<execution::ExecutionStatus>,
+        /// Canonical D-7 transition version of the dispatch view, or `None`
+        /// for a pre-D-7 denial record.
+        version: Option<u64>,
+    },
+    /// Append-only D-3 view of one tool-execution terminal (ADR-0003
+    /// TC-06). Carries canonical identity, transition version, and bounded
+    /// metadata only.
+    ToolResult {
+        /// Canonical D-7 identity, or `None` when policy denied before any
+        /// D-7 existed.
+        attempt_id: Option<execution::AttemptId>,
+        /// Canonical D-7 lifecycle status of the terminal.
+        status: execution::ExecutionStatus,
+        /// Stable failure or denial code, or `None` for a success, timeout,
+        /// or cancellation.
+        code: Option<String>,
+        /// Executor-observed effect-state evidence.
+        effect_state: Option<ToolEffectState>,
+        /// Serialized size of the bounded executor output.
+        output_bytes: u64,
+        /// SHA-256 digest of a successful model-bound output, or `None` for
+        /// failure, timeout, cancellation, and pre-D-7 denial records.
+        output_digest: Option<String>,
+        /// Canonical D-7 terminal transition version, or `None` for a
+        /// pre-D-7 denial record.
+        version: Option<u64>,
+    },
     /// Exactly one terminal outcome for the turn.
     Terminal(TerminalOutcome),
+}
+
+/// Executor-observed effect-state evidence mirrored into D-3 views.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ToolEffectState {
+    /// The executor proved the effect never started.
+    NotStarted,
+    /// The executor confirmed the effect started.
+    Started,
+    /// The executor could not determine whether the effect started.
+    Unknown,
 }
 
 /// A durably sequenced Thread/Turn history item.

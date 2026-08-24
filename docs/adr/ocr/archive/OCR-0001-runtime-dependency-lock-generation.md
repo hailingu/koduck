@@ -210,6 +210,7 @@ stated condition does not apply.
 - **Requirement-level review**: Pass — every required and triggered field for
   `Complete` is complete, non-triggered conditionals carry reasons, and retained
   optional content is complete.
+- **Governance validation**: Pass — governance validation passed (`npm run validate --prefix tools/governance-validator`).
 
 ## Supporting Notes [Optional]
 

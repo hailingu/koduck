@@ -49,3 +49,6 @@ coverage/
 # Kubernetes (docs/development/kubernetes-standard.md) — never commit rendered secrets
 *.local.yaml
 *.local.yml
+
+# Workbuddy workspace
+.workbuddy/

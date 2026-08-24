@@ -105,6 +105,16 @@ pub struct ModelInput {
     pub input: String,
     /// Durable prior Thread history supplied exactly once for resume.
     pub history: Vec<Item>,
+    /// Serviced Tool rounds whose committed results a continuation request
+    /// carries; empty for the initial request of a Turn.
+    ///
+    /// Each element is one provider stream's Tool-call batch. The runner
+    /// starts a continuation request only after the C-5 boundary durably
+    /// committed each carried result in the current lease generation
+    /// (ADR-0003 TC-11), and the provider adapter serializes the rounds in
+    /// order as alternating assistant-call/result groups after the user
+    /// message, preserving the causal order of the committed interaction.
+    pub tool_rounds: Vec<ToolRound>,
 }
 
 /// One owned event produced by a model provider adapter.
@@ -112,6 +122,17 @@ pub struct ModelInput {
 pub enum ProviderEvent {
     /// One non-empty provider output delta.
     Delta(String),
+    /// One fully assembled model-originated Tool call.
+    ///
+    /// The provider adapter assembles streamed fragments into complete calls
+    /// before emitting this event; `name` and `arguments` are untrusted
+    /// provider content and never authority (ADR-0003 TC-02/TC-11).
+    ToolCall {
+        /// Declared tool name exactly as the provider delivered it.
+        name: String,
+        /// Serialized arguments exactly as the provider delivered them.
+        arguments: String,
+    },
     /// Final provider usage counters.
     Usage(Usage),
     /// Successful provider completion.
@@ -150,6 +171,33 @@ pub enum NewItem {
     AgentMessageDelta { content: String },
     /// Provider usage observed before terminal completion.
     Usage(Usage),
+    /// Append-only D-3 view of one canonical D-6 approval status.
+    ApprovalStatus {
+        approval_id: crate::domain::execution::ApprovalId,
+        attempt_id: crate::domain::execution::AttemptId,
+        status: crate::domain::execution::ApprovalStatus,
+        decision: Option<crate::domain::execution::ApprovalDecision>,
+        version: u64,
+    },
+    /// Append-only D-3 view of one model-originated Tool call.
+    ToolCall {
+        descriptor_id: String,
+        descriptor_version: String,
+        target: String,
+        attempt_id: Option<crate::domain::execution::AttemptId>,
+        status: Option<crate::domain::execution::ExecutionStatus>,
+        version: Option<u64>,
+    },
+    /// Append-only D-3 view of one tool-execution terminal.
+    ToolResult {
+        attempt_id: Option<crate::domain::execution::AttemptId>,
+        status: crate::domain::execution::ExecutionStatus,
+        code: Option<String>,
+        effect_state: Option<crate::domain::ToolEffectState>,
+        output_bytes: u64,
+        output_digest: Option<String>,
+        version: Option<u64>,
+    },
     /// Exactly one terminal outcome.
     Terminal(TerminalOutcome),
 }
@@ -161,8 +209,219 @@ impl NewItem {
         match self {
             Self::AgentMessageDelta { content } => ItemPayload::AgentMessageDelta { content },
             Self::Usage(usage) => ItemPayload::Usage(usage),
+            Self::ApprovalStatus {
+                approval_id,
+                attempt_id,
+                status,
+                decision,
+                version,
+            } => ItemPayload::ApprovalStatus {
+                approval_id,
+                attempt_id,
+                status,
+                decision,
+                version,
+            },
+            Self::ToolCall {
+                descriptor_id,
+                descriptor_version,
+                target,
+                attempt_id,
+                status,
+                version,
+            } => ItemPayload::ToolCall {
+                descriptor_id,
+                descriptor_version,
+                target,
+                attempt_id,
+                status,
+                version,
+            },
+            Self::ToolResult {
+                attempt_id,
+                status,
+                code,
+                effect_state,
+                output_bytes,
+                output_digest,
+                version,
+            } => ItemPayload::ToolResult {
+                attempt_id,
+                status,
+                code,
+                effect_state,
+                output_bytes,
+                output_digest,
+                version,
+            },
             Self::Terminal(outcome) => ItemPayload::Terminal(outcome),
         }
+    }
+}
+
+use super::tool_projection::{ToolProjection, ToolProjectionSink};
+
+/// One model-originated Tool call exactly as the provider delivered it.
+///
+/// `name` and `arguments` are untrusted provider content; they never carry
+/// authority and are only resolved against configured descriptors by the
+/// tool-execution boundary (ADR-0003 TC-02).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ModelToolCall {
+    /// Declared tool name as delivered.
+    pub name: String,
+    /// Serialized arguments as delivered.
+    pub arguments: String,
+}
+
+/// The model-bound view of one committed Tool-call result.
+///
+/// `content` is the bounded committed executor output, a stable
+/// denial/failure summary when the call did not produce output, or the stable
+/// non-UTF-8 summary bound by the projection sink to an opaque committed
+/// success. It is delivered to the model only inside a continuation request
+/// started after the current-generation durable result commit the C-5 boundary
+/// proved, and it remains untrusted content there (ADR-0003 TC-11).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ModelToolResult {
+    /// Bounded committed result content for the continuation request.
+    pub content: String,
+    /// Whether the call failed, was denied, or was unavailable.
+    pub is_error: bool,
+}
+
+/// One serviced Tool call paired with its committed result.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CommittedToolCall {
+    /// The model-originated call exactly as delivered (untrusted).
+    pub call: ModelToolCall,
+    /// The committed result carried into the continuation request.
+    pub result: ModelToolResult,
+}
+
+/// One provider Tool-call round: every call the model raised in one stream,
+/// each paired with its committed result.
+///
+/// Continuation requests carry rounds in order and the provider adapter
+/// serializes them as alternating assistant-call/result groups, so a later
+/// round raised on an earlier result is never rewritten as concurrent with
+/// it (ADR-0003 TC-11).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ToolRound {
+    /// Assistant text emitted in this stream before or alongside the Tool
+    /// calls. It is retained with the call batch so the continuation can
+    /// reconstruct the model's causal assistant message.
+    pub assistant_content: String,
+    /// The round's serviced calls in the order the model raised them.
+    pub calls: Vec<CommittedToolCall>,
+}
+
+/// Turn-scoped identity context for one serviced Tool call.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ToolCallTurnContext {
+    /// Tenant that owns the Turn.
+    pub tenant_id: TenantId,
+    /// Thread that owns the Turn.
+    pub thread_id: ThreadId,
+    /// Turn whose D-7 budget the call consumes.
+    pub turn_id: TurnId,
+    /// Foreground lease generation that must remain current.
+    pub lease_generation: LeaseGeneration,
+}
+
+/// Consumer-owned boundary that services one model Tool call through C-5 and
+/// returns the ordered append-only D-3 items to record for it plus the bounded
+/// committed result the runner's continuation request carries.
+///
+/// The runner owns the durable append-before-publish ordering; the port owns
+/// C-5 policy, approval, execution, and the D-3 projection contents. A typed
+/// denial or unavailability is returned as recorded items, never as an error.
+pub trait ToolCallExecutor {
+    /// Services one Tool call and returns its D-3 items and committed result.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ToolCallError`] only for turn-level failures that own the
+    /// turn terminal, such as canonical reconciliation or durability.
+    fn execute_tool_call(
+        &mut self,
+        call: ModelToolCall,
+        context: &ToolCallTurnContext,
+        trust: &TrustContext,
+        projections: &mut dyn ToolProjectionSink,
+    ) -> Result<ModelToolResult, super::ToolCallError>;
+
+    /// Cancels live C-5 work and returns its canonical D-7 terminal items.
+    ///
+    /// The default is deliberately a no-op because configurations without a
+    /// live C-5 boundary have no process-owned execution work to cancel. The
+    /// production boundary overrides it to close catalogued D-7 attempts.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ToolCallError`] when live execution work cannot reach a
+    /// canonical terminal and requires reconciliation. Returned items must be
+    /// persisted before the Turn interruption terminal.
+    fn request_interrupt(
+        &mut self,
+        _trust: &TrustContext,
+        _thread_id: ThreadId,
+        _turn_id: TurnId,
+    ) -> Result<Vec<NewItem>, super::ToolCallError> {
+        Ok(Vec::new())
+    }
+
+    /// Notifies the boundary that one Turn's durable terminal committed.
+    ///
+    /// The default is deliberately a no-op because configurations without a
+    /// live C-5 boundary retain no process-owned authority. The production
+    /// boundary overrides it to reclaim its process-local Turn authority
+    /// against the proven canonical terminal; reclamation is hygiene, so an
+    /// unproven probe retains the authority instead of surfacing an error.
+    fn turn_terminal_committed(
+        &mut self,
+        _tenant_id: &TenantId,
+        _thread_id: ThreadId,
+        _turn_id: TurnId,
+    ) {
+    }
+}
+
+/// Explicit unconfigured tool-execution boundary.
+///
+/// Every call is recorded as a typed unavailability without any execution,
+/// caching, or fallback path (ADR-0003 TC-13).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct NoToolExecution;
+
+impl ToolCallExecutor for NoToolExecution {
+    fn execute_tool_call(
+        &mut self,
+        call: ModelToolCall,
+        _context: &ToolCallTurnContext,
+        _trust: &TrustContext,
+        projections: &mut dyn ToolProjectionSink,
+    ) -> Result<ModelToolResult, super::ToolCallError> {
+        let descriptor_id = if crate::domain::tool::validate_descriptor_id(&call.name).is_ok() {
+            call.name
+        } else {
+            String::new()
+        };
+        // The unconfigured boundary is recorded through the same durable
+        // projection sink as every other outcome (ADR-0003 TC-13).
+        crate::application::tool_projection::emit(
+            projections,
+            ToolProjection::Denied {
+                descriptor_id,
+                descriptor_version: String::new(),
+                target: String::new(),
+                code: "tool_execution_unavailable".to_owned(),
+            },
+        );
+        Ok(ModelToolResult {
+            content: "tool_execution_unavailable".to_owned(),
+            is_error: true,
+        })
     }
 }
 
@@ -229,17 +488,39 @@ pub trait TurnHistory {
         Ok(Box::new(NoopTurnLiveness))
     }
 
-    /// Records an authenticated interrupt request for an active tenant-owned turn.
+    /// Records D-7 interruption terminals followed by the authenticated Turn
+    /// interruption terminal as one ordered operation.
     ///
     /// # Errors
     ///
     /// Returns [`HistoryError::NotFound`] for unknown or non-owned turns and
-    /// [`HistoryError::AlreadyTerminal`] for a terminal turn.
+    /// [`HistoryError::AlreadyTerminal`] for a terminal turn. Implementations
+    /// must append none of the supplied D-7 items when the Turn terminal loses.
     fn request_interrupt(
         &mut self,
         trust: &TrustContext,
         turn_id: TurnId,
+        tool_terminals: Vec<NewItem>,
     ) -> Result<(), HistoryError>;
+
+    /// Resolves the authenticated Turn's Thread for a paired C-5 interruption.
+    ///
+    /// History adapters that do not host a C-5 execution boundary return
+    /// `None`, preserving their canonical history-only interruption behavior.
+    /// Production adapters return the tenant- and subject-owned Thread so the
+    /// runner can cancel live D-7 work before recording the Turn terminal.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`HistoryError`] when the authenticated ownership lookup cannot
+    /// complete.
+    fn interruption_thread(
+        &self,
+        _trust: &TrustContext,
+        _turn_id: TurnId,
+    ) -> Result<Option<ThreadId>, HistoryError> {
+        Ok(None)
+    }
 
     /// Reports whether the accepted turn has a durable interrupt request.
     ///
@@ -328,6 +609,31 @@ pub trait TurnHistory {
     /// Returns [`HistoryError`] when durability is unavailable or ownership is invalid.
     fn append(&mut self, turn: &AcceptedTurn, item: NewItem) -> Result<Item, HistoryError>;
 
+    /// Atomically appends every D-3 item emitted for one Tool projection.
+    ///
+    /// Implementations MUST either append the complete sequence in order or
+    /// append none of it. The default denies multi-item projections so an
+    /// adapter cannot silently downgrade this contract to per-item appends.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`HistoryError`] when the complete sequence cannot be made
+    /// durable under the accepted lease generation.
+    fn append_tool_projection(
+        &mut self,
+        turn: &AcceptedTurn,
+        items: Vec<NewItem>,
+    ) -> Result<Vec<Item>, HistoryError> {
+        if items.len() != 1 {
+            return Err(HistoryError::Unavailable);
+        }
+        let item = items
+            .into_iter()
+            .next()
+            .expect("one checked projection item exists");
+        self.append(turn, item).map(|durable| vec![durable])
+    }
+
     /// Reads the tenant-scoped durable items in increasing sequence order.
     ///
     /// # Errors
@@ -384,6 +690,9 @@ pub enum TurnRunError {
     /// Canonical history rejected an operation.
     #[error(transparent)]
     History(#[from] HistoryError),
+    /// Live C-5 work could not be terminalized for an authenticated interrupt.
+    #[error(transparent)]
+    Tool(#[from] super::ToolCallError),
     /// Internal lifecycle code attempted an invalid state transition.
     #[error(transparent)]
     Transition(#[from] TurnTransitionError),

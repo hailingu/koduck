@@ -19,6 +19,14 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: tools/governance-validator/package-lock.json
+      - run: npm ci --prefix tools/governance-validator
+      - run: npm test --prefix tools/governance-validator
+      - run: npm run validate --prefix tools/governance-validator
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: "1.95"
