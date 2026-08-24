@@ -363,12 +363,16 @@ mod strict_tool_result_tests {
         // Cancelled terminals, so their `code: null` encoding must replay;
         // only a Failed terminal carries the stable failure code (ADR-0003
         // TC-06).
-        for status in ["timed_out", "cancelled"] {
+        for (status, effect_state) in [
+            ("timed_out", "unknown"),
+            ("cancelled", "not_started"),
+            ("cancelled", "started"),
+        ] {
             let encoded = serde_json::json!({
                 "attempt_id": "00000000-0000-0000-0000-000000000001",
                 "status": status,
                 "code": null,
-                "effect_state": "unknown",
+                "effect_state": effect_state,
                 "output_bytes": 0,
                 "output_digest": null,
                 "version": 3,
@@ -384,6 +388,7 @@ mod strict_tool_result_tests {
         for corrupt in [
             serde_json::json!({"attempt_id": "00000000-0000-0000-0000-000000000001", "status": "timed_out", "code": "timed_out", "effect_state": "unknown", "output_bytes": 0, "output_digest": null, "version": 3}),
             serde_json::json!({"attempt_id": "00000000-0000-0000-0000-000000000001", "status": "cancelled", "code": "cancelled", "effect_state": "not_started", "output_bytes": 0, "output_digest": null, "version": 3}),
+            serde_json::json!({"attempt_id": "00000000-0000-0000-0000-000000000001", "status": "cancelled", "code": null, "effect_state": "unknown", "output_bytes": 0, "output_digest": null, "version": 3}),
         ] {
             assert_eq!(
                 decode_payload("tool_result", &corrupt),

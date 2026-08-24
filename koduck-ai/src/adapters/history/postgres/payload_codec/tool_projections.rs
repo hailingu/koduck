@@ -5,8 +5,8 @@
 use serde_json::Value;
 
 use crate::application::HistoryError;
-use crate::domain::ItemPayload;
 use crate::domain::execution::{ApprovalDecision, ApprovalId, ApprovalStatus, ExecutionStatus};
+use crate::domain::{ItemPayload, ToolEffectState};
 
 use super::{
     field, parse_approval_decision, parse_approval_status, parse_effect_state, parse_status,
@@ -140,6 +140,7 @@ fn decode_tool_result(payload: &Value) -> Result<ItemPayload, HistoryError> {
         || canonical
             && version != Some(crate::application::tool_projection::attempt_version(status))
         || (status == ExecutionStatus::Failed) != code.is_some()
+        || status == ExecutionStatus::Cancelled && effect_state == Some(ToolEffectState::Unknown)
         || output_bytes > crate::application::MAX_EXECUTOR_OUTPUT_BYTES as u64
         || (status != ExecutionStatus::Succeeded && output_bytes != 0)
         || (status == ExecutionStatus::Succeeded) != output_digest.is_some()

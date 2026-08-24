@@ -14,7 +14,7 @@ use crate::domain::tool::{
 };
 use crate::domain::{TerminalOutcome, ToolEffectState};
 
-use super::super::executor_envelope::{ExecutionFailure, MAX_EXECUTOR_OUTPUT_BYTES};
+use super::super::executor_envelope::{EffectState, ExecutionFailure, MAX_EXECUTOR_OUTPUT_BYTES};
 use super::{ToolProjection, ToolProjectionError, approval_version, attempt_version};
 
 /// Validates one projection's canonical tuple before durable D-3 persistence.
@@ -59,6 +59,7 @@ pub(super) fn validate_canonical_tuple(
         ToolProjection::ToolResult {
             status,
             code,
+            effect_state,
             output_bytes,
             output_digest,
             version,
@@ -68,6 +69,7 @@ pub(super) fn validate_canonical_tuple(
                 && (*status == ExecutionStatus::Failed) == code.is_some()
                 && (*status == ExecutionStatus::Succeeded || *output_bytes == 0)
                 && (*status == ExecutionStatus::Succeeded) == output_digest.is_some()
+                && (*status != ExecutionStatus::Cancelled || *effect_state != EffectState::Unknown)
                 && output_digest.as_deref().is_none_or(is_sha256_hex)
                 && *output_bytes <= MAX_EXECUTOR_OUTPUT_BYTES as u64
                 && *version == attempt_version(*status)
@@ -252,5 +254,23 @@ mod tests {
         };
 
         assert_eq!(validate_canonical_tuple(&projection), Ok(()));
+    }
+
+    #[test]
+    fn cancelled_tool_result_rejects_unknown_effect_state() {
+        let projection = ToolProjection::ToolResult {
+            attempt_id: AttemptId::new(),
+            status: ExecutionStatus::Cancelled,
+            code: None,
+            effect_state: crate::application::EffectState::Unknown,
+            output_bytes: 0,
+            output_digest: None,
+            version: attempt_version(ExecutionStatus::Cancelled),
+        };
+
+        assert_eq!(
+            validate_canonical_tuple(&projection),
+            Err(ToolProjectionError::Unavailable),
+        );
     }
 }
