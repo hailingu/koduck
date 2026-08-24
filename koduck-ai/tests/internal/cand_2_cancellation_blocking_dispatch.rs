@@ -1,3 +1,5 @@
+// ADR: docs/adr/ADR-0003-default-deny-tool-approval-execution-boundary.md
+
 use super::*;
 use koduck_ai::domain::execution::ExecutionError;
 

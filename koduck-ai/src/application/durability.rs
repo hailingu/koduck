@@ -89,6 +89,26 @@ impl AppendPolicy {
         }
     }
 
+    /// Validates cumulative nonterminal capacity while retaining room for the
+    /// bounded Turn terminal used when a later normal terminal cannot fit.
+    ///
+    /// # Errors
+    ///
+    /// Returns the applicable buffer-limit error when the mandatory terminal
+    /// would exceed the 64-item or 1-MiB Turn budget.
+    pub(crate) fn reserve_durability_terminal(
+        self,
+        item_count: usize,
+        payload_bytes: usize,
+    ) -> Result<(), BufferLimitError> {
+        let terminal = NewItem::Terminal(TerminalOutcome::Failed {
+            code: "DURABILITY_UNAVAILABLE".to_owned(),
+        });
+        self.check_item_count(item_count.saturating_add(1))
+            .and_then(|()| self.accumulate_payload_bytes(payload_bytes, &terminal))
+            .map(|_| ())
+    }
+
     /// Checks whether one append completed inside the exact deadline.
     ///
     /// # Errors

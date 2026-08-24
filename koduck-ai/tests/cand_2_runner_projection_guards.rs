@@ -9,10 +9,10 @@ use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
 use koduck_ai::application::{
-    AcceptedTurn, HistoryError, ModelInput, ModelProvider, ModelToolResult, NewItem, ProviderError,
-    ProviderEvent, ProviderStream, ToolCallError, ToolCallExecutor, ToolCallTurnContext,
-    ToolProjection, ToolProjectionSink, TurnCommand, TurnHistory, TurnRunner, TurnStreamEvent,
-    output_digest,
+    AcceptedTurn, AppendPolicy, HistoryError, ModelInput, ModelProvider, ModelToolResult, NewItem,
+    ProviderError, ProviderEvent, ProviderStream, ToolCallError, ToolCallExecutor,
+    ToolCallTurnContext, ToolProjection, ToolProjectionSink, TurnCommand, TurnHistory, TurnRunner,
+    TurnStreamEvent, output_digest,
 };
 use koduck_ai::domain::{
     Item, ItemPayload, LeaseGeneration, TenantId, TerminalOutcome, ThreadId, TrustContext, TurnId,
@@ -971,6 +971,94 @@ fn a_projection_sequence_is_preflighted_atomically_against_the_cumulative_turn_b
         1,
         "no continuation request starts after the sequence preflight fails"
     );
+}
+
+#[test]
+fn a_projection_sequence_reserves_the_mandatory_turn_terminal() {
+    // 62 provider deltas plus the denial's two-item sequence would consume
+    // all 64 provider-item slots. Admission must retain one slot for the
+    // mandatory Turn terminal, reject the complete denial atomically, and
+    // close through the bounded durability failure instead of appending an
+    // unbudgeted item 65 (ADR-0001 exact buffer contract, ADR-0003 TC-06).
+    let mut stream: Vec<ProviderEvent> = (0..62)
+        .map(|_| ProviderEvent::Delta("d".to_owned()))
+        .collect();
+    stream.push(tool_call_event("fixture.tool"));
+    let provider = ScriptedProvider::scripted(vec![stream, vec![ProviderEvent::Completed]]);
+    let history = MemoryHistory::default();
+    let mut runner =
+        TurnRunner::new(provider.clone(), history.clone()).with_tool_executor(DenyingToolExecutor);
+
+    let result = runner.execute(command());
+
+    let Err(koduck_ai::application::TurnRunError::Durability(failure)) = result else {
+        panic!("a projection that consumes the terminal reserve must fail closed");
+    };
+    assert!(failure.accepted);
+    let recorded = &history.state.lock().expect("history lock").items;
+    let items = recorded.values().next().expect("the accepted turn exists");
+    assert_only_durability_failure(items, 62);
+    assert_eq!(
+        provider.recorded_inputs().len(),
+        1,
+        "no continuation starts after projection admission consumes the terminal reserve"
+    );
+}
+
+#[test]
+fn a_projection_sequence_reserves_the_mandatory_turn_terminal_payload() {
+    let policy = AppendPolicy::cand_1();
+    let projection = ToolProjection::Denied {
+        descriptor_id: "fixture.tool".to_owned(),
+        descriptor_version: String::new(),
+        target: String::new(),
+        code: "descriptor_missing".to_owned(),
+    };
+    let projection_bytes = projection
+        .d3_items()
+        .iter()
+        .try_fold(0, |total, item| {
+            policy.accumulate_payload_bytes(total, item)
+        })
+        .expect("the denial projection is independently bounded");
+    let terminal_bytes = policy
+        .accumulate_payload_bytes(
+            0,
+            &NewItem::Terminal(TerminalOutcome::Failed {
+                code: "DURABILITY_UNAVAILABLE".to_owned(),
+            }),
+        )
+        .expect("the durability terminal is independently bounded");
+    let delta_overhead = policy
+        .accumulate_payload_bytes(
+            0,
+            &NewItem::AgentMessageDelta {
+                content: String::new(),
+            },
+        )
+        .expect("the empty delta provides its canonical object overhead");
+    let content_bytes = 1_048_576 - projection_bytes - terminal_bytes + 1 - delta_overhead;
+    let provider = ScriptedProvider::scripted(vec![
+        vec![
+            ProviderEvent::Delta("x".repeat(content_bytes)),
+            tool_call_event("fixture.tool"),
+        ],
+        vec![ProviderEvent::Completed],
+    ]);
+    let history = MemoryHistory::default();
+    let mut runner =
+        TurnRunner::new(provider.clone(), history.clone()).with_tool_executor(DenyingToolExecutor);
+
+    let result = runner.execute(command());
+
+    let Err(koduck_ai::application::TurnRunError::Durability(failure)) = result else {
+        panic!("a projection that consumes the terminal payload reserve must fail closed");
+    };
+    assert!(failure.accepted);
+    let recorded = &history.state.lock().expect("history lock").items;
+    let items = recorded.values().next().expect("the accepted turn exists");
+    assert_only_durability_failure(items, 1);
+    assert_eq!(provider.recorded_inputs().len(), 1);
 }
 
 #[test]

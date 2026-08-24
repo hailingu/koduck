@@ -1,3 +1,5 @@
+// ADR: docs/adr/ADR-0003-default-deny-tool-approval-execution-boundary.md
+
 use super::*;
 
 /// Lease that is Current for the pre-claim check and Unavailable right after

@@ -326,7 +326,7 @@ struct ExcessItemProvider {
 impl ModelProvider for ExcessItemProvider {
     fn stream(&mut self, _input: ModelInput) -> Result<ProviderStream<'_>, ProviderError> {
         let consumed = Rc::clone(&self.consumed);
-        let mut events = (0..65)
+        let mut events = (0..64)
             .map(|_| ProviderEvent::Delta("A".to_owned()))
             .collect::<Vec<_>>();
         events.push(ProviderEvent::Completed);
@@ -339,7 +339,7 @@ impl ModelProvider for ExcessItemProvider {
 }
 
 #[test]
-fn execution_rejects_item_65_before_append() {
+fn execution_reserves_item_64_for_the_mandatory_terminal() {
     let items = Rc::new(RefCell::new(Vec::new()));
     let consumed = Rc::new(Cell::new(0));
     let result = TurnRunner::new(
@@ -357,18 +357,18 @@ fn execution_rejects_item_65_before_append() {
     .execute(TurnCommand::new(trust(), None, "hello").expect("valid command"));
 
     let Err(TurnRunError::Durability(failure)) = result else {
-        panic!("item 65 must fail as a durability boundary violation");
+        panic!("the nonterminal item consuming the terminal reserve must fail closed");
     };
     assert!(failure.accepted);
-    assert_eq!(failure.published.len(), 64);
-    assert_eq!(consumed.get(), 65);
+    assert_eq!(failure.published.len(), 63);
+    assert_eq!(consumed.get(), 64);
     assert_eq!(
         items
             .borrow()
             .iter()
             .filter(|item| matches!(item.payload, ItemPayload::AgentMessageDelta { .. }))
             .count(),
-        64
+        63
     );
     assert!(matches!(
         items.borrow().last().map(|item| &item.payload),

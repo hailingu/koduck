@@ -516,7 +516,7 @@ impl ModelProvider for BackpressuredProvider {
     fn stream(&mut self, _input: ModelInput) -> Result<ProviderStream<'_>, ProviderError> {
         let mut delta_count = 0;
         Ok(Box::new(std::iter::from_fn(move || {
-            if delta_count < 64 {
+            if delta_count < 63 {
                 delta_count += 1;
                 Some(ProviderEvent::Delta("A".to_owned()))
             } else {
@@ -542,12 +542,12 @@ async fn unread_sse_backpressure_does_not_block_interrupt_terminalization() {
     let turn_id = history.accepted_turn_id();
 
     timeout(Duration::from_millis(500), async {
-        while history.item_count(turn_id) < 65 {
+        while history.item_count(turn_id) < 64 {
             tokio::time::sleep(Duration::from_millis(1)).await;
         }
     })
     .await
-    .expect("all 64 provider deltas become durable without reading the SSE body");
+    .expect("all 63 provider deltas become durable without consuming the terminal reserve");
 
     let interrupt = router
         .oneshot(interrupt_request(turn_id))

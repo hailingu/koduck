@@ -1,3 +1,5 @@
+// ADR: docs/adr/ADR-0003-default-deny-tool-approval-execution-boundary.md
+
 use super::*;
 
 /// An unscoped approval-required call fails C-7 pre-validation before any D-7

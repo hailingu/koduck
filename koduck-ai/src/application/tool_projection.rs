@@ -319,7 +319,8 @@ fn failure_code(code: ExecutionFailure) -> String {
 /// item instead of each call receiving a fresh budget (ADR-0001 exact buffer
 /// contract). The port is untrusted: `append` first validates the
 /// projection's canonical tuple, then reserves capacity for the complete
-/// remaining lifecycle the projection opens — a running view is never
+/// remaining lifecycle the projection opens and the mandatory Turn terminal
+/// — a running view is never
 /// appended without capacity for its guaranteed terminal view, and a
 /// requested approval never without capacity for its resolution, dispatch,
 /// and terminal views — before the projection's own complete item sequence is
@@ -527,10 +528,13 @@ where
             return Err(self.fail_projection(false));
         };
         // Preflight the projection's complete item sequence plus the held and
-        // newly opened lifecycle reservations against the cumulative per-Turn
-        // budgets before any part is appended: no partial prefix and no
-        // orphan running or approval view can be left durable (ADR-0001
-        // exact buffer contract, ADR-0003 TC-06).
+        // newly opened lifecycle reservations and the mandatory Turn terminal
+        // against the cumulative per-Turn budgets before any part is appended:
+        // no partial prefix, orphan running/approval view, or unbudgeted item
+        // 65 can be left durable (ADR-0001 exact buffer contract, ADR-0003
+        // TC-06). Reserve the bounded durability-failure terminal: if a later
+        // normal terminal is larger than the remaining payload capacity, the
+        // runner can still fail closed inside the authoritative cap.
         let policy = crate::application::AppendPolicy::cand_1();
         let mut next_count = self.item_count;
         let mut next_bytes = self.payload_bytes;
@@ -552,8 +556,9 @@ where
             .saturating_add(self.reserved_bytes)
             .saturating_sub(plan.release_bytes)
             .saturating_add(plan.reserve_bytes);
-        if policy.check_item_count(total_items).is_err()
-            || policy.check_payload_bytes(total_bytes).is_err()
+        if policy
+            .reserve_durability_terminal(total_items, total_bytes)
+            .is_err()
         {
             return Err(self.fail_projection(terminal_projection));
         }

@@ -19,6 +19,9 @@ pub(super) fn validate_provider_item(
     let next_payload_bytes = policy
         .check_item_count(next_count)
         .and_then(|()| policy.accumulate_payload_bytes(state.provider_payload_bytes, item))?;
+    if !matches!(item, NewItem::Terminal(_)) {
+        policy.reserve_durability_terminal(next_count, next_payload_bytes)?;
+    }
     state.provider_item_count = next_count;
     state.provider_payload_bytes = next_payload_bytes;
     Ok(())
