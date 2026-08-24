@@ -53,4 +53,4 @@ coverage/
 # Workbuddy workspace
 .workbuddy/
 
-run.sh
+/run.sh
