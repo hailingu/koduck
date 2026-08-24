@@ -7,6 +7,7 @@ use std::collections::VecDeque;
 
 use serde_json::Value;
 
+use crate::adapters::unique_json;
 use crate::application::{ProviderError, ProviderEvent};
 use crate::domain::Usage;
 
@@ -98,6 +99,11 @@ impl StreamState {
         if data == "[DONE]" {
             return self.done_sentinel();
         }
+        // `serde_json::Value` keeps only the last duplicate member, so the
+        // frame is first rejected when any object member is duplicated — two
+        // `finish_reason` values must never collapse into one validated
+        // finish (ADR-0004 PSC-3/PSC-5).
+        unique_json::ensure_unique(data).map_err(|_| protocol_error("INVALID_FRAME"))?;
         let document: Value =
             serde_json::from_str(data).map_err(|_| protocol_error("INVALID_FRAME"))?;
         if self.usage_seen {

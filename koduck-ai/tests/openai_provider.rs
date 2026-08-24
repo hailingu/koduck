@@ -603,6 +603,22 @@ fn invalid_clean_end_sequences_fail_closed() {
             "INVALID_DELTA_FRAME",
         ),
         (
+            "duplicate finish_reason members in one frame",
+            vec![
+                r#"data: {"choices":[{"delta":{},"finish_reason":"length","finish_reason":"stop"}]}"#,
+                CLEAN_END,
+            ],
+            "INVALID_FRAME",
+        ),
+        (
+            "duplicate top-level members in one frame",
+            vec![
+                r#"data: {"choices":[{"delta":{}}],"choices":[{"delta":{"content":"A"},"finish_reason":"stop"}]}"#,
+                CLEAN_END,
+            ],
+            "INVALID_FRAME",
+        ),
+        (
             "tool output after a finish frame",
             vec![stop, tool_fragment, CLEAN_END],
             "INVALID_FINISH_FRAME",
