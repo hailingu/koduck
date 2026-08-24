@@ -15,7 +15,7 @@ use crate::domain::{Item, ItemPayload, ToolEffectState};
 use super::LeaseKey;
 use super::sqlx_executor::{milliseconds_i64, unavailable};
 
-mod terminal_backfill;
+pub(super) mod terminal_backfill;
 
 use terminal_backfill::backfill_unrecorded_terminal_attempts;
 

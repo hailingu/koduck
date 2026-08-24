@@ -67,6 +67,73 @@ Initial.
   assert.match(result.stderr, /Accepted requires complete Approver.*Approval Time.*Approval Evidence/i);
 });
 
+test("does not satisfy Accepted approval metadata from an HTML comment", () => {
+  const root = validRepository();
+  acceptedAdr(root, "0091");
+  rewrite(root, "docs/adr/ADR-0091-example.md", (content) => content
+    .replace(/- \*\*(?:Approver|Approval Time|Approval Evidence)\*\*:[^\n]+\n/g, "")
+    .replace(
+      "## Requirement Level Legend [Required]",
+      `<!--
+- **Approver**: @linhai
+- **Approval Time**: 2026-08-13T00:00:00Z
+- **Approval Evidence**: Approve
+-->
+
+## Requirement Level Legend [Required]`,
+    ));
+
+  const result = run(root);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Accepted requires complete Approver.*Approval Time.*Approval Evidence/i);
+});
+
+test("does not satisfy a required section from an HTML comment", () => {
+  const root = validRepository();
+  rewrite(root, "docs/adr/ADR-0001-example.md", (content) => content.replace(
+    "## Decision [Required]\nDecision.",
+    "<!--\n## Decision [Required]\nDecision.\n-->",
+  ));
+
+  const result = run(root);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /missing required section Decision/i);
+});
+
+test("does not satisfy a structured table from an HTML comment", () => {
+  const root = validRepository();
+  makeCurrentAdd(root);
+  rewrite(root, "docs/architecture/ADD-0001-example.md", (content) => content.replace(
+    `| ID | Component |
+| --- | --- |
+| C-1 | Component |`,
+    `<!--
+| ID | Component |
+| --- | --- |
+| C-1 | Component |
+-->`,
+  ));
+
+  const result = run(root);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Architecture Design requires a structured component table/i);
+});
+
+test("does not satisfy an eligibility checklist item from an HTML comment", () => {
+  const root = validRepository();
+  acceptedOcr(root, "0090");
+  rewrite(root, "docs/adr/ocr/OCR-0090-example.md", (content) => content.replace(
+    "- [x] Uses an accepted architecture, pipeline, artifact contract, security boundary, and data boundary.",
+    `<!--
+- [x] Uses an accepted architecture, pipeline, artifact contract, security boundary, and data boundary.
+-->`,
+  ));
+
+  const result = run(root);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Eligibility item "boundary" must be present and confirmed/i);
+});
+
 test("rejects an Accepted OCR with a missing required runbook stage", () => {
   const root = validRepository();
   acceptedOcr(root, "0098");

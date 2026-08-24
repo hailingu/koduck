@@ -10,18 +10,20 @@ use koduck_ai::adapters::history::postgres::{PostgresExecutor, SqlxPostgresExecu
 use koduck_ai::adapters::tool::{parse_action_parameters, parse_input_schema};
 use koduck_ai::application::{
     AcceptedTurn, ApprovalDecisionResolution, ApprovalInsertResolution, ApprovalRecordStore,
-    ApprovalStoreError, ExecutionAttemptInterruptionGuard, InterruptionBarrierResolution, NewItem,
+    ApprovalStoreError, DurableAttemptTerminal, EffectState, ExecutionAttemptInterruptionGuard,
+    ExecutionAttemptStore, HistoryError, InterruptionBarrierResolution, NewItem,
     PendingApprovalCancellation, PendingApprovalCanceller, ToolAuthorizationService,
-    ToolPolicyConfiguration,
+    ToolExecutionOutcome, ToolPolicyConfiguration,
 };
 use koduck_ai::domain::execution::{
     ApprovalDecision, ApprovalRequest, ApprovalStatus, AttemptId, ExactActionBinding,
+    ExecutionStatus,
 };
 use koduck_ai::domain::tool::{
     Action, CapabilityDescriptor, DescriptorState, Effect, PermissionProfile,
 };
 use koduck_ai::domain::{
-    Item, ItemPayload, LeaseGeneration, TenantId, TerminalOutcome, TrustContext,
+    Item, ItemPayload, LeaseGeneration, TenantId, TerminalOutcome, ToolEffectState, TrustContext,
 };
 use sqlx::postgres::{PgPool, PgPoolOptions};
 use uuid::Uuid;
@@ -515,6 +517,109 @@ fn interruption_cancels_the_canonical_requested_approval() {
         .replay(approval.tenant_id(), approval.binding().turn_id())
         .expect("interrupted Turn history is readable");
     assert_cancelled_approval_precedes_terminal(&replay, &approval);
+}
+
+#[test]
+fn interruption_requires_the_exact_missing_canonical_tool_terminal_set() {
+    let Some(harness) = harness() else {
+        return;
+    };
+    let executor =
+        SqlxPostgresExecutor::new(harness.pool.clone(), harness.runtime.handle().clone());
+
+    for case in ["empty", "incomplete", "already-projected"] {
+        let first = attempts::prepared_binding(Effect::ReadData);
+        let second = ExactActionBinding::new(
+            first.tenant_id().clone(),
+            first.thread_id(),
+            first.turn_id(),
+            first.lease_generation(),
+            ("profile-default", "v1"),
+            AttemptId::new(),
+            first.action().clone(),
+        )
+        .expect("valid sibling binding");
+        let mut store = attempts::attempt_store(harness.pool.clone(), &harness.runtime);
+        assert_eq!(
+            attempts::insert_prepared(&harness, &mut store, &first, 1_000),
+            Ok(koduck_ai::application::AttemptInsertResolution::Inserted),
+        );
+        let cancelled = DurableAttemptTerminal::from_outcome(&ToolExecutionOutcome::Cancelled {
+            effect_state: EffectState::NotStarted,
+        });
+        assert!(matches!(
+            store.commit_terminal(&first, &cancelled, 2_000),
+            Ok(koduck_ai::application::AttemptTerminalResolution::Won { version: 3 })
+        ));
+        let first_terminal = cancelled_terminal(first.attempt_id());
+        let supplied = match case {
+            "empty" => Vec::new(),
+            "incomplete" => {
+                assert_eq!(
+                    attempts::insert_prepared(&harness, &mut store, &second, 1_000),
+                    Ok(koduck_ai::application::AttemptInsertResolution::Inserted),
+                );
+                assert!(matches!(
+                    store.commit_terminal(&second, &cancelled, 2_000),
+                    Ok(koduck_ai::application::AttemptTerminalResolution::Won { version: 3 })
+                ));
+                vec![first_terminal.clone()]
+            }
+            "already-projected" => {
+                let accepted = AcceptedTurn::new(
+                    first.tenant_id().clone(),
+                    first.thread_id(),
+                    first.turn_id(),
+                    first.lease_generation(),
+                    Item::new(
+                        1,
+                        ItemPayload::UserMessage {
+                            content: "terminal-set fixture".to_owned(),
+                        },
+                    ),
+                );
+                executor
+                    .append_tool_projection(&accepted, vec![first_terminal.clone()])
+                    .expect("canonical terminal projection is durable");
+                vec![first_terminal]
+            }
+            _ => unreachable!("enumerated fixture case"),
+        };
+        let trust = TrustContext::new(first.tenant_id().clone(), "d7-attempt-fixture")
+            .expect("valid fixture owner");
+
+        assert_eq!(
+            executor.request_interrupt(&trust, first.turn_id(), supplied),
+            Err(HistoryError::Unavailable),
+            "{case} terminal batch must fail closed",
+        );
+        let status: String = harness.runtime.block_on(async {
+            sqlx::query_scalar(
+                "SELECT status FROM turns
+                 WHERE tenant_id = $1 AND thread_id = $2 AND turn_id = $3",
+            )
+            .bind(first.tenant_id().as_str())
+            .bind(first.thread_id().as_uuid())
+            .bind(first.turn_id().as_uuid())
+            .fetch_one(&harness.pool)
+            .await
+            .expect("fixture Turn remains readable")
+        });
+        assert_eq!(status, "started", "{case} must not terminalize the Turn");
+    }
+}
+
+/// Builds the exact public D-3 projection of a canonical cancelled D-7.
+fn cancelled_terminal(attempt_id: AttemptId) -> NewItem {
+    NewItem::ToolResult {
+        attempt_id: Some(attempt_id),
+        status: ExecutionStatus::Cancelled,
+        code: None,
+        effect_state: Some(ToolEffectState::NotStarted),
+        output_bytes: 0,
+        output_digest: None,
+        version: Some(3),
+    }
 }
 
 /// Proves replay keeps the requested view but resolves it with the canonical

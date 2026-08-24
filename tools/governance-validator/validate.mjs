@@ -147,12 +147,61 @@ function repositoryPath(root, path) {
   return relative(root, path).split(sep).join("/");
 }
 
-// Removes fenced code blocks so headings and metadata cannot be forged by
-// example content. Both backtick and tilde fences are stripped; a fence is
-// closed only by a run of the same character at least as long as the opener
-// (CommonMark), so a four-backtick block is not closed by three backticks.
-function stripFencedCode(markdown) {
+// Removes HTML comments outside real code fences before any structural parser
+// sees Markdown. Fence parsing takes precedence, so comment markers in literal
+// examples remain inert. Newlines are retained to preserve block boundaries.
+function stripHtmlComments(markdown) {
   const lines = markdown.split("\n");
+  let fence = null;
+  let htmlComment = false;
+  const kept = [];
+  for (const line of lines) {
+    const marker = line.match(/^\s{0,3}(`{3,}|~{3,})/);
+    if (fence !== null) {
+      if (
+        marker && marker[1][0] === fence.char && marker[1].length >= fence.length
+        && /^\s{0,3}(`{3,}|~{3,})\s*$/.test(line)
+      ) {
+        fence = null;
+      }
+      kept.push(line);
+      continue;
+    }
+    let active = "";
+    let cursor = 0;
+    while (cursor < line.length) {
+      if (htmlComment) {
+        const end = line.indexOf("-->", cursor);
+        if (end === -1) {
+          cursor = line.length;
+          continue;
+        }
+        htmlComment = false;
+        cursor = end + 3;
+        continue;
+      }
+      const start = line.indexOf("<!--", cursor);
+      if (start === -1) {
+        active += line.slice(cursor);
+        break;
+      }
+      active += line.slice(cursor, start);
+      htmlComment = true;
+      cursor = start + 4;
+    }
+    const activeMarker = active.match(/^\s{0,3}(`{3,}|~{3,})/);
+    if (activeMarker) {
+      fence = { char: activeMarker[1][0], length: activeMarker[1].length };
+    }
+    kept.push(active);
+  }
+  return kept.join("\n");
+}
+
+// Removes fenced examples after global HTML-comment sanitization so headings,
+// metadata, tables, and checklists inside examples cannot become structure.
+function stripFencedCode(markdown) {
+  const lines = stripHtmlComments(markdown).split("\n");
   let fence = null;
   const kept = [];
   for (const line of lines) {
@@ -173,6 +222,12 @@ function stripFencedCode(markdown) {
     kept.push(line);
   }
   return kept.join("\n");
+}
+
+// Reads a Markdown record through the same inactive-comment boundary used by
+// the primary validation loop and cross-record relationship checks.
+function readActiveMarkdown(path, encoding = "utf8") {
+  return stripHtmlComments(readFileSync(path, encoding));
 }
 
 function headingTexts(markdown) {
@@ -699,7 +754,7 @@ const relationshipValidator = createRelationshipValidator({
   CANDIDATE_STATUSES,
   isCompleteValue,
   metadata,
-  readFileSync,
+  readFileSync: readActiveMarkdown,
   resolveRepositoryFile,
   sectionContent,
   tableFromContent,
@@ -727,9 +782,12 @@ async function validate(root) {
 
   for (const absolute of markdownFiles) {
     const path = repositoryPath(root, absolute);
-    const markdown = readFileSync(absolute, "utf8");
+    const rawMarkdown = readFileSync(absolute, "utf8");
+    const markdown = stripHtmlComments(rawMarkdown);
     const isTemplate = path.includes("/template/") || path === "AGENTS.template.md";
-    validateTemplateVariables(path, markdown, isTemplate, errors);
+    // Template variable declarations intentionally live in authoring-only
+    // HTML comments; validate that dedicated contract from raw template text.
+    validateTemplateVariables(path, rawMarkdown, isTemplate, errors);
 
     if (path.endsWith("/INDEX.md")) {
       const paths = relationshipValidator.validateIndex(root, path, markdown, errors);

@@ -5,9 +5,9 @@
 use sqlx::{PgConnection, Row};
 
 use crate::application::tool_projection::{output_digest, tool_effect_state};
-use crate::application::{EffectState, ExecutionFailure, HistoryError};
+use crate::application::{EffectState, ExecutionFailure, HistoryError, NewItem};
+use crate::domain::Item;
 use crate::domain::execution::{AttemptId, ExecutionStatus};
-use crate::domain::{Item, ItemPayload};
 
 use super::super::LeaseKey;
 use super::super::sqlx_executor::unavailable;
@@ -18,6 +18,24 @@ pub(super) async fn backfill_unrecorded_terminal_attempts(
     connection: &mut PgConnection,
     key: &LeaseKey,
 ) -> Result<Vec<Item>, HistoryError> {
+    unprojected_terminal_attempts(connection, &key.tenant_id, key.thread_id, key.turn_id)
+        .await
+        .map(|projections| {
+            projections
+                .into_iter()
+                .map(|projection| Item::new(1, projection.into_payload()))
+                .collect()
+        })
+}
+
+/// Locks and rebuilds the complete set of terminal D-7 projections still
+/// absent from D-3 for one tenant-owned Turn.
+pub(in crate::adapters::history::postgres) async fn unprojected_terminal_attempts(
+    connection: &mut PgConnection,
+    tenant_id: &crate::domain::TenantId,
+    thread_id: crate::domain::ThreadId,
+    turn_id: crate::domain::TurnId,
+) -> Result<Vec<NewItem>, HistoryError> {
     let rows = sqlx::query(
         "SELECT attempts.attempt_id, attempts.status, attempts.effect_state, \
                 attempts.failure_code, attempts.output \
@@ -37,9 +55,9 @@ pub(super) async fn backfill_unrecorded_terminal_attempts(
          ORDER BY attempts.terminal_at_millis, attempts.attempt_id \
          FOR UPDATE OF attempts",
     )
-    .bind(key.tenant_id.as_str())
-    .bind(key.thread_id.as_uuid())
-    .bind(key.turn_id.as_uuid())
+    .bind(tenant_id.as_str())
+    .bind(thread_id.as_uuid())
+    .bind(turn_id.as_uuid())
     .fetch_all(&mut *connection)
     .await
     .map_err(unavailable)?;
@@ -72,7 +90,7 @@ fn terminal_projection(
     effect_state: EffectState,
     failure_code: Option<&str>,
     output: Option<&[u8]>,
-) -> Result<Item, HistoryError> {
+) -> Result<NewItem, HistoryError> {
     let (code, output_bytes, output_digest) = match status {
         ExecutionStatus::Succeeded => {
             let output = output.ok_or(HistoryError::Unavailable)?;
@@ -106,18 +124,15 @@ fn terminal_projection(
             return Err(HistoryError::Unavailable);
         }
     };
-    Ok(Item::new(
-        1,
-        ItemPayload::ToolResult {
-            attempt_id: Some(attempt_id),
-            status,
-            code,
-            effect_state: Some(tool_effect_state(effect_state)),
-            output_bytes,
-            output_digest,
-            version: Some(3),
-        },
-    ))
+    Ok(NewItem::ToolResult {
+        attempt_id: Some(attempt_id),
+        status,
+        code,
+        effect_state: Some(tool_effect_state(effect_state)),
+        output_bytes,
+        output_digest,
+        version: Some(3),
+    })
 }
 
 /// Parses one persisted terminal status without accepting active D-7 states.
@@ -141,9 +156,9 @@ fn terminal_effect_state(value: Option<&str>) -> Result<EffectState, HistoryErro
 #[cfg(test)]
 mod tests {
     use super::terminal_projection;
-    use crate::application::EffectState;
+    use crate::application::{EffectState, NewItem};
+    use crate::domain::ToolEffectState;
     use crate::domain::execution::{AttemptId, ExecutionStatus};
-    use crate::domain::{ItemPayload, ToolEffectState};
 
     #[test]
     fn a_previously_closed_cancellation_backfills_its_terminal_projection() {
@@ -159,8 +174,8 @@ mod tests {
         .expect("a canonical cancellation has a D-3 terminal projection");
 
         assert!(matches!(
-            projection.payload,
-            ItemPayload::ToolResult {
+            projection,
+            NewItem::ToolResult {
                 attempt_id: Some(projected_id),
                 status: ExecutionStatus::Cancelled,
                 effect_state: Some(ToolEffectState::NotStarted),
