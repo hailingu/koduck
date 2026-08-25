@@ -20,7 +20,10 @@ pub(super) fn provider_messages(input: &ModelInput) -> Vec<serde_json::Value> {
             ItemPayload::Usage(_)
             | ItemPayload::ApprovalStatus { .. }
             | ItemPayload::ToolCall { .. }
-            | ItemPayload::ToolResult { .. } => {}
+            | ItemPayload::ToolResult { .. }
+            // A correction is not provider input in this slice; effective
+            // corrected meaning is owned by CAND-12/CAND-13 (ADR-0003 CR-07).
+            | ItemPayload::Correction(_) => {}
         }
     }
     flush_assistant(&mut messages, &mut assistant);

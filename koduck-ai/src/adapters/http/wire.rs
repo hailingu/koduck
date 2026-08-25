@@ -162,8 +162,9 @@ fn turn_started_event(thread_id: ThreadId, turn_id: TurnId) -> String {
 /// One exhaustive item-document serializer for every published
 /// `ItemPayload`; each arm is the exact wire shape of one payload, and
 /// splitting it would separate a payload from its serialized contract.
-/// Returns `None` for terminal, user-message, and usage payloads, which are
-/// not `item.created` documents.
+/// Returns `None` for terminal, user-message, usage, and correction payloads,
+/// which are not `item.created` documents; a correction stays unpublished
+/// until a later record owns its delivery (ADR-0003 CR-07).
 fn item_created_event(thread_id: ThreadId, turn_id: TurnId, item: &Item) -> Option<String> {
     let data = match &item.payload {
         ItemPayload::AgentMessageDelta { content } => wire_json(&AgentMessageDeltaDocument {
@@ -234,7 +235,10 @@ fn item_created_event(thread_id: ThreadId, turn_id: TurnId, item: &Item) -> Opti
             output_digest: output_digest.as_deref(),
             version: *version,
         }),
-        ItemPayload::Terminal(_) | ItemPayload::UserMessage { .. } | ItemPayload::Usage(_) => {
+        ItemPayload::Terminal(_)
+        | ItemPayload::UserMessage { .. }
+        | ItemPayload::Usage(_)
+        | ItemPayload::Correction(_) => {
             return None;
         }
     };

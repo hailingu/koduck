@@ -4,6 +4,7 @@
 //! Domain-owned lifecycle rules for a foreground model turn.
 
 pub mod execution;
+pub mod item_correction;
 pub mod tool;
 
 use std::collections::BTreeSet;
@@ -336,6 +337,11 @@ pub enum ItemPayload {
     },
     /// Exactly one terminal outcome for the turn.
     Terminal(TerminalOutcome),
+    /// One typed correction of one earlier Item in the same Turn: replacement
+    /// content plus the corrected predecessor identity (ADR-0003 CR-01).
+    /// Raw replay keeps the original and this correction side by side;
+    /// admission is owned by a later candidate, so no caller can append one.
+    Correction(item_correction::ItemCorrection),
 }
 
 /// Executor-observed effect-state evidence mirrored into D-3 views.

@@ -61,7 +61,7 @@ pub(super) async fn appended_item(
     let mut transaction = pool.begin().await.map_err(unavailable)?;
     lock_operation(&mut transaction, item_id).await?;
     let row = sqlx::query(
-        "SELECT item_id, sequence, item_type, payload FROM turn_items \
+        "SELECT item_id, sequence, item_type, payload, corrects_item_id FROM turn_items \
          WHERE tenant_id = $1 AND thread_id = $2 AND turn_id = $3 \
          AND item_id = $4",
     )
@@ -91,7 +91,7 @@ pub(super) async fn appended_projection(
     let mut missing = 0_usize;
     for expected in &planned {
         let row = sqlx::query(
-            "SELECT item_id, sequence, item_type, payload FROM turn_items \
+            "SELECT item_id, sequence, item_type, payload, corrects_item_id FROM turn_items \
              WHERE tenant_id = $1 AND thread_id = $2 AND turn_id = $3 \
              AND item_id = $4",
         )

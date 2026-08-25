@@ -24,6 +24,7 @@ mod sqlx_executor;
 #[cfg(test)]
 mod tests;
 
+pub use payload_codec::{DurableItemCodec, DurableItemColumns};
 pub use sqlx_executor::SqlxPostgresExecutor;
 
 const MAX_BACKGROUND_WORKERS: usize = 256;

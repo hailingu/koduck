@@ -885,6 +885,7 @@ fn payload_kinds(items: &[Item]) -> Vec<&'static str> {
             ItemPayload::Terminal(TerminalOutcome::Completed { .. }) => "completed",
             ItemPayload::Terminal(TerminalOutcome::Failed { .. }) => "failed",
             ItemPayload::UserMessage { .. } => "user_message",
+            ItemPayload::Correction(_) => "correction",
             other @ ItemPayload::Terminal(_) => {
                 panic!("unexpected published payload: {other:?}")
             }
