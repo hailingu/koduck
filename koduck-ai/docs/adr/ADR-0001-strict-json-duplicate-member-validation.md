@@ -12,17 +12,17 @@
 - **Approver [Conditionally Required — Decision Status is or has been `Accepted`]**: @linhai
 - **Approval Time [Conditionally Required — Decision Status is or has been `Accepted`]**: 2026-08-25T01:34:22Z
 - **Approval Evidence [Conditionally Required — Decision Status is or has been `Accepted`]**: Approve
-- **Rejector [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is `Proposed`
-- **Rejection Time [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is `Proposed`
-- **Rejection Evidence [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is `Proposed`
-- **Retired By [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — Decision Status is `Proposed`
-- **Retirement Time [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — Decision Status is `Proposed`
-- **Retirement Evidence [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — Decision Status is `Proposed`
-- **Retirement Reason [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — Decision Status is `Proposed`
-- **Blocked From [Conditionally Required — Implementation Status is `Blocked`]**: N/A — Implementation Status is `Not Started`
-- **Blocker And Evidence [Conditionally Required — Implementation Status is `Blocked`]**: N/A — Implementation Status is `Not Started`
-- **Blocker Owner [Conditionally Required — Implementation Status is `Blocked`]**: N/A — Implementation Status is `Not Started`
-- **Blocker Exit Or Recheck Criterion [Conditionally Required — Implementation Status is `Blocked`]**: N/A — Implementation Status is `Not Started`
+- **Rejector [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is `Accepted`
+- **Rejection Time [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is `Accepted`
+- **Rejection Evidence [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is `Accepted`
+- **Retired By [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — Decision Status is `Accepted`
+- **Retirement Time [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — Decision Status is `Accepted`
+- **Retirement Evidence [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — Decision Status is `Accepted`
+- **Retirement Reason [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — Decision Status is `Accepted`
+- **Blocked From [Conditionally Required — Implementation Status is `Blocked`]**: N/A — Implementation Status is `Complete`
+- **Blocker And Evidence [Conditionally Required — Implementation Status is `Blocked`]**: N/A — Implementation Status is `Complete`
+- **Blocker Owner [Conditionally Required — Implementation Status is `Blocked`]**: N/A — Implementation Status is `Complete`
+- **Blocker Exit Or Recheck Criterion [Conditionally Required — Implementation Status is `Blocked`]**: N/A — Implementation Status is `Complete`
 - **Related [Optional]**: `docs/adr/ADR-0003-default-deny-tool-approval-execution-boundary.md`; `docs/adr/ADR-0004-provider-stream-completion-normalization.md`
 - **Architecture Source [Conditionally Required — product demand]**: N/A — corrective internal maintainability work discovered through source review, not derived from product demand
 - **Supersedes [Conditionally Required — this ADR replaces another]**: None
@@ -371,6 +371,7 @@ implementation completion. When triggered:
 
 | Date | Change | Author |
 | --- | --- | --- |
+| 2026-08-25 | Corrected the conditional rejection, retirement, and blocker fields' `N/A` reasons to the current `Accepted` / `Complete` statuses after the automated P1 review on PR #5; approval-preserving metadata correction with no decision or scope change. | @zcode |
 | 2026-08-25 | Implemented T-1 through T-3 at `fd1ca905faf294885b0709f407911dd8b91f67e8`: added the private `adapters::strict_json` validator with its characterization test, migrated both consumers off their private visitors, and recorded every acceptance check and risk row as `Pass`; Implementation Status set to `Complete`. Evidence-only update with no decision or scope change. | @zcode |
 | 2026-08-25 | Accepted on @linhai's self-identified `Approve` response in the ADR-0001 review conversation; no approval context revision recorded because no immutable revision containing this document existed at approval time. | @zcode |
 | 2026-08-25 | Aligned AC-4's Clippy and test commands exactly with the `koduck-ai/**` Scope Routing row after non-blocking review; no decision, scope, contract, or implementation status changed. | @codex |
