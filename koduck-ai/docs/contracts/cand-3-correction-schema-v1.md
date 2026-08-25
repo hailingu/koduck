@@ -46,10 +46,12 @@ durable Item codec contract. `encode` returns the durable column tuple for
 one `ItemPayload`; `decode(item_type, payload_text, corrects_item_id)`
 returns the owned payload. Decoding fails closed with
 `application::HistoryError::Unavailable` for an unknown discriminator,
-malformed JSON, a missing or non-string or blank correction `content`, a
-missing relationship identity on a correction row, or a relationship identity
-present on any non-correction row. No stored row is guessed, dropped, or
-rewritten.
+malformed JSON, a correction payload that is not exactly the one `content`
+string member (any missing, non-string, blank, or extra member), a
+missing relationship identity on a correction row, or a relationship
+identity present on any non-correction row. No stored row is guessed,
+dropped, or rewritten; a non-canonical payload shape is never silently
+canonicalized into replay history.
 
 ## Raw Replay
 

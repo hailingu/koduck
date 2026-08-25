@@ -151,6 +151,18 @@ fn malformed_correction_rows_fail_closed() {
         ("payload is a JSON string", "correction", r#""text""#, None),
         ("payload is not JSON", "correction", "not json {", None),
         (
+            "payload carries one extra member",
+            "correction",
+            r#"{"content":"x","unexpected":true}"#,
+            Some(target),
+        ),
+        (
+            "payload carries a null extra member",
+            "correction",
+            r#"{"content":"x","unexpected":null}"#,
+            Some(target),
+        ),
+        (
             "unknown discriminator variant",
             "correction_v2",
             valid.as_str(),
