@@ -1,12 +1,10 @@
 // ADR: docs/adr/ADR-0003-default-deny-tool-approval-execution-boundary.md
+// ADR: koduck-ai/docs/adr/ADR-0001-strict-json-duplicate-member-validation.md
 
 //! Fail-closed JSON and JSON Schema translation into protocol-neutral Tool values.
 
 use std::collections::BTreeMap;
-use std::fmt;
 
-use serde::Deserialize;
-use serde::de::{self, MapAccess, SeqAccess, Visitor};
 use serde_json::Value;
 use thiserror::Error;
 
@@ -135,7 +133,8 @@ pub fn parse_action_parameters(serialized: &str) -> Result<ActionParameters, Too
     if serialized.len() > MAX_ACTION_INPUT_BYTES {
         return Err(ToolAdapterError::InputTooLarge);
     }
-    serde_json::from_str::<UniqueJson>(serialized).map_err(|_| ToolAdapterError::InvalidJson)?;
+    super::strict_json::ensure_unique_members(serialized)
+        .map_err(|_| ToolAdapterError::InvalidJson)?;
     let value: Value =
         serde_json::from_str(serialized).map_err(|_| ToolAdapterError::InvalidJson)?;
     let value = convert_value(value)?;
@@ -154,7 +153,8 @@ pub fn parse_input_schema(serialized: &str) -> Result<InputSchema, ToolAdapterEr
     if serialized.len() > MAX_DESCRIPTOR_SCHEMA_BYTES {
         return Err(ToolAdapterError::SchemaTooLarge);
     }
-    serde_json::from_str::<UniqueJson>(serialized).map_err(|_| ToolAdapterError::InvalidSchema)?;
+    super::strict_json::ensure_unique_members(serialized)
+        .map_err(|_| ToolAdapterError::InvalidSchema)?;
     let schema: Value =
         serde_json::from_str(serialized).map_err(|_| ToolAdapterError::InvalidSchema)?;
     let object = schema.as_object().ok_or(ToolAdapterError::InvalidSchema)?;
@@ -204,89 +204,6 @@ pub fn parse_input_schema(serialized: &str) -> Result<InputSchema, ToolAdapterEr
         .ok_or(ToolAdapterError::InvalidSchema)?;
     InputSchema::object(properties, required, additional_properties)
         .map_err(|_| ToolAdapterError::InvalidSchema)
-}
-
-struct UniqueJson;
-
-impl<'de> Deserialize<'de> for UniqueJson {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        deserializer.deserialize_any(UniqueJsonVisitor)
-    }
-}
-
-struct UniqueJsonVisitor;
-
-impl<'de> Visitor<'de> for UniqueJsonVisitor {
-    type Value = UniqueJson;
-
-    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("JSON without duplicate object members")
-    }
-
-    fn visit_bool<E>(self, value: bool) -> Result<Self::Value, E> {
-        let _ = value;
-        Ok(UniqueJson)
-    }
-
-    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
-    where
-        E: de::Error,
-    {
-        self.visit_string(value.to_owned())
-    }
-
-    fn visit_string<E>(self, value: String) -> Result<Self::Value, E> {
-        let _ = value;
-        Ok(UniqueJson)
-    }
-
-    fn visit_none<E>(self) -> Result<Self::Value, E> {
-        Ok(UniqueJson)
-    }
-
-    fn visit_unit<E>(self) -> Result<Self::Value, E> {
-        Ok(UniqueJson)
-    }
-
-    fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E> {
-        let _ = value;
-        Ok(UniqueJson)
-    }
-
-    fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E> {
-        let _ = value;
-        Ok(UniqueJson)
-    }
-
-    fn visit_f64<E>(self, value: f64) -> Result<Self::Value, E> {
-        let _ = value;
-        Ok(UniqueJson)
-    }
-
-    fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
-    where
-        A: SeqAccess<'de>,
-    {
-        while sequence.next_element::<UniqueJson>()?.is_some() {}
-        Ok(UniqueJson)
-    }
-
-    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
-    where
-        A: MapAccess<'de>,
-    {
-        let mut names = std::collections::BTreeSet::new();
-        while let Some(name) = map.next_key::<String>()? {
-            if !names.insert(name) {
-                return Err(de::Error::custom("duplicate JSON object member"));
-            }
-            map.next_value::<UniqueJson>()?;
-        }
-        Ok(UniqueJson)
-    }
 }
 
 fn parse_kind(value: &str) -> Option<JsonValueKind> {
