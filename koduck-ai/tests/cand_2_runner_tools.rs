@@ -1,5 +1,6 @@
 // ADR: docs/adr/ADR-0003-default-deny-tool-approval-execution-boundary.md
 // ADR: docs/adr/ADR-0004-provider-stream-completion-normalization.md
+// ADR: koduck-ai/docs/adr/ADR-0003-correction-item-schema-and-raw-replay.md
 
 //! Black-box runner integration harness for C-5 tool-call servicing.
 

@@ -1,5 +1,6 @@
 // ADR: docs/adr/ADR-0001-provider-neutral-turn-kernel.md
 // ADR: koduck-ai/docs/adr/ADR-0002-typed-http-wire-serialization.md
+// ADR: koduck-ai/docs/adr/ADR-0003-correction-item-schema-and-raw-replay.md
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;

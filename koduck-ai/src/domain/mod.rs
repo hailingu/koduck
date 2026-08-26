@@ -1,5 +1,6 @@
 // ADR: docs/adr/ADR-0001-provider-neutral-turn-kernel.md
 // ADR: docs/adr/ADR-0003-default-deny-tool-approval-execution-boundary.md
+// ADR: koduck-ai/docs/adr/ADR-0003-correction-item-schema-and-raw-replay.md
 
 //! Domain-owned lifecycle rules for a foreground model turn.
 

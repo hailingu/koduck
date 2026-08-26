@@ -1,4 +1,5 @@
 // ADR: docs/adr/ADR-0001-provider-neutral-turn-kernel.md
+// ADR: koduck-ai/docs/adr/ADR-0003-correction-item-schema-and-raw-replay.md
 
 //! Production runtime configuration and executable assembly.
 
