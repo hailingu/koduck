@@ -1,11 +1,14 @@
 // ADR: docs/adr/ADR-0003-default-deny-tool-approval-execution-boundary.md
+// ADR: koduck-ai/docs/adr/ADR-0003-correction-item-schema-and-raw-replay.md
 
 //! Strict canonical D-3 projection payload decoding.
 
 use serde_json::Value;
 
 use crate::application::HistoryError;
-use crate::domain::execution::{ApprovalDecision, ApprovalId, ApprovalStatus, ExecutionStatus};
+use crate::domain::execution::{
+    ApprovalDecision, ApprovalId, ApprovalStatus, AttemptId, ExecutionStatus,
+};
 use crate::domain::{ItemPayload, ToolEffectState};
 
 use super::{
@@ -166,4 +169,70 @@ fn required_text<'a>(payload: &'a Value, name: &str) -> Result<&'a str, HistoryE
         .get(name)
         .and_then(Value::as_str)
         .ok_or(HistoryError::Unavailable)
+}
+
+/// Encodes the canonical D-6 view payload JSON for one approval status.
+pub(super) fn approval_status_json(
+    approval_id: ApprovalId,
+    attempt_id: AttemptId,
+    status: ApprovalStatus,
+    decision: Option<ApprovalDecision>,
+    version: u64,
+) -> Value {
+    serde_json::json!({
+        "approval_id": approval_id.as_uuid().to_string(),
+        "attempt_id": attempt_id.as_uuid().to_string(),
+        "status": status.as_str(),
+        "decision": decision.map(|decision| decision.as_str().to_owned()),
+        "version": version,
+    })
+}
+
+/// Encodes the canonical dispatch-view payload JSON for one Tool call.
+pub(super) fn tool_call_json(
+    descriptor_id: &str,
+    descriptor_version: &str,
+    target: &str,
+    attempt_id: Option<AttemptId>,
+    status: Option<ExecutionStatus>,
+    version: Option<u64>,
+) -> Value {
+    serde_json::json!({
+        "descriptor_id": descriptor_id,
+        "descriptor_version": descriptor_version,
+        "target": target,
+        "attempt_id": attempt_id.map(|id| id.as_uuid().to_string()),
+        "status": status.map(ExecutionStatus::as_str),
+        "version": version,
+    })
+}
+
+/// Encodes the canonical terminal-view payload JSON for one Tool result.
+pub(super) fn tool_result_json(
+    attempt_id: Option<AttemptId>,
+    status: ExecutionStatus,
+    code: Option<&str>,
+    effect_state: Option<ToolEffectState>,
+    output_bytes: u64,
+    output_digest: Option<&str>,
+    version: Option<u64>,
+) -> Value {
+    serde_json::json!({
+        "attempt_id": attempt_id.map(|id| id.as_uuid().to_string()),
+        "status": status.as_str(),
+        "code": code,
+        "effect_state": effect_state.map(effect_state_name),
+        "output_bytes": output_bytes,
+        "output_digest": output_digest,
+        "version": version,
+    })
+}
+
+/// Returns the durable name of one effect-state view.
+fn effect_state_name(state: ToolEffectState) -> &'static str {
+    match state {
+        ToolEffectState::NotStarted => "not_started",
+        ToolEffectState::Started => "started",
+        ToolEffectState::Unknown => "unknown",
+    }
 }

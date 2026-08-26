@@ -91,8 +91,10 @@ fn decode_payload_text(
 }
 
 /// Encodes one owned payload into its `PostgreSQL` discriminator and JSON text.
-// One exhaustive durable payload discriminator table; splitting it would
-// separate a payload from its durable translation (ADR-0003 CR-01).
+// One exhaustive durable payload discriminator table; it sits above clippy's
+// 100-line default but below the 120-line engineering-exception limit, and
+// splitting it would separate a payload from its durable translation
+// (ADR-0003 CR-01).
 #[allow(clippy::too_many_lines)]
 pub(super) fn encode_payload(
     payload: &ItemPayload,
@@ -147,13 +149,13 @@ pub(super) fn encode_payload(
             version,
         } => (
             "approval_status",
-            json!({
-                "approval_id": approval_id.as_uuid().to_string(),
-                "attempt_id": attempt_id.as_uuid().to_string(),
-                "status": status.as_str(),
-                "decision": decision.map(|decision| decision.as_str().to_owned()),
-                "version": version,
-            }),
+            tool_projections::approval_status_json(
+                *approval_id,
+                *attempt_id,
+                *status,
+                *decision,
+                *version,
+            ),
             false,
             None,
             None,
@@ -167,14 +169,14 @@ pub(super) fn encode_payload(
             version,
         } => (
             "tool_call",
-            json!({
-                "descriptor_id": descriptor_id,
-                "descriptor_version": descriptor_version,
-                "target": target,
-                "attempt_id": attempt_id.map(|id| id.as_uuid().to_string()),
-                "status": status.map(crate::domain::execution::ExecutionStatus::as_str),
-                "version": version,
-            }),
+            tool_projections::tool_call_json(
+                descriptor_id,
+                descriptor_version,
+                target,
+                *attempt_id,
+                *status,
+                *version,
+            ),
             false,
             None,
             None,
@@ -189,15 +191,15 @@ pub(super) fn encode_payload(
             version,
         } => (
             "tool_result",
-            json!({
-                "attempt_id": attempt_id.map(|id| id.as_uuid().to_string()),
-                "status": status.as_str(),
-                "code": code,
-                "effect_state": effect_state.map(effect_state_name),
-                "output_bytes": output_bytes,
-                "output_digest": output_digest,
-                "version": version,
-            }),
+            tool_projections::tool_result_json(
+                *attempt_id,
+                *status,
+                code.as_deref(),
+                *effect_state,
+                *output_bytes,
+                output_digest.as_deref(),
+                *version,
+            ),
             false,
             None,
             None,
@@ -769,14 +771,6 @@ pub(super) fn required_optional_u64(
         Some(Value::Null) => Ok(None),
         Some(Value::Number(number)) => number.as_u64().map(Some).ok_or(HistoryError::Unavailable),
         _ => Err(HistoryError::Unavailable),
-    }
-}
-
-fn effect_state_name(state: crate::domain::ToolEffectState) -> &'static str {
-    match state {
-        crate::domain::ToolEffectState::NotStarted => "not_started",
-        crate::domain::ToolEffectState::Started => "started",
-        crate::domain::ToolEffectState::Unknown => "unknown",
     }
 }
 
