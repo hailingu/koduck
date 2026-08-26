@@ -47,12 +47,13 @@ one `ItemPayload`; `decode(item_type, payload_text, corrects_item_id)`
 returns the owned payload. Decoding fails closed with
 `application::HistoryError::Unavailable` for an unknown discriminator,
 malformed JSON, a correction payload that is not exactly the one `content`
-string member (any missing, non-string, blank, extra, or duplicated member —
-duplicates are detected on the raw text before `serde_json` can collapse
-them), a missing relationship identity on a correction row, or a
-relationship identity present on any non-correction row. No stored row is
-guessed, dropped, or rewritten; a non-canonical payload shape is never
-silently canonicalized into replay history.
+string member (any missing, non-string, blank, extra, or duplicated member
+— the payload is deserialized once by a strict document type that rejects
+duplicate and unknown members while constructing the owned value, with no
+intermediate full-document allocation), a missing relationship identity on
+a correction row, or a relationship identity present on any non-correction
+row. No stored row is guessed, dropped, or rewritten; a non-canonical
+payload shape is never silently canonicalized into replay history.
 
 ## Raw Replay
 

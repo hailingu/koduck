@@ -67,22 +67,26 @@ impl DurableItemCodec {
         payload: &str,
         corrects_item_id: Option<Uuid>,
     ) -> Result<ItemPayload, HistoryError> {
-        let payload: Value = parse_payload(item_type, payload)?;
-        decode_payload(item_type, &payload, corrects_item_id)
+        decode_payload_text(item_type, payload, corrects_item_id)
     }
 }
 
-/// Parses one durable payload document, failing closed first for malformed
-/// JSON and — for a correction row — for any duplicated object member:
-/// `serde_json::Value` collapses duplicates, so the raw text must pass the
-/// strict recursive validator before the last value can masquerade as the
-/// single canonical member (ADR-0003 CR-05).
-fn parse_payload(item_type: &str, payload: &str) -> Result<Value, HistoryError> {
+/// Decodes one durable payload text into the owned payload. A correction
+/// row bypasses the generic `Value` parse entirely: its payload is
+/// deserialized once by the strict correction document type, so duplicate
+/// members, unknown members, and malformed shapes fail closed without any
+/// second full-document allocation (ADR-0003 CR-05 and the resource-bounds
+/// matrix).
+fn decode_payload_text(
+    item_type: &str,
+    payload: &str,
+    corrects_item_id: Option<Uuid>,
+) -> Result<ItemPayload, HistoryError> {
     if item_type == item_correction::DISCRIMINATOR {
-        crate::adapters::strict_json::ensure_unique_members(payload)
-            .map_err(|_| HistoryError::Unavailable)?;
+        return item_correction::decode(payload, corrects_item_id).map(ItemPayload::Correction);
     }
-    serde_json::from_str(payload).map_err(|_| HistoryError::Unavailable)
+    let payload: Value = serde_json::from_str(payload).map_err(|_| HistoryError::Unavailable)?;
+    decode_payload(item_type, &payload, corrects_item_id)
 }
 
 /// Encodes one owned payload into its `PostgreSQL` discriminator and JSON text.
@@ -221,8 +225,7 @@ pub(super) fn row_to_item(row: &PgRow) -> Result<Item, HistoryError> {
     let item_type: String = row.try_get("item_type").map_err(unavailable)?;
     let payload: String = row.try_get("payload").map_err(unavailable)?;
     let corrects_item_id: Option<Uuid> = row.try_get("corrects_item_id").map_err(unavailable)?;
-    let payload: Value = parse_payload(&item_type, &payload)?;
-    let payload = decode_payload(&item_type, &payload, corrects_item_id)?;
+    let payload = decode_payload_text(&item_type, &payload, corrects_item_id)?;
     Ok(Item {
         item_id: crate::domain::ItemId::from_uuid(item_id),
         sequence: u64::try_from(sequence).map_err(|_| HistoryError::Unavailable)?,
@@ -276,10 +279,6 @@ fn decode_payload(
         })),
         "interrupted" => Ok(ItemPayload::Terminal(TerminalOutcome::Interrupted)),
         "cancelled" => Ok(ItemPayload::Terminal(TerminalOutcome::Cancelled)),
-        item_correction::DISCRIMINATOR => Ok(ItemPayload::Correction(item_correction::decode(
-            payload,
-            corrects_item_id,
-        )?)),
         _ => Err(HistoryError::Unavailable),
     }
 }

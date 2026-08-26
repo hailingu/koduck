@@ -5,6 +5,7 @@
 //! `corrects_item_id` relationship column; the canonical payload JSON
 //! carries exactly the replacement content.
 
+use serde::Deserialize;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
@@ -20,23 +21,32 @@ pub(super) fn encode(correction: &ItemCorrection) -> Value {
     json!({ "content": correction.content() })
 }
 
-/// Decodes one durable correction row, failing closed on every malformed
-/// shape (CR-05): the payload must be exactly the one `content` string
-/// member, the durable relationship column must be present, and the typed
-/// representation must validate. A payload carrying any extra member is a
-/// non-canonical externally inserted shape and is never silently
-/// canonicalized into replay history.
+/// The strict durable correction document: exactly one `content` string
+/// member. Derived deserialization rejects a duplicated `content` member,
+/// and `deny_unknown_fields` rejects every extra member, so the canonical
+/// shape is enforced while the payload is constructed in one pass with no
+/// intermediate full-document `Value` (ADR-0003 CR-05 and the
+/// resource-bounds matrix).
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CorrectionDocument {
+    content: String,
+}
+
+/// Decodes one durable correction row from its raw payload text, failing
+/// closed on every malformed shape (CR-05): the payload must deserialize
+/// as exactly the one `content` string member, the durable relationship
+/// column must be present, and the typed representation must validate. A
+/// payload carrying any extra or duplicated member is a non-canonical
+/// externally inserted shape and is never silently canonicalized into
+/// replay history.
 pub(super) fn decode(
-    payload: &Value,
+    payload: &str,
     corrects_item_id: Option<Uuid>,
 ) -> Result<ItemCorrection, HistoryError> {
-    let content = payload
-        .as_object()
-        .filter(|members| members.len() == 1)
-        .and_then(|members| members.get("content"))
-        .and_then(Value::as_str)
-        .ok_or(HistoryError::Unavailable)?;
+    let document: CorrectionDocument =
+        serde_json::from_str(payload).map_err(|_| HistoryError::Unavailable)?;
     let corrects_item_id = corrects_item_id.ok_or(HistoryError::Unavailable)?;
-    ItemCorrection::new(content, ItemId::from_uuid(corrects_item_id))
+    ItemCorrection::new(document.content, ItemId::from_uuid(corrects_item_id))
         .map_err(|_| HistoryError::Unavailable)
 }
