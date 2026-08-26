@@ -163,6 +163,12 @@ fn malformed_correction_rows_fail_closed() {
             Some(target),
         ),
         (
+            "payload duplicates the content member",
+            "correction",
+            r#"{"content":"first","content":"second"}"#,
+            Some(target),
+        ),
+        (
             "unknown discriminator variant",
             "correction_v2",
             valid.as_str(),
@@ -207,9 +213,13 @@ fn malformed_correction_rows_fail_closed() {
         );
     }
 
-    // CR-05 and the resource-bounds matrix: the decoder allocates only the
-    // owned payload, so an at-limit and an over-limit stored content decode
-    // exactly instead of inventing a second replay-side byte bound.
+    oversized_stored_content_decodes_exactly();
+}
+
+/// CR-05 and the resource-bounds matrix: the decoder allocates only the
+/// owned payload, so an at-limit and an over-limit stored content decode
+/// exactly instead of inventing a second replay-side byte bound.
+fn oversized_stored_content_decodes_exactly() {
     for size in [1_048_576, 1_048_577] {
         let oversized = serde_json::json!({ "content": "x".repeat(size) }).to_string();
         let decoded =
