@@ -1,4 +1,5 @@
 // ADR: docs/adr/ADR-0001-provider-neutral-turn-kernel.md
+// ADR: koduck-ai/docs/adr/ADR-0003-correction-item-schema-and-raw-replay.md
 
 //! `SQLx`-backed implementation of the canonical `PostgreSQL` transaction boundary.
 
@@ -86,7 +87,7 @@ impl SqlxPostgresExecutor {
     ) -> Result<Vec<Item>, HistoryError> {
         let rows = sqlx::query(
             "SELECT turn_items.item_id, turn_items.sequence, turn_items.item_type, \
-             turn_items.payload FROM turn_items JOIN turns \
+             turn_items.payload, turn_items.corrects_item_id FROM turn_items JOIN turns \
              ON turns.tenant_id = turn_items.tenant_id \
              AND turns.thread_id = turn_items.thread_id \
              AND turns.turn_id = turn_items.turn_id JOIN threads \
@@ -138,7 +139,7 @@ impl SqlxPostgresExecutor {
     ) -> Result<AcceptedTurn, HistoryError> {
         let tenant_id = command.trust.tenant_id.clone();
         let generation = LeaseGeneration::initial();
-        let (_, payload, _, _) = encode_payload(&input.payload);
+        let (_, payload, _, _, _) = encode_payload(&input.payload);
         let mut transaction = self.pool.begin().await.map_err(unavailable)?;
         commit_reconciliation::lock_operation(&mut transaction, input.item_id.as_uuid()).await?;
         sqlx::query(
@@ -262,7 +263,7 @@ impl SqlxPostgresExecutor {
             &item,
         )
         .await?;
-        let (_, _, _, terminal_status) = encode_payload(&item.payload);
+        let (_, _, _, terminal_status, _) = encode_payload(&item.payload);
         if let Some(terminal_status) = terminal_status {
             sqlx::query(
                 "UPDATE turns SET next_sequence = next_sequence + 1, status = $5 \
@@ -309,7 +310,7 @@ impl SqlxPostgresExecutor {
         turn_id: TurnId,
     ) -> Result<Vec<Item>, HistoryError> {
         let rows = sqlx::query(
-            "SELECT item_id, sequence, item_type, payload FROM turn_items \
+            "SELECT item_id, sequence, item_type, payload, corrects_item_id FROM turn_items \
              WHERE tenant_id = $1 AND turn_id = $2 ORDER BY sequence",
         )
         .bind(tenant_id.as_str())
@@ -320,7 +321,13 @@ impl SqlxPostgresExecutor {
         if rows.is_empty() {
             return Err(HistoryError::NotFound);
         }
-        rows.iter().map(row_to_item).collect()
+        let items: Vec<Item> = rows.iter().map(row_to_item).collect::<Result<_, _>>()?;
+        // Raw replay fails closed on malformed legacy or externally inserted
+        // correction relationships before any caller observes the Turn
+        // (ADR-0003 CR-04/CR-05).
+        crate::domain::item_correction::validate_raw_replay(&items)
+            .map_err(|_| HistoryError::Unavailable)?;
+        Ok(items)
     }
 
     async fn renew_lease_async(&self, key: &LeaseKey, now_ms: u64) -> Result<(), HistoryError> {
@@ -707,11 +714,12 @@ pub(super) async fn insert_item(
     turn_id: TurnId,
     item: &Item,
 ) -> Result<(), HistoryError> {
-    let (item_type, payload, is_terminal, _) = encode_payload(&item.payload);
+    let (item_type, payload, is_terminal, _, corrects_item_id) = encode_payload(&item.payload);
     sqlx::query(
         "INSERT INTO turn_items \
-         (tenant_id, thread_id, turn_id, sequence, item_id, item_type, payload, is_terminal) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+         (tenant_id, thread_id, turn_id, sequence, item_id, item_type, payload, is_terminal, \
+          corrects_item_id) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
     )
     .bind(tenant_id.as_str())
     .bind(thread_id.as_uuid())
@@ -721,6 +729,7 @@ pub(super) async fn insert_item(
     .bind(item_type)
     .bind(payload)
     .bind(is_terminal)
+    .bind(corrects_item_id)
     .execute(&mut **transaction)
     .await
     .map_err(unavailable)?;

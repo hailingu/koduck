@@ -1,5 +1,6 @@
 // ADR: docs/adr/ADR-0001-provider-neutral-turn-kernel.md
 // ADR: docs/adr/ADR-0003-default-deny-tool-approval-execution-boundary.md
+// ADR: koduck-ai/docs/adr/ADR-0003-correction-item-schema-and-raw-replay.md
 
 //! Process-wide migration guard for every env-gated test harness inside the
 //! library test binary.
@@ -52,6 +53,7 @@ pub(crate) async fn ensure(pool: &PgPool) {
                 include_str!("../../migrations/0006_cand_2_interrupt_barrier.sql"),
                 include_str!("../../migrations/0007_cand_2_tool_audit.sql"),
                 include_str!("../../migrations/0008_cand_2_interruption_approval_cancellation.sql"),
+                include_str!("../../migrations/0009_cand_3_correction_items.sql"),
             ] {
                 sqlx::raw_sql(migration)
                     .execute(pool)

@@ -1,4 +1,5 @@
 // ADR: docs/adr/ADR-0001-provider-neutral-turn-kernel.md
+// ADR: koduck-ai/docs/adr/ADR-0003-correction-item-schema-and-raw-replay.md
 
 //! Production runtime configuration and executable assembly.
 
@@ -276,6 +277,7 @@ pub(crate) async fn apply_startup_migrations(
             include_str!("../../migrations/0006_cand_2_interrupt_barrier.sql"),
             include_str!("../../migrations/0007_cand_2_tool_audit.sql"),
             include_str!("../../migrations/0008_cand_2_interruption_approval_cancellation.sql"),
+            include_str!("../../migrations/0009_cand_3_correction_items.sql"),
         ] {
             sqlx::raw_sql(migration)
                 .execute(&mut *transaction)

@@ -1,4 +1,5 @@
 // ADR: docs/adr/ADR-0001-provider-neutral-turn-kernel.md
+// ADR: koduck-ai/docs/adr/ADR-0003-correction-item-schema-and-raw-replay.md
 
 //! `PostgreSQL` payload encoding and durable-row decoding for canonical Items.
 
@@ -10,34 +11,135 @@ use uuid::Uuid;
 use crate::application::HistoryError;
 use crate::domain::{Item, ItemPayload, TerminalOutcome, Usage};
 
+mod item_correction;
 mod tool_projections;
 
+/// The durable `turn_items` column tuple of one encoded canonical Item.
+#[derive(Clone, Debug)]
+pub struct DurableItemColumns {
+    /// Durable `item_type` discriminator.
+    pub item_type: &'static str,
+    /// Canonical serialized `payload` JSON text.
+    pub payload: String,
+    /// Whether the encoded Item is the Turn terminal.
+    pub is_terminal: bool,
+    /// The durable terminal status name, when the Item is terminal.
+    pub terminal_status: Option<&'static str>,
+    /// The durable correction relationship target, when the Item is a
+    /// correction (ADR-0003 CR-02).
+    pub corrects_item_id: Option<Uuid>,
+}
+
+/// The durable canonical-Item codec contract of the C-6 `PostgreSQL` history
+/// adapter (ADR-0003 CR-01/CR-05).
+///
+/// Public so the durable representation stays deterministically verifiable
+/// without a live database. Correction admission (CAND-11) and effective
+/// projection (CAND-12) are owned by later records and MUST NOT grow this
+/// contract into write behavior.
+#[derive(Clone, Copy, Debug)]
+pub struct DurableItemCodec;
+
+impl DurableItemCodec {
+    /// Encodes one owned payload into its durable column tuple.
+    #[must_use]
+    pub fn encode(payload: &ItemPayload) -> DurableItemColumns {
+        let (item_type, payload_text, is_terminal, terminal_status, corrects_item_id) =
+            encode_payload(payload);
+        DurableItemColumns {
+            item_type,
+            payload: payload_text,
+            is_terminal,
+            terminal_status,
+            corrects_item_id,
+        }
+    }
+
+    /// Decodes one durable row into the owned payload, failing closed on
+    /// every malformed shape (CR-05).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`HistoryError::Unavailable`] when the discriminator is
+    /// unknown, the payload text is not the declared structure, or the
+    /// relationship column disagrees with the discriminator.
+    pub fn decode(
+        item_type: &str,
+        payload: &str,
+        corrects_item_id: Option<Uuid>,
+    ) -> Result<ItemPayload, HistoryError> {
+        decode_payload_text(item_type, payload, corrects_item_id)
+    }
+}
+
+/// Decodes one durable payload text into the owned payload. A correction
+/// row bypasses the generic `Value` parse entirely: its payload is
+/// deserialized once by the strict correction document type, so duplicate
+/// members, unknown members, and malformed shapes fail closed without any
+/// second full-document allocation (ADR-0003 CR-05 and the resource-bounds
+/// matrix).
+fn decode_payload_text(
+    item_type: &str,
+    payload: &str,
+    corrects_item_id: Option<Uuid>,
+) -> Result<ItemPayload, HistoryError> {
+    if item_type == item_correction::DISCRIMINATOR {
+        return item_correction::decode(payload, corrects_item_id).map(ItemPayload::Correction);
+    }
+    let payload: Value = serde_json::from_str(payload).map_err(|_| HistoryError::Unavailable)?;
+    decode_payload(item_type, &payload, corrects_item_id)
+}
+
 /// Encodes one owned payload into its `PostgreSQL` discriminator and JSON text.
+// One exhaustive durable payload discriminator table; it sits above clippy's
+// 100-line default but below the 120-line engineering-exception limit, and
+// splitting it would separate a payload from its durable translation
+// (ADR-0003 CR-01).
+#[allow(clippy::too_many_lines)]
 pub(super) fn encode_payload(
     payload: &ItemPayload,
-) -> (&'static str, String, bool, Option<&'static str>) {
-    let (item_type, payload, is_terminal, terminal_status) = match payload {
-        ItemPayload::UserMessage { content } => {
-            ("user_message", json!({ "content": content }), false, None)
-        }
+) -> (
+    &'static str,
+    String,
+    bool,
+    Option<&'static str>,
+    Option<Uuid>,
+) {
+    let (item_type, payload, is_terminal, terminal_status, corrects_item_id) = match payload {
+        ItemPayload::UserMessage { content } => (
+            "user_message",
+            json!({ "content": content }),
+            false,
+            None,
+            None,
+        ),
         ItemPayload::AgentMessageDelta { content } => (
             "agent_message_delta",
             json!({ "content": content }),
             false,
             None,
+            None,
         ),
-        ItemPayload::Usage(usage) => ("usage", usage_json(*usage), false, None),
-        ItemPayload::Terminal(TerminalOutcome::Completed { usage }) => {
-            ("completed", usage_json(*usage), true, Some("completed"))
-        }
-        ItemPayload::Terminal(TerminalOutcome::Failed { code }) => {
-            ("failed", json!({ "code": code }), true, Some("failed"))
-        }
+        ItemPayload::Usage(usage) => ("usage", usage_json(*usage), false, None, None),
+        ItemPayload::Terminal(TerminalOutcome::Completed { usage }) => (
+            "completed",
+            usage_json(*usage),
+            true,
+            Some("completed"),
+            None,
+        ),
+        ItemPayload::Terminal(TerminalOutcome::Failed { code }) => (
+            "failed",
+            json!({ "code": code }),
+            true,
+            Some("failed"),
+            None,
+        ),
         ItemPayload::Terminal(TerminalOutcome::Interrupted) => {
-            ("interrupted", json!({}), true, Some("interrupted"))
+            ("interrupted", json!({}), true, Some("interrupted"), None)
         }
         ItemPayload::Terminal(TerminalOutcome::Cancelled) => {
-            ("cancelled", json!({}), true, Some("cancelled"))
+            ("cancelled", json!({}), true, Some("cancelled"), None)
         }
         ItemPayload::ApprovalStatus {
             approval_id,
@@ -47,14 +149,15 @@ pub(super) fn encode_payload(
             version,
         } => (
             "approval_status",
-            json!({
-                "approval_id": approval_id.as_uuid().to_string(),
-                "attempt_id": attempt_id.as_uuid().to_string(),
-                "status": status.as_str(),
-                "decision": decision.map(|decision| decision.as_str().to_owned()),
-                "version": version,
-            }),
+            tool_projections::approval_status_json(
+                *approval_id,
+                *attempt_id,
+                *status,
+                *decision,
+                *version,
+            ),
             false,
+            None,
             None,
         ),
         ItemPayload::ToolCall {
@@ -66,15 +169,16 @@ pub(super) fn encode_payload(
             version,
         } => (
             "tool_call",
-            json!({
-                "descriptor_id": descriptor_id,
-                "descriptor_version": descriptor_version,
-                "target": target,
-                "attempt_id": attempt_id.map(|id| id.as_uuid().to_string()),
-                "status": status.map(crate::domain::execution::ExecutionStatus::as_str),
-                "version": version,
-            }),
+            tool_projections::tool_call_json(
+                descriptor_id,
+                descriptor_version,
+                target,
+                *attempt_id,
+                *status,
+                *version,
+            ),
             false,
+            None,
             None,
         ),
         ItemPayload::ToolResult {
@@ -87,20 +191,34 @@ pub(super) fn encode_payload(
             version,
         } => (
             "tool_result",
-            json!({
-                "attempt_id": attempt_id.map(|id| id.as_uuid().to_string()),
-                "status": status.as_str(),
-                "code": code,
-                "effect_state": effect_state.map(effect_state_name),
-                "output_bytes": output_bytes,
-                "output_digest": output_digest,
-                "version": version,
-            }),
+            tool_projections::tool_result_json(
+                *attempt_id,
+                *status,
+                code.as_deref(),
+                *effect_state,
+                *output_bytes,
+                output_digest.as_deref(),
+                *version,
+            ),
             false,
             None,
+            None,
+        ),
+        ItemPayload::Correction(correction) => (
+            item_correction::DISCRIMINATOR,
+            item_correction::encode(correction),
+            false,
+            None,
+            Some(correction.corrects_item_id().as_uuid()),
         ),
     };
-    (item_type, payload.to_string(), is_terminal, terminal_status)
+    (
+        item_type,
+        payload.to_string(),
+        is_terminal,
+        terminal_status,
+        corrects_item_id,
+    )
 }
 
 /// Decodes one `PostgreSQL` row into the owned canonical Item representation.
@@ -109,8 +227,8 @@ pub(super) fn row_to_item(row: &PgRow) -> Result<Item, HistoryError> {
     let sequence: i64 = row.try_get("sequence").map_err(unavailable)?;
     let item_type: String = row.try_get("item_type").map_err(unavailable)?;
     let payload: String = row.try_get("payload").map_err(unavailable)?;
-    let payload: Value = serde_json::from_str(&payload).map_err(|_| HistoryError::Unavailable)?;
-    let payload = decode_payload(&item_type, &payload)?;
+    let corrects_item_id: Option<Uuid> = row.try_get("corrects_item_id").map_err(unavailable)?;
+    let payload = decode_payload_text(&item_type, &payload, corrects_item_id)?;
     Ok(Item {
         item_id: crate::domain::ItemId::from_uuid(item_id),
         sequence: u64::try_from(sequence).map_err(|_| HistoryError::Unavailable)?,
@@ -127,7 +245,17 @@ fn usage_json(usage: Usage) -> Value {
 }
 
 /// Decodes non-projection payloads after the projection decoder validates D-3.
-fn decode_payload(item_type: &str, payload: &Value) -> Result<ItemPayload, HistoryError> {
+fn decode_payload(
+    item_type: &str,
+    payload: &Value,
+    corrects_item_id: Option<Uuid>,
+) -> Result<ItemPayload, HistoryError> {
+    // A durable correction relationship is legal only on a correction row:
+    // any other shape is malformed externally inserted data and fails closed
+    // (ADR-0003 CR-05).
+    if corrects_item_id.is_some() && item_type != item_correction::DISCRIMINATOR {
+        return Err(HistoryError::Unavailable);
+    }
     if let Some(projection) = tool_projections::decode(item_type, payload)? {
         return Ok(projection);
     }
@@ -377,7 +505,7 @@ mod strict_tool_result_tests {
                 "output_digest": null,
                 "version": 3,
             });
-            let decoded = decode_payload("tool_result", &encoded);
+            let decoded = decode_payload("tool_result", &encoded, None);
             assert!(
                 matches!(decoded, Ok(ItemPayload::ToolResult { code: None, .. })),
                 "canonical {status} terminal must replay with code null: {decoded:?}"
@@ -391,7 +519,7 @@ mod strict_tool_result_tests {
             serde_json::json!({"attempt_id": "00000000-0000-0000-0000-000000000001", "status": "cancelled", "code": null, "effect_state": "unknown", "output_bytes": 0, "output_digest": null, "version": 3}),
         ] {
             assert_eq!(
-                decode_payload("tool_result", &corrupt),
+                decode_payload("tool_result", &corrupt, None),
                 Err(HistoryError::Unavailable),
                 "a non-failed terminal carrying a code is not canonical: {corrupt}"
             );
@@ -421,7 +549,7 @@ mod strict_tool_result_tests {
                 "decision": decision,
                 "version": version,
             });
-            let decoded = decode_payload("approval_status", &encoded);
+            let decoded = decode_payload("approval_status", &encoded, None);
             assert!(
                 matches!(decoded, Ok(ItemPayload::ApprovalStatus { .. })),
                 "canonical approval tuple must replay: {decoded:?}"
@@ -444,7 +572,7 @@ mod strict_tool_result_tests {
             serde_json::json!({"approval_id": "00000000-0000-0000-0000-000000000001", "status": "cancelled", "decision": "accepted", "version": 2}),
         ] {
             assert_eq!(
-                decode_payload("approval_status", &corrupt),
+                decode_payload("approval_status", &corrupt, None),
                 Err(HistoryError::Unavailable),
                 "impossible approval tuple must fail closed: {corrupt}"
             );
@@ -463,7 +591,7 @@ mod strict_tool_result_tests {
             "version": 3,
         });
         assert_eq!(
-            decode_payload("tool_result", &valid),
+            decode_payload("tool_result", &valid, None),
             Ok(ItemPayload::ToolResult {
                 attempt_id: Some(crate::domain::execution::AttemptId::from_uuid(
                     uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000001").expect("valid")
@@ -487,7 +615,7 @@ mod strict_tool_result_tests {
             "version": null,
         });
         assert_eq!(
-            decode_payload("tool_result", &denied),
+            decode_payload("tool_result", &denied, None),
             Ok(ItemPayload::ToolResult {
                 attempt_id: None,
                 status: crate::domain::execution::ExecutionStatus::Failed,
@@ -527,7 +655,7 @@ mod strict_tool_result_tests {
             serde_json::json!({"attempt_id": "00000000-0000-0000-0000-000000000001", "status": "succeeded", "code": null, "effect_state": "started", "output_bytes": 3, "version": 2}),
         ] {
             assert_eq!(
-                decode_payload("tool_result", &corrupt),
+                decode_payload("tool_result", &corrupt, None),
                 Err(HistoryError::Unavailable),
                 "corrupt canonical identity must fail closed: {corrupt}"
             );
@@ -551,7 +679,7 @@ mod strict_tool_result_tests {
         for (status, version) in [("prepared", 1), ("running", 2)] {
             assert!(
                 matches!(
-                    decode_payload("tool_call", &valid(status, version)),
+                    decode_payload("tool_call", &valid(status, version), None),
                     Ok(ItemPayload::ToolCall { .. })
                 ),
                 "canonical {status}/v{version} dispatch view must replay"
@@ -559,7 +687,7 @@ mod strict_tool_result_tests {
         }
         for (status, version) in [("prepared", 2), ("running", 1), ("running", 3)] {
             assert_eq!(
-                decode_payload("tool_call", &valid(status, version)),
+                decode_payload("tool_call", &valid(status, version), None),
                 Err(HistoryError::Unavailable),
                 "a noncanonical {status}/v{version} transition version must fail closed"
             );
@@ -577,7 +705,7 @@ mod strict_tool_result_tests {
             "version": 2,
         });
         assert!(matches!(
-            decode_payload("tool_call", &valid),
+            decode_payload("tool_call", &valid, None),
             Ok(ItemPayload::ToolCall { .. })
         ));
 
@@ -589,7 +717,7 @@ mod strict_tool_result_tests {
             let mut corrupt = valid.clone();
             corrupt[field] = value;
             assert_eq!(
-                decode_payload("tool_call", &corrupt),
+                decode_payload("tool_call", &corrupt, None),
                 Err(HistoryError::Unavailable),
                 "noncanonical {field} must not enter replay history"
             );
@@ -608,7 +736,7 @@ mod strict_tool_result_tests {
         });
 
         assert!(matches!(
-            decode_payload("tool_call", &denied),
+            decode_payload("tool_call", &denied, None),
             Ok(ItemPayload::ToolCall {
                 descriptor_id,
                 descriptor_version,
@@ -643,14 +771,6 @@ pub(super) fn required_optional_u64(
         Some(Value::Null) => Ok(None),
         Some(Value::Number(number)) => number.as_u64().map(Some).ok_or(HistoryError::Unavailable),
         _ => Err(HistoryError::Unavailable),
-    }
-}
-
-fn effect_state_name(state: crate::domain::ToolEffectState) -> &'static str {
-    match state {
-        crate::domain::ToolEffectState::NotStarted => "not_started",
-        crate::domain::ToolEffectState::Started => "started",
-        crate::domain::ToolEffectState::Unknown => "unknown",
     }
 }
 

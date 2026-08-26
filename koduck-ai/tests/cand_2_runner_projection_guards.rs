@@ -1,4 +1,5 @@
 // ADR: docs/adr/ADR-0003-default-deny-tool-approval-execution-boundary.md
+// ADR: koduck-ai/docs/adr/ADR-0003-correction-item-schema-and-raw-replay.md
 
 //! Black-box runner integration harness for the durable projection sink's
 //! guard contract: canonical tuple and lifecycle-identity validation,
@@ -885,6 +886,7 @@ fn payload_kinds(items: &[Item]) -> Vec<&'static str> {
             ItemPayload::Terminal(TerminalOutcome::Completed { .. }) => "completed",
             ItemPayload::Terminal(TerminalOutcome::Failed { .. }) => "failed",
             ItemPayload::UserMessage { .. } => "user_message",
+            ItemPayload::Correction(_) => "correction",
             other @ ItemPayload::Terminal(_) => {
                 panic!("unexpected published payload: {other:?}")
             }

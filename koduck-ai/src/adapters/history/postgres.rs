@@ -1,4 +1,5 @@
 // ADR: docs/adr/ADR-0001-provider-neutral-turn-kernel.md
+// ADR: koduck-ai/docs/adr/ADR-0003-correction-item-schema-and-raw-replay.md
 
 //! `PostgreSQL` history translation and exact foreground-lease policy.
 
@@ -24,6 +25,7 @@ mod sqlx_executor;
 #[cfg(test)]
 mod tests;
 
+pub use payload_codec::{DurableItemCodec, DurableItemColumns};
 pub use sqlx_executor::SqlxPostgresExecutor;
 
 const MAX_BACKGROUND_WORKERS: usize = 256;

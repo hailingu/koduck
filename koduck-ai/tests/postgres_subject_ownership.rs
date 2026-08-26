@@ -1,4 +1,5 @@
 // ADR: docs/adr/ADR-0002-required-ai-ci-postgres-verification.md
+// ADR: koduck-ai/docs/adr/ADR-0003-correction-item-schema-and-raw-replay.md
 
 use std::thread;
 
@@ -31,27 +32,26 @@ fn production_postgres_contract() {
                 .connect(&database_url),
         )
         .expect("connect to disposable PostgreSQL");
-    runtime
-        .block_on(
-            sqlx::raw_sql(include_str!("../migrations/0001_cand_1_history.sql")).execute(&pool),
-        )
-        .expect("apply production migration");
-    runtime
-        .block_on(
-            sqlx::raw_sql(include_str!(
-                "../migrations/0004_cand_2_tool_projections.sql"
-            ))
-            .execute(&pool),
-        )
-        .expect("apply production projection migration");
-    runtime
-        .block_on(
-            sqlx::raw_sql(include_str!(
-                "../migrations/0005_cand_2_execution_attempts.sql"
-            ))
-            .execute(&pool),
-        )
-        .expect("apply production execution-attempt migration");
+    // The executor's insert and replay queries reference the correction
+    // relationship column, and the projection and interruption legs need the
+    // complete durable schema, so this standalone harness applies the full
+    // production migration list itself instead of relying on another binary
+    // having run first (ADR-0003 CR-06).
+    for migration in [
+        include_str!("../migrations/0001_cand_1_history.sql"),
+        include_str!("../migrations/0002_cand_2_policy_execution.sql"),
+        include_str!("../migrations/0003_cand_2_requester_ownership.sql"),
+        include_str!("../migrations/0004_cand_2_tool_projections.sql"),
+        include_str!("../migrations/0005_cand_2_execution_attempts.sql"),
+        include_str!("../migrations/0006_cand_2_interrupt_barrier.sql"),
+        include_str!("../migrations/0007_cand_2_tool_audit.sql"),
+        include_str!("../migrations/0008_cand_2_interruption_approval_cancellation.sql"),
+        include_str!("../migrations/0009_cand_3_correction_items.sql"),
+    ] {
+        runtime
+            .block_on(async { sqlx::raw_sql(migration).execute(&pool).await })
+            .expect("apply production migration");
+    }
     let executor = SqlxPostgresExecutor::new(pool.clone(), runtime.handle().clone());
 
     let tenant = TenantId::new(format!("ci-{}", Uuid::new_v4())).expect("unique tenant");
