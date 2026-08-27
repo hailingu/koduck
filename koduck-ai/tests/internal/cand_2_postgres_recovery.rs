@@ -1,4 +1,5 @@
 // ADR: docs/adr/ADR-0003-default-deny-tool-approval-execution-boundary.md
+// ADR: docs/adr/ADR-0005-provider-delta-coalescing-and-512-item-turn-budget.md
 
 //! Recovery, lease, and approval-audit legs of the canonical `PostgreSQL`
 //! persistence harness (ADR-0003 TC-10, TC-12, and TC-14).
@@ -1112,9 +1113,10 @@ fn lease_recovery_waits_for_a_running_action_deadline() {
 )]
 fn terminal_recovery_rejects_a_batch_beyond_the_turn_item_budget() {
     // Both recovery owners must preflight the complete missing D-3 batch plus
-    // the mandatory Turn terminal. With 63 existing provider items, one
-    // recovered D-7 projection and the terminal would total 65 and must roll
-    // back atomically rather than bypass the CAND-1 64-item cap.
+    // the mandatory Turn terminal. With 511 existing provider items, one
+    // recovered D-7 projection and the terminal would total 513 and must roll
+    // back atomically rather than bypass the 512-item Turn cap (ADR-0005
+    // PLB-5).
     let Some(harness) = harness() else {
         return;
     };
@@ -1139,7 +1141,7 @@ fn terminal_recovery_rejects_a_batch_beyond_the_turn_item_budget() {
             .expect("fixture thread");
             sqlx::query(
                 "INSERT INTO turns (tenant_id, thread_id, turn_id, status, next_sequence) \
-                 VALUES ($1, $2, $3, $4, 64)",
+                 VALUES ($1, $2, $3, $4, 512)",
             )
             .bind(tenant.as_str())
             .bind(thread.as_uuid())
@@ -1167,7 +1169,7 @@ fn terminal_recovery_rejects_a_batch_beyond_the_turn_item_budget() {
             .execute(&harness.pool)
             .await
             .expect("fixture lease");
-            for sequence in 1_i64..=63 {
+            for sequence in 1_i64..=511 {
                 sqlx::query(
                     "INSERT INTO turn_items \
                      (tenant_id, thread_id, turn_id, sequence, item_id, item_type, payload) \
@@ -1260,6 +1262,6 @@ fn terminal_recovery_rejects_a_batch_beyond_the_turn_item_budget() {
                 .expect("rolled-back recovery state is readable");
         assert_eq!(persisted_turn_status, turn_status);
         assert_eq!(persisted_attempt_status, "prepared");
-        assert_eq!(item_count, 63);
+        assert_eq!(item_count, 511);
     }
 }
