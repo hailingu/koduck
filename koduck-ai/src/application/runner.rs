@@ -456,6 +456,15 @@ fn drive_stream<H: TurnHistory, T: ToolCallExecutor>(
         if terminalize_from_cancellation(history, accepted, state, observer, cancelled)? {
             return Ok(true);
         }
+        // The latency deadline is checked before every event — including a
+        // backlog of consecutive Delta frames that never reaches the Pending
+        // arm — so a due buffered chunk publishes no later than 500 ms after
+        // its first byte (ADR-0005 PLB-2).
+        if let Some(due) = state.delta_coalescer.take_due_flush(Instant::now())
+            && append_coalesced_deltas(history, accepted, state, [due], observer)?
+        {
+            return Ok(true);
+        }
         let event_result = handle_event(history, tools, accepted, trust, state, event, observer);
         // Observe every item published by the event that was not already
         // observed live at its publish boundary (e.g. tool projections).
@@ -679,11 +688,6 @@ fn handle_event<H: TurnHistory, T: ToolCallExecutor>(
                 history, tools, accepted, trust, state, name, arguments, observer,
             )
         }
-        ProviderEvent::Pending => {
-            // The latency bound flushes buffered text even while the provider
-            // stays idle (ADR-0005 PLB-2).
-            let due = state.delta_coalescer.take_due_flush(Instant::now());
-            append_coalesced_deltas(history, accepted, state, due, observer)
-        }
+        ProviderEvent::Pending => Ok(false),
     }
 }

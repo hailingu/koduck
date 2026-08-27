@@ -1055,3 +1055,55 @@ fn run_payload_boundary() {
             if code == "RESOURCE_LIMIT_EXCEEDED"
     ));
 }
+
+/// One provider whose frames carry real inter-event delays, so the latency
+/// deadline can elapse between consecutive Delta events (PR-8 review P2).
+struct DelayedDeltaProvider {
+    first_delay: std::time::Duration,
+}
+
+impl ModelProvider for DelayedDeltaProvider {
+    fn stream(&mut self, _input: ModelInput) -> Result<ProviderStream<'_>, ProviderError> {
+        let delay = self.first_delay;
+        let mut events = 0;
+        Ok(Box::new(std::iter::from_fn(move || {
+            events += 1;
+            match events {
+                1 => Some(ProviderEvent::Delta("a".to_owned())),
+                2 => {
+                    std::thread::sleep(delay);
+                    Some(ProviderEvent::Delta("b".to_owned()))
+                }
+                3 => Some(ProviderEvent::Usage(Usage::new(1, 2).expect("valid usage"))),
+                4 => Some(ProviderEvent::Completed),
+                _ => None,
+            }
+        })))
+    }
+}
+
+/// PLB-2 (PR-8 review P2): the 500-ms latency deadline is checked before
+/// every provider event, so a backlog of consecutive Delta frames still
+/// publishes the due buffered chunk instead of holding it until a semantic
+/// boundary.
+#[test]
+fn latency_deadline_flushes_between_consecutive_delta_events() {
+    let (history, items) = fixture_history();
+    let result = TurnRunner::new(
+        DelayedDeltaProvider {
+            first_delay: Duration::from_millis(600),
+        },
+        history,
+    )
+    .execute(TurnCommand::new(trust(), None, "hello").expect("valid command"));
+
+    let Ok(result) = result else {
+        panic!("the delayed-delta turn must complete");
+    };
+    assert_eq!(result.status, TurnStatus::Completed);
+    assert_eq!(
+        delta_contents(&items.borrow()),
+        vec!["a".to_owned(), "b".to_owned()],
+        "the 600-ms-old buffered chunk flushes before the next Delta event"
+    );
+}
