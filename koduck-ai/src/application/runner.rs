@@ -469,11 +469,42 @@ fn drive_stream<H: TurnHistory, T: ToolCallExecutor>(
     }
     // The stream ended without a terminal: buffered text flushes durably
     // before any Tool-round continuation or stream-ended terminal takes
-    // effect (ADR-0005 PLB-3).
-    if flush_buffered_deltas(history, accepted, state, observer)? {
+    // effect (ADR-0005 PLB-3), with the flush outcome arbitrated like any
+    // event failure.
+    if flush_and_arbitrate(history, accepted, state, observer)? {
         return Ok(true);
     }
     Ok(false)
+}
+
+/// Flushes buffered deltas outside the driving loop's observation window.
+///
+/// A flush outcome is arbitrated exactly like an event failure: any durable
+/// terminal the flush appended is observed before the error surfaces — a
+/// started stream sees the exact `turn.failed` terminal and never a
+/// contradictory error event — a competing writer's terminal is adopted
+/// through replay, and a history outage enters the bounded recovery path
+/// (ADR-0005 PLB-3/PLB-4/PLB-7).
+fn flush_and_arbitrate<H: TurnHistory>(
+    history: &mut H,
+    accepted: &AcceptedTurn,
+    state: &mut ExecutionState,
+    observer: &mut dyn FnMut(TurnStreamEvent),
+) -> Result<bool, TurnRunError> {
+    let outcome = flush_buffered_deltas(history, accepted, state, observer);
+    for item in &state.published[state.observed_len..] {
+        observe_item(observer, accepted, item);
+    }
+    state.observed_len = state.published.len();
+    match outcome {
+        Ok(closed) => Ok(closed),
+        Err(TurnRunError::History(HistoryError::Fenced | HistoryError::AlreadyTerminal)) => {
+            publish_replayed_terminal(history, accepted, state, observer)?;
+            Ok(true)
+        }
+        Err(TurnRunError::History(error)) => Err(recover_append_failure(state, error)),
+        Err(error) => Err(error),
+    }
 }
 
 fn terminalize_from_persisted_interruption<H: TurnHistory>(
@@ -485,8 +516,9 @@ fn terminalize_from_persisted_interruption<H: TurnHistory>(
     match history.interruption_requested(accepted) {
         Ok(true) => {
             // Buffered text flushes durably before the winning terminal
-            // (ADR-0005 PLB-3).
-            if flush_buffered_deltas(history, accepted, state, observer)? {
+            // (ADR-0005 PLB-3), with the flush outcome arbitrated like any
+            // event failure.
+            if flush_and_arbitrate(history, accepted, state, observer)? {
                 return Ok(true);
             }
             if let Err(error) = append_terminal(
@@ -529,8 +561,9 @@ fn terminalize_from_cancellation<H: TurnHistory>(
     }
     // Buffered text flushes durably before the winning terminal; the same
     // signal serves dependency and downstream-disconnect cancellation
-    // (ADR-0005 PLB-3).
-    if flush_buffered_deltas(history, accepted, state, observer)? {
+    // (ADR-0005 PLB-3), with the flush outcome arbitrated like any event
+    // failure.
+    if flush_and_arbitrate(history, accepted, state, observer)? {
         return Ok(true);
     }
     append_terminal_or_replay_fenced(

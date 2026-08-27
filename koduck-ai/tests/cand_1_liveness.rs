@@ -13,7 +13,7 @@ use koduck_ai::adapters::history::postgres::{
 };
 use koduck_ai::application::{
     AcceptedTurn, HistoryError, ModelInput, ModelProvider, NewItem, ProviderError, ProviderEvent,
-    ProviderStream, TurnCommand, TurnHistory, TurnRunner,
+    ProviderStream, TurnCommand, TurnHistory, TurnRunError, TurnRunner,
 };
 use koduck_ai::domain::{
     Item, ItemPayload, LeaseGeneration, TenantId, TerminalOutcome, ThreadId, TrustContext, TurnId,
@@ -680,6 +680,8 @@ impl ModelProvider for BufferedIdleProvider {
 /// controlled by the fixture.
 struct InterruptibleHistory {
     interrupt: Rc<Cell<bool>>,
+    fail_append_at: Option<usize>,
+    append_calls: usize,
     items: Rc<RefCell<Vec<Item>>>,
 }
 
@@ -724,6 +726,13 @@ impl TurnHistory for InterruptibleHistory {
     }
 
     fn append(&mut self, _turn: &AcceptedTurn, item: NewItem) -> Result<Item, HistoryError> {
+        self.append_calls += 1;
+        if self
+            .fail_append_at
+            .is_some_and(|first_failure| self.append_calls >= first_failure)
+        {
+            return Err(HistoryError::Unavailable);
+        }
         let durable = Item::new(self.items.borrow().len() as u64 + 1, item.into_payload());
         self.items.borrow_mut().push(durable.clone());
         Ok(durable)
@@ -764,6 +773,13 @@ fn buffered_deltas(items: &[Item]) -> Vec<String> {
 /// and no text after it.
 #[test]
 fn buffered_delta_interrupt_and_cancellation_arbitration() {
+    interrupted_with_buffered_text_flushes_one_coalesced_delta();
+    cancelled_with_buffered_text_flushes_one_coalesced_delta();
+    timer_flush_at_the_boundary_precedes_the_interrupt_terminal();
+}
+/// Authenticated interruption with buffered text: one coalesced delta
+/// flushes durably before the Interrupted terminal.
+fn interrupted_with_buffered_text_flushes_one_coalesced_delta() {
     // Authenticated interruption arrives with buffered text: the flush
     // precedes the Interrupted terminal.
     let interrupt = Rc::new(Cell::new(false));
@@ -778,6 +794,8 @@ fn buffered_delta_interrupt_and_cancellation_arbitration() {
         },
         InterruptibleHistory {
             interrupt: Rc::clone(&interrupt),
+            fail_append_at: None,
+            append_calls: 0,
             items: Rc::clone(&items),
         },
     )
@@ -800,7 +818,11 @@ fn buffered_delta_interrupt_and_cancellation_arbitration() {
         durable.last().map(|item| &item.payload),
         Some(ItemPayload::Terminal(TerminalOutcome::Interrupted))
     ));
+}
 
+/// Dependency or disconnect cancellation with buffered text: one
+/// coalesced delta flushes durably before the Cancelled terminal.
+fn cancelled_with_buffered_text_flushes_one_coalesced_delta() {
     // Dependency or disconnect cancellation arrives with buffered text: the
     // flush precedes the Cancelled terminal. The same runner signal serves
     // the disconnect path, whose end-to-end delivery AC-7 exercises.
@@ -816,6 +838,8 @@ fn buffered_delta_interrupt_and_cancellation_arbitration() {
         },
         InterruptibleHistory {
             interrupt: Rc::new(Cell::new(false)),
+            fail_append_at: None,
+            append_calls: 0,
             items: Rc::clone(&items),
         },
     )
@@ -834,7 +858,11 @@ fn buffered_delta_interrupt_and_cancellation_arbitration() {
         durable.last().map(|item| &item.payload),
         Some(ItemPayload::Terminal(TerminalOutcome::Cancelled))
     ));
+}
 
+/// Timer race at the 500-ms boundary: both deltas flush as one item
+/// before the interruption terminal commits.
+fn timer_flush_at_the_boundary_precedes_the_interrupt_terminal() {
     // Timer race: both deltas buffer inside the latency window, the flush
     // becomes eligible at exactly 500 ms, and an interruption arriving after
     // that boundary still observes the flushed delta before its terminal.
@@ -850,6 +878,8 @@ fn buffered_delta_interrupt_and_cancellation_arbitration() {
         },
         InterruptibleHistory {
             interrupt: Rc::clone(&interrupt),
+            fail_append_at: None,
+            append_calls: 0,
             items: Rc::clone(&items),
         },
     )
@@ -872,4 +902,44 @@ fn buffered_delta_interrupt_and_cancellation_arbitration() {
         durable.last().map(|item| &item.payload),
         Some(ItemPayload::Terminal(TerminalOutcome::Interrupted))
     ));
+}
+
+/// PLB-3 (PR-8 review P1): an append outage during an out-of-loop flush —
+/// here the interruption flush — is arbitrated through the bounded
+/// durability path as a `DurabilityFailure` with a recovery-pending
+/// lifecycle, never a raw history rejection.
+#[test]
+fn out_of_loop_flush_outage_enters_durability_recovery() {
+    let interrupt = Rc::new(Cell::new(false));
+    let items = Rc::new(RefCell::new(Vec::new()));
+    let result = TurnRunner::new(
+        BufferedIdleProvider {
+            deltas: vec!["a".to_owned()],
+            flag: Rc::clone(&interrupt),
+            idle_sleep: Duration::from_millis(5),
+            flag_after: Some(Duration::ZERO),
+            started: None,
+        },
+        InterruptibleHistory {
+            interrupt: Rc::clone(&interrupt),
+            fail_append_at: Some(1),
+            append_calls: 0,
+            items: Rc::clone(&items),
+        },
+    )
+    .execute(buffered_command());
+
+    let Err(TurnRunError::Durability(failure)) = result else {
+        panic!("an out-of-loop flush outage must surface as a durability failure");
+    };
+    assert!(failure.accepted);
+    assert!(
+        failure.published.is_empty(),
+        "no byte of the uncommitted buffered delta is published"
+    );
+    assert_eq!(
+        items.borrow().len(),
+        1,
+        "only the accepted user message is durable"
+    );
 }

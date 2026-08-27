@@ -1190,3 +1190,60 @@ fn resource_limit_and_durability_outage_have_distinct_diagnostics() {
     assert!(stream.contains("durability-unavailable"));
     assert_eq!(stream.matches("event: turn.failed").count(), 0);
 }
+
+/// PLB-4/PLB-7 (PR-8 review P1): a budget exhausted by an out-of-loop
+/// flush — here the end-of-stream flush — still publishes its durable
+/// `RESOURCE_LIMIT_EXCEEDED` terminal to a started stream instead of a
+/// contradictory error event.
+#[test]
+fn out_of_loop_resource_limit_flush_publishes_the_durable_terminal() {
+    // 255 denied Tool calls occupy 510 counted Items; the first byte-cap
+    // delta flush reaches 511, and the stream ends with the second delta
+    // buffered, so the end-of-stream flush is the one that starves the
+    // terminal reserve.
+    let mut stream: Vec<ProviderEvent> = (0..255)
+        .map(|_| ProviderEvent::ToolCall {
+            name: "fixture.tool".to_owned(),
+            arguments: "{}".to_owned(),
+        })
+        .collect();
+    stream.push(ProviderEvent::Delta("x".repeat(16_384)));
+    stream.push(ProviderEvent::Delta("y".repeat(16_384)));
+    let items = Rc::new(RefCell::new(Vec::new()));
+    let history = ScriptedHistory {
+        fail_append_at: None,
+        append_calls: 0,
+        items: Rc::clone(&items),
+    };
+    let mut observed = Vec::new();
+    let result = TurnRunner::new(
+        EventScriptedProvider {
+            scripts: vec![stream],
+            taken: 0,
+            consumed: Rc::new(Cell::new(0)),
+        },
+        history,
+    )
+    .execute_with_observer(
+        TurnCommand::new(trust(), None, "hello").expect("valid command"),
+        &mut |event| observed.push(event),
+    );
+
+    assert!(matches!(result, Err(TurnRunError::ResourceLimit(_))));
+    let observed_terminals: Vec<_> = observed
+        .iter()
+        .filter(|event| match event {
+            TurnStreamEvent::Item { item, .. } => matches!(
+                &item.payload,
+                ItemPayload::Terminal(TerminalOutcome::Failed { code })
+                    if code == "RESOURCE_LIMIT_EXCEEDED"
+            ),
+            TurnStreamEvent::Started { .. } => false,
+        })
+        .collect();
+    assert_eq!(
+        observed_terminals.len(),
+        1,
+        "the durable resource-limit terminal is published to the stream"
+    );
+}
