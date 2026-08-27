@@ -42,13 +42,14 @@ impl DeltaCoalescer {
     /// Buffers one non-empty provider fragment and returns the complete
     /// coalesced chunks that must be appended now, in order.
     ///
-    /// The accumulator flushes immediately before adding content that would
-    /// exceed [`MAX_BUFFERED_DELTA_BYTES`]. A fragment above that cap is
-    /// split at UTF-8 scalar boundaries into the minimum ordered sequence of
-    /// non-empty chunks no larger than the cap; every full chunk is returned
-    /// and only a sub-cap remainder stays buffered, so concatenating every
-    /// emitted chunk with the retained content reproduces the provider bytes
-    /// exactly (ADR-0005 PLB-2).
+    /// The accumulator flushes the moment its buffered content reaches
+    /// [`MAX_BUFFERED_DELTA_BYTES`] and immediately before adding content
+    /// that would exceed it. A fragment at or above that cap is split at
+    /// UTF-8 scalar boundaries into the minimum ordered sequence of non-empty
+    /// chunks no larger than the cap; every full chunk is returned and only a
+    /// sub-cap remainder stays buffered, so concatenating every emitted chunk
+    /// with the retained content reproduces the provider bytes exactly
+    /// (ADR-0005 PLB-2, TN-1).
     pub fn push(&mut self, fragment: &str, now: Instant) -> Vec<String> {
         let mut emitted = Vec::new();
         if fragment.is_empty() {
@@ -60,20 +61,29 @@ impl DeltaCoalescer {
         }
         if fragment.len() > MAX_BUFFERED_DELTA_BYTES {
             let mut remainder = fragment;
-            while remainder.len() > MAX_BUFFERED_DELTA_BYTES {
+            while remainder.len() >= MAX_BUFFERED_DELTA_BYTES {
                 let split = scalar_boundary(remainder, MAX_BUFFERED_DELTA_BYTES);
                 let (chunk, rest) = remainder.split_at(split);
                 emitted.push(chunk.to_owned());
                 remainder = rest;
             }
             remainder.clone_into(&mut self.buffer);
-            self.first_buffered_at = Some(now);
+            if self.buffer.is_empty() {
+                self.first_buffered_at = None;
+            } else {
+                self.first_buffered_at = Some(now);
+            }
             return emitted;
         }
         if self.buffer.is_empty() {
             self.first_buffered_at = Some(now);
         }
         self.buffer.push_str(fragment);
+        // The accumulated content flushes the moment it reaches the cap —
+        // 16,384 bytes or 500 ms, whichever occurs first (ADR-0005 TN-1).
+        if self.buffer.len() >= MAX_BUFFERED_DELTA_BYTES {
+            emitted.push(self.take_buffered());
+        }
         emitted
     }
 

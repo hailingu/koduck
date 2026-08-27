@@ -757,11 +757,15 @@ fn delta_contents(items: &[Item]) -> Vec<String> {
 fn delta_coalescer_flushes_at_exact_byte_and_latency_boundaries() {
     let base = Instant::now();
 
-    // ASCII byte cap: the 16,384th byte stays buffered, and the byte that
-    // would cross the cap flushes the complete first chunk.
+    // ASCII byte cap: the accumulated content flushes the moment it reaches
+    // the cap (TN-1: 16,384 bytes or 500 ms, whichever occurs first), so a
+    // provider that pauses at exactly the cap has already published.
     let mut ascii = DeltaCoalescer::empty();
-    assert!(ascii.push(&"a".repeat(16_384), base).is_empty());
-    assert_eq!(ascii.push("b", base), vec!["a".repeat(16_384)]);
+    assert_eq!(
+        ascii.push(&"a".repeat(16_384), base),
+        vec!["a".repeat(16_384)]
+    );
+    assert!(ascii.push("b", base).is_empty());
     assert_eq!(ascii.take_forced_flush().as_deref(), Some("b"));
     assert_eq!(ascii.take_forced_flush(), None);
 
@@ -773,6 +777,15 @@ fn delta_coalescer_flushes_at_exact_byte_and_latency_boundaries() {
         vec!["c".repeat(16_384)]
     );
     assert_eq!(oversized.take_forced_flush().as_deref(), Some("c"));
+
+    // An exact multiple of the cap emits every full chunk with nothing
+    // retained.
+    let mut exact_multiple = DeltaCoalescer::empty();
+    assert_eq!(
+        exact_multiple.push(&"d".repeat(32_768), base),
+        vec!["d".repeat(16_384), "d".repeat(16_384)]
+    );
+    assert!(!exact_multiple.has_pending());
 
     // 16,384 is not a multiple of the three-byte euro sign, so the split
     // backs off to the enclosing scalar boundary: a 16,383-byte chunk and a
