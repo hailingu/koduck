@@ -1,4 +1,5 @@
 // ADR: docs/adr/ADR-0001-provider-neutral-turn-kernel.md
+// ADR: docs/adr/ADR-0005-provider-delta-coalescing-and-512-item-turn-budget.md
 
 //! Provider-neutral lifecycle orchestration and durable-before-visible ordering.
 
@@ -6,25 +7,24 @@ use std::time::{Duration, Instant};
 
 use crate::domain::{Item, TenantId, TerminalOutcome, ThreadId, TrustContext, Turn, TurnId, Usage};
 
-use super::MAX_EXECUTOR_OUTPUT_BYTES;
+use super::delta_coalescer::DeltaCoalescer;
 use super::ports::{
-    AcceptedTurn, CommittedToolCall, HistoryError, ModelInput, ModelProvider, ModelToolCall,
-    NewItem, NoToolExecution, ProviderEvent, ToolCallExecutor, ToolCallTurnContext, ToolRound,
-    TurnCommand, TurnHistory, TurnResult, TurnRunError, TurnStreamEvent,
+    AcceptedTurn, CommittedToolCall, HistoryError, ModelInput, ModelProvider, NewItem,
+    NoToolExecution, ProviderEvent, ToolCallExecutor, ToolRound, TurnCommand, TurnHistory,
+    TurnResult, TurnRunError, TurnStreamEvent,
 };
-use super::tool_execution::ToolCallError;
-use super::tool_projection::TurnProjectionSink;
 
 pub(super) mod failure;
+pub(super) mod tool_call;
 
 use failure::{
-    accept_appended_provider_item, apply_terminal_outcome, history_failure, recover_append_failure,
-    validate_provider_item,
+    accept_appended_provider_item, enforce_provider_limit, history_failure, recover_append_failure,
 };
 
 use super::runner_terminals::{
-    append_provider_terminal, append_provider_terminal_observed, append_terminal,
-    event_terminal_or_recover, observe_item, publish_replayed_terminal,
+    append_coalesced_deltas, append_provider_terminal, append_provider_terminal_observed,
+    append_terminal, event_terminal_or_recover, flush_buffered_deltas, observe_item,
+    publish_replayed_terminal,
 };
 
 /// Maximum frequency of persisted interruption checks during provider streams.
@@ -63,6 +63,9 @@ pub(super) struct ExecutionState {
     /// Assistant text emitted by the current stream, retained with its Tool
     /// round when the stream requires continuation.
     pub(super) current_assistant_content: String,
+    /// Application-owned accumulator coalescing raw provider fragments into
+    /// bounded durable deltas (ADR-0005 PLB-1/PLB-2).
+    pub(super) delta_coalescer: DeltaCoalescer,
 }
 
 impl ExecutionState {
@@ -77,6 +80,7 @@ impl ExecutionState {
             tool_rounds: Vec::new(),
             current_calls: Vec::new(),
             current_assistant_content: String::new(),
+            delta_coalescer: DeltaCoalescer::empty(),
         }
     }
 }
@@ -296,6 +300,14 @@ where
                 }
                 return Err(TurnRunError::Durability(failure));
             }
+            Err(TurnRunError::ResourceLimit(failure)) => {
+                // The durable `RESOURCE_LIMIT_EXCEEDED` terminal committed
+                // before this failure surfaced, so the boundary's fail-closed
+                // probe can reclaim its process-local authority (ADR-0003
+                // T-3, ADR-0005 PLB-7).
+                self.notify_terminal(&command.trust, accepted.thread_id, accepted.turn_id);
+                return Err(TurnRunError::ResourceLimit(failure));
+            }
             Err(error) => return Err(error),
         }
         Self::finish(
@@ -455,6 +467,12 @@ fn drive_stream<H: TurnHistory, T: ToolCallExecutor>(
             return Ok(true);
         }
     }
+    // The stream ended without a terminal: buffered text flushes durably
+    // before any Tool-round continuation or stream-ended terminal takes
+    // effect (ADR-0005 PLB-3).
+    if flush_buffered_deltas(history, accepted, state, observer)? {
+        return Ok(true);
+    }
     Ok(false)
 }
 
@@ -466,6 +484,11 @@ fn terminalize_from_persisted_interruption<H: TurnHistory>(
 ) -> Result<bool, TurnRunError> {
     match history.interruption_requested(accepted) {
         Ok(true) => {
+            // Buffered text flushes durably before the winning terminal
+            // (ADR-0005 PLB-3).
+            if flush_buffered_deltas(history, accepted, state, observer)? {
+                return Ok(true);
+            }
             if let Err(error) = append_terminal(
                 history,
                 accepted,
@@ -504,6 +527,12 @@ fn terminalize_from_cancellation<H: TurnHistory>(
     if !cancelled() {
         return Ok(false);
     }
+    // Buffered text flushes durably before the winning terminal; the same
+    // signal serves dependency and downstream-disconnect cancellation
+    // (ADR-0005 PLB-3).
+    if flush_buffered_deltas(history, accepted, state, observer)? {
+        return Ok(true);
+    }
     append_terminal_or_replay_fenced(
         history,
         accepted,
@@ -525,21 +554,21 @@ fn handle_event<H: TurnHistory, T: ToolCallExecutor>(
 ) -> Result<bool, TurnRunError> {
     match event {
         ProviderEvent::Delta(content) => {
-            let item = NewItem::AgentMessageDelta {
-                content: content.clone(),
-            };
-            if enforce_provider_limits(history, accepted, state, &item)? {
-                return Ok(true);
-            }
-            let durable = history.append(accepted, item)?;
-            let terminal = accept_appended_provider_item(state, durable, true)?;
+            // Raw fragments are not canonical Items: the bytes join the
+            // application-owned accumulator and only its flushed chunks are
+            // accounted and appended (ADR-0005 PLB-1/PLB-2).
             state.current_assistant_content.push_str(&content);
-            Ok(terminal)
+            let chunks = state.delta_coalescer.push(&content, Instant::now());
+            append_coalesced_deltas(history, accepted, state, chunks, observer)
         }
         ProviderEvent::Usage(counters) => {
             // Every request of one Turn — including each Tool-call
             // continuation — reports its own counters; the Turn terminal
-            // carries their checked sum (ADR-0003 TC-11).
+            // carries their checked sum (ADR-0003 TC-11). Buffered text
+            // flushes durably before the usage boundary (ADR-0005 PLB-3).
+            if flush_buffered_deltas(history, accepted, state, observer)? {
+                return Ok(true);
+            }
             if let Ok(total) = state.usage.checked_accumulate(&counters) {
                 state.usage = total;
             } else {
@@ -554,13 +583,18 @@ fn handle_event<H: TurnHistory, T: ToolCallExecutor>(
                 return Ok(true);
             }
             let item = NewItem::Usage(counters);
-            if enforce_provider_limits(history, accepted, state, &item)? {
+            if enforce_provider_limit(history, accepted, state, &item)? {
                 return Ok(true);
             }
             let durable = history.append(accepted, item)?;
             accept_appended_provider_item(state, durable, false)
         }
         ProviderEvent::Completed => {
+            // Buffered text flushes durably before the completion boundary
+            // (ADR-0005 PLB-3).
+            if flush_buffered_deltas(history, accepted, state, observer)? {
+                return Ok(true);
+            }
             if !state.current_calls.is_empty() {
                 // A completion on a stream that still owes Tool-call
                 // continuation is a provider protocol violation: the committed
@@ -577,7 +611,7 @@ fn handle_event<H: TurnHistory, T: ToolCallExecutor>(
                 return Ok(true);
             }
             let item = NewItem::Terminal(TerminalOutcome::Completed { usage: state.usage });
-            if enforce_provider_limits(history, accepted, state, &item)? {
+            if enforce_provider_limit(history, accepted, state, &item)? {
                 return Ok(true);
             }
             append_provider_terminal(
@@ -589,208 +623,34 @@ fn handle_event<H: TurnHistory, T: ToolCallExecutor>(
             Ok(true)
         }
         ProviderEvent::Error { code } => {
+            // Buffered text flushes durably before the provider error
+            // terminal (ADR-0005 PLB-3).
+            if flush_buffered_deltas(history, accepted, state, observer)? {
+                return Ok(true);
+            }
             let outcome = TerminalOutcome::Failed { code };
             let item = NewItem::Terminal(outcome.clone());
-            if enforce_provider_limits(history, accepted, state, &item)? {
+            if enforce_provider_limit(history, accepted, state, &item)? {
                 return Ok(true);
             }
             append_provider_terminal(history, accepted, state, outcome)?;
             Ok(true)
         }
-        ProviderEvent::ToolCall { name, arguments } => handle_tool_call(
-            history, tools, accepted, trust, state, name, arguments, observer,
-        ),
-        ProviderEvent::Pending => Ok(false),
-    }
-}
-
-/// Services one assembled model Tool call through the C-5 port and records
-/// its D-3 items with durable-before-publish ordering.
-///
-/// A turn-level port failure owns the turn terminal with its stable code; a
-/// typed denial or unavailability arrives as recorded items instead of
-/// failing the turn (ADR-0003 TC-06/TC-11).
-#[allow(
-    clippy::too_many_arguments,
-    reason = "each parameter is one independently validated orchestration input"
-)]
-fn handle_tool_call<H: TurnHistory, T: ToolCallExecutor>(
-    history: &mut H,
-    tools: &mut T,
-    accepted: &AcceptedTurn,
-    trust: &crate::domain::TrustContext,
-    state: &mut ExecutionState,
-    name: String,
-    arguments: String,
-    observer: &mut dyn FnMut(TurnStreamEvent),
-) -> Result<bool, TurnRunError> {
-    let context = ToolCallTurnContext {
-        tenant_id: accepted.tenant_id.clone(),
-        thread_id: accepted.thread_id,
-        turn_id: accepted.turn_id,
-        lease_generation: accepted.generation,
-    };
-    let call = ModelToolCall { name, arguments };
-    // The runner supplies the durable projection sink, seeded with the
-    // cumulative per-Turn budget counters so every call shares the one
-    // 64-item/1-MiB allowance with the provider items: every approval,
-    // dispatch, denial, and terminal view is preflighted as a complete
-    // sequence, durably appended as it happens — the running view before the
-    // executor dispatch — and published to the live observer at its publish
-    // boundary (ADR-0001 exact buffer contract, ADR-0003 TC-06).
-    let mut projections = TurnProjectionSink::new(
-        &mut *history,
-        accepted,
-        &mut *observer,
-        state.provider_item_count,
-        state.provider_payload_bytes,
-    );
-    let result = tools.execute_tool_call(call.clone(), &context, trust, &mut projections);
-    // Publish anything an implementation durably appended but did not publish,
-    // so no durable projection stays invisible past this call boundary.
-    projections.drain_unpublished();
-    let projections_failed = projections.is_failed();
-    let terminal_recovery_required = projections.terminal_recovery_required();
-    let lifecycle_complete = projections.is_lifecycle_complete();
-    let matches_committed_result = result
-        .as_ref()
-        .is_ok_and(|result| projections.matches_committed_result(result));
-    let (provider_item_count, provider_payload_bytes) = projections.budget();
-    state.provider_item_count = provider_item_count;
-    state.provider_payload_bytes = provider_payload_bytes;
-    // Record the durably appended projections in append order. They were
-    // already observed at their publish boundaries, so the observation
-    // watermark advances past them. The shape is validated by construction
-    // (only approval, dispatch, denial, and terminal views exist); a
-    // defensive guard still refuses anything else (ADR-0003 TC-06).
-    let durable_items = projections.into_durable_items();
-    for durable in &durable_items {
-        if !matches!(
-            durable.payload,
-            crate::domain::ItemPayload::ApprovalStatus { .. }
-                | crate::domain::ItemPayload::ToolCall { .. }
-                | crate::domain::ItemPayload::ToolResult { .. }
-        ) {
-            return Err(history_failure(
-                HistoryError::Unavailable,
-                true,
-                &state.published,
-            ));
+        ProviderEvent::ToolCall { name, arguments } => {
+            // Buffered text flushes durably before Tool-call delivery
+            // (ADR-0005 PLB-3).
+            if flush_buffered_deltas(history, accepted, state, observer)? {
+                return Ok(true);
+            }
+            tool_call::handle_tool_call(
+                history, tools, accepted, trust, state, name, arguments, observer,
+            )
         }
-    }
-    state.published.extend(durable_items);
-    state.observed_len = state.published.len();
-    if matches!(&result, Err(ToolCallError::Reconciliation(_))) {
-        // A C-5 reconciliation requirement proves a canonical D-7 may still
-        // be live. It outranks a failed D-3 append: terminalizing the Turn
-        // would remove it from recovery scans and strand the live effect.
-        return Err(history_failure(
-            HistoryError::Unavailable,
-            true,
-            &state.published,
-        ));
-    }
-    if projections_failed {
-        // A projection that was rejected or could not be appended durably —
-        // a noncanonical tuple, an out-of-contract sequence exceeding the
-        // cumulative per-Turn budget, or an append outage — is a durability
-        // boundary violation that outranks any executor error: the Turn
-        // terminalizes through the owned limit/recovery path rather than
-        // recording a normal tool-error terminal over incomplete history
-        // (ADR-0001 exact buffer contract, ADR-0003 TC-06).
-        if terminal_recovery_required {
-            // Production commits D-7 before emitting its terminal D-3 view.
-            // A failed terminal projection therefore keeps the Turn
-            // recovery-pending: closing it here would exclude it from the
-            // only scan that can backfill that canonical terminal.
-            return Err(recover_append_failure(state, HistoryError::Unavailable));
+        ProviderEvent::Pending => {
+            // The latency bound flushes buffered text even while the provider
+            // stays idle (ADR-0005 PLB-2).
+            let due = state.delta_coalescer.take_due_flush(Instant::now());
+            append_coalesced_deltas(history, accepted, state, due, observer)
         }
-        return terminalize_from_limit(history, accepted, state);
-    }
-    let result = match result {
-        Ok(result) => result,
-        Err(ToolCallError::Reconciliation(_)) => {
-            // The C-5 boundary intentionally retains a live D-7 when its
-            // canonical terminal cannot be decided. Committing a failed Turn
-            // terminal here would strand that D-7: expiry recovery only
-            // reconciles non-terminal Turns and interruption rejects a
-            // terminal Turn. Surface the durability failure and keep the
-            // Turn open so reconciliation closes both (ADR-0003
-            // TC-10/TC-12).
-            return Err(history_failure(
-                HistoryError::Unavailable,
-                true,
-                &state.published,
-            ));
-        }
-        Err(error) => {
-            append_provider_terminal(
-                history,
-                accepted,
-                state,
-                TerminalOutcome::Failed {
-                    code: error.stable_code().to_owned(),
-                },
-            )?;
-            return Ok(true);
-        }
-    };
-    if !lifecycle_complete || !matches_committed_result {
-        return terminalize_from_limit(history, accepted, state);
-    }
-    // The committed result crosses the public executor port untrusted:
-    // enforce the same raw output-byte bound the executor boundary already
-    // applies, so an approved at-limit result is never re-measured against an
-    // expanded JSON serialization and rejected here, while an
-    // out-of-contract implementation still fails closed (ADR-0003
-    // TC-09/TC-11).
-    if result.content.len() > MAX_EXECUTOR_OUTPUT_BYTES {
-        return terminalize_from_limit(history, accepted, state);
-    }
-    state.current_calls.push(CommittedToolCall { call, result });
-    Ok(false)
-}
-
-fn enforce_provider_limits<H: TurnHistory>(
-    history: &mut H,
-    accepted: &AcceptedTurn,
-    state: &mut ExecutionState,
-    item: &NewItem,
-) -> Result<bool, TurnRunError> {
-    match validate_provider_item(state, item) {
-        Ok(()) => Ok(false),
-        Err(_) => terminalize_from_limit(history, accepted, state),
-    }
-}
-
-fn terminalize_from_limit<H: TurnHistory>(
-    history: &mut H,
-    accepted: &AcceptedTurn,
-    state: &mut ExecutionState,
-) -> Result<bool, TurnRunError> {
-    let terminal = history
-        .append_provider_terminal(
-            accepted,
-            TerminalOutcome::Failed {
-                code: "DURABILITY_UNAVAILABLE".to_owned(),
-            },
-        )
-        .map_err(|error| recover_append_failure(state, error))?;
-    match &terminal.payload {
-        crate::domain::ItemPayload::Terminal(TerminalOutcome::Interrupted) => {
-            apply_terminal_outcome(state, &TerminalOutcome::Interrupted)?;
-            state.published.push(terminal);
-            Ok(true)
-        }
-        crate::domain::ItemPayload::Terminal(TerminalOutcome::Failed { code })
-            if code == "DURABILITY_UNAVAILABLE" =>
-        {
-            Err(history_failure(
-                HistoryError::Unavailable,
-                true,
-                &state.published,
-            ))
-        }
-        _ => Err(HistoryError::Unavailable.into()),
     }
 }

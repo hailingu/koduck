@@ -1,5 +1,8 @@
 // ADR: docs/adr/ADR-0001-provider-neutral-turn-kernel.md
+// ADR: docs/adr/ADR-0005-provider-delta-coalescing-and-512-item-turn-budget.md
 
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -8,10 +11,13 @@ use koduck_ai::adapters::history::postgres::{
     LeaseKey, LeaseTiming, PostgresExecutor, PostgresTurnHistory, ReconcileOutcome,
     RecoveryOutcome, TurnTerminalObserver,
 };
-use koduck_ai::application::{AcceptedTurn, HistoryError, NewItem, TurnCommand, TurnHistory};
+use koduck_ai::application::{
+    AcceptedTurn, HistoryError, ModelInput, ModelProvider, NewItem, ProviderError, ProviderEvent,
+    ProviderStream, TurnCommand, TurnHistory, TurnRunner,
+};
 use koduck_ai::domain::{
     Item, ItemPayload, LeaseGeneration, TenantId, TerminalOutcome, ThreadId, TrustContext, TurnId,
-    Usage,
+    TurnStatus, Usage,
 };
 
 #[derive(Clone)]
@@ -627,4 +633,243 @@ fn race_reconcilers(
         .into_iter()
         .map(|handle| handle.join().expect("reconciler thread"))
         .collect()
+}
+
+// ADR: docs/adr/ADR-0005-provider-delta-coalescing-and-512-item-turn-budget.md
+
+/// One provider that buffers scripted deltas, then flips a shared flag and
+/// idles with Pending frames, so interruption and cancellation land on a
+/// non-empty accumulator (ADR-0005 AC-6).
+struct BufferedIdleProvider {
+    deltas: Vec<String>,
+    flag: Rc<Cell<bool>>,
+    idle_sleep: Duration,
+    flag_after: Option<Duration>,
+    started: Option<Instant>,
+}
+
+impl ModelProvider for BufferedIdleProvider {
+    fn stream(&mut self, _input: ModelInput) -> Result<ProviderStream<'_>, ProviderError> {
+        let deltas = self.deltas.clone();
+        let flag = Rc::clone(&self.flag);
+        let idle_sleep = self.idle_sleep;
+        let flag_after = self.flag_after;
+        let started = self.started.get_or_insert_with(Instant::now);
+        let mut delta_index = 0;
+        Ok(Box::new(std::iter::from_fn(move || {
+            if delta_index < deltas.len() {
+                let delta = deltas[delta_index].clone();
+                delta_index += 1;
+                return Some(ProviderEvent::Delta(delta));
+            }
+            if !idle_sleep.is_zero() {
+                thread::sleep(idle_sleep);
+            }
+            if let Some(flag_after) = flag_after
+                && started.elapsed() >= flag_after
+                && !flag.get()
+            {
+                flag.set(true);
+            }
+            Some(ProviderEvent::Pending)
+        })))
+    }
+}
+
+/// One in-memory history whose persisted-interruption flag is externally
+/// controlled by the fixture.
+struct InterruptibleHistory {
+    interrupt: Rc<Cell<bool>>,
+    items: Rc<RefCell<Vec<Item>>>,
+}
+
+impl TurnHistory for InterruptibleHistory {
+    fn request_interrupt(
+        &mut self,
+        _trust: &TrustContext,
+        _turn_id: TurnId,
+        _tool_terminals: Vec<NewItem>,
+    ) -> Result<(), HistoryError> {
+        self.interrupt.set(true);
+        Ok(())
+    }
+
+    fn interruption_requested(&self, _turn: &AcceptedTurn) -> Result<bool, HistoryError> {
+        Ok(self.interrupt.get())
+    }
+
+    fn prior_thread_items(
+        &self,
+        _trust: &TrustContext,
+        _thread_id: ThreadId,
+    ) -> Result<Vec<Item>, HistoryError> {
+        Ok(Vec::new())
+    }
+
+    fn accept_initial(&mut self, command: &TurnCommand) -> Result<AcceptedTurn, HistoryError> {
+        let input = Item::new(
+            1,
+            ItemPayload::UserMessage {
+                content: command.input.clone(),
+            },
+        );
+        self.items.borrow_mut().push(input.clone());
+        Ok(AcceptedTurn::new(
+            command.trust.tenant_id.clone(),
+            ThreadId::new(),
+            TurnId::new(),
+            LeaseGeneration::initial(),
+            input,
+        ))
+    }
+
+    fn append(&mut self, _turn: &AcceptedTurn, item: NewItem) -> Result<Item, HistoryError> {
+        let durable = Item::new(self.items.borrow().len() as u64 + 1, item.into_payload());
+        self.items.borrow_mut().push(durable.clone());
+        Ok(durable)
+    }
+
+    fn replay(&self, _tenant_id: &TenantId, _turn_id: TurnId) -> Result<Vec<Item>, HistoryError> {
+        Ok(self.items.borrow().clone())
+    }
+}
+
+fn buffered_command() -> TurnCommand {
+    TurnCommand::new(
+        TrustContext::new(
+            TenantId::new("tenant-a").expect("valid tenant"),
+            "subject-a",
+        )
+        .expect("valid trust context"),
+        None,
+        "hello",
+    )
+    .expect("valid command")
+}
+
+fn buffered_deltas(items: &[Item]) -> Vec<String> {
+    items
+        .iter()
+        .filter_map(|item| match &item.payload {
+            ItemPayload::AgentMessageDelta { content } => Some(content.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// PLB-3/AC-6: buffered coalesced text is durably flushed before an
+/// authenticated interruption and before a dependency or disconnect
+/// cancellation wins, and the timer flush at the 500-ms boundary still
+/// precedes the winning terminal — each case ends with exactly one terminal
+/// and no text after it.
+#[test]
+fn buffered_delta_interrupt_and_cancellation_arbitration() {
+    // Authenticated interruption arrives with buffered text: the flush
+    // precedes the Interrupted terminal.
+    let interrupt = Rc::new(Cell::new(false));
+    let items = Rc::new(RefCell::new(Vec::new()));
+    let result = TurnRunner::new(
+        BufferedIdleProvider {
+            deltas: vec!["a".to_owned(), "b".to_owned()],
+            flag: Rc::clone(&interrupt),
+            idle_sleep: Duration::from_millis(5),
+            flag_after: Some(Duration::ZERO),
+            started: None,
+        },
+        InterruptibleHistory {
+            interrupt: Rc::clone(&interrupt),
+            items: Rc::clone(&items),
+        },
+    )
+    .execute(buffered_command());
+
+    assert_eq!(
+        result
+            .expect("the interrupted turn returns its durable replay")
+            .status,
+        TurnStatus::Interrupted
+    );
+    let durable = items.borrow();
+    assert_eq!(
+        buffered_deltas(&durable),
+        vec!["ab".to_owned()],
+        "the buffered text flushes as one coalesced delta before the terminal"
+    );
+    assert_eq!(durable.len(), 3);
+    assert!(matches!(
+        durable.last().map(|item| &item.payload),
+        Some(ItemPayload::Terminal(TerminalOutcome::Interrupted))
+    ));
+
+    // Dependency or disconnect cancellation arrives with buffered text: the
+    // flush precedes the Cancelled terminal. The same runner signal serves
+    // the disconnect path, whose end-to-end delivery AC-7 exercises.
+    let cancel = Rc::new(Cell::new(false));
+    let items = Rc::new(RefCell::new(Vec::new()));
+    let result = TurnRunner::new(
+        BufferedIdleProvider {
+            deltas: vec!["a".to_owned(), "b".to_owned()],
+            flag: Rc::clone(&cancel),
+            idle_sleep: Duration::from_millis(5),
+            flag_after: Some(Duration::ZERO),
+            started: None,
+        },
+        InterruptibleHistory {
+            interrupt: Rc::new(Cell::new(false)),
+            items: Rc::clone(&items),
+        },
+    )
+    .execute_with_observer_and_cancellation(buffered_command(), &mut |_| {}, &|| cancel.get());
+
+    assert_eq!(
+        result
+            .expect("the cancelled turn returns its durable replay")
+            .status,
+        TurnStatus::Cancelled
+    );
+    let durable = items.borrow();
+    assert_eq!(buffered_deltas(&durable), vec!["ab".to_owned()]);
+    assert_eq!(durable.len(), 3);
+    assert!(matches!(
+        durable.last().map(|item| &item.payload),
+        Some(ItemPayload::Terminal(TerminalOutcome::Cancelled))
+    ));
+
+    // Timer race: both deltas buffer inside the latency window, the flush
+    // becomes eligible at exactly 500 ms, and an interruption arriving after
+    // that boundary still observes the flushed delta before its terminal.
+    let interrupt = Rc::new(Cell::new(false));
+    let items = Rc::new(RefCell::new(Vec::new()));
+    let result = TurnRunner::new(
+        BufferedIdleProvider {
+            deltas: vec!["x1".to_owned(), "x2".to_owned()],
+            flag: Rc::clone(&interrupt),
+            idle_sleep: Duration::from_millis(25),
+            flag_after: Some(Duration::from_millis(540)),
+            started: None,
+        },
+        InterruptibleHistory {
+            interrupt: Rc::clone(&interrupt),
+            items: Rc::clone(&items),
+        },
+    )
+    .execute(buffered_command());
+
+    assert_eq!(
+        result
+            .expect("the timer-race interruption returns its durable replay")
+            .status,
+        TurnStatus::Interrupted
+    );
+    let durable = items.borrow();
+    assert_eq!(
+        buffered_deltas(&durable),
+        vec!["x1x2".to_owned()],
+        "the timer flush at 500 ms coalesces both buffered deltas"
+    );
+    assert_eq!(durable.len(), 3);
+    assert!(matches!(
+        durable.last().map(|item| &item.payload),
+        Some(ItemPayload::Terminal(TerminalOutcome::Interrupted))
+    ));
 }

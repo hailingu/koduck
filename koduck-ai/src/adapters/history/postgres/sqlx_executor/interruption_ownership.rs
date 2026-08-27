@@ -1,4 +1,5 @@
 // ADR: docs/adr/ADR-0001-provider-neutral-turn-kernel.md
+// ADR: docs/adr/ADR-0005-provider-delta-coalescing-and-512-item-turn-budget.md
 // ADR: docs/adr/ADR-0003-default-deny-tool-approval-execution-boundary.md
 
 //! Authenticated Thread resolution for paired C-5 interruptions.
@@ -275,7 +276,7 @@ mod tests {
     #[test]
     fn interruption_rejects_terminals_past_the_turn_item_budget() {
         assert_eq!(
-            validate_interruption_terminals(&[cancelled_terminal()], 64, 0),
+            validate_interruption_terminals(&[cancelled_terminal()], 512, 0),
             Err(HistoryError::Unavailable),
         );
     }
@@ -283,7 +284,7 @@ mod tests {
     #[test]
     fn interruption_reserves_one_item_for_its_turn_terminal() {
         assert_eq!(
-            validate_interruption_terminals(&[], 64, 0),
+            validate_interruption_terminals(&[], 512, 0),
             Err(HistoryError::Unavailable),
         );
     }
