@@ -678,11 +678,18 @@ impl ModelProvider for BufferedIdleProvider {
 
 /// One in-memory history whose persisted-interruption flag is externally
 /// controlled by the fixture.
+/// One (kind, timestamp) record of a control read or provider append.
+type TraceEntry = (&'static str, Instant);
+type TraceLog = Arc<Mutex<Vec<TraceEntry>>>;
+
 struct InterruptibleHistory {
     interrupt: Rc<Cell<bool>>,
     fail_append_at: Option<usize>,
     append_calls: usize,
     items: Rc<RefCell<Vec<Item>>>,
+    control_read_delay: Option<Duration>,
+    /// One (kind, timestamp) trace of control reads and provider appends.
+    trace: Option<TraceLog>,
 }
 
 impl TurnHistory for InterruptibleHistory {
@@ -697,6 +704,16 @@ impl TurnHistory for InterruptibleHistory {
     }
 
     fn interruption_requested(&self, _turn: &AcceptedTurn) -> Result<bool, HistoryError> {
+        if let Some(trace) = &self.trace {
+            let mut trace = trace.lock().expect("trace lock");
+            if let Some(last) = trace.last().filter(|(kind, _)| *kind == "control_read") {
+                let _ = last;
+            }
+            trace.push(("control_read", Instant::now()));
+        }
+        if let Some(delay) = self.control_read_delay {
+            thread::sleep(delay);
+        }
         Ok(self.interrupt.get())
     }
 
@@ -726,6 +743,12 @@ impl TurnHistory for InterruptibleHistory {
     }
 
     fn append(&mut self, _turn: &AcceptedTurn, item: NewItem) -> Result<Item, HistoryError> {
+        if let Some(trace) = &self.trace {
+            trace
+                .lock()
+                .expect("trace lock")
+                .push(("provider_append", Instant::now()));
+        }
         self.append_calls += 1;
         if self
             .fail_append_at
@@ -797,6 +820,8 @@ fn interrupted_with_buffered_text_flushes_one_coalesced_delta() {
             fail_append_at: None,
             append_calls: 0,
             items: Rc::clone(&items),
+            control_read_delay: None,
+            trace: None,
         },
     )
     .execute(buffered_command());
@@ -841,6 +866,8 @@ fn cancelled_with_buffered_text_flushes_one_coalesced_delta() {
             fail_append_at: None,
             append_calls: 0,
             items: Rc::clone(&items),
+            control_read_delay: None,
+            trace: None,
         },
     )
     .execute_with_observer_and_cancellation(buffered_command(), &mut |_| {}, &|| cancel.get());
@@ -881,6 +908,8 @@ fn timer_flush_at_the_boundary_precedes_the_interrupt_terminal() {
             fail_append_at: None,
             append_calls: 0,
             items: Rc::clone(&items),
+            control_read_delay: None,
+            trace: None,
         },
     )
     .execute(buffered_command());
@@ -925,6 +954,8 @@ fn out_of_loop_flush_outage_enters_durability_recovery() {
             fail_append_at: Some(1),
             append_calls: 0,
             items: Rc::clone(&items),
+            control_read_delay: None,
+            trace: None,
         },
     )
     .execute(buffered_command());
@@ -941,5 +972,81 @@ fn out_of_loop_flush_outage_enters_durability_recovery() {
         items.borrow().len(),
         1,
         "only the accepted user message is durable"
+    );
+}
+
+/// PLB-2 (PR-8 review P2): a due buffered chunk flushes before the next
+/// potentially blocking interruption control read, so a slow control read
+/// cannot delay the flush past the 500-ms deadline.
+#[test]
+fn deadline_flush_precedes_the_slow_interruption_control_read() {
+    // One delta buffers, then the provider idles 600 ms before its next
+    // event: the delta's latency deadline elapses exactly when that event
+    // arrives, so the loop-head deadline check and the (slow) interruption
+    // control read race. The flush must win (PR-8 review P2).
+    let cancel = Rc::new(Cell::new(false));
+    let items = Rc::new(RefCell::new(Vec::new()));
+    let trace = Arc::new(Mutex::new(Vec::new()));
+    let result = TurnRunner::new(
+        BufferedIdleProvider {
+            deltas: vec!["a".to_owned()],
+            flag: Rc::clone(&cancel),
+            idle_sleep: Duration::from_millis(600),
+            flag_after: Some(Duration::from_secs(30)),
+            started: None,
+        },
+        InterruptibleHistory {
+            interrupt: Rc::new(Cell::new(false)),
+            fail_append_at: None,
+            append_calls: 0,
+            items: Rc::clone(&items),
+            control_read_delay: Some(Duration::from_millis(600)),
+            trace: Some(Arc::clone(&trace)),
+        },
+    )
+    .execute_with_observer_and_cancellation(
+        buffered_command(),
+        &mut |event| {
+            if matches!(
+                event,
+                koduck_ai::application::TurnStreamEvent::Item {
+                    item: Item {
+                        payload: ItemPayload::AgentMessageDelta { .. },
+                        ..
+                    },
+                    ..
+                }
+            ) {
+                cancel.set(true);
+            }
+        },
+        &|| cancel.get(),
+    );
+    assert_eq!(
+        result
+            .expect("the cancelled turn returns its durable replay")
+            .status,
+        TurnStatus::Cancelled
+    );
+
+    let trace = trace.lock().expect("trace lock");
+    let control_reads: Vec<usize> = trace
+        .iter()
+        .enumerate()
+        .filter_map(|(index, (kind, _))| (*kind == "control_read").then_some(index))
+        .collect();
+    assert!(
+        control_reads.len() >= 2,
+        "the fixture performs at least two control reads"
+    );
+    let second_control_read = trace[control_reads[1]].1;
+    let first_provider_append = trace
+        .iter()
+        .find(|(kind, _)| *kind == "provider_append")
+        .expect("the fixture flushed its delta")
+        .1;
+    assert!(
+        first_provider_append < second_control_read,
+        "the due delta flush must precede the next (slow) interruption control read"
     );
 }

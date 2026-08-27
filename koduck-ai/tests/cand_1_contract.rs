@@ -1247,3 +1247,76 @@ fn out_of_loop_resource_limit_flush_publishes_the_durable_terminal() {
         "the durable resource-limit terminal is published to the stream"
     );
 }
+
+/// PLB-7 (PR-8 review P1): a budget exhausted by the per-event deadline
+/// flush still publishes its durable `RESOURCE_LIMIT_EXCEEDED` terminal —
+/// the deadline path must arbitrate like every other flush.
+/// One provider whose first stream serves denied Tool calls and whose
+/// completing stream delays its deltas past the latency deadline, so the
+/// per-event deadline path is what flushes them.
+struct DeadlineBudgetProvider {
+    delay_ms: u64,
+}
+
+impl ModelProvider for DeadlineBudgetProvider {
+    fn stream(&mut self, _input: ModelInput) -> Result<ProviderStream<'_>, ProviderError> {
+        let delay = std::time::Duration::from_millis(self.delay_ms);
+        let mut events: Vec<ProviderEvent> = (0..255)
+            .map(|_| ProviderEvent::ToolCall {
+                name: "fixture.tool".to_owned(),
+                arguments: "{}".to_owned(),
+            })
+            .collect();
+        events.push(ProviderEvent::Delta("x".repeat(16_384)));
+        events.push(ProviderEvent::Delta("y".repeat(16_384)));
+        events.push(ProviderEvent::Usage(Usage::new(1, 2).expect("valid usage")));
+        events.push(ProviderEvent::Completed);
+        let mut position = 0_usize;
+        Ok(Box::new(std::iter::from_fn(move || {
+            if position >= events.len() {
+                return None;
+            }
+            let event = events[position].clone();
+            position += 1;
+            // Delay the usage event so the second buffered delta crosses
+            // the latency deadline before that event is processed — the
+            // loop-head deadline flush is what must flush it.
+            if matches!(event, ProviderEvent::Usage(_)) {
+                std::thread::sleep(delay);
+            }
+            Some(event)
+        })))
+    }
+}
+
+#[test]
+fn deadline_flush_resource_limit_publishes_the_durable_terminal() {
+    // 255 denied calls occupy 510 counted Items; the first byte-cap delta
+    // flushes at 511 through its successor's byte boundary, the second delta
+    // buffers, and the latency deadline expires before the usage event — the
+    // per-event deadline flush is what starves the terminal reserve.
+    let items = Rc::new(RefCell::new(Vec::new()));
+    let mut observed = Vec::new();
+    let result = TurnRunner::new(
+        DeadlineBudgetProvider { delay_ms: 600 },
+        ScriptedHistory {
+            fail_append_at: None,
+            append_calls: 0,
+            items: Rc::clone(&items),
+        },
+    )
+    .execute_with_observer(
+        TurnCommand::new(trust(), None, "hello").expect("valid command"),
+        &mut |event| observed.push(event),
+    );
+
+    assert!(matches!(result, Err(TurnRunError::ResourceLimit(_))));
+    assert!(observed.iter().any(|event| match event {
+        TurnStreamEvent::Item { item, .. } => matches!(
+            &item.payload,
+            ItemPayload::Terminal(TerminalOutcome::Failed { code })
+                if code == "RESOURCE_LIMIT_EXCEEDED"
+        ),
+        TurnStreamEvent::Started { .. } => false,
+    }));
+}

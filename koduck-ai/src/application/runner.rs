@@ -439,6 +439,18 @@ fn drive_stream<H: TurnHistory, T: ToolCallExecutor>(
 ) -> Result<bool, TurnRunError> {
     let mut last_interruption_poll = None;
     for event in stream {
+        // The latency deadline is sampled and flushed before any potentially
+        // blocking control read and before every event — including a backlog
+        // of consecutive Delta frames that never reaches the Pending arm — so
+        // a due buffered chunk publishes no later than 500 ms after its first
+        // byte, with its outcome arbitrated like any event failure
+        // (ADR-0005 PLB-2/PLB-7).
+        if let Some(due) = state.delta_coalescer.take_due_flush(Instant::now()) {
+            let outcome = append_coalesced_deltas(history, accepted, state, [due], observer);
+            if arbitrate_flush_outcome(history, accepted, state, outcome, observer)? {
+                return Ok(true);
+            }
+        }
         let interruption_poll_due = last_interruption_poll
             .is_none_or(|last: Instant| last.elapsed() >= INTERRUPTION_POLL_INTERVAL);
         if interruption_poll_due {
@@ -454,15 +466,6 @@ fn drive_stream<H: TurnHistory, T: ToolCallExecutor>(
             return Ok(true);
         }
         if terminalize_from_cancellation(history, accepted, state, observer, cancelled)? {
-            return Ok(true);
-        }
-        // The latency deadline is checked before every event — including a
-        // backlog of consecutive Delta frames that never reaches the Pending
-        // arm — so a due buffered chunk publishes no later than 500 ms after
-        // its first byte (ADR-0005 PLB-2).
-        if let Some(due) = state.delta_coalescer.take_due_flush(Instant::now())
-            && append_coalesced_deltas(history, accepted, state, [due], observer)?
-        {
             return Ok(true);
         }
         let event_result = handle_event(history, tools, accepted, trust, state, event, observer);
@@ -486,14 +489,8 @@ fn drive_stream<H: TurnHistory, T: ToolCallExecutor>(
     Ok(false)
 }
 
-/// Flushes buffered deltas outside the driving loop's observation window.
-///
-/// A flush outcome is arbitrated exactly like an event failure: any durable
-/// terminal the flush appended is observed before the error surfaces — a
-/// started stream sees the exact `turn.failed` terminal and never a
-/// contradictory error event — a competing writer's terminal is adopted
-/// through replay, and a history outage enters the bounded recovery path
-/// (ADR-0005 PLB-3/PLB-4/PLB-7).
+/// Flushes buffered deltas outside the driving loop's observation window and
+/// arbitrates the outcome through [`arbitrate_flush_outcome`].
 fn flush_and_arbitrate<H: TurnHistory>(
     history: &mut H,
     accepted: &AcceptedTurn,
@@ -501,6 +498,22 @@ fn flush_and_arbitrate<H: TurnHistory>(
     observer: &mut dyn FnMut(TurnStreamEvent),
 ) -> Result<bool, TurnRunError> {
     let outcome = flush_buffered_deltas(history, accepted, state, observer);
+    arbitrate_flush_outcome(history, accepted, state, outcome, observer)
+}
+
+/// Arbitrates one flush outcome exactly like an event failure: any durable
+/// terminal the flush appended is observed before the error surfaces — a
+/// started stream sees the exact `turn.failed` terminal and never a
+/// contradictory error event — a competing writer's terminal is adopted
+/// through replay, and a history outage enters the bounded recovery path
+/// (ADR-0005 PLB-3/PLB-4/PLB-7).
+fn arbitrate_flush_outcome<H: TurnHistory>(
+    history: &mut H,
+    accepted: &AcceptedTurn,
+    state: &mut ExecutionState,
+    outcome: Result<bool, TurnRunError>,
+    observer: &mut dyn FnMut(TurnStreamEvent),
+) -> Result<bool, TurnRunError> {
     for item in &state.published[state.observed_len..] {
         observe_item(observer, accepted, item);
     }

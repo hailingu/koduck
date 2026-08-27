@@ -19,10 +19,10 @@
 - **Retirement Time [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — Decision Status is `Accepted`
 - **Retirement Evidence [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — Decision Status is `Accepted`
 - **Retirement Reason [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — Decision Status is `Accepted`
-- **Blocked From [Conditionally Required — Implementation Status is `Blocked`]**: N/A — Implementation Status is `Not Started`
-- **Blocker And Evidence [Conditionally Required — Implementation Status is `Blocked`]**: N/A — Implementation Status is `Not Started`
-- **Blocker Owner [Conditionally Required — Implementation Status is `Blocked`]**: N/A — Implementation Status is `Not Started`
-- **Blocker Exit Or Recheck Criterion [Conditionally Required — Implementation Status is `Blocked`]**: N/A — Implementation Status is `Not Started`
+- **Blocked From [Conditionally Required — Implementation Status is `Blocked`]**: N/A — Implementation Status is `Complete`
+- **Blocker And Evidence [Conditionally Required — Implementation Status is `Blocked`]**: N/A — Implementation Status is `Complete`
+- **Blocker Owner [Conditionally Required — Implementation Status is `Blocked`]**: N/A — Implementation Status is `Complete`
+- **Blocker Exit Or Recheck Criterion [Conditionally Required — Implementation Status is `Blocked`]**: N/A — Implementation Status is `Complete`
 - **Related [Optional]**: `docs/adr/ADR-0001-provider-neutral-turn-kernel.md`; `docs/adr/ADR-0003-default-deny-tool-approval-execution-boundary.md`; `docs/adr/ADR-0004-provider-stream-completion-normalization.md`
 - **Architecture Source [Conditionally Required — product demand]**: N/A — this corrective provider-fragmentation compatibility task was discovered through local verification of the existing provider-neutral runtime and is not derived from a new Trello product requirement
 - **Supersedes [Conditionally Required — this ADR replaces another]**: None
@@ -535,6 +535,7 @@ implementation completion. When triggered:
 
 | Date | Change | Author |
 | --- | --- | --- |
+| 2026-08-27 | Addressed the second PR-8 review round on `c34533e`: the per-event deadline flush now routes through the shared `arbitrate_flush_outcome` seam (P1, regression `deadline_flush_resource_limit_publishes_the_durable_terminal`), the deadline check moved ahead of the potentially blocking interruption control read (P2, regression `deadline_flush_precedes_the_slow_interruption_control_read`, observed RED on the pre-fix source), and the four blocker-field reasons now identify `Complete` (P3). No approved decision content changed. | @zcode |
 | 2026-08-27 | Addressed the PR-8 automated-review findings: two P1s (out-of-loop flush terminal publication and error arbitration) fixed in `0f1b796` with RED-first regressions, and one P2 (latency deadline now checked before every provider event, not only Pending) fixed with the `latency_deadline_flushes_between_consecutive_delta_events` regression; no approved decision content changed. | @zcode |
 | 2026-08-27 | Moved the PostgreSQL-gated recovery regression `terminal_recovery_rejects_a_batch_beyond_the_turn_item_budget` to the 512-item boundary and added `koduck-ai/tests/internal/cand_2_postgres_recovery.rs` to the Affected paths evidence-only enumeration; no approved decision content changed. | @zcode |
 | 2026-08-27 | Implemented T-1 and T-2 and recorded all evidence: coalescer module, runner integration, 512-Item budget, resource-limit diagnostics, 514-slot SSE queue, contract-copy updates, rewritten budget/grouping fixtures, and Pass on AC-1 through AC-8 and all five risk rows; Implementation Status set to `Complete`. The Affected paths enumeration gained the two in-scope focused-regression sources (`recovery_budget.rs`, `interruption_ownership.rs`), `cand_1_kernel.rs`, and the two new decomposition modules (`delta_coalescer.rs`, `runner/tool_call.rs`) as evidence-only enumeration under the already-approved "focused regressions" scope; no approved decision content changed. | @zcode |
