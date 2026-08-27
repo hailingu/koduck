@@ -1,4 +1,5 @@
 // ADR: docs/adr/ADR-0001-provider-neutral-turn-kernel.md
+// ADR: docs/adr/ADR-0005-provider-delta-coalescing-and-512-item-turn-budget.md
 
 //! Atomic CAND-1 item and payload preflight for Turn terminal recovery.
 
@@ -84,14 +85,14 @@ mod tests {
     #[test]
     fn mandatory_terminal_is_included_in_recovery_item_and_payload_budgets() {
         assert_eq!(
-            validate_totals(63, 1_048_574, &[], &TerminalOutcome::Cancelled),
+            validate_totals(511, 1_048_574, &[], &TerminalOutcome::Cancelled),
             Ok(()),
-            "the exact 64-item and 1-MiB boundary remains legal"
+            "the exact 512-item and 1-MiB boundary remains legal"
         );
         assert_eq!(
-            validate_totals(64, 0, &[], &TerminalOutcome::Cancelled),
+            validate_totals(512, 0, &[], &TerminalOutcome::Cancelled),
             Err(HistoryError::Unavailable),
-            "the mandatory terminal cannot become item 65"
+            "the mandatory terminal cannot become item 513"
         );
         assert_eq!(
             validate_totals(0, 1_048_575, &[], &TerminalOutcome::Cancelled),

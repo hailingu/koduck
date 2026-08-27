@@ -1,10 +1,14 @@
 <!-- ADR: docs/adr/ADR-0001-provider-neutral-turn-kernel.md -->
+<!-- ADR: docs/adr/ADR-0005-provider-delta-coalescing-and-512-item-turn-budget.md -->
 
 # CAND-1 REST/SSE v1 Implementation Contract
 
 This file is the implementation copy of the authoritative wire contract in
-`docs/adr/ADR-0001-provider-neutral-turn-kernel.md`. It is test evidence, not a
-second source of authority. When the two differ, the Accepted ADR governs.
+`docs/adr/ADR-0001-provider-neutral-turn-kernel.md`, updated by
+`docs/adr/ADR-0005-provider-delta-coalescing-and-512-item-turn-budget.md` for
+the coalesced delta delivery and raised resource diagnostics below. It is test
+evidence, not a second source of authority. When the two differ, the Accepted
+ADRs govern.
 
 ## Trust Boundary
 
@@ -45,6 +49,13 @@ Turn is closed later as `failed` or `cancelled` by bounded recovery or fenced
 reconciliation. The `error` event carries no Thread/Turn ID or sequence, and
 no `error` event is emitted once a terminal event has been published.
 
+Raw provider fragments are application-owned and coalesced before persistence:
+each visible `agent_message_delta` item is one bounded coalesced chunk of at
+most 16,384 content bytes flushed at exact byte, latency, or semantic
+boundaries, so consecutive `item.created` documents may group provider output
+differently than its wire frames while concatenated content is byte-for-byte
+exact (ADR-0005 PLB-1 through PLB-4).
+
 `turn.started` data contains exactly `thread_id`, `turn_id`, `sequence`, and
 `status: started`. `item.created` additionally contains exactly `item_id`,
 `type: agent_message_delta`, and non-empty `content`. Terminal data contains
@@ -70,7 +81,12 @@ returns `400` with code `invalid-request`; prior durable history is not
 truncated or mutated. Initial or mid-turn durability failure
 returns `503` with code `durability-unavailable`; on an already-started SSE
 stream the same diagnostic is delivered in-band as the `error` event instead
-of an HTTP status. Every problem body contains
+of an HTTP status. Exhausting the Turn's durable output budget — count or
+serialized payload — instead appends the durable `RESOURCE_LIMIT_EXCEEDED`
+terminal and returns `422` with code `resource-limit-exceeded`, while an
+already-started SSE stream has already emitted that terminal as its exact
+`turn.failed` document and never emits a contradictory `error` event
+(ADR-0005 PLB-7). Every problem body contains
 exactly `type: about:blank`, kebab-code-derived `title`, numeric `status`, stable
 `code`, and UUID `correlation_id`. Failed initial acceptance exposes no Turn.
 For synchronous chat, an interrupted Turn returns `409 turn-interrupted`, a

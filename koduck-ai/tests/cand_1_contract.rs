@@ -1,5 +1,6 @@
 // ADR: docs/adr/ADR-0001-provider-neutral-turn-kernel.md
 // ADR: docs/adr/ADR-0004-provider-stream-completion-normalization.md
+// ADR: docs/adr/ADR-0005-provider-delta-coalescing-and-512-item-turn-budget.md
 
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
@@ -12,7 +13,8 @@ use koduck_ai::adapters::provider::{
 };
 use koduck_ai::application::{
     AcceptedTurn, HistoryError, ModelInput, ModelProvider, NewItem, ProviderError, ProviderEvent,
-    ProviderStream, TurnCommand, TurnHistory, TurnResult, TurnRunner,
+    ProviderStream, TurnCommand, TurnHistory, TurnResult, TurnRunError, TurnRunner,
+    TurnStreamEvent,
 };
 use koduck_ai::domain::{
     Item, ItemPayload, LeaseGeneration, TenantId, TerminalOutcome, ThreadId, TrustContext, TurnId,
@@ -753,5 +755,630 @@ fn provider_completion_normalization_preserves_v1_delivery() {
     assert!(
         response.body.contains("\"code\":\"provider-unavailable\""),
         "an unannounced stream end retains the provider-failure delivery mapping"
+    );
+}
+
+// ADR: docs/adr/ADR-0005-provider-delta-coalescing-and-512-item-turn-budget.md
+
+/// One provider whose successive streams replay one scripted event list each.
+struct EventScriptedProvider {
+    scripts: Vec<Vec<ProviderEvent>>,
+    taken: usize,
+    consumed: Rc<Cell<usize>>,
+}
+
+impl ModelProvider for EventScriptedProvider {
+    fn stream(&mut self, _input: ModelInput) -> Result<ProviderStream<'_>, ProviderError> {
+        let consumed = Rc::clone(&self.consumed);
+        let script = self.scripts.get(self.taken).cloned().unwrap_or_default();
+        self.taken += 1;
+        Ok(Box::new(
+            script
+                .into_iter()
+                .inspect(move |_| consumed.set(consumed.get() + 1)),
+        ))
+    }
+}
+
+/// One in-memory history whose append can fail from a fixed call index, or
+/// whose first provider append is replaced by an `Interrupted` terminal the
+/// way production arbitration commits an interrupt that wins the append race.
+struct ScriptedHistory {
+    fail_append_at: Option<usize>,
+    interrupt_wins_first_provider_append: bool,
+    append_calls: usize,
+    items: Rc<RefCell<Vec<Item>>>,
+}
+
+impl TurnHistory for ScriptedHistory {
+    fn request_interrupt(
+        &mut self,
+        _trust: &TrustContext,
+        _turn_id: TurnId,
+        _tool_terminals: Vec<NewItem>,
+    ) -> Result<(), HistoryError> {
+        Err(HistoryError::NotFound)
+    }
+
+    fn interruption_requested(&self, _turn: &AcceptedTurn) -> Result<bool, HistoryError> {
+        Ok(false)
+    }
+
+    fn prior_thread_items(
+        &self,
+        _trust: &TrustContext,
+        _thread_id: ThreadId,
+    ) -> Result<Vec<Item>, HistoryError> {
+        Ok(Vec::new())
+    }
+
+    fn accept_initial(&mut self, command: &TurnCommand) -> Result<AcceptedTurn, HistoryError> {
+        let input = Item::new(
+            1,
+            ItemPayload::UserMessage {
+                content: command.input.clone(),
+            },
+        );
+        self.items.borrow_mut().push(input.clone());
+        Ok(AcceptedTurn::new(
+            command.trust.tenant_id.clone(),
+            command.thread_id.unwrap_or_default(),
+            TurnId::new(),
+            LeaseGeneration::initial(),
+            input,
+        ))
+    }
+
+    fn append(&mut self, _turn: &AcceptedTurn, item: NewItem) -> Result<Item, HistoryError> {
+        self.append_calls += 1;
+        if self
+            .fail_append_at
+            .is_some_and(|first_failure| self.append_calls >= first_failure)
+        {
+            return Err(HistoryError::Unavailable);
+        }
+        if self.interrupt_wins_first_provider_append {
+            // Production replaces the pending append with the arbitrated
+            // interrupt terminal and returns it successfully.
+            let terminal = Item::new(
+                self.items.borrow().len() as u64 + 1,
+                ItemPayload::Terminal(TerminalOutcome::Interrupted),
+            );
+            self.items.borrow_mut().push(terminal.clone());
+            return Ok(terminal);
+        }
+        let durable = Item::new(self.items.borrow().len() as u64 + 1, item.into_payload());
+        self.items.borrow_mut().push(durable.clone());
+        Ok(durable)
+    }
+
+    fn append_tool_projection(
+        &mut self,
+        turn: &AcceptedTurn,
+        items: Vec<NewItem>,
+    ) -> Result<Vec<Item>, HistoryError> {
+        let mut durable = Vec::new();
+        for item in items {
+            durable.push(self.append(turn, item)?);
+        }
+        Ok(durable)
+    }
+
+    fn replay(&self, _tenant_id: &TenantId, _turn_id: TurnId) -> Result<Vec<Item>, HistoryError> {
+        Ok(self.items.borrow().clone())
+    }
+}
+
+fn durable_payload_kinds(items: &[Item]) -> Vec<&'static str> {
+    items
+        .iter()
+        .map(|item| match &item.payload {
+            ItemPayload::UserMessage { .. } => "user_message",
+            ItemPayload::AgentMessageDelta { .. } => "agent_message_delta",
+            ItemPayload::Usage(_) => "usage",
+            ItemPayload::ToolCall { .. } => "tool_call",
+            ItemPayload::ToolResult { .. } => "tool_result",
+            ItemPayload::Terminal(TerminalOutcome::Completed { .. }) => "completed",
+            ItemPayload::Terminal(TerminalOutcome::Failed { .. }) => "failed",
+            ItemPayload::Terminal(TerminalOutcome::Interrupted) => "interrupted",
+            ItemPayload::Terminal(TerminalOutcome::Cancelled) => "cancelled",
+            other => panic!("unexpected durable payload: {other:?}"),
+        })
+        .collect()
+}
+
+/// One coalescing boundary scenario: scripted streams, the exact durable
+/// payload order, and the closing status.
+type BoundaryScenario = (
+    &'static str,
+    Vec<Vec<ProviderEvent>>,
+    &'static [&'static str],
+    TurnStatus,
+);
+
+/// Builds every PLB-3 boundary scenario with its exact durable order.
+fn boundary_scenarios() -> Vec<BoundaryScenario> {
+    let usage = Usage::new(1, 2).expect("valid usage");
+    let tool_call = || ProviderEvent::ToolCall {
+        name: "fixture.tool".to_owned(),
+        arguments: "{}".to_owned(),
+    };
+    vec![
+        (
+            "usage boundary",
+            vec![vec![
+                ProviderEvent::Delta("a".to_owned()),
+                ProviderEvent::Delta("b".to_owned()),
+                ProviderEvent::Usage(usage),
+                ProviderEvent::Completed,
+            ]],
+            &["user_message", "agent_message_delta", "usage", "completed"],
+            TurnStatus::Completed,
+        ),
+        (
+            "Tool-call delivery boundary",
+            vec![
+                vec![ProviderEvent::Delta("pre".to_owned()), tool_call()],
+                vec![ProviderEvent::Completed],
+            ],
+            &[
+                "user_message",
+                "agent_message_delta",
+                "tool_call",
+                "tool_result",
+                "completed",
+            ],
+            TurnStatus::Completed,
+        ),
+        (
+            "completion boundary",
+            vec![vec![
+                ProviderEvent::Delta("pre".to_owned()),
+                ProviderEvent::Completed,
+            ]],
+            &["user_message", "agent_message_delta", "completed"],
+            TurnStatus::Completed,
+        ),
+        (
+            "provider error boundary",
+            vec![vec![
+                ProviderEvent::Delta("pre".to_owned()),
+                ProviderEvent::Error {
+                    code: "PROVIDER_FAILED".to_owned(),
+                },
+            ]],
+            &["user_message", "agent_message_delta", "failed"],
+            TurnStatus::Failed,
+        ),
+        (
+            "Tool-round continuation boundary",
+            vec![
+                vec![ProviderEvent::Delta("first".to_owned()), tool_call()],
+                vec![
+                    ProviderEvent::Delta("second".to_owned()),
+                    ProviderEvent::Completed,
+                ],
+            ],
+            &[
+                "user_message",
+                "agent_message_delta",
+                "tool_call",
+                "tool_result",
+                "agent_message_delta",
+                "completed",
+            ],
+            TurnStatus::Completed,
+        ),
+    ]
+}
+
+/// Drives one boundary scenario and asserts its exact durable shape.
+fn assert_boundary_scenario(
+    name: &str,
+    scripts: Vec<Vec<ProviderEvent>>,
+    expected_kinds: &[&'static str],
+    expected_status: TurnStatus,
+) {
+    let items = Rc::new(RefCell::new(Vec::new()));
+    let mut observed = Vec::new();
+    let result = TurnRunner::new(
+        EventScriptedProvider {
+            scripts,
+            taken: 0,
+            consumed: Rc::new(Cell::new(0)),
+        },
+        ScriptedHistory {
+            fail_append_at: None,
+            interrupt_wins_first_provider_append: false,
+            append_calls: 0,
+            items: Rc::clone(&items),
+        },
+    )
+    .execute_with_observer(
+        TurnCommand::new(trust(), None, "hello").expect("valid command"),
+        &mut |event| observed.push(event),
+    );
+
+    let Ok(result) = result else {
+        panic!("the {name} boundary must close through its durable terminal");
+    };
+    assert_eq!(result.status, expected_status, "{name}");
+    assert_eq!(
+        durable_payload_kinds(&items.borrow()),
+        expected_kinds,
+        "{name}: the coalesced delta precedes the semantic boundary durably"
+    );
+    let durable = items.borrow();
+    let deltas: Vec<&String> = durable
+        .iter()
+        .filter_map(|item| match &item.payload {
+            ItemPayload::AgentMessageDelta { content } => Some(content),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        deltas.iter().all(|content| !content.is_empty()),
+        "{name}: no empty Item is emitted"
+    );
+    for event in &observed {
+        if let TurnStreamEvent::Item { item, .. } = event {
+            assert!(
+                durable
+                    .iter()
+                    .any(|durable_item| durable_item.item_id == item.item_id),
+                "{name}: only durably appended content is published"
+            );
+        }
+    }
+    assert_eq!(
+        observed
+            .iter()
+            .filter(|event| matches!(event, TurnStreamEvent::Item { .. }))
+            .count(),
+        result.published.len(),
+        "{name}: exactly the published durable items are observed"
+    );
+}
+/// PLB-3/PLB-4/AC-3: buffered text flushes durably before every usage,
+/// Tool-call, completion, provider-error, and Tool-round continuation
+/// boundary with no empty Item, is published only after its append, and a
+/// failed flush publishes none of the uncommitted content.
+#[test]
+fn coalesced_deltas_preserve_semantic_order_and_append_before_publish() {
+    for (name, scripts, kinds, status) in boundary_scenarios() {
+        assert_boundary_scenario(name, scripts, kinds, status);
+    }
+
+    // Append failure at the flush: the uncommitted coalesced Item publishes
+    // no byte, the Turn enters the bounded durability path, and the semantic
+    // event whose boundary triggered the flush is consumed first.
+    let items = Rc::new(RefCell::new(Vec::new()));
+    let consumed = Rc::new(Cell::new(0));
+    let mut observed = Vec::new();
+    let result = TurnRunner::new(
+        EventScriptedProvider {
+            scripts: vec![vec![
+                ProviderEvent::Delta("a".to_owned()),
+                ProviderEvent::Delta("b".to_owned()),
+                ProviderEvent::Usage(Usage::new(1, 2).expect("valid usage")),
+                ProviderEvent::Completed,
+            ]],
+            taken: 0,
+            consumed: Rc::clone(&consumed),
+        },
+        ScriptedHistory {
+            fail_append_at: Some(1),
+            interrupt_wins_first_provider_append: false,
+            append_calls: 0,
+            items: Rc::clone(&items),
+        },
+    )
+    .execute_with_observer(
+        TurnCommand::new(trust(), None, "hello").expect("valid command"),
+        &mut |event| observed.push(event),
+    );
+
+    let Err(TurnRunError::Durability(failure)) = result else {
+        panic!("a failed flush append must fail closed at the durability boundary");
+    };
+    assert!(failure.accepted);
+    assert!(
+        failure.published.is_empty(),
+        "no byte of the uncommitted coalesced Item is published"
+    );
+    assert!(
+        observed
+            .iter()
+            .all(|event| matches!(event, TurnStreamEvent::Started { .. })),
+        "the observer never sees the failed flush"
+    );
+    assert_eq!(
+        items.borrow().len(),
+        1,
+        "only the accepted user message is durable"
+    );
+    assert_eq!(
+        consumed.get(),
+        3,
+        "both deltas buffer first and the usage boundary consumes before the flush fails"
+    );
+}
+
+/// PLB-7/AC-5: count or payload exhaustion durably closes the Turn as
+/// `RESOURCE_LIMIT_EXCEEDED`, returns the synchronous `422
+/// resource-limit-exceeded` problem, and emits the existing exact
+/// `turn.failed` SSE terminal with no contradictory error event, while an
+/// actual history outage retains `durability-unavailable` delivery.
+#[test]
+fn resource_limit_and_durability_outage_have_distinct_diagnostics() {
+    // 65 fragments at the 16,384-byte coalescing cap cross the exact 1-MiB
+    // payload cap on the 64th counted delta item.
+    let mut exhausting: Vec<ProviderEvent> = (0..65)
+        .map(|_| ProviderEvent::Delta("x".repeat(16_384)))
+        .collect();
+    exhausting.push(ProviderEvent::Usage(Usage::new(2, 4).expect("valid usage")));
+    exhausting.push(ProviderEvent::Completed);
+    let exhausting_history = ScriptedHistory {
+        fail_append_at: None,
+        interrupt_wins_first_provider_append: false,
+        append_calls: 0,
+        items: Rc::new(RefCell::new(Vec::new())),
+    };
+    let exhausting_items = Rc::clone(&exhausting_history.items);
+    let mut adapter = HttpAdapter::new(TurnRunner::new(
+        EventScriptedProvider {
+            scripts: vec![exhausting],
+            taken: 0,
+            consumed: Rc::new(Cell::new(0)),
+        },
+        exhausting_history,
+    ));
+
+    let sync = adapter.handle(post(
+        "/api/v1/ai/chat",
+        r#"{"input":"hello"}"#,
+        Some(trust()),
+    ));
+    assert_eq!(sync.status, 422);
+    assert!(sync.body.contains("\"code\":\"resource-limit-exceeded\""));
+    assert!(matches!(
+        exhausting_items.borrow().last().map(|item| &item.payload),
+        Some(ItemPayload::Terminal(TerminalOutcome::Failed { code }))
+            if code == "RESOURCE_LIMIT_EXCEEDED"
+    ));
+
+    let mut stream = String::new();
+    let response = adapter.handle_stream_controlled(
+        post(
+            "/api/v1/ai/chat/stream",
+            r#"{"input":"hello"}"#,
+            Some(trust()),
+        ),
+        &mut |chunk| stream.push_str(&chunk),
+        &|| false,
+    );
+    assert_eq!(response.status, 200);
+    assert_eq!(stream.matches("event: turn.failed").count(), 1);
+    assert!(
+        !stream.contains("event: error"),
+        "a started stream never emits a contradictory error event"
+    );
+
+    // An actual append outage keeps the durability-unavailable diagnostics.
+    let outage_history = ScriptedHistory {
+        fail_append_at: Some(2),
+        interrupt_wins_first_provider_append: false,
+        append_calls: 0,
+        items: Rc::new(RefCell::new(Vec::new())),
+    };
+    let mut outage_adapter = HttpAdapter::new(TurnRunner::new(
+        EventScriptedProvider {
+            scripts: vec![vec![
+                ProviderEvent::Delta("a".to_owned()),
+                ProviderEvent::Usage(Usage::new(1, 2).expect("valid usage")),
+                ProviderEvent::Completed,
+            ]],
+            taken: 0,
+            consumed: Rc::new(Cell::new(0)),
+        },
+        outage_history,
+    ));
+
+    let sync = outage_adapter.handle(post(
+        "/api/v1/ai/chat",
+        r#"{"input":"hello"}"#,
+        Some(trust()),
+    ));
+    assert_eq!(sync.status, 503);
+    assert!(sync.body.contains("\"code\":\"durability-unavailable\""));
+
+    let mut stream = String::new();
+    let response = outage_adapter.handle_stream_controlled(
+        post(
+            "/api/v1/ai/chat/stream",
+            r#"{"input":"hello"}"#,
+            Some(trust()),
+        ),
+        &mut |chunk| stream.push_str(&chunk),
+        &|| false,
+    );
+    assert_eq!(response.status, 200);
+    assert_eq!(stream.matches("event: error").count(), 1);
+    assert!(stream.contains("durability-unavailable"));
+    assert_eq!(stream.matches("event: turn.failed").count(), 0);
+}
+
+/// PLB-4/PLB-7 (PR-8 review P1): a budget exhausted by an out-of-loop
+/// flush — here the end-of-stream flush — still publishes its durable
+/// `RESOURCE_LIMIT_EXCEEDED` terminal to a started stream instead of a
+/// contradictory error event.
+#[test]
+fn out_of_loop_resource_limit_flush_publishes_the_durable_terminal() {
+    // 255 denied Tool calls occupy 510 counted Items; the first byte-cap
+    // delta flush reaches 511, and the stream ends with the second delta
+    // buffered, so the end-of-stream flush is the one that starves the
+    // terminal reserve.
+    let mut stream: Vec<ProviderEvent> = (0..255)
+        .map(|_| ProviderEvent::ToolCall {
+            name: "fixture.tool".to_owned(),
+            arguments: "{}".to_owned(),
+        })
+        .collect();
+    stream.push(ProviderEvent::Delta("x".repeat(16_384)));
+    stream.push(ProviderEvent::Delta("y".repeat(16_384)));
+    let items = Rc::new(RefCell::new(Vec::new()));
+    let history = ScriptedHistory {
+        fail_append_at: None,
+        interrupt_wins_first_provider_append: false,
+        append_calls: 0,
+        items: Rc::clone(&items),
+    };
+    let mut observed = Vec::new();
+    let result = TurnRunner::new(
+        EventScriptedProvider {
+            scripts: vec![stream],
+            taken: 0,
+            consumed: Rc::new(Cell::new(0)),
+        },
+        history,
+    )
+    .execute_with_observer(
+        TurnCommand::new(trust(), None, "hello").expect("valid command"),
+        &mut |event| observed.push(event),
+    );
+
+    assert!(matches!(result, Err(TurnRunError::ResourceLimit(_))));
+    let observed_terminals: Vec<_> = observed
+        .iter()
+        .filter(|event| match event {
+            TurnStreamEvent::Item { item, .. } => matches!(
+                &item.payload,
+                ItemPayload::Terminal(TerminalOutcome::Failed { code })
+                    if code == "RESOURCE_LIMIT_EXCEEDED"
+            ),
+            TurnStreamEvent::Started { .. } => false,
+        })
+        .collect();
+    assert_eq!(
+        observed_terminals.len(),
+        1,
+        "the durable resource-limit terminal is published to the stream"
+    );
+}
+
+/// PLB-7 (PR-8 review P1): a budget exhausted by the per-event deadline
+/// flush still publishes its durable `RESOURCE_LIMIT_EXCEEDED` terminal —
+/// the deadline path must arbitrate like every other flush.
+/// One provider whose first stream serves denied Tool calls and whose
+/// completing stream delays its deltas past the latency deadline, so the
+/// per-event deadline path is what flushes them.
+struct DeadlineBudgetProvider {
+    delay_ms: u64,
+}
+
+impl ModelProvider for DeadlineBudgetProvider {
+    fn stream(&mut self, _input: ModelInput) -> Result<ProviderStream<'_>, ProviderError> {
+        let delay = std::time::Duration::from_millis(self.delay_ms);
+        let mut events: Vec<ProviderEvent> = (0..255)
+            .map(|_| ProviderEvent::ToolCall {
+                name: "fixture.tool".to_owned(),
+                arguments: "{}".to_owned(),
+            })
+            .collect();
+        events.push(ProviderEvent::Delta("x".repeat(16_384)));
+        events.push(ProviderEvent::Delta("y".repeat(16_384)));
+        events.push(ProviderEvent::Usage(Usage::new(1, 2).expect("valid usage")));
+        events.push(ProviderEvent::Completed);
+        let mut position = 0_usize;
+        Ok(Box::new(std::iter::from_fn(move || {
+            if position >= events.len() {
+                return None;
+            }
+            let event = events[position].clone();
+            position += 1;
+            // Delay the usage event so the second buffered delta crosses
+            // the latency deadline before that event is processed — the
+            // loop-head deadline flush is what must flush it.
+            if matches!(event, ProviderEvent::Usage(_)) {
+                std::thread::sleep(delay);
+            }
+            Some(event)
+        })))
+    }
+}
+
+#[test]
+fn deadline_flush_resource_limit_publishes_the_durable_terminal() {
+    // 255 denied calls occupy 510 counted Items; the first byte-cap delta
+    // flushes at 511 through its successor's byte boundary, the second delta
+    // buffers, and the latency deadline expires before the usage event — the
+    // per-event deadline flush is what starves the terminal reserve.
+    let items = Rc::new(RefCell::new(Vec::new()));
+    let mut observed = Vec::new();
+    let result = TurnRunner::new(
+        DeadlineBudgetProvider { delay_ms: 600 },
+        ScriptedHistory {
+            fail_append_at: None,
+            interrupt_wins_first_provider_append: false,
+            append_calls: 0,
+            items: Rc::clone(&items),
+        },
+    )
+    .execute_with_observer(
+        TurnCommand::new(trust(), None, "hello").expect("valid command"),
+        &mut |event| observed.push(event),
+    );
+
+    assert!(matches!(result, Err(TurnRunError::ResourceLimit(_))));
+    assert!(observed.iter().any(|event| match event {
+        TurnStreamEvent::Item { item, .. } => matches!(
+            &item.payload,
+            ItemPayload::Terminal(TerminalOutcome::Failed { code })
+                if code == "RESOURCE_LIMIT_EXCEEDED"
+        ),
+        TurnStreamEvent::Started { .. } => false,
+    }));
+}
+
+/// PLB-3/PLB-4 (PR-8 review P1): when the durable append arbitration
+/// replaces a flushed delta with an `Interrupted` terminal, the flush stops
+/// and the Turn completes its interruption instead of appending past the
+/// terminal and double-transitioning the lifecycle.
+#[test]
+fn interrupt_won_flush_append_closes_the_turn_without_double_transition() {
+    let items = Rc::new(RefCell::new(Vec::new()));
+    let result = TurnRunner::new(
+        EventScriptedProvider {
+            scripts: vec![vec![
+                ProviderEvent::Delta("a".to_owned()),
+                ProviderEvent::Usage(Usage::new(1, 2).expect("valid usage")),
+                ProviderEvent::Completed,
+            ]],
+            taken: 0,
+            consumed: Rc::new(Cell::new(0)),
+        },
+        ScriptedHistory {
+            fail_append_at: None,
+            interrupt_wins_first_provider_append: true,
+            append_calls: 0,
+            items: Rc::clone(&items),
+        },
+    )
+    .execute(TurnCommand::new(trust(), None, "hello").expect("valid command"));
+
+    let result = result.expect("the interrupted turn returns its durable replay");
+    assert_eq!(result.status, TurnStatus::Interrupted);
+    assert_eq!(
+        durable_payload_kinds(&items.borrow()),
+        vec!["user_message", "interrupted"],
+        "the arbitrated terminal is the only durable outcome"
+    );
+    assert_eq!(
+        result
+            .published
+            .iter()
+            .filter(|item| matches!(item.payload, ItemPayload::Terminal(_)))
+            .count(),
+        1
     );
 }

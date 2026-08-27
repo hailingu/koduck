@@ -1,5 +1,6 @@
 // ADR: docs/adr/ADR-0001-provider-neutral-turn-kernel.md
 // ADR: docs/adr/ADR-0003-default-deny-tool-approval-execution-boundary.md
+// ADR: docs/adr/ADR-0005-provider-delta-coalescing-and-512-item-turn-budget.md
 
 //! Durable Turn-terminal append and replay publication for the runner.
 //!
@@ -15,7 +16,8 @@ use super::ports::{
 };
 use super::runner::ExecutionState;
 use super::runner::failure::{
-    apply_terminal_outcome, history_failure, post_accept_failure, recover_append_failure,
+    accept_appended_provider_item, apply_terminal_outcome, enforce_provider_limit, history_failure,
+    post_accept_failure, recover_append_failure,
 };
 
 /// Publishes the terminal a competing writer already committed.
@@ -73,6 +75,61 @@ pub(super) fn event_terminal_or_recover<H: TurnHistory>(
         Err(TurnRunError::History(error)) => Err(recover_append_failure(state, error)),
         Err(error) => Err(post_accept_failure(error, &state.published)),
     }
+}
+
+/// Appends and publishes flushed coalesced delta chunks in order.
+///
+/// Each chunk is accounted against the shared Turn budget, durably appended
+/// first, and observed at its publish boundary so callers outside the
+/// driving loop's re-observation window still deliver every visible item in
+/// append order (ADR-0005 PLB-1/PLB-4).
+///
+/// # Errors
+///
+/// Returns [`TurnRunError`] when the budget closes the Turn through the
+/// resource-limit terminal or an append fails.
+pub(super) fn append_coalesced_deltas<H: TurnHistory>(
+    history: &mut H,
+    accepted: &AcceptedTurn,
+    state: &mut ExecutionState,
+    chunks: impl IntoIterator<Item = String>,
+    observer: &mut dyn FnMut(TurnStreamEvent),
+) -> Result<bool, TurnRunError> {
+    for content in chunks {
+        let item = NewItem::AgentMessageDelta { content };
+        if enforce_provider_limit(history, accepted, state, &item)? {
+            return Ok(true);
+        }
+        let durable = history.append(accepted, item)?;
+        // The append can return an arbitrated terminal instead of the delta
+        // — an interrupt that won the durable race — which closes the Turn
+        // immediately; no further chunk or semantic item may append past it.
+        let closed = accept_appended_provider_item(state, durable, true)?;
+        let published = state.published.last().ok_or(HistoryError::Unavailable)?;
+        observe_item(observer, accepted, published);
+        state.observed_len = state.published.len();
+        if closed {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Flushes every buffered coalesced delta before a semantic or terminal
+/// boundary takes effect; an empty accumulator emits no Item (ADR-0005
+/// PLB-3).
+///
+/// # Errors
+///
+/// Returns [`TurnRunError`] through the coalesced append path.
+pub(super) fn flush_buffered_deltas<H: TurnHistory>(
+    history: &mut H,
+    accepted: &AcceptedTurn,
+    state: &mut ExecutionState,
+    observer: &mut dyn FnMut(TurnStreamEvent),
+) -> Result<bool, TurnRunError> {
+    let buffered = state.delta_coalescer.take_forced_flush();
+    append_coalesced_deltas(history, accepted, state, buffered, observer)
 }
 
 /// Appends one sequenced terminal item and publishes only the appended copy.

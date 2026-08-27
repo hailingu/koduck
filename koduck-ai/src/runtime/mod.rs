@@ -1,5 +1,6 @@
 // ADR: docs/adr/ADR-0001-provider-neutral-turn-kernel.md
 // ADR: koduck-ai/docs/adr/ADR-0003-correction-item-schema-and-raw-replay.md
+// ADR: docs/adr/ADR-0005-provider-delta-coalescing-and-512-item-turn-budget.md
 
 //! Production runtime configuration and executable assembly.
 
@@ -55,8 +56,11 @@ const THREAD_ROUTING_HEADER: &str = "x-koduck-thread-id";
 const MAX_APPROVAL_SCOPES: usize = 16;
 /// Maximum size of one validated scope token in bytes.
 const MAX_APPROVAL_SCOPE_BYTES: usize = 128;
-// One turn.started chunk, up to 64 provider items, and one terminal or error chunk.
-const STREAM_BUFFER_CAPACITY: usize = 66;
+/// Bounded SSE delivery queue capacity: one `turn.started` chunk, up to 512
+/// counted Item/terminal publications of the raised Turn budget, and one
+/// possible in-band error chunk, so legal maximum output is never mistaken
+/// for a downstream disconnect (ADR-0005 PLB-8).
+pub const STREAM_BUFFER_CAPACITY: usize = 514;
 
 /// Validated process configuration required to assemble the AI runtime.
 #[derive(Clone, Eq, PartialEq)]

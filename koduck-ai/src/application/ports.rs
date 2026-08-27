@@ -1,4 +1,5 @@
 // ADR: docs/adr/ADR-0001-provider-neutral-turn-kernel.md
+// ADR: docs/adr/ADR-0005-provider-delta-coalescing-and-512-item-turn-budget.md
 
 //! Consumer-owned commands, results, and external I/O ports.
 
@@ -687,6 +688,11 @@ pub enum TurnRunError {
     /// Canonical durability failed, with only the committed visible prefix retained.
     #[error(transparent)]
     Durability(DurabilityFailure),
+    /// The Turn exceeded its exact 512-Item or 1-MiB durable output budget
+    /// and durably closed as `failed` with `RESOURCE_LIMIT_EXCEEDED`
+    /// (ADR-0005 PLB-5/PLB-7).
+    #[error(transparent)]
+    ResourceLimit(#[from] ResourceLimitFailure),
     /// Canonical history rejected an operation.
     #[error(transparent)]
     History(#[from] HistoryError),
@@ -696,6 +702,20 @@ pub enum TurnRunError {
     /// Internal lifecycle code attempted an invalid state transition.
     #[error(transparent)]
     Transition(#[from] TurnTransitionError),
+}
+
+/// Context retained when the Turn's exact durable output budget was exceeded.
+///
+/// The durable terminal has already committed when this failure surfaces;
+/// synchronous delivery maps it to `422 resource-limit-exceeded` while a
+/// started SSE stream has already emitted the exact durable `turn.failed`
+/// terminal (ADR-0005 PLB-7).
+#[derive(Clone, Debug, Error, Eq, PartialEq)]
+#[error("turn resource limit exceeded")]
+pub struct ResourceLimitFailure {
+    /// Items published only after their successful durable append, ending
+    /// with the durable `RESOURCE_LIMIT_EXCEEDED` terminal.
+    pub published: Vec<Item>,
 }
 
 /// Context retained when canonical history becomes unavailable.

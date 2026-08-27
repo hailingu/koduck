@@ -1,4 +1,5 @@
 // ADR: docs/adr/ADR-0001-provider-neutral-turn-kernel.md
+// ADR: docs/adr/ADR-0005-provider-delta-coalescing-and-512-item-turn-budget.md
 
 use koduck_ai::application::{
     AcceptedTurn, HistoryError, ModelInput, ModelProvider, NewItem, ProviderError, ProviderEvent,
@@ -119,22 +120,20 @@ fn tool_free_turn_completes_with_ordered_items() {
     let result = runner.execute(command()).expect("turn completes");
 
     assert_eq!(result.status, TurnStatus::Completed);
-    assert_eq!(result.replay.len(), 5);
+    // Both one-byte fragments coalesce inside the latency window and flush
+    // at the usage boundary as one exact concatenated delta (ADR-0005 PLB-1).
+    assert_eq!(result.replay.len(), 4);
     assert!(matches!(
         &result.replay[0].payload,
         ItemPayload::UserMessage { content } if content == "hello"
     ));
     assert!(matches!(
         &result.replay[1].payload,
-        ItemPayload::AgentMessageDelta { content } if content == "A"
+        ItemPayload::AgentMessageDelta { content } if content == "AB"
     ));
+    assert!(matches!(result.replay[2].payload, ItemPayload::Usage(_)));
     assert!(matches!(
-        &result.replay[2].payload,
-        ItemPayload::AgentMessageDelta { content } if content == "B"
-    ));
-    assert!(matches!(result.replay[3].payload, ItemPayload::Usage(_)));
-    assert!(matches!(
-        result.replay[4].payload,
+        result.replay[3].payload,
         ItemPayload::Terminal(TerminalOutcome::Completed { .. })
     ));
     assert_eq!(
@@ -143,7 +142,7 @@ fn tool_free_turn_completes_with_ordered_items() {
             .iter()
             .map(|item| item.sequence)
             .collect::<Vec<_>>(),
-        vec![2, 3, 5]
+        vec![2, 4]
     );
     assert!(result.published.iter().all(|published| {
         result

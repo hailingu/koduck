@@ -1,4 +1,5 @@
 // ADR: docs/adr/ADR-0003-default-deny-tool-approval-execution-boundary.md
+// ADR: docs/adr/ADR-0005-provider-delta-coalescing-and-512-item-turn-budget.md
 
 //! Append-before-publish D-3 projections of canonical C-5 state (TC-06).
 
@@ -315,9 +316,9 @@ fn failure_code(code: ExecutionFailure) -> String {
 ///
 /// The sink is seeded with the runner's cumulative per-Turn provider counters
 /// and synchronizes them back through [`Self::budget`], so one Turn's
-/// projections share the single 64-item/1-MiB allowance with every provider
+/// projections share the single 512-item/1-MiB allowance with every provider
 /// item instead of each call receiving a fresh budget (ADR-0001 exact buffer
-/// contract). The port is untrusted: `append` first validates the
+/// contract, ADR-0005 PLB-5). The port is untrusted: `append` first validates the
 /// projection's canonical tuple, then reserves capacity for the complete
 /// remaining lifecycle the projection opens and the mandatory Turn terminal
 /// — a running view is never
@@ -343,7 +344,19 @@ pub struct TurnProjectionSink<'a, H> {
     stage: ProjectionStage,
     committed_result: Option<CommittedProjectionResult>,
     opaque_success_summary: bool,
+    /// One sink failure surface with its recovery requirement (ADR-0003
+    /// TC-06, ADR-0005 PLB-7).
+    failure: SinkFailure,
+}
+
+/// The sink's collapsed failure state: once any projection is rejected or
+/// fails to append, every later append fails; `budget_exhausted` selects the
+/// distinct resource-limit terminal while a canonical failed terminal
+/// projection requires D-7 recovery before the Turn closes.
+#[derive(Clone, Copy, Default)]
+struct SinkFailure {
     failed: bool,
+    budget_exhausted: bool,
     terminal_recovery_required: bool,
 }
 
@@ -389,28 +402,36 @@ where
             stage: ProjectionStage::Open,
             committed_result: None,
             opaque_success_summary: false,
-            failed: false,
-            terminal_recovery_required: false,
+            failure: SinkFailure::default(),
         }
     }
 
     /// Reports whether any projection was rejected or failed to append.
     #[must_use]
     pub fn is_failed(&self) -> bool {
-        self.failed
+        self.failure.failed
+    }
+
+    /// Reports whether the failure came from the cumulative Turn budget
+    /// preflight — count or payload exhaustion — rather than a noncanonical
+    /// tuple or append outage, so the runner closes through the distinct
+    /// resource-limit terminal (ADR-0005 PLB-7).
+    #[must_use]
+    pub fn budget_exhausted(&self) -> bool {
+        self.failure.budget_exhausted
     }
 
     /// Reports that a canonical terminal `ToolResult` failed after its D-7 may
     /// already have committed and must be recovered before the Turn closes.
     #[must_use]
     pub(in crate::application) fn terminal_recovery_required(&self) -> bool {
-        self.terminal_recovery_required
+        self.failure.terminal_recovery_required
     }
 
     /// Marks the sink failed and retains whether D-7 recovery must precede the Turn terminal.
     fn fail_projection(&mut self, terminal_recovery_required: bool) -> ToolProjectionError {
-        self.failed = true;
-        self.terminal_recovery_required |= terminal_recovery_required;
+        self.failure.failed = true;
+        self.failure.terminal_recovery_required |= terminal_recovery_required;
         ToolProjectionError::Unavailable
     }
 
@@ -514,8 +535,8 @@ where
         // A later terminal attempt still proves canonical D-7 may need
         // backfill, so retain that recovery requirement before returning
         // (projection contract, ADR-0003 TC-06).
-        if self.failed {
-            self.terminal_recovery_required |= terminal_projection;
+        if self.failure.failed {
+            self.failure.terminal_recovery_required |= terminal_projection;
             return Err(ToolProjectionError::Unavailable);
         }
         // The port is untrusted: reject noncanonical tuples and out-of-order
@@ -544,6 +565,7 @@ where
                 .check_item_count(next_count)
                 .and_then(|()| policy.accumulate_payload_bytes(next_bytes, item))
             else {
+                self.failure.budget_exhausted = true;
                 return Err(self.fail_projection(terminal_projection));
             };
             next_bytes = checked_bytes;
@@ -560,6 +582,7 @@ where
             .reserve_durability_terminal(total_items, total_bytes)
             .is_err()
         {
+            self.failure.budget_exhausted = true;
             return Err(self.fail_projection(terminal_projection));
         }
         let planned_payloads = items

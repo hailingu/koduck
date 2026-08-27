@@ -1,4 +1,5 @@
 // ADR: docs/adr/ADR-0001-provider-neutral-turn-kernel.md
+// ADR: docs/adr/ADR-0005-provider-delta-coalescing-and-512-item-turn-budget.md
 
 //! Exact CAND-1 append deadline and unpublished-buffer limits.
 
@@ -18,12 +19,16 @@ pub struct AppendPolicy {
 }
 
 impl AppendPolicy {
-    /// Returns the approved 2-second, 64-item, 1-MiB CAND-1 policy.
+    /// Returns the approved 2-second, 512-item, 1-MiB policy.
+    ///
+    /// The 512-Item count budget is shared by coalesced agent deltas, usage,
+    /// Tool projections, and the terminal, with one slot always reserved for
+    /// the mandatory terminal (ADR-0005 PLB-5).
     #[must_use]
     pub const fn cand_1() -> Self {
         Self {
             deadline: Duration::from_secs(2),
-            max_items: 64,
+            max_items: 512,
             max_payload_bytes: 1_048_576,
         }
     }
@@ -38,7 +43,7 @@ impl AppendPolicy {
     ///
     /// # Errors
     ///
-    /// Returns [`BufferLimitError::ItemCount`] when `item_count` exceeds 64.
+    /// Returns [`BufferLimitError::ItemCount`] when `item_count` exceeds 512.
     pub fn check_item_count(self, item_count: usize) -> Result<(), BufferLimitError> {
         if item_count > self.max_items {
             Err(BufferLimitError::ItemCount)
@@ -95,14 +100,14 @@ impl AppendPolicy {
     /// # Errors
     ///
     /// Returns the applicable buffer-limit error when the mandatory terminal
-    /// would exceed the 64-item or 1-MiB Turn budget.
+    /// would exceed the 512-item or 1-MiB Turn budget.
     pub(crate) fn reserve_durability_terminal(
         self,
         item_count: usize,
         payload_bytes: usize,
     ) -> Result<(), BufferLimitError> {
         let terminal = NewItem::Terminal(TerminalOutcome::Failed {
-            code: "DURABILITY_UNAVAILABLE".to_owned(),
+            code: RESOURCE_LIMIT_TERMINAL_CODE.to_owned(),
         });
         self.check_item_count(item_count.saturating_add(1))
             .and_then(|()| self.accumulate_payload_bytes(payload_bytes, &terminal))
@@ -123,13 +128,17 @@ impl AppendPolicy {
     }
 }
 
+/// Durable terminal code closing a Turn whose count or payload budget was
+/// exhausted (ADR-0005 PLB-7).
+pub const RESOURCE_LIMIT_TERMINAL_CODE: &str = "RESOURCE_LIMIT_EXCEEDED";
+
 /// A fail-closed reason for stopping provider consumption before publication.
 #[derive(Clone, Copy, Debug, Error, Eq, PartialEq)]
 pub enum BufferLimitError {
     /// One append exceeded 2 seconds.
     #[error("append deadline exceeded")]
     AppendDeadline,
-    /// More than 64 unpublished items would be retained.
+    /// More than 512 counted Items would be retained.
     #[error("unpublished item count exceeded")]
     ItemCount,
     /// More than 1 MiB of unpublished serialized payload would be retained.
@@ -138,10 +147,15 @@ pub enum BufferLimitError {
 }
 
 impl BufferLimitError {
-    /// Returns the stable presentation problem code for every fail-closed limit.
+    /// Returns the stable presentation problem code for this limit: count or
+    /// payload exhaustion is a resource limit, while an append deadline
+    /// failure remains a durability unavailability (ADR-0005 PLB-7).
     #[must_use]
     pub const fn problem_code(self) -> &'static str {
-        "durability-unavailable"
+        match self {
+            Self::AppendDeadline => "durability-unavailable",
+            Self::ItemCount | Self::PayloadBytes => "resource-limit-exceeded",
+        }
     }
 }
 

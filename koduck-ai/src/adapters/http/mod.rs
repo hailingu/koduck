@@ -1,4 +1,5 @@
 // ADR: docs/adr/ADR-0001-provider-neutral-turn-kernel.md
+// ADR: docs/adr/ADR-0005-provider-delta-coalescing-and-512-item-turn-budget.md
 
 //! Owned HTTP/SSE v1 presentation contract around the application turn kernel.
 
@@ -80,6 +81,9 @@ pub enum ServiceError {
     /// Canonical history is unavailable.
     #[error("durability unavailable")]
     DurabilityUnavailable,
+    /// The Turn exceeded its exact durable output budget.
+    #[error("turn resource limit exceeded")]
+    ResourceLimitExceeded,
     /// The provider failed before a normal owned result was available.
     #[error("provider unavailable")]
     ProviderUnavailable,
@@ -336,6 +340,7 @@ fn map_service_error(error: &ServiceError) -> HttpResponse {
         ServiceError::NotFound => problem(404, "not-found", false),
         ServiceError::AlreadyTerminal => problem(409, "turn-already-terminal", false),
         ServiceError::DurabilityUnavailable => problem(503, "durability-unavailable", false),
+        ServiceError::ResourceLimitExceeded => problem(422, "resource-limit-exceeded", false),
         ServiceError::ProviderUnavailable => problem(503, "provider-unavailable", false),
     }
 }
@@ -345,6 +350,7 @@ fn map_turn_run_error(error: &TurnRunError) -> ServiceError {
         TurnRunError::Durability(_)
         | TurnRunError::History(HistoryError::Unavailable)
         | TurnRunError::Tool(_) => ServiceError::DurabilityUnavailable,
+        TurnRunError::ResourceLimit(_) => ServiceError::ResourceLimitExceeded,
         TurnRunError::History(HistoryError::NotFound | HistoryError::Fenced) => {
             ServiceError::NotFound
         }

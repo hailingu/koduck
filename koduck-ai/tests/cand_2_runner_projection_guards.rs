@@ -1,4 +1,5 @@
 // ADR: docs/adr/ADR-0003-default-deny-tool-approval-execution-boundary.md
+// ADR: docs/adr/ADR-0005-provider-delta-coalescing-and-512-item-turn-budget.md
 // ADR: koduck-ai/docs/adr/ADR-0003-correction-item-schema-and-raw-replay.md
 
 //! Black-box runner integration harness for the durable projection sink's
@@ -17,7 +18,7 @@ use koduck_ai::application::{
 };
 use koduck_ai::domain::{
     Item, ItemPayload, LeaseGeneration, TenantId, TerminalOutcome, ThreadId, TrustContext, TurnId,
-    TurnStatus,
+    TurnStatus, Usage,
 };
 
 #[derive(Clone, Default)]
@@ -289,7 +290,7 @@ impl ToolCallExecutor for ApprovingToolExecutor {
                 code: None,
                 effect_state: koduck_ai::application::EffectState::Started,
                 output_bytes: 2,
-                output_digest: None,
+                output_digest: Some(output_digest(b"ok")),
                 version: 3,
             },
         ];
@@ -725,6 +726,15 @@ impl MemoryHistory {
         }
     }
 
+    fn failing_first_projection_append() -> Self {
+        Self {
+            state: Arc::new(Mutex::new(MemoryHistoryState::default())),
+            fail_projection_batch_number: Some(1),
+            fail_append_after_projection: false,
+            defer_failed_recovery: false,
+        }
+    }
+
     fn failing_terminal_projection_append() -> Self {
         Self {
             state: Arc::new(Mutex::new(MemoryHistoryState::default())),
@@ -919,55 +929,84 @@ fn assert_only_durability_failure(items: &[Item], deltas: usize) {
     assert_eq!(code, "DURABILITY_UNAVAILABLE");
 }
 
+/// Asserts the recorded Turn history ends in the `RESOURCE_LIMIT_EXCEEDED`
+/// terminal with exactly `tool_items` prior tool-projection items and
+/// `deltas` coalesced deltas durable (ADR-0005 PLB-7).
+fn assert_only_resource_limit_failure(items: &[Item], deltas: usize, tool_items: usize) {
+    assert_eq!(
+        items.len(),
+        1 + deltas + tool_items + 1,
+        "the user message, admitted items, and the failed terminal are durable"
+    );
+    assert_eq!(
+        items
+            .iter()
+            .filter(|item| matches!(
+                item.payload,
+                ItemPayload::ApprovalStatus { .. }
+                    | ItemPayload::ToolCall { .. }
+                    | ItemPayload::ToolResult { .. }
+            ))
+            .count(),
+        tool_items,
+        "no part of the over-budget projection became durable"
+    );
+    let ItemPayload::Terminal(TerminalOutcome::Failed { code }) =
+        &items.last().expect("the terminal exists").payload
+    else {
+        panic!("the turn terminal is the resource-limit failure");
+    };
+    assert_eq!(code, "RESOURCE_LIMIT_EXCEEDED");
+}
+
 #[test]
 fn a_projection_sequence_is_preflighted_atomically_against_the_cumulative_turn_budget() {
-    // 63 provider deltas leave exactly one slot of the cumulative 64-item
-    // per-Turn budget: the denial's two-item sequence (tool_call +
-    // tool_result) does not fit, so neither part is appended or published — a
-    // lone tool_call prefix would contradict the complete-sequence preflight
-    // contract (ADR-0001 exact buffer contract, ADR-0003 TC-06).
-    let mut stream: Vec<ProviderEvent> = (0..63)
-        .map(|_| ProviderEvent::Delta("d".to_owned()))
-        .collect();
+    // 255 denied calls consume 510 of the 512 counted slots and one flushed
+    // delta the 511th: the next denial's two-item sequence (tool_call +
+    // tool_result) would reach counted Item 513, so neither part is appended
+    // or published — a lone tool_call prefix would contradict the
+    // complete-sequence preflight contract (ADR-0001 exact buffer contract,
+    // ADR-0003 TC-06, ADR-0005 PLB-5).
+    let mut stream: Vec<ProviderEvent> =
+        (0..255).map(|_| tool_call_event("fixture.tool")).collect();
+    stream.push(ProviderEvent::Delta("x".repeat(16_384)));
     stream.push(tool_call_event("fixture.tool"));
-    let provider = ScriptedProvider::scripted(vec![stream, vec![ProviderEvent::Completed]]);
+    let provider = ScriptedProvider::scripted(vec![stream]);
     let history = MemoryHistory::default();
     let mut runner =
         TurnRunner::new(provider.clone(), history.clone()).with_tool_executor(DenyingToolExecutor);
 
     let result = runner.execute(command());
 
-    let Err(koduck_ai::application::TurnRunError::Durability(failure)) = result else {
-        panic!("an over-budget projection sequence fails as a durability boundary violation");
+    let Err(koduck_ai::application::TurnRunError::ResourceLimit(failure)) = result else {
+        panic!("an over-budget projection sequence fails as a resource limit");
     };
-    assert!(failure.accepted);
-    assert!(
-        failure.published.iter().all(|item| !matches!(
-            item.payload,
-            ItemPayload::ToolCall { .. } | ItemPayload::ToolResult { .. }
-        )),
+    assert_eq!(
+        failure
+            .published
+            .iter()
+            .filter(|item| matches!(
+                item.payload,
+                ItemPayload::ToolCall { .. } | ItemPayload::ToolResult { .. }
+            ))
+            .count(),
+        510,
         "no part of the over-budget sequence was published"
     );
     let recorded = &history.state.lock().expect("history lock").items;
     let items = recorded.values().next().expect("the accepted turn exists");
     assert_eq!(
-        items.len(),
-        1 + 63 + 1,
-        "only the user message, the deltas, and the failed terminal are durable"
-    );
-    assert!(
-        items.iter().all(|item| !matches!(
-            item.payload,
-            ItemPayload::ToolCall { .. } | ItemPayload::ToolResult { .. }
-        )),
+        items
+            .iter()
+            .filter(|item| matches!(
+                item.payload,
+                ItemPayload::ToolCall { .. } | ItemPayload::ToolResult { .. }
+            ))
+            .count(),
+        510,
         "the over-budget sequence left no partial prefix durable"
     );
-    let ItemPayload::Terminal(TerminalOutcome::Failed { code }) =
-        &items.last().expect("the terminal exists").payload
-    else {
-        panic!("the turn terminal is the buffer-limit failure");
-    };
-    assert_eq!(code, "DURABILITY_UNAVAILABLE");
+    assert_only_resource_limit_failure(items, 1, 510);
     assert_eq!(
         provider.recorded_inputs().len(),
         1,
@@ -977,29 +1016,26 @@ fn a_projection_sequence_is_preflighted_atomically_against_the_cumulative_turn_b
 
 #[test]
 fn a_projection_sequence_reserves_the_mandatory_turn_terminal() {
-    // 62 provider deltas plus the denial's two-item sequence would consume
-    // all 64 provider-item slots. Admission must retain one slot for the
-    // mandatory Turn terminal, reject the complete denial atomically, and
-    // close through the bounded durability failure instead of appending an
-    // unbudgeted item 65 (ADR-0001 exact buffer contract, ADR-0003 TC-06).
-    let mut stream: Vec<ProviderEvent> = (0..62)
-        .map(|_| ProviderEvent::Delta("d".to_owned()))
-        .collect();
-    stream.push(tool_call_event("fixture.tool"));
-    let provider = ScriptedProvider::scripted(vec![stream, vec![ProviderEvent::Completed]]);
+    // 255 denied calls consume 510 of the 512 counted slots: the next
+    // denial's two-item sequence would consume Items 511 and 512 and starve
+    // the mandatory Turn terminal. Admission must retain one slot for the
+    // terminal, reject the complete denial atomically, and close through the
+    // resource-limit terminal instead of appending an unbudgeted Item 513
+    // (ADR-0001 exact buffer contract, ADR-0003 TC-06, ADR-0005 PLB-5).
+    let stream: Vec<ProviderEvent> = (0..256).map(|_| tool_call_event("fixture.tool")).collect();
+    let provider = ScriptedProvider::scripted(vec![stream]);
     let history = MemoryHistory::default();
     let mut runner =
         TurnRunner::new(provider.clone(), history.clone()).with_tool_executor(DenyingToolExecutor);
 
     let result = runner.execute(command());
 
-    let Err(koduck_ai::application::TurnRunError::Durability(failure)) = result else {
+    let Err(koduck_ai::application::TurnRunError::ResourceLimit(_)) = result else {
         panic!("a projection that consumes the terminal reserve must fail closed");
     };
-    assert!(failure.accepted);
     let recorded = &history.state.lock().expect("history lock").items;
     let items = recorded.values().next().expect("the accepted turn exists");
-    assert_only_durability_failure(items, 62);
+    assert_only_resource_limit_failure(items, 0, 510);
     assert_eq!(
         provider.recorded_inputs().len(),
         1,
@@ -1027,10 +1063,10 @@ fn a_projection_sequence_reserves_the_mandatory_turn_terminal_payload() {
         .accumulate_payload_bytes(
             0,
             &NewItem::Terminal(TerminalOutcome::Failed {
-                code: "DURABILITY_UNAVAILABLE".to_owned(),
+                code: "RESOURCE_LIMIT_EXCEEDED".to_owned(),
             }),
         )
-        .expect("the durability terminal is independently bounded");
+        .expect("the reserved failure terminal is independently bounded");
     let delta_overhead = policy
         .accumulate_payload_bytes(
             0,
@@ -1039,27 +1075,32 @@ fn a_projection_sequence_reserves_the_mandatory_turn_terminal_payload() {
             },
         )
         .expect("the empty delta provides its canonical object overhead");
-    let content_bytes = 1_048_576 - projection_bytes - terminal_bytes + 1 - delta_overhead;
-    let provider = ScriptedProvider::scripted(vec![
-        vec![
-            ProviderEvent::Delta("x".repeat(content_bytes)),
-            tool_call_event("fixture.tool"),
-        ],
-        vec![ProviderEvent::Completed],
-    ]);
+    // The coalescer splits the fragment into 63 capped chunks plus one sized
+    // remainder, so the 64 delta items' cumulative payload leaves one byte
+    // too little room for the denial pair plus the reserved terminal.
+    let delta_items = 64;
+    let content_bytes =
+        1_048_576 - projection_bytes - terminal_bytes + 1 - delta_items * delta_overhead;
+    let mut stream: Vec<ProviderEvent> = (0..63)
+        .map(|_| ProviderEvent::Delta("x".repeat(16_384)))
+        .collect();
+    stream.push(ProviderEvent::Delta(
+        "x".repeat(content_bytes - 63 * 16_384),
+    ));
+    stream.push(tool_call_event("fixture.tool"));
+    let provider = ScriptedProvider::scripted(vec![stream]);
     let history = MemoryHistory::default();
     let mut runner =
         TurnRunner::new(provider.clone(), history.clone()).with_tool_executor(DenyingToolExecutor);
 
     let result = runner.execute(command());
 
-    let Err(koduck_ai::application::TurnRunError::Durability(failure)) = result else {
+    let Err(koduck_ai::application::TurnRunError::ResourceLimit(_)) = result else {
         panic!("a projection that consumes the terminal payload reserve must fail closed");
     };
-    assert!(failure.accepted);
     let recorded = &history.state.lock().expect("history lock").items;
     let items = recorded.values().next().expect("the accepted turn exists");
-    assert_only_durability_failure(items, 1);
+    assert_only_resource_limit_failure(items, delta_items, 0);
     assert_eq!(provider.recorded_inputs().len(), 1);
 }
 
@@ -1112,30 +1153,30 @@ fn projections_become_visible_at_their_publish_boundary_during_servicing() {
 
 #[test]
 fn a_running_projection_requires_reserved_capacity_for_its_terminal() {
-    // 63 provider deltas leave exactly one slot of the cumulative per-Turn
-    // budget: the running view alone would fit, but its guaranteed terminal
-    // view would not — the complete call lifecycle is reserved before the
-    // first projection, so the running view is never appended and no orphan
-    // running view can be left durable (ADR-0001 exact buffer contract,
-    // ADR-0003 TC-06).
-    let mut stream: Vec<ProviderEvent> = (0..63)
-        .map(|_| ProviderEvent::Delta("d".to_owned()))
-        .collect();
+    // 255 completed execution lifecycles consume 510 of the 512 counted
+    // slots and one flushed delta the 511th: the next call's running view
+    // alone would fit, but its guaranteed terminal view would not — the
+    // complete call lifecycle is reserved before the first projection, so
+    // the running view is never appended and no orphan running view can be
+    // left durable (ADR-0001 exact buffer contract, ADR-0003 TC-06,
+    // ADR-0005 PLB-5).
+    let mut stream: Vec<ProviderEvent> =
+        (0..255).map(|_| tool_call_event("fixture.tool")).collect();
+    stream.push(ProviderEvent::Delta("x".repeat(16_384)));
     stream.push(tool_call_event("fixture.tool"));
-    let provider = ScriptedProvider::scripted(vec![stream, vec![ProviderEvent::Completed]]);
+    let provider = ScriptedProvider::scripted(vec![stream]);
     let history = MemoryHistory::default();
     let mut runner = TurnRunner::new(provider.clone(), history.clone())
         .with_tool_executor(ExecutionToolExecutor);
 
     let result = runner.execute(command());
 
-    let Err(koduck_ai::application::TurnRunError::Durability(failure)) = result else {
-        panic!("an unreservable lifecycle fails as a durability boundary violation");
+    let Err(koduck_ai::application::TurnRunError::ResourceLimit(_)) = result else {
+        panic!("an unreservable lifecycle fails as a resource limit");
     };
-    assert!(failure.accepted);
     let recorded = &history.state.lock().expect("history lock").items;
     let items = recorded.values().next().expect("the accepted turn exists");
-    assert_only_durability_failure(items, 63);
+    assert_only_resource_limit_failure(items, 1, 510);
     assert_eq!(
         provider.recorded_inputs().len(),
         1,
@@ -1145,43 +1186,46 @@ fn a_running_projection_requires_reserved_capacity_for_its_terminal() {
 
 #[test]
 fn an_approval_lifecycle_reserves_its_complete_sequence_before_the_first_projection() {
-    // 62 provider deltas leave two slots: an approval-required call needs up
-    // to four (requested + resolution + running + terminal), so the lifecycle
-    // reservation fails before the requested view is appended — no orphan
-    // approval view can be left durable (ADR-0003 TC-06).
-    let mut stream: Vec<ProviderEvent> = (0..62)
-        .map(|_| ProviderEvent::Delta("d".to_owned()))
-        .collect();
+    // 127 completed approval lifecycles consume 508 of the 512 counted
+    // slots and one flushed delta the 509th: an approval-required call needs
+    // up to four more (requested + resolution + running + terminal), so the
+    // lifecycle reservation fails before the requested view is appended — no
+    // orphan approval view can be left durable (ADR-0003 TC-06, ADR-0005
+    // PLB-5).
+    let mut stream: Vec<ProviderEvent> =
+        (0..127).map(|_| tool_call_event("fixture.tool")).collect();
+    stream.push(ProviderEvent::Delta("x".repeat(16_384)));
     stream.push(tool_call_event("fixture.tool"));
-    let provider = ScriptedProvider::scripted(vec![stream, vec![ProviderEvent::Completed]]);
+    let provider = ScriptedProvider::scripted(vec![stream]);
     let history = MemoryHistory::default();
     let mut runner = TurnRunner::new(provider.clone(), history.clone())
         .with_tool_executor(ApprovingToolExecutor);
 
     let result = runner.execute(command());
 
-    let Err(koduck_ai::application::TurnRunError::Durability(failure)) = result else {
-        panic!("an unreservable approval lifecycle fails as a durability boundary violation");
+    let Err(koduck_ai::application::TurnRunError::ResourceLimit(_)) = result else {
+        panic!("an unreservable approval lifecycle fails as a resource limit: {result:?}");
     };
-    assert!(failure.accepted);
     let recorded = &history.state.lock().expect("history lock").items;
     let items = recorded.values().next().expect("the accepted turn exists");
-    assert_only_durability_failure(items, 62);
+    assert_only_resource_limit_failure(items, 1, 508);
 }
 
 #[test]
 fn lifecycle_reservations_release_so_calls_sharing_the_exact_budget_complete() {
-    // 59 deltas plus two two-item execution lifecycles plus the completed
-    // terminal equal exactly the 64-item budget: reservations are released as
-    // their projections land, so exact-budget calls still complete.
-    let mut first: Vec<ProviderEvent> = (0..59)
-        .map(|_| ProviderEvent::Delta("d".to_owned()))
-        .collect();
-    first.push(tool_call_event("fixture.tool"));
+    // 254 two-item execution lifecycles, two byte-cap coalesced deltas, the
+    // usage item, and the completed terminal equal exactly the 512-item
+    // budget: reservations are released as their projections land, so
+    // exact-budget calls still complete (ADR-0005 PLB-5).
+    let mut first: Vec<ProviderEvent> = (0..254).map(|_| tool_call_event("fixture.tool")).collect();
+    first.push(ProviderEvent::Delta("x".repeat(16_384)));
+    first.push(ProviderEvent::Delta("y".repeat(16_384)));
     let provider = ScriptedProvider::scripted(vec![
         first,
-        vec![tool_call_event("fixture.tool")],
-        vec![ProviderEvent::Completed],
+        vec![
+            ProviderEvent::Usage(Usage::new(2, 4).expect("valid usage")),
+            ProviderEvent::Completed,
+        ],
     ]);
     let history = MemoryHistory::default();
     let executor = RecordingToolExecutor::default();
@@ -1192,15 +1236,17 @@ fn lifecycle_reservations_release_so_calls_sharing_the_exact_budget_complete() {
 
     assert_eq!(result.status, TurnStatus::Completed);
     let mut expected = vec!["user_message"];
-    expected.extend(std::iter::repeat_n("agent_message_delta", 59));
+    for _ in 0..254 {
+        expected.extend(["tool_call", "tool_result"]);
+    }
     expected.extend([
-        "tool_call",
-        "tool_result",
-        "tool_call",
-        "tool_result",
+        "agent_message_delta",
+        "agent_message_delta",
+        "usage",
         "completed",
     ]);
     assert_eq!(payload_kinds(&result.replay), expected);
+    assert_eq!(result.replay.len(), 1 + 512);
 }
 
 #[test]
@@ -1270,12 +1316,14 @@ fn a_projection_durability_failure_takes_precedence_over_the_executor_error() {
     // error: the missing durable projection is the more severe contract
     // violation, so the Turn enters the durability path rather than recording
     // the executor's normal tool-error terminal (ADR-0001, ADR-0003 TC-06).
+    // The outage is injected at the first projection append; the coalesced
+    // delta ahead of it stays durable (ADR-0005 PLB-1).
     let mut stream: Vec<ProviderEvent> = (0..63)
         .map(|_| ProviderEvent::Delta("d".to_owned()))
         .collect();
     stream.push(tool_call_event("fixture.tool"));
     let provider = ScriptedProvider::scripted(vec![stream, vec![ProviderEvent::Completed]]);
-    let history = MemoryHistory::default();
+    let history = MemoryHistory::failing_first_projection_append();
     let mut runner = TurnRunner::new(provider.clone(), history.clone())
         .with_tool_executor(FailingDenialToolExecutor);
 
@@ -1287,7 +1335,7 @@ fn a_projection_durability_failure_takes_precedence_over_the_executor_error() {
     assert!(failure.accepted);
     let recorded = &history.state.lock().expect("history lock").items;
     let items = recorded.values().next().expect("the accepted turn exists");
-    assert_only_durability_failure(items, 63);
+    assert_only_durability_failure(items, 1);
 }
 
 #[test]

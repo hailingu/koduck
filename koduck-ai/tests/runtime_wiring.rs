@@ -1,4 +1,5 @@
 // ADR: docs/adr/ADR-0001-provider-neutral-turn-kernel.md
+// ADR: docs/adr/ADR-0005-provider-delta-coalescing-and-512-item-turn-budget.md
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Read, Write};
@@ -448,6 +449,18 @@ impl TurnHistory for ConcurrentHistory {
         Ok(durable)
     }
 
+    fn append_tool_projection(
+        &mut self,
+        turn: &AcceptedTurn,
+        items: Vec<koduck_ai::application::NewItem>,
+    ) -> Result<Vec<Item>, HistoryError> {
+        let mut durable = Vec::new();
+        for item in items {
+            durable.push(self.append(turn, item)?);
+        }
+        Ok(durable)
+    }
+
     fn replay(&self, _tenant_id: &TenantId, turn_id: TurnId) -> Result<Vec<Item>, HistoryError> {
         self.state
             .lock()
@@ -509,20 +522,33 @@ impl ConcurrentHistory {
     }
 }
 
+/// Serves one denied Tool-call round of 254 calls — 508 counted projection
+/// publications — then idles with Pending frames until the Turn terminalizes.
 #[derive(Clone)]
-struct BackpressuredProvider;
+struct ProjectionHeavyThenIdleProvider {
+    rounds_served: Arc<Mutex<usize>>,
+}
 
-impl ModelProvider for BackpressuredProvider {
+impl ModelProvider for ProjectionHeavyThenIdleProvider {
     fn stream(&mut self, _input: ModelInput) -> Result<ProviderStream<'_>, ProviderError> {
-        let mut delta_count = 0;
-        Ok(Box::new(std::iter::from_fn(move || {
-            if delta_count < 63 {
-                delta_count += 1;
-                Some(ProviderEvent::Delta("A".to_owned()))
-            } else {
-                thread::sleep(Duration::from_millis(1));
-                Some(ProviderEvent::Pending)
-            }
+        let first_round = {
+            let mut served = self.rounds_served.lock().expect("round lock");
+            let first = *served == 0;
+            *served += 1;
+            first
+        };
+        if first_round {
+            let round: Vec<ProviderEvent> = (0..254)
+                .map(|_| ProviderEvent::ToolCall {
+                    name: "fixture.tool".to_owned(),
+                    arguments: "{}".to_owned(),
+                })
+                .collect();
+            return Ok(Box::new(round.into_iter()));
+        }
+        Ok(Box::new(std::iter::from_fn(|| {
+            thread::sleep(Duration::from_millis(1));
+            Some(ProviderEvent::Pending)
         })))
     }
 }
@@ -531,7 +557,12 @@ impl ModelProvider for BackpressuredProvider {
 async fn unread_sse_backpressure_does_not_block_interrupt_terminalization() {
     let history = ConcurrentHistory::default();
     let router = build_router(
-        TurnRunner::new(BackpressuredProvider, history.clone()),
+        TurnRunner::new(
+            ProjectionHeavyThenIdleProvider {
+                rounds_served: Arc::new(Mutex::new(0)),
+            },
+            history.clone(),
+        ),
         ApprovalsUnavailable,
     );
     let response = router
@@ -541,13 +572,13 @@ async fn unread_sse_backpressure_does_not_block_interrupt_terminalization() {
         .expect("stream response");
     let turn_id = history.accepted_turn_id();
 
-    timeout(Duration::from_millis(500), async {
-        while history.item_count(turn_id) < 64 {
+    timeout(Duration::from_secs(5), async {
+        while history.item_count(turn_id) < 509 {
             tokio::time::sleep(Duration::from_millis(1)).await;
         }
     })
     .await
-    .expect("all 63 provider deltas become durable without consuming the terminal reserve");
+    .expect("all 508 counted projection publications become durable without a reading consumer");
 
     let interrupt = router
         .oneshot(interrupt_request(turn_id))
@@ -781,4 +812,175 @@ fn interrupt_request(turn_id: TurnId) -> Request<Body> {
         .header("x-koduck-subject-id", "subject-a")
         .body(Body::empty())
         .expect("valid interrupt request")
+}
+
+// ADR: docs/adr/ADR-0005-provider-delta-coalescing-and-512-item-turn-budget.md
+
+/// One provider whose successive streams replay one scripted event list each.
+#[derive(Clone)]
+struct StreamsProvider {
+    streams: Vec<Vec<ProviderEvent>>,
+    taken: usize,
+}
+
+impl ModelProvider for StreamsProvider {
+    fn stream(&mut self, _input: ModelInput) -> Result<ProviderStream<'_>, ProviderError> {
+        let script = self.streams.get(self.taken).cloned().unwrap_or_default();
+        self.taken += 1;
+        Ok(Box::new(script.into_iter()))
+    }
+}
+
+/// One provider that emits a single delta and then idles with Pending
+/// frames, so a disconnect arrives with non-empty buffered content.
+#[derive(Clone)]
+struct OneDeltaThenIdle;
+
+impl ModelProvider for OneDeltaThenIdle {
+    fn stream(&mut self, _input: ModelInput) -> Result<ProviderStream<'_>, ProviderError> {
+        let mut delta_sent = false;
+        Ok(Box::new(std::iter::from_fn(move || {
+            thread::sleep(Duration::from_millis(25));
+            if !delta_sent {
+                delta_sent = true;
+                return Some(ProviderEvent::Delta("buffered".to_owned()));
+            }
+            Some(ProviderEvent::Pending)
+        })))
+    }
+}
+
+/// PLB-8/AC-7: the bounded SSE queue is exactly the declared
+/// started-plus-512-counted-plus-error bound of 514 slots, admits the legal
+/// maximum counted sequence to a slow consumer without mistaking it for a
+/// disconnect, and a disconnected consumer with buffered content still
+/// flushes durably before the cancellation terminal.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn raised_turn_budget_preserves_sse_backpressure_and_disconnect() {
+    use koduck_ai::runtime::STREAM_BUFFER_CAPACITY;
+
+    assert_eq!(
+        STREAM_BUFFER_CAPACITY, 514,
+        "one turn.started, up to 512 counted publications, and one in-band error"
+    );
+
+    // 254 denied Tool calls contribute 508 counted projection items; the
+    // coalesced delta, the usage item, and the terminal reach exactly 512
+    // counted publications delivered while the consumer has read nothing.
+    let tool_round: Vec<ProviderEvent> = (0..254)
+        .map(|_| ProviderEvent::ToolCall {
+            name: "fixture.tool".to_owned(),
+            arguments: "{}".to_owned(),
+        })
+        .collect();
+    let completion = vec![
+        ProviderEvent::Delta("answer".to_owned()),
+        ProviderEvent::Usage(Usage::new(2, 4).expect("valid usage")),
+        ProviderEvent::Completed,
+    ];
+    let history = ConcurrentHistory::default();
+    let router = build_router(
+        TurnRunner::new(
+            StreamsProvider {
+                streams: vec![tool_round, completion],
+                taken: 0,
+            },
+            history.clone(),
+        ),
+        ApprovalsUnavailable,
+    );
+    let response = router
+        .clone()
+        .oneshot(chat_request("/api/v1/ai/chat/stream"))
+        .await
+        .expect("stream response");
+    let turn_id = history.accepted_turn_id();
+
+    timeout(Duration::from_secs(10), async {
+        while history.item_count(turn_id) < 512 {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("the exact 512-counted budget turns durable without a reading consumer");
+
+    let body = to_bytes(response.into_body(), 4 * 1_048_576)
+        .await
+        .expect("bounded stream body");
+    let stream = String::from_utf8_lossy(&body);
+    assert_eq!(stream.matches("event: turn.started").count(), 1);
+    assert_eq!(
+        stream.matches("event: item.created").count(),
+        509,
+        "508 projection items plus one coalesced delta become visible"
+    );
+    assert_eq!(stream.matches("event: turn.completed").count(), 1);
+    assert!(
+        !stream.contains("event: error"),
+        "legal maximum delivery is never mistaken for a downstream disconnect"
+    );
+    assert!(!history.has_cancelled_terminal(turn_id));
+    assert!(!history.has_interrupted_terminal(turn_id));
+
+    // A consumer that disconnects while content is buffered: the flush
+    // still happens durably before the cancellation terminal.
+    disconnect_with_buffered_content_flushes_before_terminal().await;
+}
+
+/// Drives one streamed Turn whose single delta stays buffered when the
+/// consumer drops the SSE body: the disconnect durably cancels and the
+/// buffered delta lands before the cancellation terminal.
+async fn disconnect_with_buffered_content_flushes_before_terminal() {
+    // A consumer that disconnects while content is buffered: the flush
+    // still happens durably before the cancellation terminal.
+    let history = ConcurrentHistory::default();
+    let router = build_router(
+        TurnRunner::new(OneDeltaThenIdle, history.clone()),
+        ApprovalsUnavailable,
+    );
+    let response = router
+        .oneshot(chat_request("/api/v1/ai/chat/stream"))
+        .await
+        .expect("stream response");
+    let turn_id = history.accepted_turn_id();
+    let mut body = response.into_body().into_data_stream();
+    let started = body
+        .next()
+        .await
+        .expect("turn.started chunk")
+        .expect("turn.started is readable");
+    assert!(String::from_utf8_lossy(&started).contains("event: turn.started"));
+
+    // Let the runner consume and buffer the delta fragment inside the
+    // latency window before the disconnect arrives.
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    drop(body);
+
+    timeout(Duration::from_secs(5), async {
+        while !history.has_cancelled_terminal(turn_id) {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("SSE disconnect durably cancels the turn with buffered content");
+    let durable = history
+        .state
+        .lock()
+        .expect("history state lock")
+        .items
+        .get(&turn_id)
+        .expect("the accepted turn exists")
+        .clone();
+    let delta_index = durable
+        .iter()
+        .position(|item| matches!(item.payload, ItemPayload::AgentMessageDelta { .. }))
+        .expect("the buffered delta flushed durably");
+    let terminal_index = durable
+        .iter()
+        .position(|item| matches!(item.payload, ItemPayload::Terminal(_)))
+        .expect("the cancellation terminal exists");
+    assert!(
+        delta_index < terminal_index,
+        "buffered text is durably flushed before the cancellation terminal"
+    );
 }

@@ -1,5 +1,6 @@
 // ADR: docs/adr/ADR-0001-provider-neutral-turn-kernel.md
 // ADR: docs/adr/ADR-0003-default-deny-tool-approval-execution-boundary.md
+// ADR: docs/adr/ADR-0005-provider-delta-coalescing-and-512-item-turn-budget.md
 
 //! Provider-neutral application orchestration and consumer-owned ports.
 
@@ -10,6 +11,7 @@ mod audit;
 mod cancellation;
 mod canonical_dispatch;
 mod deadline;
+mod delta_coalescer;
 mod durability;
 mod execution;
 mod execution_dispatch;
@@ -48,6 +50,7 @@ pub use cancellation::{CancelAcknowledgement, CancelPermit, CancelledEffectState
 pub(crate) use cancellation::{PendingApprovalCancellation, PendingApprovalCanceller};
 pub use deadline::ActionDeadline;
 pub(crate) use deadline::MAX_ACTION_DURATION_MILLIS;
+pub use delta_coalescer::{DELTA_FLUSH_LATENCY, DeltaCoalescer, MAX_BUFFERED_DELTA_BYTES};
 pub use durability::{AppendPolicy, BufferLimitError};
 pub use execution::*;
 pub use executor_envelope::*;

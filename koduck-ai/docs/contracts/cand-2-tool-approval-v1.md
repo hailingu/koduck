@@ -1,4 +1,5 @@
 <!-- ADR: docs/adr/ADR-0003-default-deny-tool-approval-execution-boundary.md -->
+<!-- ADR: docs/adr/ADR-0005-provider-delta-coalescing-and-512-item-turn-budget.md -->
 
 # CAND-2 Tool Approval v1 Implementation Contract
 
@@ -148,8 +149,9 @@ index, a missing index, a non-object function fragment, or a
 TC-02/TC-11). Assembly is bounded incrementally before any allocation grows:
 one call's cumulative arguments never exceed the canonical 65,536-byte
 serialized action input (`TOOL_CALL_ARGUMENTS_TOO_LARGE`), and a 33rd
-assembled call fails closed (`TOO_MANY_TOOL_CALLS`) because the 64-item
-per-Turn provider buffer could never record it. A `[DONE]` frame arriving
+assembled call fails closed (`TOO_MANY_TOOL_CALLS`): the 32-call assembly
+bound is exact and retained unchanged under the raised 512-item per-Turn
+budget (ADR-0005 PLB-8). A `[DONE]` frame arriving
 while assembled fragments remain unflushed (no `finish_reason: "tool_calls"`)
 fails closed as `INVALID_TOOL_CALL_FRAME` instead of dropping the requested
 action.
@@ -176,8 +178,8 @@ runner-supplied `TurnProjectionSink`, whose `append` performs the durable
 append and whose `publish` is the visibility step (ADR-0003 TC-06). The sink
 is seeded with the runner's cumulative per-Turn provider counters and
 synchronizes them back when the call returns, so one Turn's projections share
-the single 64-item/1-MiB provider buffer allowance with every provider item
-(ADR-0001). Before persisting, the sink validates each projection's canonical
+the single 512-item/1-MiB provider buffer allowance with every coalesced
+provider item (ADR-0001, ADR-0005 PLB-5). Before persisting, the sink validates each projection's canonical
 tuple — the status/decision/version shape, the exact `prepared` = 1 /
 `running` = 2 / terminal = 3 transition versions, and the canonical Tool
 value validators for the descriptor, version, and target fields — and tracks

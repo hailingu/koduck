@@ -1,4 +1,5 @@
 // ADR: docs/adr/ADR-0003-default-deny-tool-approval-execution-boundary.md
+// ADR: docs/adr/ADR-0005-provider-delta-coalescing-and-512-item-turn-budget.md
 
 //! Identity, lifecycle-completion, and retry guards split from the shared harness.
 
@@ -78,7 +79,10 @@ fn appends_are_rejected_after_the_first_projection_failure() {
         .collect();
     stream.push(tool_call_event("fixture.tool"));
     let provider = ScriptedProvider::scripted(vec![stream, vec![ProviderEvent::Completed]]);
-    let history = MemoryHistory::default();
+    // The first projection append fails through an outage rather than the
+    // budget, so the sink failure under test is its persistence rejection
+    // (ADR-0003 TC-06).
+    let history = MemoryHistory::failing_first_projection_append();
     let mut runner = TurnRunner::new(provider.clone(), history.clone())
         .with_tool_executor(PersistentAfterFailureToolExecutor);
     let Err(koduck_ai::application::TurnRunError::Durability(failure)) = runner.execute(command())
@@ -87,9 +91,11 @@ fn appends_are_rejected_after_the_first_projection_failure() {
     };
     assert!(failure.accepted);
     let recorded = &history.state.lock().expect("history lock").items;
+    // The 62 one-byte fragments coalesce into one durable delta before the
+    // Tool-call boundary (ADR-0005 PLB-1).
     assert_only_durability_failure(
         recorded.values().next().expect("the accepted turn exists"),
-        62,
+        1,
     );
 }
 

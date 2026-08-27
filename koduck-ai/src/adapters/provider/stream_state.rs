@@ -1,6 +1,7 @@
 // ADR: docs/adr/ADR-0003-default-deny-tool-approval-execution-boundary.md
 // ADR: docs/adr/ADR-0004-provider-stream-completion-normalization.md
 // ADR: koduck-ai/docs/adr/ADR-0001-strict-json-duplicate-member-validation.md
+// ADR: docs/adr/ADR-0005-provider-delta-coalescing-and-512-item-turn-budget.md
 
 //! Stateful parsing and bounded assembly for one provider stream.
 
@@ -19,8 +20,8 @@ use super::{OpenAiFrame, OpenAiTransportError};
 const MAX_TOOL_CALL_ARGUMENTS_BYTES: usize = 65_536;
 
 /// Every serviced call records at least a `ToolCall` and a `ToolResult` D-3
-/// item, so the 64-item per-Turn provider buffer (ADR-0001) can never record a
-/// 33rd call; the assembly fails closed instead of allocating past that bound.
+/// item; the 32-call assembly bound stays exact and unchanged under the
+/// raised 512-item per-Turn budget (ADR-0003, ADR-0005 PLB-8).
 const MAX_ASSEMBLED_TOOL_CALLS: usize = 32;
 
 /// Per-stream assembly state for provider Tool-call fragments (ADR-0003).
@@ -298,9 +299,8 @@ impl StreamState {
     /// Cumulative bounds are enforced before any allocation grows: one call's
     /// assembled arguments never exceed the canonical 65,536-byte serialized
     /// action input (ADR-0003), and the assembled call count never exceeds 32
-    /// — each serviced call appends at least a `ToolCall` and a `ToolResult`
-    /// D-3 item, so the 64-item per-Turn provider buffer (ADR-0001) could
-    /// never record a 33rd call. A provider that crosses either bound fails
+    /// — the exact bound retained unchanged under the raised 512-item Turn
+    /// budget (ADR-0005 PLB-8). A provider that crosses either bound fails
     /// closed.
     fn accumulate_tool_call_fragments(&mut self, fragments: &[Value]) -> Result<(), ProviderError> {
         for fragment in fragments {
