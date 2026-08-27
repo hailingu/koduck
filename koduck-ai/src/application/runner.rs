@@ -445,11 +445,8 @@ fn drive_stream<H: TurnHistory, T: ToolCallExecutor>(
         // a due buffered chunk publishes no later than 500 ms after its first
         // byte, with its outcome arbitrated like any event failure
         // (ADR-0005 PLB-2/PLB-7).
-        if let Some(due) = state.delta_coalescer.take_due_flush(Instant::now()) {
-            let outcome = append_coalesced_deltas(history, accepted, state, [due], observer);
-            if arbitrate_flush_outcome(history, accepted, state, outcome, observer)? {
-                return Ok(true);
-            }
+        if flush_due_deltas(history, accepted, state, observer)? {
+            return Ok(true);
         }
         let interruption_poll_due = last_interruption_poll
             .is_none_or(|last: Instant| last.elapsed() >= INTERRUPTION_POLL_INTERVAL);
@@ -466,6 +463,12 @@ fn drive_stream<H: TurnHistory, T: ToolCallExecutor>(
             return Ok(true);
         }
         if terminalize_from_cancellation(history, accepted, state, observer, cancelled)? {
+            return Ok(true);
+        }
+        // A control read can block past the boundary a just-preceding sample
+        // missed, so the deadline is re-sampled after the blocking read and
+        // before the event is handled (ADR-0005 PLB-2).
+        if flush_due_deltas(history, accepted, state, observer)? {
             return Ok(true);
         }
         let event_result = handle_event(history, tools, accepted, trust, state, event, observer);
@@ -487,6 +490,22 @@ fn drive_stream<H: TurnHistory, T: ToolCallExecutor>(
         return Ok(true);
     }
     Ok(false)
+}
+
+/// Samples the latency deadline and flushes any due buffered chunk with its
+/// outcome arbitrated (ADR-0005 PLB-2/PLB-7). Returns whether the Turn
+/// closed.
+fn flush_due_deltas<H: TurnHistory>(
+    history: &mut H,
+    accepted: &AcceptedTurn,
+    state: &mut ExecutionState,
+    observer: &mut dyn FnMut(TurnStreamEvent),
+) -> Result<bool, TurnRunError> {
+    let Some(due) = state.delta_coalescer.take_due_flush(Instant::now()) else {
+        return Ok(false);
+    };
+    let outcome = append_coalesced_deltas(history, accepted, state, [due], observer);
+    arbitrate_flush_outcome(history, accepted, state, outcome, observer)
 }
 
 /// Flushes buffered deltas outside the driving loop's observation window and

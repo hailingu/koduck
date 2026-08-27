@@ -1050,3 +1050,76 @@ fn deadline_flush_precedes_the_slow_interruption_control_read() {
         "the due delta flush must precede the next (slow) interruption control read"
     );
 }
+
+/// PLB-2 (PR-8 review P2, second round): when the deadline is sampled just
+/// before its 500-ms boundary and the following interruption control read
+/// blocks, the flush must still run inside the same event iteration —
+/// immediately after the blocking read — instead of waiting for the next
+/// event.
+#[test]
+fn deadline_flush_runs_after_a_blocking_control_read_crossing_the_boundary() {
+    let cancel = Rc::new(Cell::new(false));
+    let items = Rc::new(RefCell::new(Vec::new()));
+    let trace: TraceLog = Arc::new(Mutex::new(Vec::new()));
+    let started = Instant::now();
+    let result = TurnRunner::new(
+        BufferedIdleProvider {
+            deltas: vec!["a".to_owned()],
+            flag: Rc::clone(&cancel),
+            // The next event arrives 490 ms after the delta buffered, so the
+            // loop-head sample misses the 500-ms boundary.
+            idle_sleep: Duration::from_millis(490),
+            flag_after: Some(Duration::from_secs(30)),
+            started: None,
+        },
+        InterruptibleHistory {
+            interrupt: Rc::new(Cell::new(false)),
+            fail_append_at: None,
+            append_calls: 0,
+            items: Rc::clone(&items),
+            // Each control read blocks 700 ms; the first runs before the
+            // delta buffers, the second inside the boundary-crossing event.
+            control_read_delay: Some(Duration::from_millis(700)),
+            trace: Some(Arc::clone(&trace)),
+        },
+    )
+    .execute_with_observer_and_cancellation(
+        buffered_command(),
+        &mut |event| {
+            if matches!(
+                event,
+                koduck_ai::application::TurnStreamEvent::Item {
+                    item: Item {
+                        payload: ItemPayload::AgentMessageDelta { .. },
+                        ..
+                    },
+                    ..
+                }
+            ) {
+                cancel.set(true);
+            }
+        },
+        &|| cancel.get(),
+    );
+    assert_eq!(
+        result
+            .expect("the cancelled turn returns its durable replay")
+            .status,
+        TurnStatus::Cancelled
+    );
+
+    let trace = trace.lock().expect("trace lock");
+    let first_append = trace
+        .iter()
+        .find(|(kind, _)| *kind == "provider_append")
+        .expect("the delta flushed")
+        .1;
+    // Timeline: control read 1 (0-700 ms) buffers the delta at ~700 ms; the
+    // next event at ~1190 ms samples age 490 ms (not due), control read 2
+    // blocks until ~1890 ms, and the post-read check must flush there.
+    // Waiting for a further event (~2380 ms) exceeds the bound below.
+    assert!(
+        first_append.duration_since(started) < Duration::from_secs(2),
+        "the flush runs inside the boundary-crossing iteration, not at the next event"
+    );
+}

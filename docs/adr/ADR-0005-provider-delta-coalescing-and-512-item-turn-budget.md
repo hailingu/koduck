@@ -490,6 +490,16 @@ precondition demonstrably does not apply.
   timer eligibility separately from database completion latency.
 - The exact SSE queue capacity is derived as 514 slots: one `turn.started`, up
   to 512 counted Item/terminal publications, and one possible in-band error.
+- **Observed scheduling debt (PR-8 review, 2026-08-27)**: within the
+  synchronous `ProviderStream` iterator port (ADR-0001), the runtime clock
+  advances between events at the production transport's ~50-ms `Pending`
+  poll granularity, so the deadline flush's end-to-end latency is bounded by
+  500 ms plus one scheduling quantum; the boundary is additionally re-sampled
+  after every potentially blocking interruption control read so a blocked
+  read cannot add its full two-second deadline. A strictly deadline-aware
+  wake — binding `stream` waits to the coalescer's remaining latency — would
+  change the ADR-0001 provider-port contract and is out of scope for this
+  record; AC-2 verifies the 500-ms eligibility boundary exactly.
 - **Decomposition review (2026-08-27)**: measured at the implemented
   revision — production files over the 400-line review threshold are
   `runner.rs` 656 (down from a 796-line baseline; the coalescing additions
