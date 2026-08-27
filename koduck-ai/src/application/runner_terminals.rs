@@ -101,10 +101,16 @@ pub(super) fn append_coalesced_deltas<H: TurnHistory>(
             return Ok(true);
         }
         let durable = history.append(accepted, item)?;
-        accept_appended_provider_item(state, durable, true)?;
+        // The append can return an arbitrated terminal instead of the delta
+        // — an interrupt that won the durable race — which closes the Turn
+        // immediately; no further chunk or semantic item may append past it.
+        let closed = accept_appended_provider_item(state, durable, true)?;
         let published = state.published.last().ok_or(HistoryError::Unavailable)?;
         observe_item(observer, accepted, published);
         state.observed_len = state.published.len();
+        if closed {
+            return Ok(true);
+        }
     }
     Ok(false)
 }

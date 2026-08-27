@@ -780,9 +780,12 @@ impl ModelProvider for EventScriptedProvider {
     }
 }
 
-/// One in-memory history whose append can fail from a fixed call index.
+/// One in-memory history whose append can fail from a fixed call index, or
+/// whose first provider append is replaced by an `Interrupted` terminal the
+/// way production arbitration commits an interrupt that wins the append race.
 struct ScriptedHistory {
     fail_append_at: Option<usize>,
+    interrupt_wins_first_provider_append: bool,
     append_calls: usize,
     items: Rc<RefCell<Vec<Item>>>,
 }
@@ -833,6 +836,16 @@ impl TurnHistory for ScriptedHistory {
             .is_some_and(|first_failure| self.append_calls >= first_failure)
         {
             return Err(HistoryError::Unavailable);
+        }
+        if self.interrupt_wins_first_provider_append {
+            // Production replaces the pending append with the arbitrated
+            // interrupt terminal and returns it successfully.
+            let terminal = Item::new(
+                self.items.borrow().len() as u64 + 1,
+                ItemPayload::Terminal(TerminalOutcome::Interrupted),
+            );
+            self.items.borrow_mut().push(terminal.clone());
+            return Ok(terminal);
         }
         let durable = Item::new(self.items.borrow().len() as u64 + 1, item.into_payload());
         self.items.borrow_mut().push(durable.clone());
@@ -976,6 +989,7 @@ fn assert_boundary_scenario(
         },
         ScriptedHistory {
             fail_append_at: None,
+            interrupt_wins_first_provider_append: false,
             append_calls: 0,
             items: Rc::clone(&items),
         },
@@ -1054,6 +1068,7 @@ fn coalesced_deltas_preserve_semantic_order_and_append_before_publish() {
         },
         ScriptedHistory {
             fail_append_at: Some(1),
+            interrupt_wins_first_provider_append: false,
             append_calls: 0,
             items: Rc::clone(&items),
         },
@@ -1105,6 +1120,7 @@ fn resource_limit_and_durability_outage_have_distinct_diagnostics() {
     exhausting.push(ProviderEvent::Completed);
     let exhausting_history = ScriptedHistory {
         fail_append_at: None,
+        interrupt_wins_first_provider_append: false,
         append_calls: 0,
         items: Rc::new(RefCell::new(Vec::new())),
     };
@@ -1151,6 +1167,7 @@ fn resource_limit_and_durability_outage_have_distinct_diagnostics() {
     // An actual append outage keeps the durability-unavailable diagnostics.
     let outage_history = ScriptedHistory {
         fail_append_at: Some(2),
+        interrupt_wins_first_provider_append: false,
         append_calls: 0,
         items: Rc::new(RefCell::new(Vec::new())),
     };
@@ -1212,6 +1229,7 @@ fn out_of_loop_resource_limit_flush_publishes_the_durable_terminal() {
     let items = Rc::new(RefCell::new(Vec::new()));
     let history = ScriptedHistory {
         fail_append_at: None,
+        interrupt_wins_first_provider_append: false,
         append_calls: 0,
         items: Rc::clone(&items),
     };
@@ -1301,6 +1319,7 @@ fn deadline_flush_resource_limit_publishes_the_durable_terminal() {
         DeadlineBudgetProvider { delay_ms: 600 },
         ScriptedHistory {
             fail_append_at: None,
+            interrupt_wins_first_provider_append: false,
             append_calls: 0,
             items: Rc::clone(&items),
         },
@@ -1319,4 +1338,47 @@ fn deadline_flush_resource_limit_publishes_the_durable_terminal() {
         ),
         TurnStreamEvent::Started { .. } => false,
     }));
+}
+
+/// PLB-3/PLB-4 (PR-8 review P1): when the durable append arbitration
+/// replaces a flushed delta with an `Interrupted` terminal, the flush stops
+/// and the Turn completes its interruption instead of appending past the
+/// terminal and double-transitioning the lifecycle.
+#[test]
+fn interrupt_won_flush_append_closes_the_turn_without_double_transition() {
+    let items = Rc::new(RefCell::new(Vec::new()));
+    let result = TurnRunner::new(
+        EventScriptedProvider {
+            scripts: vec![vec![
+                ProviderEvent::Delta("a".to_owned()),
+                ProviderEvent::Usage(Usage::new(1, 2).expect("valid usage")),
+                ProviderEvent::Completed,
+            ]],
+            taken: 0,
+            consumed: Rc::new(Cell::new(0)),
+        },
+        ScriptedHistory {
+            fail_append_at: None,
+            interrupt_wins_first_provider_append: true,
+            append_calls: 0,
+            items: Rc::clone(&items),
+        },
+    )
+    .execute(TurnCommand::new(trust(), None, "hello").expect("valid command"));
+
+    let result = result.expect("the interrupted turn returns its durable replay");
+    assert_eq!(result.status, TurnStatus::Interrupted);
+    assert_eq!(
+        durable_payload_kinds(&items.borrow()),
+        vec!["user_message", "interrupted"],
+        "the arbitrated terminal is the only durable outcome"
+    );
+    assert_eq!(
+        result
+            .published
+            .iter()
+            .filter(|item| matches!(item.payload, ItemPayload::Terminal(_)))
+            .count(),
+        1
+    );
 }
