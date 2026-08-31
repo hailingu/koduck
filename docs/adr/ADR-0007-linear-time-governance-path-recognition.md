@@ -3,7 +3,7 @@
 ## Metadata [Required]
 
 - **Decision Status**: Accepted
-- **Implementation Status**: In Progress
+- **Implementation Status**: Complete
 - **Date**: 2026-08-31
 - **Author**: @codex
 - **Decision Owner**: @linhai
@@ -163,9 +163,9 @@ Allowed subtask statuses: `Not Started`, `In Progress`, `Blocked`, `Complete`, o
 
 | Path | Stable symbol or contract anchor | Key code excerpt, when needed | Purpose | Source revision |
 | --- | --- | --- | --- | --- |
-| `tools/governance-validator/test/index-path-validation.test.mjs` | `rejects an adversarial index-path without timing out` | N/A — stable symbol is sufficient | Executes the production validator against a controlled adversarial temporary repository fixture. | Working-tree pre-commit state — replace before terminal completion. |
-| `tools/governance-validator/lib/relationship-validation.mjs` | `createRelationshipValidator` > `validateIndex` | N/A — stable symbol is sufficient | Finds candidate governance record paths while validating index rows. | Working-tree pre-commit state — replace before terminal completion. |
-| `tools/governance-validator/validate.mjs` | `ADR_PATH_PATTERN` and `ADD_PATH_PATTERN` | N/A — stable symbols are sufficient | Recognizes linked ADR and ADD record paths for reciprocal relationship validation. | Working-tree pre-commit state — replace before terminal completion. |
+| `tools/governance-validator/test/index-path-validation.test.mjs` | `rejects an adversarial index-path without timing out` | N/A — stable symbol is sufficient | Executes the production validator against a controlled adversarial temporary repository fixture. | `109c478580d8ec41bdf65b43b68cb8a0e90c14a8` |
+| `tools/governance-validator/lib/relationship-validation.mjs` | `createRelationshipValidator` > `validateIndex` | N/A — stable symbol is sufficient | Finds candidate governance record paths while validating index rows. | `109c478580d8ec41bdf65b43b68cb8a0e90c14a8` |
+| `tools/governance-validator/validate.mjs` | `ADR_PATH_PATTERN` and `ADD_PATH_PATTERN` | N/A — stable symbols are sufficient | Recognizes linked ADR and ADD record paths for reciprocal relationship validation. | `109c478580d8ec41bdf65b43b68cb8a0e90c14a8` |
 
 **Migration and rollback strategy [Conditionally Required — this replaces or changes existing behavior]**: Replace only the unsafe pattern internals; stop if existing valid-path tests fail. Rollback is a Git revert of the task commit, returning to the current expressions; no data or runtime migration is involved.
 
@@ -203,7 +203,7 @@ N/A — the planned localized changes do not exceed or waive a software-engineer
 | ID | Item | Completion Criterion | Expected Evidence | Status | Actual Evidence |
 | --- | --- | --- | --- | --- | --- |
 | A-1 | ADR approved | An eligible non-author approver, approval time, and exact `Approval Evidence: Approve` are recorded. | ADR metadata | Complete | @linhai approved at 2026-08-31T17:22:50+08:00 with `Approval Evidence: Approve`. |
-| A-2 | Complete task delivered | T-1 through T-3 have implementation evidence and AC-1 through AC-3 are Pass. | Implementation Plan and Acceptance Checks | In Progress | Source implementation and all checks are complete; terminal record update awaits immutable source-commit evidence. |
+| A-2 | Complete task delivered | T-1 through T-3 have implementation evidence and AC-1 through AC-3 are Pass. | Implementation Plan and Acceptance Checks | Complete | Source implementation is recorded by commit `109c478580d8ec41bdf65b43b68cb8a0e90c14a8`; every declared subtask and check is complete or Pass. |
 | A-3 | Reciprocal ADD link synchronized, when applicable | N/A — the task is not derived from product demand and has no ADD candidate. | Metadata Architecture Source | N/A — no ADD applies | N/A — no product-demand ADD applies. |
 | A-4 | Requirement levels satisfied | Every required section is complete, and every conditional trigger is completed or has a specific N/A reason. | Structured document review | Complete | `npm run validate` passed after the accepted ADR update. |
 | A-5 | Acceptance checks are decidable | Every check has one subtask, input, deterministic method, exact expected result, and evidence. | Acceptance Checks table | Complete | The accepted ADR's three checks reference T-1 through T-3 and passed as recorded. |
@@ -226,3 +226,4 @@ The record is Accepted and not archival-eligible. If a later rejection, deprecat
 | 2026-08-31 | Drafted the Full ADR for the three local SonarQube ReDoS findings in governance-validator path recognition. | @codex |
 | 2026-08-31 | Accepted by @linhai with approval evidence `Approve` at 2026-08-31T17:22:50+08:00. | @codex |
 | 2026-08-31 | Recorded the red `ETIMEDOUT` regression, the green implementation result, and pre-commit verification evidence. | @codex |
+| 2026-08-31 | Completed the ADR with source evidence pinned to `109c478580d8ec41bdf65b43b68cb8a0e90c14a8`. | @codex |
