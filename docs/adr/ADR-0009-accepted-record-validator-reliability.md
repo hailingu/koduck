@@ -2,16 +2,16 @@
 
 ## Metadata [Required]
 
-- **Decision Status**: Proposed
+- **Decision Status**: Accepted
 - **Implementation Status**: Not Started
 - **Date**: 2026-08-31
 - **Author**: @codex
 - **Decision Owner**: @linhai
 - **Required Approver**: @linhai
 - **Record Scope**: Project
-- **Approver [Conditionally Required — Decision Status is or has been `Accepted`]**: N/A — Decision Status is `Proposed`
-- **Approval Time [Conditionally Required — Decision Status is or has been `Accepted`]**: N/A — Decision Status is `Proposed`
-- **Approval Evidence [Conditionally Required — Decision Status is or has been `Accepted`]**: N/A — Decision Status is `Proposed`
+- **Approver [Conditionally Required — Decision Status is or has been `Accepted`]**: @linhai
+- **Approval Time [Conditionally Required — Decision Status is or has been `Accepted`]**: 2026-08-31T21:33:34+08:00
+- **Approval Evidence [Conditionally Required — Decision Status is or has been `Accepted`]**: Approve
 - **Rejector [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is `Proposed`
 - **Rejection Time [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is `Proposed`
 - **Rejection Evidence [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is `Proposed`
@@ -204,7 +204,7 @@ N/A — the localized replacements do not exceed or waive a software-engineering
 
 | ID | Item | Completion Criterion | Expected Evidence | Status | Actual Evidence |
 | --- | --- | --- | --- | --- | --- |
-| A-1 | ADR approved | An eligible non-author approver, approval time, and exact `Approval Evidence: Approve` are recorded. | ADR metadata | Not Started | Not run — awaiting approval. |
+| A-1 | ADR approved | An eligible non-author approver, approval time, and exact `Approval Evidence: Approve` are recorded. | ADR metadata | Complete | @linhai approved at 2026-08-31T21:33:34+08:00 with `Approval Evidence: Approve`. |
 | A-2 | Complete task delivered | T-1 through T-2 have implementation evidence and AC-1 through AC-4 are Pass. | Implementation Plan and Acceptance Checks | Not Started | Not run — awaiting implementation and OCR verification. |
 | A-3 | Reciprocal ADD link synchronized, when applicable | N/A — the task is not derived from product demand and has no ADD candidate. | Metadata Architecture Source | N/A — no ADD applies | N/A — no product-demand ADD applies. |
 | A-4 | Requirement levels satisfied | Every required section is complete, and every conditional trigger is completed or has a specific N/A reason. | Structured document review | Not Started | Not run — terminal review follows implementation. |
@@ -226,3 +226,4 @@ The record is Proposed and not archival-eligible. If a later rejection, deprecat
 | Date | Change | Author |
 | --- | --- | --- |
 | 2026-08-31 | Drafted the Full ADR for the first four overall SonarQube Reliability findings in the accepted-record validator. | @codex |
+| 2026-08-31 | Accepted by @linhai with approval evidence `Approve` at 2026-08-31T21:33:34+08:00. | @codex |
