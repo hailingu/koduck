@@ -2,19 +2,19 @@
 
 ## Metadata [Required]
 
-- **Decision Status**: Accepted
-- **Implementation Status**: In Progress
+- **Decision Status**: Proposed
+- **Implementation Status**: Not Started
 - **Date**: 2026-08-31
 - **Author**: @codex
 - **Decision Owner**: @linhai
 - **Required Approver**: @linhai
 - **Record Scope**: Project
-- **Approver [Conditionally Required — Decision Status is or has been `Accepted`]**: @linhai
-- **Approval Time [Conditionally Required — Decision Status is or has been `Accepted`]**: 2026-08-31T20:50:11+08:00
-- **Approval Evidence [Conditionally Required — Decision Status is or has been `Accepted`]**: Approve
-- **Rejector [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is `Accepted`
-- **Rejection Time [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is `Accepted`
-- **Rejection Evidence [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is `Accepted`
+- **Approver [Conditionally Required — Decision Status is or has been `Accepted`]**: Pending — reapproval required
+- **Approval Time [Conditionally Required — Decision Status is or has been `Accepted`]**: Pending — reapproval required
+- **Approval Evidence [Conditionally Required — Decision Status is or has been `Accepted`]**: Pending — reapproval required
+- **Rejector [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is Proposed
+- **Rejection Time [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is Proposed
+- **Rejection Evidence [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is Proposed
 - **Retired By [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — record is not retired
 - **Retirement Time [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — record is not retired
 - **Retirement Evidence [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — record is not retired
@@ -40,14 +40,14 @@ Unlabeled fields inside a `[Required]` section are required.
 
 ADR-0007 replaced three nested path-recognition expressions with slash-constrained variants and the Security filter then reported zero findings. The subsequent local SonarQube analysis still reports the same three source locations as Medium Reliability findings: `validateIndex` in the relationship validator and the ADR/ADD relationship-path recognition in the CLI. The revised expressions continue to contain repeated variable-width path segments, which SonarQube identifies as potentially super-linear.
 
-The current expressions also locate a path as a substring instead of requiring the complete delimiter-bounded token. For example, a selected candidate path ending in `.md.` can be reduced to its `.md` prefix and accepted. The validator must instead recognize only complete governance-record path tokens while preserving valid nested project or service paths.
+The existing real-validator adversarial regression remains green, so it must be preserved as the behavioral guard. A proposed test for a path ending in `.md.` was rejected before implementation because the current reciprocal-link validation already rejects that value; it does not represent a missing behavior. The residual defect is therefore the static analyzer finding at three expression sites, not an unproven path-acceptance change.
 
 ## Scope [Required]
 
 In scope:
 
-- Add one real-validator regression that proves a selected ADR path with trailing punctuation is rejected rather than truncated to a valid record path.
-- Replace the remaining three pattern-based extraction sites with one delimiter-bounded, procedural governance-record path recognizer.
+- Retain the existing real-validator adversarial regression as the behavior-preservation guard and record the current three-finding SonarQube baseline.
+- Replace the remaining three pattern-based extraction sites with one delimiter-bounded, procedural governance-record path recognizer that preserves existing accepted and rejected behavior.
 - Preserve valid ADR, ADD, project, and service-relative path recognition through the routed validator suites.
 
 Out of scope:
@@ -62,8 +62,7 @@ Out of scope:
 
 | ID | Tension | Impact | Decision |
 | --- | --- | --- | --- |
-| TN-1 | Full-token validation must reject suffix-contaminated paths while accepted project and service-relative paths must remain recognizable. | A permissive extractor can validate a substring; an over-restrictive extractor can reject valid nested records. | Split only on existing record delimiters and accept a token only when its complete final component has the required ADR or ADD filename form. |
-| TN-2 | The implementation must eliminate SonarQube's repeated-variable-width expression findings without introducing a broad parser framework. | Further expression tuning can retain the analyzer finding; a broad parser adds unrelated behavior. | Use one small procedural helper inside the existing relationship-validation boundary and retain existing file-resolution validation. |
+| TN-1 | Existing accepted and rejected path behavior must remain stable while the repeated-variable-width expressions are removed. | An overly broad replacement can change record resolution; a further expression tweak can retain the analyzer finding. | Use one small procedural helper inside the existing relationship-validation boundary, retain existing file-resolution validation, and preserve the real-validator adversarial regression. |
 
 ### Constraints [Required]
 
@@ -79,8 +78,8 @@ None — the local issue list identifies all three remaining extraction location
 ## Decision Drivers [Required]
 
 1. **Eliminate the residual findings**: no active SonarQube Reliability finding may remain for the three former path-recognition expressions.
-2. **Reject truncation**: a record reference is valid only when its entire delimiter-bounded token is a recognized ADR or ADD path.
-3. **Preserve established behavior**: valid nested repository paths continue through the existing resolver and fixture suite without a new package.
+2. **Preserve established behavior**: the existing real-validator adversarial and valid-fixture behavior must remain unchanged.
+3. **Keep the correction narrow**: valid nested repository paths continue through the existing resolver and fixture suite without a new package.
 
 ## Options Considered [Required]
 
@@ -91,12 +90,11 @@ Split candidate text at the existing Markdown delimiters and accept a token only
 Pros:
 
 - Removes the three repeated-variable-width path expressions reported by SonarQube.
-- Prevents a valid `.md` prefix from accepting a token with a trailing punctuation suffix.
 - Keeps file containment and relationship validation in their existing owners.
 
 Cons:
 
-- Adds a small helper and focused regression to preserve the documented token grammar.
+- Adds a small helper while the existing focused regression preserves the documented behavior.
 
 ### Option: Further constrain the existing expressions
 
@@ -128,14 +126,14 @@ Cons:
 
 **Selected option**: Delimiter-bounded procedural path recognition.
 
-**Rationale**: Record paths already occur in Markdown-delimited fields. Treating each complete token as the unit of recognition removes the analyzer-reported repetition and makes suffix rejection explicit, while the existing resolver remains the single source of truth for containment and file validity.
+**Rationale**: Record paths already occur in Markdown-delimited fields. Treating each complete token as the unit of recognition removes the analyzer-reported repetition while retaining the existing resolver as the single source of truth for containment and file validity; the existing real-validator regression guards the intended malformed-input behavior.
 
 ### Consequences [Required]
 
 Positive:
 
 - The three pattern sites no longer use variable-width repeated path expressions.
-- A record path with trailing punctuation cannot be silently truncated and accepted.
+- The existing valid and malformed record-path behavior remains guarded without retaining the reported expressions.
 
 Negative:
 
@@ -143,11 +141,11 @@ Negative:
 
 Mitigations:
 
-- Test the production validator against the trailing-punctuation fixture, retain the existing adversarial timeout regression, and run the complete package and governance checks.
+- Retain the existing adversarial timeout regression, run the complete package and governance checks, then verify the three SonarQube findings through a separately accepted local OCR.
 
 ## Implementation Plan [Required]
 
-**Complete task outcome**: The governance validator rejects a selected record path with a trailing punctuation suffix and recognizes only complete ADR and ADD path tokens through a shared procedural extractor, leaving no active SonarQube Reliability finding at the three reported locations after separately authorized reanalysis.
+**Complete task outcome**: The governance validator replaces the three remaining expression-based record-path extraction sites with one delimiter-bounded procedural extractor while preserving the existing real-validator adversarial regression, leaving no active SonarQube Reliability finding at the three reported locations after separately authorized reanalysis.
 
 **Primary implementation boundary**: `tools/governance-validator` governance-record path extraction for index and reciprocal relationship validation.
 
@@ -155,9 +153,9 @@ Allowed subtask statuses: `Not Started`, `In Progress`, `Blocked`, `Complete`, o
 
 | ID | Objective or deliverable | Included scope | Status | Actual implementation evidence |
 | --- | --- | --- | --- | --- |
-| T-1 | Add a behavioral regression for a selected ADR reference whose complete token ends in `.md.`. | `tools/governance-validator/test/index-path-validation.test.mjs` and existing temporary fixture helpers. | In Progress | Red test not yet run. |
-| T-2 | Replace the three reported extraction sites with delimiter-bounded procedural record-path recognition and update governed-file markers. | `tools/governance-validator/lib/relationship-validation.mjs` and `tools/governance-validator/validate.mjs`. | Not Started | Not run — awaiting T-1 red result. |
-| T-3 | Verify the new regression, existing adversarial timeout regression, complete test suite, and governance validation. | Existing Node.js tests and `npm` scripts in `tools/governance-validator`. | Not Started | Not run — awaiting T-2 implementation. |
+| T-1 | Establish the three-finding SonarQube Reliability baseline and retain the existing real-validator adversarial regression as the behavior-preservation guard. | Local issue evidence and `tools/governance-validator/test/index-path-validation.test.mjs`. | Not Started | Not run — reapproval required. |
+| T-2 | Replace the three reported extraction sites with delimiter-bounded procedural record-path recognition and update governed-file markers. | `tools/governance-validator/lib/relationship-validation.mjs` and `tools/governance-validator/validate.mjs`. | Not Started | Not run — reapproval required. |
+| T-3 | Verify the existing adversarial regression, complete test suite, and governance validation. | Existing Node.js tests and `npm` scripts in `tools/governance-validator`. | Not Started | Not run — reapproval required. |
 
 **Affected paths**: `tools/governance-validator/test/index-path-validation.test.mjs`; `tools/governance-validator/lib/relationship-validation.mjs`; `tools/governance-validator/validate.mjs`; `docs/adr/ADR-0008-delimiter-bounded-governance-record-paths.md`; `docs/adr/INDEX.md`.
 
@@ -165,7 +163,7 @@ Allowed subtask statuses: `Not Started`, `In Progress`, `Blocked`, `Complete`, o
 
 | Path | Stable symbol or contract anchor | Key code excerpt, when needed | Purpose | Source revision |
 | --- | --- | --- | --- | --- |
-| `tools/governance-validator/test/index-path-validation.test.mjs` | `validRepository` and selected-ADR relationship regression | N/A — stable test anchors are sufficient | Runs the production validator against malformed and valid repository fixtures. | `67807a4d26a77a4a3bff24317499289b0bba5882` |
+| `tools/governance-validator/test/index-path-validation.test.mjs` | `rejects an adversarial index-path without timing out` | N/A — stable test anchor is sufficient | Runs the production validator against a controlled malformed repository fixture. | `67807a4d26a77a4a3bff24317499289b0bba5882` |
 | `tools/governance-validator/lib/relationship-validation.mjs` | `createRelationshipValidator` > `validateIndex` and reciprocal relationship checks | N/A — stable symbols are sufficient | Owns index fallback and linked ADR/ADD record-path extraction. | `67807a4d26a77a4a3bff24317499289b0bba5882` |
 | `tools/governance-validator/validate.mjs` | `ADR_PATH_PATTERN` and `ADD_PATH_PATTERN` | N/A — stable symbols are sufficient | Supplies the current CLI relationship path recognizers that the correction removes. | `67807a4d26a77a4a3bff24317499289b0bba5882` |
 
@@ -179,7 +177,7 @@ N/A — the planned localized helper and regression do not exceed or waive a sof
 
 | Clause ID | Authoritative contract path and heading | Exact normative requirement | Acceptance check or deterministic test IDs | Explicit coverage method |
 | --- | --- | --- | --- | --- |
-| TC-1 | `docs/adr/ADR-0008-delimiter-bounded-governance-record-paths.md` — Decision | Only a complete delimiter-bounded ADR or ADD path token may be resolved as a governance record reference. | AC-1 | A real validator run rejects a Selected candidate whose token ends in `.md.` instead of accepting the valid `.md` prefix. |
+| TC-1 | `docs/adr/ADR-0008-delimiter-bounded-governance-record-paths.md` — Decision | Delimiter-bounded record-path extraction must preserve the existing malformed-input rejection behavior without expression backtracking. | AC-1 | The real CLI processes the existing adversarial index fixture with no timeout error and rejects it with exit status 1. |
 | TC-2 | `tools/governance-validator/README.md` — Governance Validator | The validator enforces deterministic ADD, ADR, and OCR structure and lifecycle contracts. | AC-2, AC-3 | The focused regressions, complete package suite, and repository governance command complete with their exact expected results. |
 
 ## Risk Coverage Matrix [Conditionally Required — source or configuration implementation]
@@ -190,13 +188,13 @@ N/A — the planned localized helper and regression do not exceed or waive a sof
 | timeout and deadline | Applicable — the three current expressions are reported as potentially super-linear on malformed path text. | Governance record-path extraction | Existing adversarial timeout regression plus AC-2. | The existing adversarial fixture has no timeout error and the focused suite exits zero. | AC-2 | Not Started | Not run — implementation not started. |
 | cancellation and interruption | N/A — the CLI exposes no cancellation protocol and the correction does not add one. | Governance-validator CLI | Structured source review and AC-2. | No cancellation interface or lifecycle is introduced. | AC-2 | N/A — no cancellation protocol | Not run — implementation not started. |
 | resource bounds and backpressure | Applicable — delimiter tokenization must process malformed input without regex backtracking. | Governance record-path extraction | Existing adversarial timeout regression and AC-2. | The adversarial fixture completes within the existing 1,000 ms child-process timeout. | AC-2 | Not Started | Not run — implementation not started. |
-| framework or trust-boundary rejection | Applicable — candidate links and Markdown index cells are untrusted repository inputs. | `createRelationshipValidator` relationship extraction | Trailing-punctuation real-validator regression. | The malformed reference fails validation and a valid fixture remains accepted. | AC-1 | Not Started | Not run — implementation not started. |
+| framework or trust-boundary rejection | Applicable — candidate links and Markdown index cells are untrusted repository inputs. | `createRelationshipValidator` relationship extraction | Existing real-validator adversarial regression. | The malformed reference fails validation with exit status 1 and no timeout error. | AC-1 | Not Started | Not run — implementation not started. |
 
 ## Acceptance Checks [Required]
 
 | Check ID | Subtask | Binary acceptance point | Preconditions or input | Verification method | Exact expected result | Expected evidence | Status | Actual result and evidence |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| AC-1 | T-1 | The actual validator rejects a Selected ADR reference whose complete path token ends in `.md.`. | A valid temporary repository fixture with CAND-1 changed to Selected, a reciprocal ADR source, and linked path `docs/adr/ADR-0001-example.md.`. | `node --test --test-name-pattern "trailing punctuation" test/index-path-validation.test.mjs` in `tools/governance-validator`. | Exit status 0; the selected test passes after asserting the spawned validator exits 1 and reports the linked ADR path as missing. | Focused Node test report. | Not Started | Pending |
+| AC-1 | T-1 | The actual validator rejects the existing adversarial index-path fixture without a child-process timeout. | A temporary valid repository with one index row containing `segment/` repeated 24 times followed by `docs` and no valid record path. | `node --test --test-name-pattern "adversarial index-path" test/index-path-validation.test.mjs` in `tools/governance-validator`. | Exit status 0; the selected test passes; its spawned validator result has exit status 1 and no `ETIMEDOUT` error. | Focused Node test report. | Not Started | Pending |
 | AC-2 | T-2 | The package regressions and complete test suite pass after replacing the three expression sites and governed-file markers. | Accepted implementation in the isolated task branch. | `npm test` in `tools/governance-validator`. | Exit status 0 with no failing test; the existing adversarial index-path regression has no timeout error. | Full package test report. | Not Started | Pending |
 | AC-3 | T-3 | Repository governance validation accepts the new ADR/index state and unchanged record contracts. | All task changes present in the isolated task branch. | `npm run validate` in `tools/governance-validator`. | Exit status 0 and no validation errors. | Governance-validation command output. | Not Started | Pending |
 
@@ -204,7 +202,7 @@ N/A — the planned localized helper and regression do not exceed or waive a sof
 
 | ID | Item | Completion Criterion | Expected Evidence | Status | Actual Evidence |
 | --- | --- | --- | --- | --- | --- |
-| A-1 | ADR approved | An eligible non-author approver, approval time, and exact `Approval Evidence: Approve` are recorded. | ADR metadata | Complete | @linhai approved at 2026-08-31T20:50:11+08:00 with `Approval Evidence: Approve`. |
+| A-1 | ADR approved | An eligible non-author approver, approval time, and exact `Approval Evidence: Approve` are recorded. | ADR metadata | Not Started | Pending — reapproval required. |
 | A-2 | Complete task delivered | T-1 through T-3 have implementation evidence and AC-1 through AC-3 are Pass. | Implementation Plan and Acceptance Checks | Not Started | Pending |
 | A-3 | Reciprocal ADD link synchronized, when applicable | N/A — the task is not derived from product demand and has no ADD candidate. | Metadata Architecture Source | N/A — no ADD applies | N/A — no product-demand ADD applies. |
 | A-4 | Requirement levels satisfied | Every required section is complete, and every conditional trigger is completed or has a specific N/A reason. | Structured document review | Not Started | Pending |
@@ -215,11 +213,11 @@ N/A — the planned localized helper and regression do not exceed or waive a sof
 
 ## Supporting Notes [Optional]
 
-The new local SonarQube issue list shows exactly three Medium Reliability findings, one in `relationship-validation.mjs` and two in `validate.mjs`. Their source locations match the three findings previously classified as Security. The issue category is diagnostic context, not a source contract.
+The new local SonarQube issue list shows exactly three Medium Reliability findings, one in `relationship-validation.mjs` and two in `validate.mjs`. Their source locations match the three findings previously classified as Security. The issue category is diagnostic context, not a source contract. The rejected trailing-punctuation test is intentionally not retained because current reciprocal-link behavior already rejects that input.
 
 ## Archival [Conditionally Required — Decision Status is `Rejected`, or Decision Status is `Deprecated` or `Superseded` and Implementation Status is final]
 
-The record is Accepted and not archival-eligible. If a later rejection, deprecation, or supersession triggers archival, move it under `docs/adr/archive/`, update all governed-file markers and references in the same change, and update its single index row.
+The record is Proposed and not archival-eligible. If a later rejection, deprecation, or supersession triggers archival, move it under `docs/adr/archive/`, update all governed-file markers and references in the same change, and update its single index row.
 
 ## Change Log [Required]
 
@@ -227,3 +225,4 @@ The record is Accepted and not archival-eligible. If a later rejection, deprecat
 | --- | --- | --- |
 | 2026-08-31 | Drafted the Full ADR for the residual three SonarQube Reliability findings in governance-record path extraction. | @codex |
 | 2026-08-31 | Accepted by @linhai with approval evidence `Approve` at 2026-08-31T20:50:11+08:00. | @codex |
+| 2026-08-31 | Approval-invalidating correction: removed the unsupported trailing-punctuation behavior claim and restored Proposed status; previous approval by @linhai at 2026-08-31T20:50:11+08:00 with evidence `Approve` remains historical only. | @codex |
