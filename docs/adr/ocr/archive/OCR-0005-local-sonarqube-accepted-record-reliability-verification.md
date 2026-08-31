@@ -3,7 +3,7 @@
 ## Metadata [Required]
 
 - **Decision Status**: Accepted
-- **Implementation Status**: In Progress
+- **Implementation Status**: Complete
 - **Date**: 2026-08-31
 - **Author**: @codex
 - **Decision Owner**: @linhai
@@ -19,10 +19,10 @@
 - **Retirement Time [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — record is not retired
 - **Retirement Evidence [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — record is not retired
 - **Retirement Reason [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — record is not retired
-- **Blocked From [Conditionally Required — Implementation Status is `Blocked`]**: N/A — Implementation Status is `In Progress`
-- **Blocker And Evidence [Conditionally Required — Implementation Status is `Blocked`]**: N/A — Implementation Status is `In Progress`; the preflight token-availability blocker cleared before scanner submission.
-- **Blocker Owner [Conditionally Required — Implementation Status is `Blocked`]**: N/A — Implementation Status is `In Progress`
-- **Blocker Exit Or Recheck Criterion [Conditionally Required — Implementation Status is `Blocked`]**: N/A — Implementation Status is `In Progress`; secure scanner-process token availability was confirmed before submission.
+- **Blocked From [Conditionally Required — Implementation Status is `Blocked`]**: N/A — Implementation Status is `Complete`
+- **Blocker And Evidence [Conditionally Required — Implementation Status is `Blocked`]**: N/A — Implementation Status is `Complete`; the preflight token-availability blocker cleared before scanner submission.
+- **Blocker Owner [Conditionally Required — Implementation Status is `Blocked`]**: N/A — Implementation Status is `Complete`
+- **Blocker Exit Or Recheck Criterion [Conditionally Required — Implementation Status is `Blocked`]**: N/A — Implementation Status is `Complete`; secure scanner-process token availability was confirmed before submission.
 - **Operation Type**: Existing Runbook
 - **Target Scope / Operation Owner**: Local SonarQube project `koduck` / @codex
 - **Input Source or Version**: `81a7c51` — `fix(governance): simplify accepted-record validation`
@@ -54,8 +54,8 @@ Allowed subtask statuses: `Not Started`, `In Progress`, `Blocked`, `Complete`, o
 
 | ID | Objective or deliverable | Included scope or target | Completion criterion | Expected evidence | Status | Actual evidence |
 | --- | --- | --- | --- | --- | --- | --- |
-| T-1 | Submit one source analysis to the existing local project. | Local SonarQube project `koduck`, source input `81a7c51`, main branch analysis. | Scanner exits 0 and the submitted compute-engine task completes successfully. | Scanner result, task identifier, and source revision. | In Progress | At 2026-08-31T21:40:20+08:00, preflight stopped before submission because no token was available. At 2026-08-31T21:43:28+08:00, rerun preflight confirmed only non-empty secure clipboard token availability; scanner submission is now in progress. |
-| T-2 | Verify the accepted-record Reliability finding state. | Existing local project overall Reliability issue view, Open/Confirmed statuses, `accepted-records.mjs` finding rows. | Zero active rows remain for the four former `accepted-records.mjs` locations; no recovery action is required. | Issue-view result and target analysis timestamp or task identifier. | Not Started | Awaiting successful T-1 analysis submission. |
+| T-1 | Submit one source analysis to the existing local project. | Local SonarQube project `koduck`, source input `81a7c51`, main branch analysis. | Scanner exits 0 and the submitted compute-engine task completes successfully. | Scanner result, task identifier, and source revision. | Complete | At 2026-08-31T21:45:02+08:00, SonarScanner CLI 7.3.0.5189 submitted the analysis and created compute-engine task `1eddc354-dc9d-4861-b77f-d501d49e187e`; the local dashboard completed version `81a7c51` at 9:44 PM with Quality Gate `Passed`. |
+| T-2 | Verify the accepted-record Reliability finding state. | Existing local project overall Reliability issue view, Open/Confirmed statuses, `accepted-records.mjs` finding rows. | Zero active rows remain for the four former `accepted-records.mjs` locations; no recovery action is required. | Issue-view result and target analysis timestamp or task identifier. | Complete | At 2026-08-31T21:45:25+08:00, the Open/Confirmed overall Reliability view showed 15 remaining issues, all in other validator files, and no `tools/governance-validator/lib/accepted-records.mjs` row; recovery was not required. |
 
 ## Eligibility [Required]
 
@@ -78,13 +78,13 @@ Allowed subtask statuses: `Not Started`, `In Progress`, `Blocked`, `Complete`, o
 
 **Planned action**: Run the installed scanner from the isolated task worktree against source input `81a7c51`, using the existing local project key and branch configuration. Supply the pre-provisioned token only through the scanner process environment. Do not log the token, scanner environment, or any copied credential.
 
-**Actual result and stable evidence**: In progress — preflight cleared the token-availability blocker and scanner submission for source input `81a7c51` is underway.
+**Actual result and stable evidence**: Pass. At 2026-08-31T21:45:02+08:00, SonarScanner CLI 7.3.0.5189 submitted source input version `81a7c51` to project `koduck`; its report recorded compute-engine task `1eddc354-dc9d-4861-b77f-d501d49e187e`. The local dashboard subsequently showed completed version `81a7c51` at 9:44 PM with Quality Gate `Passed`. No credential was output or persisted.
 
 ### Verify [Required]
 
 **Success criterion**: The scanner reports successful analysis submission and compute-engine completion; the resulting overall Reliability view has exactly zero active rows at the four former `accepted-records.mjs` locations. Record only non-sensitive scanner/task and issue-view evidence.
 
-**Actual result and stable evidence**: Pending successful scanner submission and compute-engine completion.
+**Actual result and stable evidence**: Pass. At 2026-08-31T21:45:25+08:00, the local Open/Confirmed overall Reliability view showed 15 issues, all listed under `mermaid-validation.mjs`, `metadata-validation.mjs`, `relationship-validation.mjs`, or `validate.mjs`; it contained no `accepted-records.mjs` row. Therefore all four target locations returned zero active findings. The dashboard identifies the verified analysis as version `81a7c51` with Quality Gate `Passed`.
 
 ### Stop and Recovery [Required]
 
@@ -94,7 +94,7 @@ Allowed subtask statuses: `Not Started`, `In Progress`, `Blocked`, `Complete`, o
 
 **Recovery verification**: Confirm that the captured pre-operation analysis is again the current local project analysis and that no new analysis remains.
 
-**Actual result and stable evidence**: Not triggered — scanner submission is in progress; no stop condition has occurred.
+**Actual result and stable evidence**: Not triggered. The new analysis completed with Quality Gate `Passed` and no target row remained active, so the captured 9:16 PM baseline was not restored and no analysis was deleted.
 
 ## Conditional Extensions [Conditionally Required — production, multi-environment, phased, user/downstream/SLO impact, or stated change-window operation]
 
@@ -104,19 +104,19 @@ N/A — this is a single local analysis with no production, multi-environment, p
 
 Allowed review statuses for Authorization review, Subtask and evidence review, and Requirement-level review are `Pass`, `Fail`, or `N/A — <specific reason>`.
 
-- **Final result**: In progress — secure token availability was confirmed and T-1 scanner submission is underway.
+- **Final result**: Completed. The 9:44 PM analysis of version `81a7c51` completed with Quality Gate `Passed`, and the overall Reliability view had zero active rows at all four former accepted-record locations; recovery was not triggered.
 - **Authorization review**: Pass — Accepted approval metadata is complete and precedes execution.
-- **Subtask and evidence review**: In progress — terminal review follows scanner completion and issue-view verification.
-- **Requirement-level review**: In progress — terminal review follows the completed operation.
-- **Governance validation**: In progress — rerun `npm run validate --prefix tools/governance-validator` for this resumed OCR revision before Execute.
+- **Subtask and evidence review**: Pass — T-1 records the scanner task and completed analysis, and T-2 records the no-target-row issue-view result.
+- **Requirement-level review**: Pass — every required and triggered field is complete; recovery has a specific non-trigger result.
+- **Governance validation**: Pass — `npm run validate --prefix tools/governance-validator` exited zero before Execute and again for this terminal, archived OCR revision.
 
 ## Supporting Notes [Optional]
 
-The expected view may still contain other Reliability findings outside `accepted-records.mjs`; those are not evidence of failure for this scoped OCR.
+The verified view retains 15 Reliability findings outside `accepted-records.mjs`; they are not evidence of failure for this scoped OCR and remain deferred to separately scoped remediation work.
 
 ## Archival [Conditionally Required — Decision Status is retired or Implementation Status is final]
 
-The accepted operation is not terminal. On `Complete` or `Verified`, move this record under `docs/adr/ocr/archive/` in the same change as the terminal status and index-path update.
+The operation is terminal and this record is archived under `docs/adr/ocr/archive/` in the same change as its `Complete` status and index-path update.
 
 ## Change Log [Required]
 
@@ -126,3 +126,4 @@ The accepted operation is not terminal. On `Complete` or `Verified`, move this r
 | 2026-08-31 | @linhai approved the unchanged planned local operation. | @linhai |
 | 2026-08-31 | Preflight captured baseline version `4be9383` and stopped before submission because no scanner-process token was available. | @codex |
 | 2026-08-31 | @linhai confirmed the secure token was copied; rerun preflight confirmed only non-empty availability and resumed scanner submission. | @codex |
+| 2026-08-31 | Submitted compute-engine task `1eddc354-dc9d-4861-b77f-d501d49e187e`, verified completed version `81a7c51` with Quality Gate `Passed`, and confirmed zero active target rows at all four accepted-record locations. | @codex |
