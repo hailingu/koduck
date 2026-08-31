@@ -3,7 +3,7 @@
 ## Metadata [Required]
 
 - **Decision Status**: Accepted
-- **Implementation Status**: Blocked
+- **Implementation Status**: In Progress
 - **Date**: 2026-08-31
 - **Author**: @codex
 - **Decision Owner**: @linhai
@@ -19,10 +19,10 @@
 - **Retirement Time [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — record is not retired
 - **Retirement Evidence [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — record is not retired
 - **Retirement Reason [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — record is not retired
-- **Blocked From [Conditionally Required — Implementation Status is `Blocked`]**: Not Started
-- **Blocker And Evidence [Conditionally Required — Implementation Status is `Blocked`]**: At 2026-08-31T21:40:20+08:00, the installed scanner was available but its process environment contained no non-empty token; no request was attempted.
-- **Blocker Owner [Conditionally Required — Implementation Status is `Blocked`]**: @linhai
-- **Blocker Exit Or Recheck Criterion [Conditionally Required — Implementation Status is `Blocked`]**: @linhai confirms a scanner token is securely available for this operation; preflight confirms only its non-empty presence without displaying or recording it.
+- **Blocked From [Conditionally Required — Implementation Status is `Blocked`]**: N/A — Implementation Status is `In Progress`
+- **Blocker And Evidence [Conditionally Required — Implementation Status is `Blocked`]**: N/A — Implementation Status is `In Progress`; the preflight token-availability blocker cleared before scanner submission.
+- **Blocker Owner [Conditionally Required — Implementation Status is `Blocked`]**: N/A — Implementation Status is `In Progress`
+- **Blocker Exit Or Recheck Criterion [Conditionally Required — Implementation Status is `Blocked`]**: N/A — Implementation Status is `In Progress`; secure scanner-process token availability was confirmed before submission.
 - **Operation Type**: Existing Runbook
 - **Target Scope / Operation Owner**: Local SonarQube project `koduck` / @codex
 - **Input Source or Version**: `81a7c51` — `fix(governance): simplify accepted-record validation`
@@ -54,8 +54,8 @@ Allowed subtask statuses: `Not Started`, `In Progress`, `Blocked`, `Complete`, o
 
 | ID | Objective or deliverable | Included scope or target | Completion criterion | Expected evidence | Status | Actual evidence |
 | --- | --- | --- | --- | --- | --- | --- |
-| T-1 | Submit one source analysis to the existing local project. | Local SonarQube project `koduck`, source input `81a7c51`, main branch analysis. | Scanner exits 0 and the submitted compute-engine task completes successfully. | Scanner result, task identifier, and source revision. | Blocked | At 2026-08-31T21:40:20+08:00, the scanner was installed but its process environment had no non-empty token; no request was attempted. |
-| T-2 | Verify the accepted-record Reliability finding state. | Existing local project overall Reliability issue view, Open/Confirmed statuses, `accepted-records.mjs` finding rows. | Zero active rows remain for the four former `accepted-records.mjs` locations; no recovery action is required. | Issue-view result and target analysis timestamp or task identifier. | Not Started | Not started — T-1 is blocked before analysis submission. |
+| T-1 | Submit one source analysis to the existing local project. | Local SonarQube project `koduck`, source input `81a7c51`, main branch analysis. | Scanner exits 0 and the submitted compute-engine task completes successfully. | Scanner result, task identifier, and source revision. | In Progress | At 2026-08-31T21:40:20+08:00, preflight stopped before submission because no token was available. At 2026-08-31T21:43:28+08:00, rerun preflight confirmed only non-empty secure clipboard token availability; scanner submission is now in progress. |
+| T-2 | Verify the accepted-record Reliability finding state. | Existing local project overall Reliability issue view, Open/Confirmed statuses, `accepted-records.mjs` finding rows. | Zero active rows remain for the four former `accepted-records.mjs` locations; no recovery action is required. | Issue-view result and target analysis timestamp or task identifier. | Not Started | Awaiting successful T-1 analysis submission. |
 
 ## Eligibility [Required]
 
@@ -72,19 +72,19 @@ Allowed subtask statuses: `Not Started`, `In Progress`, `Blocked`, `Complete`, o
 
 **Planned action and criterion**: Confirm this OCR is Accepted before execution; confirm the local service exposes project `koduck` with the prior analysis identifier captured; confirm `sonar-scanner` is available; and confirm the scanner token is available only through its process environment without printing, storing, or transmitting it to any other destination.
 
-**Actual result and stable evidence**: At 2026-08-31T21:40:20+08:00, the local project activity showed baseline version `4be9383` at 9:16 PM, and the scanner was installed. Its process environment contained no non-empty token, so preflight stopped before submission without printing or recording a credential.
+**Actual result and stable evidence**: At 2026-08-31T21:40:20+08:00, the local project activity showed baseline version `4be9383` at 9:16 PM, and the scanner was installed. Its process environment contained no non-empty token, so preflight stopped before submission without printing or recording a credential. At 2026-08-31T21:43:28+08:00, after @linhai confirmed the secure token was copied, rerun preflight confirmed only non-empty availability; its value was not displayed, stored, or recorded.
 
 ### Execute [Required]
 
 **Planned action**: Run the installed scanner from the isolated task worktree against source input `81a7c51`, using the existing local project key and branch configuration. Supply the pre-provisioned token only through the scanner process environment. Do not log the token, scanner environment, or any copied credential.
 
-**Actual result and stable evidence**: Not started — preflight stopped before submission because T-1 has no scanner-process token.
+**Actual result and stable evidence**: In progress — preflight cleared the token-availability blocker and scanner submission for source input `81a7c51` is underway.
 
 ### Verify [Required]
 
 **Success criterion**: The scanner reports successful analysis submission and compute-engine completion; the resulting overall Reliability view has exactly zero active rows at the four former `accepted-records.mjs` locations. Record only non-sensitive scanner/task and issue-view evidence.
 
-**Actual result and stable evidence**: Not started — no submitted analysis exists to verify.
+**Actual result and stable evidence**: Pending successful scanner submission and compute-engine completion.
 
 ### Stop and Recovery [Required]
 
@@ -94,7 +94,7 @@ Allowed subtask statuses: `Not Started`, `In Progress`, `Blocked`, `Complete`, o
 
 **Recovery verification**: Confirm that the captured pre-operation analysis is again the current local project analysis and that no new analysis remains.
 
-**Actual result and stable evidence**: Not triggered — preflight stopped before submission, so no analysis exists to recover.
+**Actual result and stable evidence**: Not triggered — scanner submission is in progress; no stop condition has occurred.
 
 ## Conditional Extensions [Conditionally Required — production, multi-environment, phased, user/downstream/SLO impact, or stated change-window operation]
 
@@ -104,11 +104,11 @@ N/A — this is a single local analysis with no production, multi-environment, p
 
 Allowed review statuses for Authorization review, Subtask and evidence review, and Requirement-level review are `Pass`, `Fail`, or `N/A — <specific reason>`.
 
-- **Final result**: Blocked — scanner-process token availability must be restored before T-1 can submit an analysis.
+- **Final result**: In progress — secure token availability was confirmed and T-1 scanner submission is underway.
 - **Authorization review**: Pass — Accepted approval metadata is complete and precedes execution.
-- **Subtask and evidence review**: N/A — operation has not run.
-- **Requirement-level review**: N/A — terminal review occurs after the operation.
-- **Governance validation**: Pass — `npm run validate --prefix tools/governance-validator` exited zero for the proposed OCR revision; run again for the accepted revision before Execute.
+- **Subtask and evidence review**: In progress — terminal review follows scanner completion and issue-view verification.
+- **Requirement-level review**: In progress — terminal review follows the completed operation.
+- **Governance validation**: In progress — rerun `npm run validate --prefix tools/governance-validator` for this resumed OCR revision before Execute.
 
 ## Supporting Notes [Optional]
 
@@ -125,3 +125,4 @@ The accepted operation is not terminal. On `Complete` or `Verified`, move this r
 | 2026-08-31 | Drafted the OCR for one local accepted-record Reliability-remediation verification analysis. | @codex |
 | 2026-08-31 | @linhai approved the unchanged planned local operation. | @linhai |
 | 2026-08-31 | Preflight captured baseline version `4be9383` and stopped before submission because no scanner-process token was available. | @codex |
+| 2026-08-31 | @linhai confirmed the secure token was copied; rerun preflight confirmed only non-empty availability and resumed scanner submission. | @codex |
