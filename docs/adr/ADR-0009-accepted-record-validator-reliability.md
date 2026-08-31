@@ -3,7 +3,7 @@
 ## Metadata [Required]
 
 - **Decision Status**: Accepted
-- **Implementation Status**: Not Started
+- **Implementation Status**: In Progress
 - **Date**: 2026-08-31
 - **Author**: @codex
 - **Decision Owner**: @linhai
@@ -153,8 +153,8 @@ Allowed subtask statuses: `Not Started`, `In Progress`, `Blocked`, `Complete`, o
 
 | ID | Objective or deliverable | Included scope | Status | Actual implementation evidence |
 | --- | --- | --- | --- | --- |
-| T-1 | Replace the four local analyzer-reported patterns with behavior-preserving operations and update the governed-file marker. | `createAcceptedRecordValidator`, `isReasonedNa`, `validateStableImplementationTouchpoints`, `validateRiskMatrixDimensions`, and `validateAcceptedRiskMatrix` in `tools/governance-validator/lib/accepted-records.mjs`. | Not Started | Not run — awaiting approval. |
-| T-2 | Verify accepted-record behavior, the complete validator package, and governance documentation contracts. | Existing Node.js tests and `npm` scripts in `tools/governance-validator`. | Not Started | Not run — awaiting T-1 implementation. |
+| T-1 | Replace the four local analyzer-reported patterns with behavior-preserving operations and update the governed-file marker. | `createAcceptedRecordValidator`, `isReasonedNa`, `validateStableImplementationTouchpoints`, `validateRiskMatrixDimensions`, and `validateAcceptedRiskMatrix` in `tools/governance-validator/lib/accepted-records.mjs`. | Complete | Commit `81a7c51` uses an explicit single-value callback, reuses `isReasonedNa` after `trimStart`, removes the redundant legacy-status branch, uses `replaceAll` for literal hyphens, and updates the file marker to this ADR. |
+| T-2 | Verify accepted-record behavior, the complete validator package, and governance documentation contracts. | Existing Node.js tests and `npm` scripts in `tools/governance-validator`. | Complete | The focused real-validator test passed in about 280 ms; `npm test` passed 146/146 tests; `npm run validate` passed. OCR verification remains required for AC-4. |
 
 **Affected paths**: `tools/governance-validator/lib/accepted-records.mjs`; `tools/governance-validator/test/validate-structure.test.mjs`; `docs/adr/ADR-0009-accepted-record-validator-reliability.md`; `docs/adr/INDEX.md`.
 
@@ -185,19 +185,19 @@ N/A — the localized replacements do not exceed or waive a software-engineering
 
 | Risk dimension | Applicability and scenario, or specific N/A reason | Owning boundary | Deterministic verification method | Exact expected result | Acceptance check IDs | Status | Actual evidence |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| concurrency and ordering | N/A — the validator processes one input synchronously and this change adds no shared state. | `createAcceptedRecordValidator` | Structured source review and AC-2. | No shared mutable state or ordering contract is introduced. | AC-2 | N/A — no concurrent behavior | Not run — implementation not started. |
-| timeout and deadline | Applicable — the repeated-whitespace expression accepts untrusted record text. | `validateRiskMatrixDimensions` | AC-2 package test suite and separately authorized analyzer reanalysis. | The package test suite exits 0, and reanalysis has no active finding at the reported expression location. | AC-2, AC-4 | Not Started | Not run — implementation not started. |
-| cancellation and interruption | N/A — the CLI has no cancellation protocol and the local replacements add none. | Governance-validator CLI | Structured source review and AC-2. | No cancellation interface or lifecycle is introduced. | AC-2 | N/A — no cancellation protocol | Not run — implementation not started. |
-| resource bounds and backpressure | Applicable — record text may contain arbitrary leading whitespace and dimension values. | `isReasonedNa` and `normalizeDimension` | AC-1 and AC-2. | Existing focused fixture and complete package suite exit 0 without changing accepted/rejected outcomes. | AC-1, AC-2 | Not Started | Not run — implementation not started. |
-| framework or trust-boundary rejection | Applicable — repository Markdown is validator input that must retain complete-cell and reasoned-N/A rejection behavior. | `createAcceptedRecordValidator` | AC-1 focused real-validator test. | The focused test exits 0, preserving the fixture’s accepted reasoned-N/A result and existing rejection diagnostics. | AC-1 | Not Started | Not run — implementation not started. |
+| concurrency and ordering | N/A — the validator processes one input synchronously and this change adds no shared state. | `createAcceptedRecordValidator` | Structured source review and AC-2. | No shared mutable state or ordering contract is introduced. | AC-2 | N/A — no concurrent behavior | Source review confirms the local replacements introduce no shared state or ordering behavior. |
+| timeout and deadline | Applicable — the repeated-whitespace expression accepts untrusted record text. | `validateRiskMatrixDimensions` | AC-2 package test suite and separately authorized analyzer reanalysis. | The package test suite exits 0, and reanalysis has no active finding at the reported expression location. | AC-2, AC-4 | In Progress | `npm test` passed 146/146 tests; analyzer reanalysis remains authorized only through a later OCR. |
+| cancellation and interruption | N/A — the CLI has no cancellation protocol and the local replacements add none. | Governance-validator CLI | Structured source review and AC-2. | No cancellation interface or lifecycle is introduced. | AC-2 | N/A — no cancellation protocol | Source review confirms the local replacements add no cancellation interface or lifecycle. |
+| resource bounds and backpressure | Applicable — record text may contain arbitrary leading whitespace and dimension values. | `isReasonedNa` and `normalizeDimension` | AC-1 and AC-2. | Existing focused fixture and complete package suite exit 0 without changing accepted/rejected outcomes. | AC-1, AC-2 | Pass | The focused test and full package suite passed after commit `81a7c51`, preserving the reasoned-N/A validation path. |
+| framework or trust-boundary rejection | Applicable — repository Markdown is validator input that must retain complete-cell and reasoned-N/A rejection behavior. | `createAcceptedRecordValidator` | AC-1 focused real-validator test. | The focused test exits 0, preserving the fixture’s accepted reasoned-N/A result and existing rejection diagnostics. | AC-1 | Pass | The focused real-validator fixture passed after the local replacements, preserving its accepted reasoned-N/A result. |
 
 ## Acceptance Checks [Required]
 
 | Check ID | Subtask | Binary acceptance point | Preconditions or input | Verification method | Exact expected result | Expected evidence | Status | Actual result and evidence |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| AC-1 | T-1 | The real validator retains accepted reasoned-N/A risk-matrix behavior after the local replacements. | The existing `accepts an explicit N/A Risk Coverage Matrix with a reason` fixture. | `node --test --test-name-pattern "accepts an explicit N/A Risk Coverage Matrix with a reason" test/validate-structure.test.mjs` in `tools/governance-validator`. | Process exits 0 with exactly one passing selected test and no failed selected test. | Focused Node test report. | Not Started | Not run — implementation not started. |
-| AC-2 | T-2 | The complete governance-validator suite preserves existing accepted-record contracts. | Accepted implementation in the isolated task branch. | `npm test` in `tools/governance-validator`. | Process exits 0 with zero failed tests. | Full package test report. | Not Started | Not run — implementation not started. |
-| AC-3 | T-2 | Repository governance validation accepts the ADR/index state and unchanged record contracts. | All task changes present in the isolated task branch. | `npm run validate` in `tools/governance-validator`. | Process exits 0 and reports `Governance validation passed.` | Governance-validation command output. | Not Started | Not run — implementation not started. |
+| AC-1 | T-1 | The real validator retains accepted reasoned-N/A risk-matrix behavior after the local replacements. | The existing `accepts an explicit N/A Risk Coverage Matrix with a reason` fixture. | `node --test --test-name-pattern "accepts an explicit N/A Risk Coverage Matrix with a reason" test/validate-structure.test.mjs` in `tools/governance-validator`. | Process exits 0 with exactly one passing selected test and no failed selected test. | Focused Node test report. | Pass | The selected real-validator test passed after the change in about 280 ms with one passing test and zero failures. |
+| AC-2 | T-2 | The complete governance-validator suite preserves existing accepted-record contracts. | Accepted implementation in the isolated task branch. | `npm test` in `tools/governance-validator`. | Process exits 0 with zero failed tests. | Full package test report. | Pass | `npm test` exited 0 with 146/146 tests passing after commit `81a7c51`. |
+| AC-3 | T-2 | Repository governance validation accepts the ADR/index state and unchanged record contracts. | All task changes present in the isolated task branch. | `npm run validate` in `tools/governance-validator`. | Process exits 0 and reports `Governance validation passed.` | Governance-validation command output. | Pass | `npm run validate` exited 0 and reported `Governance validation passed.` after the source correction. |
 | AC-4 | T-2 | A separate accepted OCR verifies the first-slice analyzer outcome. | Source correction, AC-1 through AC-3 passed, and an accepted local SonarQube verification OCR. | The specified local Reliability issue view after the OCR’s analysis completes. | Exactly zero active Reliability findings remain at the four former `accepted-records.mjs` locations. | OCR task and issue-view evidence without credentials. | Not Started | Not run — separate OCR not yet proposed. |
 
 ## Completion Checklist [Required]
@@ -205,13 +205,13 @@ N/A — the localized replacements do not exceed or waive a software-engineering
 | ID | Item | Completion Criterion | Expected Evidence | Status | Actual Evidence |
 | --- | --- | --- | --- | --- | --- |
 | A-1 | ADR approved | An eligible non-author approver, approval time, and exact `Approval Evidence: Approve` are recorded. | ADR metadata | Complete | @linhai approved at 2026-08-31T21:33:34+08:00 with `Approval Evidence: Approve`. |
-| A-2 | Complete task delivered | T-1 through T-2 have implementation evidence and AC-1 through AC-4 are Pass. | Implementation Plan and Acceptance Checks | Not Started | Not run — awaiting implementation and OCR verification. |
+| A-2 | Complete task delivered | T-1 through T-2 have implementation evidence and AC-1 through AC-4 are Pass. | Implementation Plan and Acceptance Checks | Not Started | T-1, T-2, and AC-1 through AC-3 are complete; AC-4 requires a separate OCR. |
 | A-3 | Reciprocal ADD link synchronized, when applicable | N/A — the task is not derived from product demand and has no ADD candidate. | Metadata Architecture Source | N/A — no ADD applies | N/A — no product-demand ADD applies. |
 | A-4 | Requirement levels satisfied | Every required section is complete, and every conditional trigger is completed or has a specific N/A reason. | Structured document review | Not Started | Not run — terminal review follows implementation. |
 | A-5 | Acceptance checks are decidable | Every check has one subtask, input, deterministic method, exact expected result, and evidence. | Acceptance Checks table | Not Started | Not run — terminal review follows implementation. |
 | A-6 | Engineering exceptions governed, when applicable | N/A — no engineering exception is planned. | Engineering Exceptions section | N/A — no exception applies | N/A — no engineering rule is exceeded or waived. |
 | A-7 | Contract and baseline risks covered, when applicable | TC-1 through TC-3 map to checks, and every applicable risk reaches Pass before completion. | Traceability, matrix, and command reports | Not Started | Not run — awaiting implementation and analyzer verification. |
-| A-8 | Governance validation passed | The independent validator reports no document or repository validation error. | `npm run validate` output | Not Started | Not run — draft validation has not run. |
+| A-8 | Governance validation passed | The independent validator reports no document or repository validation error. | `npm run validate` output | Complete | `npm run validate` exited 0 after the source correction. |
 
 ## Supporting Notes [Optional]
 
@@ -227,3 +227,4 @@ The record is Proposed and not archival-eligible. If a later rejection, deprecat
 | --- | --- | --- |
 | 2026-08-31 | Drafted the Full ADR for the first four overall SonarQube Reliability findings in the accepted-record validator. | @codex |
 | 2026-08-31 | Accepted by @linhai with approval evidence `Approve` at 2026-08-31T21:33:34+08:00. | @codex |
+| 2026-08-31 | Implemented local accepted-record simplifications in commit `81a7c51`; focused test, full package suite, and governance validation passed. | @codex |
