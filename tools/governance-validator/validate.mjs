@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// ADR: docs/adr/ADR-0007-linear-time-governance-path-recognition.md
+// ADR: docs/adr/ADR-0008-delimiter-bounded-governance-record-paths.md
 
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { relative, resolve, sep } from "node:path";
@@ -119,9 +119,6 @@ const ADD_CONDITIONAL_SECTIONS = [
   "Interaction Flow Design",
   "Assumptions And Open Questions",
 ];
-const ADR_PATH_PATTERN = /(?:[^|`/\s]+\/)*docs\/adr\/(?:[^|`/\s]+\/)*ADR-\d+[^|`/\s]*\.md/;
-const ADD_PATH_PATTERN = /(?:[^|`/\s]+\/)*docs\/architecture\/(?:[^|`/\s]+\/)*ADD-\d+[^|`/\s]*\.md/;
-
 function parseArguments(argv) {
   const rootIndex = argv.indexOf("--root");
   if (rootIndex === -1 || !argv[rootIndex + 1]) {
@@ -753,8 +750,6 @@ const terminalValidator = createTerminalValidator({
 });
 
 const relationshipValidator = createRelationshipValidator({
-  ADD_PATH_PATTERN,
-  ADR_PATH_PATTERN,
   CANDIDATE_STATUSES,
   isCompleteValue,
   metadata,

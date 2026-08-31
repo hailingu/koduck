@@ -1,11 +1,32 @@
-// ADR: docs/adr/ADR-0007-linear-time-governance-path-recognition.md
+// ADR: docs/adr/ADR-0008-delimiter-bounded-governance-record-paths.md
+
+// Separates Markdown-delimited path candidates without matching through their
+// contents, so record recognition remains bounded by the existing delimiters.
+function recordPathTokens(value) {
+  return String(value).split(/[|`\s()[\]{}<>]+/).filter(Boolean);
+}
+
+// Returns the complete token for one ADR or ADD path when it has the expected
+// record directory and filename prefix; callers retain ownership of resolution.
+export function findRecordPath(value, directory, filenamePrefix) {
+  for (const token of recordPathTokens(value)) {
+    const filename = token.slice(token.lastIndexOf("/") + 1);
+    if (
+      token.includes(directory)
+      && filename.startsWith(filenamePrefix)
+      && /\d/.test(filename[filenamePrefix.length] ?? "")
+      && filename.endsWith(".md")
+    ) {
+      return token;
+    }
+  }
+  return undefined;
+}
 
 // Builds record-index and reciprocal-link validators from filesystem and
 // Markdown parsing dependencies supplied by the CLI entry point.
 export function createRelationshipValidator(context) {
   const {
-    ADD_PATH_PATTERN,
-    ADR_PATH_PATTERN,
     CANDIDATE_STATUSES,
     isCompleteValue,
     metadata,
@@ -61,10 +82,13 @@ export function createRelationshipValidator(context) {
     }
     for (const cells of parsed.rows) {
       const rowText = `| ${cells.join(" | ")} |`;
-      const matches = [...rowText.matchAll(/`?((?:[^`|/\s]+\/)*docs\/(?:adr|architecture)\/[^`|/\s]+\.md)`?/g)];
+      const matches = recordPathTokens(rowText).filter((token) =>
+        findRecordPath(token, "docs/adr/", "ADR-")
+        || findRecordPath(token, "docs/architecture/", "ADD-"),
+      );
       const indexed = columns.has("Path")
         ? cells[columns.get("Path")]
-        : matches.at(-1)?.[1];
+        : matches.at(-1);
       if (!indexed) {
         errors.push(`${path}: index Path is missing`);
         continue;
@@ -166,7 +190,7 @@ export function createRelationshipValidator(context) {
         continue;
       }
       if (status !== "Selected" && status !== "Complete") continue;
-      const linkedPath = (linked.match(ADR_PATH_PATTERN) ?? [])[0];
+      const linkedPath = findRecordPath(linked, "docs/adr/", "ADR-");
       if (!linkedPath) {
         errors.push(`${path}: Selected or Complete ${candidate} is missing its linked ADR path`);
         continue;
@@ -175,7 +199,7 @@ export function createRelationshipValidator(context) {
       if (!absolute) continue;
       const adr = readFileSync(absolute, "utf8");
       const source = metadata(adr, "Architecture Source") ?? "";
-      const sourceAdd = source.match(ADD_PATH_PATTERN)?.[0];
+      const sourceAdd = findRecordPath(source, "docs/architecture/", "ADD-");
       const sourceCandidate = source.match(/\bCAND-\d+\b/)?.[0];
       if (sourceAdd !== path || sourceCandidate !== candidate) {
         errors.push(`${path}: reciprocal Architecture Source is missing for ${candidate} -> ${linkedPath}`);
@@ -210,7 +234,7 @@ export function createRelationshipValidator(context) {
     // Governance, process, and other non-product-demand ADRs may record
     // `N/A — <reason>`. Any other value must be an exact ADD path plus candidate.
     if (/^N\/A\s+—\s+\S/.test(source)) return;
-    const addPath = source.match(ADD_PATH_PATTERN)?.[0];
+    const addPath = findRecordPath(source, "docs/architecture/", "ADD-");
     const candidate = source.match(/\bCAND-\d+\b/)?.[0];
     if (!addPath || !candidate) {
       errors.push(
