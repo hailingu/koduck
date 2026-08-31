@@ -3,7 +3,7 @@
 ## Metadata [Required]
 
 - **Decision Status**: Accepted
-- **Implementation Status**: In Progress
+- **Implementation Status**: Blocked
 - **Date**: 2026-08-31
 - **Author**: @codex
 - **Decision Owner**: @linhai
@@ -19,10 +19,10 @@
 - **Retirement Time [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — record is not retired
 - **Retirement Evidence [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — record is not retired
 - **Retirement Reason [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — record is not retired
-- **Blocked From [Conditionally Required — Implementation Status is `Blocked`]**: N/A — implementation is in progress
-- **Blocker And Evidence [Conditionally Required — Implementation Status is `Blocked`]**: N/A — @linhai confirmed a replacement token was copied at 2026-08-31T23:07:39+08:00; the accepted operation will rerun its secure non-empty preflight before submission.
-- **Blocker Owner [Conditionally Required — Implementation Status is `Blocked`]**: N/A — implementation is in progress
-- **Blocker Exit Or Recheck Criterion [Conditionally Required — Implementation Status is `Blocked`]**: N/A — secure non-empty availability will be rechecked before the resumed submission.
+- **Blocked From [Conditionally Required — Implementation Status is `Blocked`]**: In Progress
+- **Blocker And Evidence [Conditionally Required — Implementation Status is `Blocked`]**: The processed version `2bfdafd` still has one Open Medium Reliability finding in `metadata-validation.mjs` line 17. Recovery cannot delete the current analysis: the local browser view exposes no delete action for version `2bfdafd`, and the scanner token returned `Insufficient privileges` for the local project-analysis lookup. No credential value was displayed or recorded.
+- **Blocker Owner [Conditionally Required — Implementation Status is `Blocked`]**: @linhai
+- **Blocker Exit Or Recheck Criterion [Conditionally Required — Implementation Status is `Blocked`]**: Obtain approval for a corrected source slice that removes the remaining line-17 field-suffix finding, then verify that new source version through a separately accepted OCR. The already-processed `2bfdafd` analysis remains because no authorized recovery interface is available to this operation.
 - **Operation Type**: Existing Runbook
 - **Target Scope / Operation Owner**: Local SonarQube project `koduck` / @codex
 - **Input Source or Version**: `2bfdafd` — `fix(governance): bound Metadata entry recognition`
@@ -55,8 +55,8 @@ Allowed subtask statuses: `Not Started`, `In Progress`, `Blocked`, `Complete`, o
 | ID | Objective or deliverable | Included scope or target | Completion criterion | Expected evidence | Status | Actual evidence |
 | --- | --- | --- | --- | --- | --- | --- |
 | T-1 | Confirm authority, target baseline, scanner availability, and secure token availability. | Local SonarQube project `koduck` and source input `2bfdafd`. | Accepted OCR, known current analysis baseline, installed scanner, and non-empty scanner-process token availability without exposing its value. | Approval metadata and non-sensitive preflight record. | Complete | At 2026-08-31T23:04:34+08:00, the local activity view showed current version `4d9c274` (10:34 PM); SonarScanner CLI 7.3.0.5189 was available; only non-empty token availability was confirmed. |
-| T-2 | Submit exactly one analysis of the approved source input. | Isolated task worktree and existing local SonarQube project `koduck`. | Scanner exits 0 and the submitted compute-engine task completes successfully. | Scanner exit result, task identifier, and source version. | In Progress | The first submission stopped at 2026-08-31T23:05:12+08:00 with HTTP 401 before report creation. At 2026-08-31T23:07:39+08:00, @linhai confirmed a replacement token was copied; secure preflight and submission are resuming. |
-| T-3 | Verify the scoped Reliability result or recover the local analysis baseline. | Local Open/Confirmed overall Reliability issue view and its two Metadata target locations. | Zero active target rows; otherwise only the newly created analysis is deleted and the captured baseline is current again. | Issue-view result, analysis identifier, and recovery record when triggered. | Not Started | Awaiting successful T-2 analysis submission. |
+| T-2 | Submit exactly one analysis of the approved source input. | Isolated task worktree and existing local SonarQube project `koduck`. | Scanner exits 0 and the submitted compute-engine task completes successfully. | Scanner exit result, task identifier, and source version. | Complete | The first submission stopped with HTTP 401 before report creation. The resumed scanner exited 0 at 2026-08-31T23:09:09+08:00 and submitted compute-engine task `69659ba9-40d2-44ef-9a48-e26fe0ea8903` for version `2bfdafd`. |
+| T-3 | Verify the scoped Reliability result or recover the local analysis baseline. | Local Open/Confirmed overall Reliability issue view and its two Metadata target locations. | Zero active target rows; otherwise only the newly created analysis is deleted and the captured baseline is current again. | Issue-view result, analysis identifier, and recovery record when triggered. | Blocked | The processed 11:08 PM view showed 13 Reliability issues and one remaining `metadata-validation.mjs` Open Medium row at L17. The current `2bfdafd` analysis has no browser delete action; scanner-token project-analysis lookup returned `Insufficient privileges`. |
 
 ## Eligibility [Required]
 
@@ -79,13 +79,13 @@ Allowed subtask statuses: `Not Started`, `In Progress`, `Blocked`, `Complete`, o
 
 **Planned action**: Run the installed scanner from the isolated task worktree against source input `2bfdafd`, using the existing local project key and branch configuration. Supply the pre-provisioned token only through the scanner process environment. Do not log the token, scanner environment, or any copied credential.
 
-**Actual result and stable evidence**: In progress. The first submission stopped at 2026-08-31T23:05:12+08:00 before report creation when `GET /api/v2/analysis/version` returned HTTP 401. After @linhai confirmed a replacement token was copied at 2026-08-31T23:07:39+08:00, the accepted submission is resuming following secure non-empty preflight.
+**Actual result and stable evidence**: Pass. The first submission stopped at 2026-08-31T23:05:12+08:00 before report creation when `GET /api/v2/analysis/version` returned HTTP 401. After replacement-token preflight, the resumed SonarScanner CLI exited 0 at 2026-08-31T23:09:09+08:00, uploaded the report, and created compute-engine task `69659ba9-40d2-44ef-9a48-e26fe0ea8903` for version `2bfdafd`. The local dashboard processed that version at 11:08 PM. No credential was output, stored, or recorded.
 
 ### Verify [Required]
 
 **Success criterion**: The scanner reports successful analysis submission and compute-engine completion; the resulting overall Reliability view has exactly zero active rows at the former `metadata-validation.mjs` entry-recognition locations. Record only non-sensitive scanner/task and issue-view evidence.
 
-**Actual result and stable evidence**: Awaiting successful resumed scanner submission and compute-engine completion.
+**Actual result and stable evidence**: Stop condition met. The local dashboard processed version `2bfdafd` at 11:08 PM. Its overall Open/Confirmed Reliability view showed 13 issues, including one Open Medium `metadata-validation.mjs` row at L17. This is the remaining field-suffix finding, so the two-target success criterion is not met.
 
 ### Stop and Recovery [Required]
 
@@ -95,7 +95,7 @@ Allowed subtask statuses: `Not Started`, `In Progress`, `Blocked`, `Complete`, o
 
 **Recovery verification**: Confirm that the captured pre-operation analysis is again the current local project analysis and that no new analysis remains.
 
-**Actual result and stable evidence**: The first HTTP 401 failure triggered the stop condition before any report or compute-engine task was created. `.scannerwork` was absent, so no local scanner artifact or new project analysis required recovery; the captured `4d9c274` baseline remained current. A replacement token is now awaiting secure non-empty preflight for the resumed submission.
+**Actual result and stable evidence**: Recovery was attempted but is blocked. The first HTTP 401 occurred before report creation and needed no recovery. After the successful resumed submission, the remaining L17 row triggered recovery. The browser exposes no delete action for current version `2bfdafd`, while the scanner-token local project-analysis lookup returned `Insufficient privileges`; consequently the current analysis cannot be deleted by this operation. The temporary local scanner report directory was removed after task evidence was captured.
 
 ## Conditional Extensions [Conditionally Required — production, multi-environment, phased, user/downstream/SLO impact, or stated change-window operation]
 
@@ -105,19 +105,19 @@ N/A — this is a single local analysis with no production, multi-environment, p
 
 Allowed review statuses for Authorization review, Subtask and evidence review, and Requirement-level review are `Pass`, `Fail`, or `N/A — <specific reason>`.
 
-- **Final result**: In progress — the first scanner submission stopped with HTTP 401 before report creation; @linhai has confirmed a replacement token is copied, and the accepted operation is resuming from secure preflight.
+- **Final result**: Blocked — version `2bfdafd` retained one active Metadata field-suffix Reliability finding at L17, and the current analysis cannot be deleted through the available recovery interfaces.
 - **Authorization review**: Pass — Accepted approval metadata is complete and precedes the first Execute action.
-- **Subtask and evidence review**: In progress — the first submission has HTTP 401 stop evidence; terminal review follows the resumed scanner completion and issue-view verification.
-- **Requirement-level review**: In progress — terminal review follows the resumed operation.
-- **Governance validation**: In progress — rerun `npm run validate --prefix tools/governance-validator` for this resumed OCR revision before Execute.
+- **Subtask and evidence review**: Fail — T-3 has deterministic evidence that one target remains, and the required recovery action is unavailable to this operation.
+- **Requirement-level review**: Pass — required content records the active blocker, its owner, the recheck criterion, and recovery-interface evidence.
+- **Governance validation**: Pass — `npm run validate --prefix tools/governance-validator` exited 0 and reported `Governance validation passed.` for this blocked OCR revision.
 
 ## Supporting Notes [Optional]
 
-This OCR verifies only the two Metadata-entry targets. Twelve overall Reliability findings in other validator modules remain intentionally outside this operation.
+This OCR verifies only the two Metadata-entry targets. Twelve unrelated Reliability findings remain outside its scope. The expected outer-expression target cleared, but the separate field-suffix target remains at L17 and requires a corrected source slice.
 
 ## Archival [Conditionally Required — Decision Status is retired or Implementation Status is final]
 
-The accepted operation is not terminal. If it reaches a final implementation status, archive it under `docs/adr/ocr/archive/` in the same change that establishes the final status and index-path update.
+The accepted operation is blocked while a corrected source slice is prepared, so it is not archival-eligible. If it reaches a final implementation status without a further attempt, archive it under `docs/adr/ocr/archive/` in the same change that establishes that final status and index-path update.
 
 ## Change Log [Required]
 
@@ -128,3 +128,4 @@ The accepted operation is not terminal. If it reaches a final implementation sta
 | 2026-08-31 | Preflight captured baseline version `4d9c274`, confirmed SonarScanner CLI 7.3.0.5189, and confirmed only non-empty secure token availability. | @codex |
 | 2026-08-31 | Stopped scanner submission before report creation after local SonarQube returned HTTP 401; no compute-engine task, new analysis, or scanner artifact was created. | @codex |
 | 2026-08-31 | @linhai confirmed a replacement token was copied; resumed the accepted operation from secure non-empty preflight. | @codex |
+| 2026-08-31 | Submitted task `69659ba9-40d2-44ef-9a48-e26fe0ea8903`; verification found one remaining L17 target and recovery was blocked because the current analysis has no browser delete action and scanner-token lookup has insufficient privileges. | @codex |
