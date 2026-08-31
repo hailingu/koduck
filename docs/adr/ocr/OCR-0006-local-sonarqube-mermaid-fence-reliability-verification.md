@@ -2,16 +2,16 @@
 
 ## Metadata [Required]
 
-- **Decision Status**: Proposed
-- **Implementation Status**: Not Started
+- **Decision Status**: Accepted
+- **Implementation Status**: In Progress
 - **Date**: 2026-08-31
 - **Author**: @codex
 - **Decision Owner**: @linhai
 - **Required Approver**: @linhai
 - **Record Scope**: Project
-- **Approver [Conditionally Required — Decision Status is or has been `Accepted`]**: N/A — Decision Status is `Proposed`
-- **Approval Time [Conditionally Required — Decision Status is or has been `Accepted`]**: N/A — Decision Status is `Proposed`
-- **Approval Evidence [Conditionally Required — Decision Status is or has been `Accepted`]**: N/A — Decision Status is `Proposed`
+- **Approver [Conditionally Required — Decision Status is or has been `Accepted`]**: @linhai
+- **Approval Time [Conditionally Required — Decision Status is or has been `Accepted`]**: 2026-08-31T22:24:44+08:00
+- **Approval Evidence [Conditionally Required — Decision Status is or has been `Accepted`]**: Approve
 - **Rejector [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is `Proposed`
 - **Rejection Time [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is `Proposed`
 - **Rejection Evidence [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is `Proposed`
@@ -54,9 +54,9 @@ Allowed subtask statuses: `Not Started`, `In Progress`, `Blocked`, `Complete`, o
 
 | ID | Objective or deliverable | Included scope or target | Completion criterion | Expected evidence | Status | Actual evidence |
 | --- | --- | --- | --- | --- | --- | --- |
-| T-1 | Confirm authority, target baseline, scanner availability, and secure token availability. | Local SonarQube project `koduck` and source input `4d9c274`. | Accepted OCR, known current analysis baseline, installed scanner, and non-empty scanner-process token availability without exposing its value. | Approval metadata and non-sensitive preflight record. | Not Started | Pending |
-| T-2 | Submit exactly one analysis of the approved source input. | Isolated task worktree and existing local SonarQube project `koduck`. | Scanner exits 0 and the submitted compute-engine task completes successfully. | Scanner exit result, task identifier, and source version. | Not Started | Pending |
-| T-3 | Verify the scoped Reliability result or recover the local analysis baseline. | Local Open/Confirmed overall Reliability issue view and its Mermaid-fence target location. | Zero active target rows; otherwise only the newly created analysis is deleted and the captured baseline is current again. | Issue-view result, analysis identifier, and recovery record when triggered. | Not Started | Pending |
+| T-1 | Confirm authority, target baseline, scanner availability, and secure token availability. | Local SonarQube project `koduck` and source input `4d9c274`. | Accepted OCR, known current analysis baseline, installed scanner, and non-empty scanner-process token availability without exposing its value. | Approval metadata and non-sensitive preflight record. | In Progress | Accepted approval metadata is recorded; preflight begins before scanner submission. |
+| T-2 | Submit exactly one analysis of the approved source input. | Isolated task worktree and existing local SonarQube project `koduck`. | Scanner exits 0 and the submitted compute-engine task completes successfully. | Scanner exit result, task identifier, and source version. | Not Started | Awaiting successful T-1 preflight. |
+| T-3 | Verify the scoped Reliability result or recover the local analysis baseline. | Local Open/Confirmed overall Reliability issue view and its Mermaid-fence target location. | Zero active target rows; otherwise only the newly created analysis is deleted and the captured baseline is current again. | Issue-view result, analysis identifier, and recovery record when triggered. | Not Started | Awaiting successful T-2 analysis submission. |
 
 ## Eligibility [Required]
 
@@ -73,19 +73,19 @@ Allowed subtask statuses: `Not Started`, `In Progress`, `Blocked`, `Complete`, o
 
 **Planned action and criterion**: Confirm this OCR is Accepted before execution; confirm the local project exposes `koduck` and capture its current analysis identifier; confirm `sonar-scanner` is available; and confirm the scanner token is available only through its process environment without printing, storing, or transmitting it to any other destination.
 
-**Actual result and stable evidence**: Pending
+**Actual result and stable evidence**: In progress — approval is recorded; project baseline, scanner availability, and non-empty secure token availability will be confirmed without exposing the token value.
 
 ### Execute [Required]
 
 **Planned action**: Run the installed scanner from the isolated task worktree against source input `4d9c274`, using the existing local project key and branch configuration. Supply the pre-provisioned token only through the scanner process environment. Do not log the token, scanner environment, or any copied credential.
 
-**Actual result and stable evidence**: Pending
+**Actual result and stable evidence**: Not started — T-1 preflight has not yet cleared submission.
 
 ### Verify [Required]
 
 **Success criterion**: The scanner reports successful analysis submission and compute-engine completion; the resulting overall Reliability view has exactly zero active rows at the former `mermaid-validation.mjs` opening-fence location. Record only non-sensitive scanner/task and issue-view evidence.
 
-**Actual result and stable evidence**: Pending
+**Actual result and stable evidence**: Awaiting successful scanner submission and compute-engine completion.
 
 ### Stop and Recovery [Required]
 
@@ -95,7 +95,7 @@ Allowed subtask statuses: `Not Started`, `In Progress`, `Blocked`, `Complete`, o
 
 **Recovery verification**: Confirm that the captured pre-operation analysis is again the current local project analysis and that no new analysis remains.
 
-**Actual result and stable evidence**: Pending — if recovery is not triggered, record `Not triggered` and the observation that confirms it.
+**Actual result and stable evidence**: Not triggered — no stop condition has occurred before scanner submission.
 
 ## Conditional Extensions [Conditionally Required — production, multi-environment, phased, user/downstream/SLO impact, or stated change-window operation]
 
@@ -105,11 +105,11 @@ N/A — this is a single local analysis with no production, multi-environment, p
 
 Allowed review statuses for Authorization review, Subtask and evidence review, and Requirement-level review are `Pass`, `Fail`, or `N/A — <specific reason>`.
 
-- **Final result**: Pending — completed / stopped / rolled back / not promoted
-- **Authorization review**: Pending — replace with `Pass` only when Decision Status was `Accepted`, complete approval metadata was recorded, and Approval Time preceded the first Execute action; use `Fail` if execution began without satisfying those conditions, or `N/A — operation not executed` with rejection or retirement evidence when no Execute action occurred
-- **Subtask and evidence review**: Pending — replace with `Pass` only when every declared subtask and applicable core or extension item has actual stable evidence and together they satisfy the complete task outcome
-- **Requirement-level review**: Pending — replace with `Pass` only when required content for the target status is complete, every conditional trigger is completed or marked `N/A — <reason>`, and optional content is complete or removed
-- **Governance validation**: Pending — replace with `Pass` only when `npm run validate --prefix tools/governance-validator` exits zero for the repository revision containing this record
+- **Final result**: In progress — accepted operation begins with T-1 preflight.
+- **Authorization review**: Pass — Accepted approval metadata is complete and precedes the first Execute action.
+- **Subtask and evidence review**: In progress — terminal review follows scanner completion and issue-view verification.
+- **Requirement-level review**: In progress — terminal review follows the completed operation.
+- **Governance validation**: In progress — rerun `npm run validate --prefix tools/governance-validator` for this accepted OCR revision before Execute.
 
 ## Supporting Notes [Optional]
 
@@ -117,10 +117,11 @@ This OCR verifies only the one Mermaid-fence target. Fourteen overall Reliabilit
 
 ## Archival [Conditionally Required — Decision Status is retired or Implementation Status is final]
 
-The record is Proposed and not archival-eligible. If it reaches a final implementation status, archive it under `docs/adr/ocr/archive/` in the same change that establishes the final status and index-path update.
+The accepted operation is not terminal. If it reaches a final implementation status, archive it under `docs/adr/ocr/archive/` in the same change that establishes the final status and index-path update.
 
 ## Change Log [Required]
 
 | Date | Change | Author |
 | --- | --- | --- |
 | 2026-08-31 | Drafted the OCR for one local Mermaid-fence Reliability-remediation verification analysis. | @codex |
+| 2026-08-31 | Accepted by @linhai with approval evidence `Approve` at 2026-08-31T22:24:44+08:00. | @codex |
