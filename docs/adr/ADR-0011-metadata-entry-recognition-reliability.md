@@ -3,7 +3,7 @@
 ## Metadata [Required]
 
 - **Decision Status**: Accepted
-- **Implementation Status**: In Progress
+- **Implementation Status**: Complete
 - **Date**: 2026-08-31
 - **Author**: @codex
 - **Decision Owner**: @linhai
@@ -19,11 +19,11 @@
 - **Retirement Time [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — record is not retired
 - **Retirement Evidence [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — record is not retired
 - **Retirement Reason [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — record is not retired
-- **Blocked From [Conditionally Required — Implementation Status is `Blocked`]**: N/A — implementation is not blocked
-- **Blocker And Evidence [Conditionally Required — Implementation Status is `Blocked`]**: N/A — implementation is not blocked
-- **Blocker Owner [Conditionally Required — Implementation Status is `Blocked`]**: N/A — implementation is not blocked
-- **Blocker Exit Or Recheck Criterion [Conditionally Required — Implementation Status is `Blocked`]**: N/A — implementation is not blocked
-- **Related [Optional]**: Local SonarQube overall Reliability issue list for project `koduck`, observed 2026-08-31 after processed version `2bfdafd` retained one `metadata-validation.mjs` field-suffix finding at L17.
+- **Blocked From [Conditionally Required — Implementation Status is `Blocked`]**: N/A — implementation is complete
+- **Blocker And Evidence [Conditionally Required — Implementation Status is `Blocked`]**: N/A — processed version `c336192` cleared the scoped target.
+- **Blocker Owner [Conditionally Required — Implementation Status is `Blocked`]**: N/A — implementation is complete
+- **Blocker Exit Or Recheck Criterion [Conditionally Required — Implementation Status is `Blocked`]**: N/A — implementation is complete
+- **Related [Optional]**: Local SonarQube overall Reliability issue list for project `koduck`, observed 2026-08-31 after processed version `c336192` reduced the overall count to twelve and removed the scoped `metadata-validation.mjs` field-suffix finding.
 - **Architecture Source [Conditionally Required — product demand]**: N/A — corrective governance-validator work requested from the local SonarQube result, not derived from product demand
 - **Supersedes [Conditionally Required — this ADR replaces another]**: N/A — no ADR is replaced
 - **Superseded By [Conditionally Required — this ADR is replaced]**: None
@@ -182,7 +182,7 @@ N/A — the localized replacement does not exceed or waive a software-engineerin
 | Risk dimension | Applicability and scenario, or specific N/A reason | Owning boundary | Deterministic verification method | Exact expected result | Acceptance check IDs | Status | Actual evidence |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | concurrency and ordering | N/A — entry extraction processes one document synchronously and the replacement adds no shared state. | `entries` | Structured source review and AC-2. | No shared mutable state or ordering contract is introduced. | AC-2 | N/A — no concurrent behavior | Source review of `c336192` found only local variables and ordered line iteration; AC-2 passed 146/146. |
-| timeout and deadline | Applicable — a repository Metadata line may contain arbitrarily long requirement-level suffix text. | `metadataEntry` | AC-2 package suite and separately authorized analyzer reanalysis. | Package suite exits 0, and reanalysis has no active finding at the reported Metadata suffix location. | AC-2, AC-4 | Blocked | `npm test` passed 146/146 after `c336192`; accepted OCR-0008 stopped before report creation when the local server rejected the non-empty copied token with HTTP 401. |
+| timeout and deadline | Applicable — a repository Metadata line may contain arbitrarily long requirement-level suffix text. | `metadataEntry` | AC-2 package suite and separately authorized analyzer reanalysis. | Package suite exits 0, and reanalysis has no active finding at the reported Metadata suffix location. | AC-2, AC-4 | Pass | `npm test` passed 146/146 after `c336192`; archived OCR-0008 verified the processed `c336192` view has no active Metadata-suffix target row. |
 | cancellation and interruption | N/A — the validator CLI has no cancellation protocol and this change adds none. | Governance-validator CLI | Structured source review and AC-2. | No cancellation interface or lifecycle is introduced. | AC-2 | N/A — no cancellation protocol | Source review of `c336192` confirms no cancellation interface or lifecycle was added; AC-2 passed 146/146. |
 | resource bounds and backpressure | Applicable — repository records can contain arbitrary Metadata labels and suffixes. | `metadataEntry` | AC-1 and AC-2. | Focused and complete real-validator checks exit 0 while retaining duplicate-entry behavior. | AC-1, AC-2 | Pass | Focused duplicate-active tests passed 3/3 and AC-2 passed 146/146 after `c336192`. |
 | framework or trust-boundary rejection | Applicable — repository Markdown Metadata is validator input that must retain canonical field/value extraction. | `createMetadataValidator` | AC-1 focused real-validator tests. | Focused tests exit 0 and retain existing duplicate-field diagnostics. | AC-1 | Pass | AC-1 passed 3/3 after `c336192`, retaining the canonical duplicate-field diagnostic. |
@@ -194,24 +194,24 @@ N/A — the localized replacement does not exceed or waive a software-engineerin
 | AC-1 | T-1 | The real validator continues to reject duplicate active Metadata fields with its canonical diagnostic. | Existing `rejects duplicate active <field> metadata` tests. | `node --test --test-name-pattern "rejects duplicate active" test/validation-boundary-regressions.test.mjs` in `tools/governance-validator`. | Process exits 0 with exactly three passing selected tests and no failed selected test. | Focused Node test report. | Pass | After `c336192`, the command passed 3/3 selected tests, zero failures, in 917.004 ms. |
 | AC-2 | T-2 | The complete governance-validator suite preserves existing Metadata and governance-record contracts. | Reapproved implementation in the isolated task branch. | `npm test` in `tools/governance-validator`. | Process exits 0 with zero failed tests. | Full package test report. | Pass | After `c336192`, `npm test` passed 146/146 with zero failures in 18.828 s. |
 | AC-3 | T-2 | Repository governance validation accepts the ADR/index state and unchanged record contracts. | All task changes present in the isolated task branch. | `npm run validate` in `tools/governance-validator`. | Process exits 0 and reports `Governance validation passed.` | Governance-validation command output. | Pass | After `c336192`, `npm run validate` exited 0 and reported `Governance validation passed.` |
-| AC-4 | T-2 | A separate accepted OCR verifies the analyzer outcome. | Reapproved source correction, AC-1 through AC-3 passed, and an accepted local SonarQube verification OCR. | The specified local Reliability issue view after the OCR analysis completes. | Zero active Reliability findings remain at the remaining `metadata-validation.mjs` suffix target location. | OCR task and issue-view evidence without credentials. | Blocked | OCR-0008 attempted the `c336192` scan but stopped with HTTP 401 before report creation. The local `2bfdafd` baseline remains current; copy a valid token and resume the accepted OCR. |
+| AC-4 | T-2 | A separate accepted OCR verifies the analyzer outcome. | Reapproved source correction, AC-1 through AC-3 passed, and an accepted local SonarQube verification OCR. | The specified local Reliability issue view after the OCR analysis completes. | Zero active Reliability findings remain at the remaining `metadata-validation.mjs` suffix target location. | OCR task and issue-view evidence without credentials. | Pass | Archived OCR-0008 submitted task `06b16a55-fee2-462b-a92b-099255f7f02d`; processed version `c336192` showed twelve unrelated Reliability rows and no active Metadata-suffix target row. |
 
 ## Completion Checklist [Required]
 
 | ID | Item | Completion Criterion | Expected Evidence | Status | Actual Evidence |
 | --- | --- | --- | --- | --- | --- |
 | A-1 | ADR approved | An eligible non-author approver, approval time, and exact `Approval Evidence: Approve` are recorded. | ADR metadata | Complete | @linhai reapproved at 2026-08-31T23:21:21+08:00 with approval evidence `Approve`. |
-| A-2 | Complete task delivered | T-1 through T-2 have implementation evidence and AC-1 through AC-4 are Pass. | Implementation Plan and Acceptance Checks | Not Started | AC-1 through AC-3 passed, but AC-4 is blocked in OCR-0008 until a valid local scanner token is copied. |
+| A-2 | Complete task delivered | T-1 through T-2 have implementation evidence and AC-1 through AC-4 are Pass. | Implementation Plan and Acceptance Checks | Complete | T-1 and T-2 are complete; AC-1 through AC-4 passed, including archived OCR-0008's processed `c336192` evidence. |
 | A-3 | Reciprocal ADD link synchronized, when applicable | N/A — the task is not derived from product demand and has no ADD candidate. | Metadata Architecture Source | N/A — no ADD applies | N/A — no product-demand ADD applies. |
-| A-4 | Requirement levels satisfied | Every required section is complete, and every conditional trigger is completed or has a specific N/A reason. | Structured document review | Not Started | Not run — terminal review follows implementation. |
-| A-5 | Acceptance checks are decidable | Every check has one subtask, input, deterministic method, exact expected result, and evidence. | Acceptance Checks table | Not Started | Not run — terminal review follows implementation. |
+| A-4 | Requirement levels satisfied | Every required section is complete, and every conditional trigger is completed or has a specific N/A reason. | Structured document review | Complete | Terminal review found all required fields complete and all inactive conditional fields carry specific N/A reasons. |
+| A-5 | Acceptance checks are decidable | Every check has one subtask, input, deterministic method, exact expected result, and evidence. | Acceptance Checks table | Complete | AC-1 through AC-4 each retain their declared subtask, inputs, deterministic method, exact expected result, and actual evidence. |
 | A-6 | Engineering exceptions governed, when applicable | N/A — no engineering exception is planned. | Engineering Exceptions section | N/A — no exception applies | N/A — no engineering rule is exceeded or waived. |
-| A-7 | Contract and baseline risks covered, when applicable | TC-1 through TC-2 map to checks, and every applicable risk reaches Pass before completion. | Traceability, matrix, and command reports | Not Started | Local contract checks passed, but the applicable timeout-and-deadline risk is blocked on OCR-0008 reanalysis after token refresh. |
+| A-7 | Contract and baseline risks covered, when applicable | TC-1 through TC-2 map to checks, and every applicable risk reaches Pass before completion. | Traceability, matrix, and command reports | Complete | TC-1 and TC-2 remain covered by AC-1 and AC-2; the applicable timeout-and-deadline risk passed through archived OCR-0008. |
 | A-8 | Governance validation passed | The independent validator reports no document or repository validation error. | `npm run validate` output | Complete | After `c336192`, `npm run validate` exited 0 and reported `Governance validation passed.` |
 
 ## Supporting Notes [Optional]
 
-Twelve unrelated overall Reliability findings are deferred so this remaining Metadata suffix slice remains independently reviewable. OCR-0007 confirmed that the whole-entry correction cleared while the suffix normalizer still reports at L17.
+Twelve unrelated overall Reliability findings remain deferred. OCR-0007 confirmed that the whole-entry correction cleared while the suffix normalizer still reported at L17; archived OCR-0008 verified the bounded suffix correction removed that final scoped row.
 
 ## Archival [Conditionally Required — Decision Status is `Rejected`, or Decision Status is `Deprecated` or `Superseded` and Implementation Status is final]
 
@@ -228,3 +228,4 @@ The record is Accepted and not archival-eligible. If a later rejection, deprecat
 | 2026-08-31 | Reaccepted by @linhai with approval evidence `Approve` at 2026-08-31T23:21:21+08:00. | @codex |
 | 2026-08-31 | Implemented bounded requirement-level suffix recognition in `c336192`; focused tests passed 3/3, package tests passed 146/146, and governance validation passed. | @codex |
 | 2026-08-31 | OCR-0008 stopped the approved `c336192` local scan before report creation when local SonarQube returned HTTP 401 for the non-empty copied token; analyzer verification remains blocked without changing the `2bfdafd` baseline. | @codex |
+| 2026-08-31 | After replacement-token preflight, archived OCR-0008 submitted task `06b16a55-fee2-462b-a92b-099255f7f02d`; processed version `c336192` removed the scoped Metadata-suffix Reliability row. | @codex |
