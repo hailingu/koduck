@@ -152,8 +152,8 @@ Allowed subtask statuses: `Not Started`, `In Progress`, `Blocked`, `Complete`, o
 
 | ID | Objective or deliverable | Included scope | Status | Actual implementation evidence |
 | --- | --- | --- | --- | --- |
-| T-1 | Replace the reported Metadata-entry expression with bounded delimiter-aware parsing and update the governed-file marker. | `createMetadataValidator` > `entries` in `tools/governance-validator/lib/metadata-validation.mjs`. | Not Started | Not run — awaiting approval. |
-| T-2 | Verify active Metadata duplicate detection, the complete package suite, and governance documentation contracts. | Existing Node.js tests and `npm` scripts in `tools/governance-validator`. | Not Started | Not run — awaiting T-1 implementation. |
+| T-1 | Replace the reported Metadata-entry expression with bounded delimiter-aware parsing and update the governed-file marker. | `createMetadataValidator` > `entries` in `tools/governance-validator/lib/metadata-validation.mjs`. | Complete | `2bfdafd` replaces the two reported captures with `metadataEntry`, preserves the governed-file ADR marker, and retains `entries` field/value normalization. |
+| T-2 | Verify active Metadata duplicate detection, the complete package suite, and governance documentation contracts. | Existing Node.js tests and `npm` scripts in `tools/governance-validator`. | Complete | Focused duplicate-active Metadata tests passed before and after the correction; `npm test` passed 146/146; `npm run validate` reported `Governance validation passed.` |
 
 **Affected paths**: `tools/governance-validator/lib/metadata-validation.mjs`; `tools/governance-validator/test/validation-boundary-regressions.test.mjs`; `docs/adr/ADR-0011-metadata-entry-recognition-reliability.md`; `docs/adr/INDEX.md`.
 
@@ -161,7 +161,7 @@ Allowed subtask statuses: `Not Started`, `In Progress`, `Blocked`, `Complete`, o
 
 | Path | Stable symbol or contract anchor | Key code excerpt, when needed | Purpose | Source revision |
 | --- | --- | --- | --- | --- |
-| `tools/governance-validator/lib/metadata-validation.mjs` | `createMetadataValidator` > `entries` | N/A — stable symbol is sufficient | Extracts active Metadata field/value records for duplicate and lifecycle validation. | `89f51c3` |
+| `tools/governance-validator/lib/metadata-validation.mjs` | `createMetadataValidator` > `entries` | N/A — stable symbol is sufficient | Extracts active Metadata field/value records for duplicate and lifecycle validation. | `2bfdafd` |
 | `tools/governance-validator/test/validation-boundary-regressions.test.mjs` | `rejects duplicate active <field> metadata` | N/A — stable test anchor is sufficient | Exercises duplicate active Metadata entries through the real validator. | `89f51c3` |
 
 **Migration and rollback strategy [Conditionally Required — this replaces or changes existing behavior]**: Replace only Metadata entry recognition; stop if focused duplicate-metadata behavior or the complete package suite fails. Rollback is a Git revert of the implementation commit, restoring the prior expression; no data or runtime migration is involved.
@@ -181,33 +181,33 @@ N/A — the localized replacement does not exceed or waive a software-engineerin
 
 | Risk dimension | Applicability and scenario, or specific N/A reason | Owning boundary | Deterministic verification method | Exact expected result | Acceptance check IDs | Status | Actual evidence |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| concurrency and ordering | N/A — entry extraction processes one document synchronously and the replacement adds no shared state. | `entries` | Structured source review and AC-2. | No shared mutable state or ordering contract is introduced. | AC-2 | N/A — no concurrent behavior | Not run — implementation not started. |
-| timeout and deadline | Applicable — a repository Metadata line may contain arbitrarily long label or value text. | `entries` | AC-2 package suite and separately authorized analyzer reanalysis. | Package suite exits 0, and reanalysis has no active finding at either reported Metadata-entry location. | AC-2, AC-4 | Not Started | SonarQube reports two Open Medium Reliability findings at the entry expression. |
-| cancellation and interruption | N/A — the validator CLI has no cancellation protocol and this change adds none. | Governance-validator CLI | Structured source review and AC-2. | No cancellation interface or lifecycle is introduced. | AC-2 | N/A — no cancellation protocol | Not run — implementation not started. |
-| resource bounds and backpressure | Applicable — repository records can contain arbitrary Metadata labels and values. | `entries` | AC-1 and AC-2. | Focused and complete real-validator checks exit 0 while retaining duplicate-entry behavior. | AC-1, AC-2 | Not Started | Not run — implementation not started. |
-| framework or trust-boundary rejection | Applicable — repository Markdown Metadata is validator input that must retain canonical field/value extraction. | `createMetadataValidator` | AC-1 focused real-validator tests. | Focused tests exit 0 and retain existing duplicate-field diagnostics. | AC-1 | Not Started | Not run — implementation not started. |
+| concurrency and ordering | N/A — entry extraction processes one document synchronously and the replacement adds no shared state. | `entries` | Structured source review and AC-2. | No shared mutable state or ordering contract is introduced. | AC-2 | N/A — no concurrent behavior | Source review of `2bfdafd` found only local variables and ordered line iteration; AC-2 passed. |
+| timeout and deadline | Applicable — a repository Metadata line may contain arbitrarily long label or value text. | `entries` | AC-2 package suite and separately authorized analyzer reanalysis. | Package suite exits 0, and reanalysis has no active finding at either reported Metadata-entry location. | AC-2, AC-4 | In Progress | `npm test` passed 146/146; analyzer reanalysis remains pending separately accepted OCR. |
+| cancellation and interruption | N/A — the validator CLI has no cancellation protocol and this change adds none. | Governance-validator CLI | Structured source review and AC-2. | No cancellation interface or lifecycle is introduced. | AC-2 | N/A — no cancellation protocol | Source review of `2bfdafd` confirms no cancellation interface or lifecycle was added; AC-2 passed. |
+| resource bounds and backpressure | Applicable — repository records can contain arbitrary Metadata labels and values. | `entries` | AC-1 and AC-2. | Focused and complete real-validator checks exit 0 while retaining duplicate-entry behavior. | AC-1, AC-2 | Pass | Focused real-validator tests passed after the correction; `npm test` passed 146/146. |
+| framework or trust-boundary rejection | Applicable — repository Markdown Metadata is validator input that must retain canonical field/value extraction. | `createMetadataValidator` | AC-1 focused real-validator tests. | Focused tests exit 0 and retain existing duplicate-field diagnostics. | AC-1 | Pass | Focused duplicate-active Metadata tests passed after the correction. |
 
 ## Acceptance Checks [Required]
 
 | Check ID | Subtask | Binary acceptance point | Preconditions or input | Verification method | Exact expected result | Expected evidence | Status | Actual result and evidence |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| AC-1 | T-1 | The real validator continues to reject duplicate active Metadata fields with its canonical diagnostic. | Existing `rejects duplicate active <field> metadata` tests. | `node --test --test-name-pattern "rejects duplicate active" test/validation-boundary-regressions.test.mjs` in `tools/governance-validator`. | Process exits 0 with exactly three passing selected tests and no failed selected test. | Focused Node test report. | Not Started | Not run — implementation not started. |
-| AC-2 | T-2 | The complete governance-validator suite preserves existing Metadata and governance-record contracts. | Accepted implementation in the isolated task branch. | `npm test` in `tools/governance-validator`. | Process exits 0 with zero failed tests. | Full package test report. | Not Started | Not run — implementation not started. |
-| AC-3 | T-2 | Repository governance validation accepts the ADR/index state and unchanged record contracts. | All task changes present in the isolated task branch. | `npm run validate` in `tools/governance-validator`. | Process exits 0 and reports `Governance validation passed.` | Governance-validation command output. | Not Started | Not run — implementation not started. |
+| AC-1 | T-1 | The real validator continues to reject duplicate active Metadata fields with its canonical diagnostic. | Existing `rejects duplicate active <field> metadata` tests. | `node --test --test-name-pattern "rejects duplicate active" test/validation-boundary-regressions.test.mjs` in `tools/governance-validator`. | Process exits 0 with exactly three passing selected tests and no failed selected test. | Focused Node test report. | Pass | Passed before the correction (930.994 ms) and after `2bfdafd` (927.213 ms): exactly three selected tests passed and none failed. |
+| AC-2 | T-2 | The complete governance-validator suite preserves existing Metadata and governance-record contracts. | Accepted implementation in the isolated task branch. | `npm test` in `tools/governance-validator`. | Process exits 0 with zero failed tests. | Full package test report. | Pass | After `2bfdafd`, `npm test` exited 0: 146 tests passed, 0 failed (18.94 s). |
+| AC-3 | T-2 | Repository governance validation accepts the ADR/index state and unchanged record contracts. | All task changes present in the isolated task branch. | `npm run validate` in `tools/governance-validator`. | Process exits 0 and reports `Governance validation passed.` | Governance-validation command output. | Pass | After `2bfdafd`, `npm run validate` exited 0 and reported `Governance validation passed.` |
 | AC-4 | T-2 | A separate accepted OCR verifies the analyzer outcome. | Source correction, AC-1 through AC-3 passed, and an accepted local SonarQube verification OCR. | The specified local Reliability issue view after the OCR analysis completes. | Zero active Reliability findings remain at the former `metadata-validation.mjs` target locations. | OCR task and issue-view evidence without credentials. | Not Started | Not run — separate OCR not yet proposed. |
 
 ## Completion Checklist [Required]
 
 | ID | Item | Completion Criterion | Expected Evidence | Status | Actual Evidence |
 | --- | --- | --- | --- | --- | --- |
-| A-1 | ADR approved | An eligible non-author approver, approval time, and exact `Approval Evidence: Approve` are recorded. | ADR metadata | Not Started | Not run — awaiting approval. |
+| A-1 | ADR approved | An eligible non-author approver, approval time, and exact `Approval Evidence: Approve` are recorded. | ADR metadata | Complete | @linhai approved at 2026-08-31T22:58:12+08:00 with `Approval Evidence: Approve`. |
 | A-2 | Complete task delivered | T-1 through T-2 have implementation evidence and AC-1 through AC-4 are Pass. | Implementation Plan and Acceptance Checks | Not Started | Not run — awaiting implementation and OCR verification. |
 | A-3 | Reciprocal ADD link synchronized, when applicable | N/A — the task is not derived from product demand and has no ADD candidate. | Metadata Architecture Source | N/A — no ADD applies | N/A — no product-demand ADD applies. |
 | A-4 | Requirement levels satisfied | Every required section is complete, and every conditional trigger is completed or has a specific N/A reason. | Structured document review | Not Started | Not run — terminal review follows implementation. |
 | A-5 | Acceptance checks are decidable | Every check has one subtask, input, deterministic method, exact expected result, and evidence. | Acceptance Checks table | Not Started | Not run — terminal review follows implementation. |
 | A-6 | Engineering exceptions governed, when applicable | N/A — no engineering exception is planned. | Engineering Exceptions section | N/A — no exception applies | N/A — no engineering rule is exceeded or waived. |
 | A-7 | Contract and baseline risks covered, when applicable | TC-1 through TC-2 map to checks, and every applicable risk reaches Pass before completion. | Traceability, matrix, and command reports | Not Started | Not run — awaiting implementation and analyzer verification. |
-| A-8 | Governance validation passed | The independent validator reports no document or repository validation error. | `npm run validate` output | Not Started | Not run — draft validation has not run. |
+| A-8 | Governance validation passed | The independent validator reports no document or repository validation error. | `npm run validate` output | Complete | After `2bfdafd`, `npm run validate` exited 0 and reported `Governance validation passed.` |
 
 ## Supporting Notes [Optional]
 
@@ -215,7 +215,7 @@ The other twelve overall Reliability findings are explicitly deferred so this Me
 
 ## Archival [Conditionally Required — Decision Status is `Rejected`, or Decision Status is `Deprecated` or `Superseded` and Implementation Status is final]
 
-The record is Proposed and not archival-eligible. If a later rejection, deprecation, or supersession triggers archival, move it under `docs/adr/archive/`, update all governed-file markers and references in the same change, and update its single index row.
+The record is Accepted and in progress, so it is not archival-eligible. If a later rejection, deprecation, or supersession triggers archival, move it under `docs/adr/archive/`, update all governed-file markers and references in the same change, and update its single index row.
 
 ## Change Log [Required]
 
@@ -223,3 +223,4 @@ The record is Proposed and not archival-eligible. If a later rejection, deprecat
 | --- | --- | --- |
 | 2026-08-31 | Drafted the Full ADR for the two overall SonarQube Reliability findings in Metadata-entry recognition. | @codex |
 | 2026-08-31 | Accepted by @linhai with approval evidence `Approve` at 2026-08-31T22:58:12+08:00. | @codex |
+| 2026-08-31 | Implemented delimiter-aware Metadata-entry recognition in `2bfdafd`; focused and full checks passed. | @codex |
