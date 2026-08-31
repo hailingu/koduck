@@ -3,7 +3,7 @@
 ## Metadata [Required]
 
 - **Decision Status**: Accepted
-- **Implementation Status**: In Progress
+- **Implementation Status**: Complete
 - **Date**: 2026-08-31
 - **Author**: @codex
 - **Decision Owner**: @linhai
@@ -182,7 +182,7 @@ N/A — the localized replacement does not exceed or waive a software-engineerin
 | Risk dimension | Applicability and scenario, or specific N/A reason | Owning boundary | Deterministic verification method | Exact expected result | Acceptance check IDs | Status | Actual evidence |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | concurrency and ordering | N/A — fence recognition processes one document synchronously and the replacement adds no shared state. | `mermaidBlocks` | Structured source review and AC-2. | No shared mutable state or ordering contract is introduced. | AC-2 | N/A — no concurrent behavior | Source review of `4d9c274` found only local variables and ordered line iteration; AC-2 passed. |
-| timeout and deadline | Applicable — a repository Markdown line may contain arbitrarily long fence-marker text. | `mermaidBlocks` | AC-2 package suite and separately authorized analyzer reanalysis. | Package suite exits 0, and reanalysis has no active finding at the reported opening-fence location. | AC-2, AC-4 | In Progress | `npm test` passed 146/146; analyzer reanalysis remains pending separately accepted OCR. |
+| timeout and deadline | Applicable — a repository Markdown line may contain arbitrarily long fence-marker text. | `mermaidBlocks` | AC-2 package suite and separately authorized analyzer reanalysis. | Package suite exits 0, and reanalysis has no active finding at the reported opening-fence location. | AC-2, AC-4 | Pass | `npm test` passed 146/146; archived OCR-0006 verified a processed local analysis with zero active Mermaid-fence target rows. |
 | cancellation and interruption | N/A — the validator CLI has no cancellation protocol and this change adds none. | Governance-validator CLI | Structured source review and AC-2. | No cancellation interface or lifecycle is introduced. | AC-2 | N/A — no cancellation protocol | Source review of `4d9c274` confirms no cancellation interface or lifecycle was added; AC-2 passed. |
 | resource bounds and backpressure | Applicable — Markdown documents can contain arbitrary fence lines and nested examples. | `mermaidBlocks` | AC-1 and AC-2. | Focused and complete real-validator checks exit 0 while retaining nested-example exclusion. | AC-1, AC-2 | Pass | Focused real-validator regression passed after the correction; `npm test` passed 146/146. |
 | framework or trust-boundary rejection | Applicable — repository Markdown is validator input that must retain real-block recognition and invalid-example exclusion. | `createMermaidValidator` | AC-1 focused real-validator test. | Focused test exits 0 and the nested invalid example remains unparsed. | AC-1 | Pass | Focused nested-fence real-validator regression passed after the correction. |
@@ -194,28 +194,28 @@ N/A — the localized replacement does not exceed or waive a software-engineerin
 | AC-1 | T-1 | The real validator does not syntax-check a Mermaid-looking invalid example nested in a longer outer fence. | Existing `does not syntax-check a Mermaid example nested inside an outer fence` fixture. | `node --test --test-name-pattern "does not syntax-check a Mermaid example nested inside an outer fence" test/validation-boundary-regressions.test.mjs` in `tools/governance-validator`. | Process exits 0 with exactly one passing selected test and no failed selected test. | Focused Node test report. | Pass | Passed before the correction (327.895 ms) and after `4d9c274` (335.790 ms): exactly one selected test passed and none failed. |
 | AC-2 | T-2 | The complete governance-validator suite preserves existing Mermaid and governance-record contracts. | Accepted implementation in the isolated task branch. | `npm test` in `tools/governance-validator`. | Process exits 0 with zero failed tests. | Full package test report. | Pass | After `4d9c274`, `npm test` exited 0: 146 tests passed, 0 failed (18.95 s). |
 | AC-3 | T-2 | Repository governance validation accepts the ADR/index state and unchanged record contracts. | All task changes present in the isolated task branch. | `npm run validate` in `tools/governance-validator`. | Process exits 0 and reports `Governance validation passed.` | Governance-validation command output. | Pass | After `4d9c274`, `npm run validate` exited 0 and reported `Governance validation passed.` |
-| AC-4 | T-2 | A separate accepted OCR verifies the analyzer outcome. | Source correction, AC-1 through AC-3 passed, and an accepted local SonarQube verification OCR. | The specified local Reliability issue view after the OCR analysis completes. | Zero active Reliability findings remain at the former `mermaid-validation.mjs` target location. | OCR task and issue-view evidence without credentials. | Not Started | Not run — separate OCR not yet proposed. |
+| AC-4 | T-2 | A separate accepted OCR verifies the analyzer outcome. | Source correction, AC-1 through AC-3 passed, and an accepted local SonarQube verification OCR. | The specified local Reliability issue view after the OCR analysis completes. | Zero active Reliability findings remain at the former `mermaid-validation.mjs` target location. | OCR task and issue-view evidence without credentials. | Pass | Archived `docs/adr/ocr/archive/OCR-0006-local-sonarqube-mermaid-fence-reliability-verification.md` records processed version `4d9c274`, compute-engine task `8750c0aa-4639-4eed-93c4-6a22ff029b2d`, and zero active target rows; 14 other Reliability rows remain. |
 
 ## Completion Checklist [Required]
 
 | ID | Item | Completion Criterion | Expected Evidence | Status | Actual Evidence |
 | --- | --- | --- | --- | --- | --- |
 | A-1 | ADR approved | An eligible non-author approver, approval time, and exact `Approval Evidence: Approve` are recorded. | ADR metadata | Complete | @linhai approved at 2026-08-31T22:18:13+08:00 with `Approval Evidence: Approve`. |
-| A-2 | Complete task delivered | T-1 through T-2 have implementation evidence and AC-1 through AC-4 are Pass. | Implementation Plan and Acceptance Checks | Not Started | Not run — awaiting implementation and OCR verification. |
+| A-2 | Complete task delivered | T-1 through T-2 have implementation evidence and AC-1 through AC-4 are Pass. | Implementation Plan and Acceptance Checks | Complete | T-1 and T-2 are complete; AC-1 through AC-4 passed, including archived OCR-0006 analyzer verification. |
 | A-3 | Reciprocal ADD link synchronized, when applicable | N/A — the task is not derived from product demand and has no ADD candidate. | Metadata Architecture Source | N/A — no ADD applies | N/A — no product-demand ADD applies. |
-| A-4 | Requirement levels satisfied | Every required section is complete, and every conditional trigger is completed or has a specific N/A reason. | Structured document review | Not Started | Not run — terminal review follows implementation. |
-| A-5 | Acceptance checks are decidable | Every check has one subtask, input, deterministic method, exact expected result, and evidence. | Acceptance Checks table | Not Started | Not run — terminal review follows implementation. |
+| A-4 | Requirement levels satisfied | Every required section is complete, and every conditional trigger is completed or has a specific N/A reason. | Structured document review | Complete | Terminal structured review and governance validation passed after OCR-0006 archival-path synchronization. |
+| A-5 | Acceptance checks are decidable | Every check has one subtask, input, deterministic method, exact expected result, and evidence. | Acceptance Checks table | Complete | AC-1 through AC-4 record their complete deterministic methods, results, and captured evidence. |
 | A-6 | Engineering exceptions governed, when applicable | N/A — no engineering exception is planned. | Engineering Exceptions section | N/A — no exception applies | N/A — no engineering rule is exceeded or waived. |
-| A-7 | Contract and baseline risks covered, when applicable | TC-1 through TC-2 map to checks, and every applicable risk reaches Pass before completion. | Traceability, matrix, and command reports | Not Started | Not run — awaiting implementation and analyzer verification. |
+| A-7 | Contract and baseline risks covered, when applicable | TC-1 through TC-2 map to checks, and every applicable risk reaches Pass before completion. | Traceability, matrix, and command reports | Complete | TC-1 and TC-2 map to AC-1 through AC-2; every applicable risk row is Pass and OCR-0006 supplies the reanalysis evidence. |
 | A-8 | Governance validation passed | The independent validator reports no document or repository validation error. | `npm run validate` output | Complete | After `4d9c274`, `npm run validate` exited 0 and reported `Governance validation passed.` |
 
 ## Supporting Notes [Optional]
 
-The other 14 overall Reliability findings are explicitly deferred so this Mermaid-fence slice remains independently reviewable. The overall count can remain nonzero after this slice; AC-4 concerns only the target `mermaid-validation.mjs` location. The static analyzer finding supplied the red baseline: the existing real-validator test already passed before the correction, so it is retained as contract evidence rather than misrepresented as a newly failing behavioral test.
+Fourteen overall Reliability findings remain in other validator modules; this Mermaid-fence slice is complete and independently reviewable. AC-4 concerned only the former `mermaid-validation.mjs` target location, which has zero active rows after OCR-0006. The static analyzer finding supplied the red baseline: the existing real-validator test already passed before the correction, so it is retained as contract evidence rather than misrepresented as a newly failing behavioral test.
 
 ## Archival [Conditionally Required — Decision Status is `Rejected`, or Decision Status is `Deprecated` or `Superseded` and Implementation Status is final]
 
-The record is Proposed and not archival-eligible. If a later rejection, deprecation, or supersession triggers archival, move it under `docs/adr/archive/`, update all governed-file markers and references in the same change, and update its single index row.
+The record is Accepted and Complete, so it remains at its current path as the governing implementation evidence. If a later rejection, deprecation, or supersession triggers archival, move it under `docs/adr/archive/`, update all governed-file markers and references in the same change, and update its single index row.
 
 ## Change Log [Required]
 
@@ -224,3 +224,4 @@ The record is Proposed and not archival-eligible. If a later rejection, deprecat
 | 2026-08-31 | Drafted the Full ADR for the one overall SonarQube Reliability finding in Mermaid-fence recognition. | @codex |
 | 2026-08-31 | Accepted by @linhai with approval evidence `Approve` at 2026-08-31T22:18:13+08:00. | @codex |
 | 2026-08-31 | Implemented the bounded opening-fence recognizer in `4d9c274`; focused and full checks passed. | @codex |
+| 2026-08-31 | Completed local analyzer verification through archived OCR-0006: version `4d9c274` has zero active Mermaid-fence target rows. | @codex |

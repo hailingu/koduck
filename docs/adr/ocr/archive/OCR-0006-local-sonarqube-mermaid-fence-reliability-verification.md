@@ -3,7 +3,7 @@
 ## Metadata [Required]
 
 - **Decision Status**: Accepted
-- **Implementation Status**: In Progress
+- **Implementation Status**: Complete
 - **Date**: 2026-08-31
 - **Author**: @codex
 - **Decision Owner**: @linhai
@@ -19,10 +19,10 @@
 - **Retirement Time [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — record is not retired
 - **Retirement Evidence [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — record is not retired
 - **Retirement Reason [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — record is not retired
-- **Blocked From [Conditionally Required — Implementation Status is `Blocked`]**: N/A — implementation is in progress
-- **Blocker And Evidence [Conditionally Required — Implementation Status is `Blocked`]**: N/A — @linhai confirmed a replacement token was copied at 2026-08-31T22:33:06+08:00; the accepted operation will rerun its secure non-empty preflight before submission.
-- **Blocker Owner [Conditionally Required — Implementation Status is `Blocked`]**: N/A — implementation is in progress
-- **Blocker Exit Or Recheck Criterion [Conditionally Required — Implementation Status is `Blocked`]**: N/A — secure non-empty availability will be rechecked before the resumed submission.
+- **Blocked From [Conditionally Required — Implementation Status is `Blocked`]**: N/A — implementation is complete
+- **Blocker And Evidence [Conditionally Required — Implementation Status is `Blocked`]**: N/A — the initial HTTP 401 stop cleared after replacement-token preflight and the resumed analysis succeeded.
+- **Blocker Owner [Conditionally Required — Implementation Status is `Blocked`]**: N/A — implementation is complete
+- **Blocker Exit Or Recheck Criterion [Conditionally Required — Implementation Status is `Blocked`]**: N/A — operation completed after resumed submission.
 - **Operation Type**: Existing Runbook
 - **Target Scope / Operation Owner**: Local SonarQube project `koduck` / @codex
 - **Input Source or Version**: `4d9c274` — `fix(governance): bound Mermaid fence recognition`
@@ -54,9 +54,9 @@ Allowed subtask statuses: `Not Started`, `In Progress`, `Blocked`, `Complete`, o
 
 | ID | Objective or deliverable | Included scope or target | Completion criterion | Expected evidence | Status | Actual evidence |
 | --- | --- | --- | --- | --- | --- | --- |
-| T-1 | Confirm authority, target baseline, scanner availability, and secure token availability. | Local SonarQube project `koduck` and source input `4d9c274`. | Accepted OCR, known current analysis baseline, installed scanner, and non-empty scanner-process token availability without exposing its value. | Approval metadata and non-sensitive preflight record. | Complete | At 2026-08-31T22:27:37+08:00, the local activity view showed current version `81a7c51` (9:44 PM); SonarScanner CLI 7.3.0.5189 was available; only non-empty token availability was confirmed. |
-| T-2 | Submit exactly one analysis of the approved source input. | Isolated task worktree and existing local SonarQube project `koduck`. | Scanner exits 0 and the submitted compute-engine task completes successfully. | Scanner exit result, task identifier, and source version. | In Progress | The first submission stopped at 2026-08-31T22:28:35+08:00 with HTTP 401 before report creation. At 2026-08-31T22:33:06+08:00, @linhai confirmed a replacement token was copied; secure preflight and submission are resuming. |
-| T-3 | Verify the scoped Reliability result or recover the local analysis baseline. | Local Open/Confirmed overall Reliability issue view and its Mermaid-fence target location. | Zero active target rows; otherwise only the newly created analysis is deleted and the captured baseline is current again. | Issue-view result, analysis identifier, and recovery record when triggered. | Not Started | Awaiting successful T-2 analysis submission. |
+| T-1 | Confirm authority, target baseline, scanner availability, and secure token availability. | Local SonarQube project `koduck` and source input `4d9c274`. | Accepted OCR, known current analysis baseline, installed scanner, and non-empty scanner-process token availability without exposing its value. | Approval metadata and non-sensitive preflight record. | Complete | At 2026-08-31T22:27:37+08:00, the activity view showed current version `81a7c51`; SonarScanner CLI 7.3.0.5189 was available. After the initial HTTP 401 stop, @linhai confirmed a replacement token at 2026-08-31T22:33:06+08:00 and secure non-empty availability was rechecked before the successful resumed submission. |
+| T-2 | Submit exactly one analysis of the approved source input. | Isolated task worktree and existing local SonarQube project `koduck`. | Scanner exits 0 and the submitted compute-engine task completes successfully. | Scanner exit result, task identifier, and source version. | Complete | The first submission stopped at 2026-08-31T22:28:35+08:00 with HTTP 401 before report creation. The resumed scanner exited 0 at 2026-08-31T22:34:33+08:00 and submitted compute-engine task `8750c0aa-4639-4eed-93c4-6a22ff029b2d` for version `4d9c274`. |
+| T-3 | Verify the scoped Reliability result or recover the local analysis baseline. | Local Open/Confirmed overall Reliability issue view and its Mermaid-fence target location. | Zero active target rows; otherwise only the newly created analysis is deleted and the captured baseline is current again. | Issue-view result, analysis identifier, and recovery record when triggered. | Complete | The local dashboard processed version `4d9c274` at 10:34 PM. The overall Open/Confirmed Reliability view showed 14 issues, all in other validator files, and no `mermaid-validation.mjs` row; recovery was not required. |
 
 ## Eligibility [Required]
 
@@ -73,19 +73,19 @@ Allowed subtask statuses: `Not Started`, `In Progress`, `Blocked`, `Complete`, o
 
 **Planned action and criterion**: Confirm this OCR is Accepted before execution; confirm the local project exposes `koduck` and capture its current analysis identifier; confirm `sonar-scanner` is available; and confirm the scanner token is available only through its process environment without printing, storing, or transmitting it to any other destination.
 
-**Actual result and stable evidence**: At 2026-08-31T22:27:37+08:00, the local activity view showed current version `81a7c51` (9:44 PM), SonarScanner CLI 7.3.0.5189 was available, and only non-empty secure token availability was confirmed. The first submission then returned HTTP 401. At 2026-08-31T22:33:06+08:00, @linhai confirmed a replacement token was copied; only non-empty availability will be rechecked before resumed submission. No token value was displayed or recorded.
+**Actual result and stable evidence**: At 2026-08-31T22:27:37+08:00, the local activity view showed current version `81a7c51`, SonarScanner CLI 7.3.0.5189 was available, and only non-empty secure token availability was confirmed. The first submission returned HTTP 401. At 2026-08-31T22:33:06+08:00, @linhai confirmed a replacement token was copied; secure non-empty availability was rechecked before resumed submission. No token value was displayed or recorded.
 
 ### Execute [Required]
 
 **Planned action**: Run the installed scanner from the isolated task worktree against source input `4d9c274`, using the existing local project key and branch configuration. Supply the pre-provisioned token only through the scanner process environment. Do not log the token, scanner environment, or any copied credential.
 
-**Actual result and stable evidence**: In progress. The first submission stopped at 2026-08-31T22:28:35+08:00 before report creation when `GET /api/v2/analysis/version` returned HTTP 401. After @linhai confirmed a replacement token was copied at 2026-08-31T22:33:06+08:00, the accepted submission is resuming following secure non-empty preflight.
+**Actual result and stable evidence**: Pass. The first submission stopped at 2026-08-31T22:28:35+08:00 before report creation when `GET /api/v2/analysis/version` returned HTTP 401. After replacement-token preflight, the resumed SonarScanner CLI exited 0 at 2026-08-31T22:34:33+08:00, uploaded the report, and created compute-engine task `8750c0aa-4639-4eed-93c4-6a22ff029b2d` for version `4d9c274`. The local dashboard processed that version at 10:34 PM. No credential was output, stored, or recorded.
 
 ### Verify [Required]
 
 **Success criterion**: The scanner reports successful analysis submission and compute-engine completion; the resulting overall Reliability view has exactly zero active rows at the former `mermaid-validation.mjs` opening-fence location. Record only non-sensitive scanner/task and issue-view evidence.
 
-**Actual result and stable evidence**: Awaiting successful resumed scanner submission and compute-engine completion.
+**Actual result and stable evidence**: Pass. The local dashboard showed processed version `4d9c274` at 10:34 PM. Its overall Open/Confirmed Reliability view showed 14 remaining issues under `metadata-validation.mjs`, `relationship-validation.mjs`, and `validate.mjs`, with no active `mermaid-validation.mjs` row. The scoped target therefore has zero active findings.
 
 ### Stop and Recovery [Required]
 
@@ -95,7 +95,7 @@ Allowed subtask statuses: `Not Started`, `In Progress`, `Blocked`, `Complete`, o
 
 **Recovery verification**: Confirm that the captured pre-operation analysis is again the current local project analysis and that no new analysis remains.
 
-**Actual result and stable evidence**: The first HTTP 401 failure triggered the stop condition before any report or compute-engine task was created. `.scannerwork` was absent, so no local scanner artifact or new project analysis required recovery; the captured `81a7c51` baseline remained current. A replacement token is now awaiting secure non-empty preflight for the resumed submission.
+**Actual result and stable evidence**: Not triggered for the successful resumed submission. The initial HTTP 401 failure did trigger a stop before any report or compute-engine task was created; `.scannerwork` was absent, so no recovery was necessary. The resumed analysis completed and the scoped target passed, so no project analysis was deleted. The temporary scanner report directory from the successful submission was removed after task evidence was captured.
 
 ## Conditional Extensions [Conditionally Required — production, multi-environment, phased, user/downstream/SLO impact, or stated change-window operation]
 
@@ -105,19 +105,19 @@ N/A — this is a single local analysis with no production, multi-environment, p
 
 Allowed review statuses for Authorization review, Subtask and evidence review, and Requirement-level review are `Pass`, `Fail`, or `N/A — <specific reason>`.
 
-- **Final result**: In progress — the first scanner submission stopped with HTTP 401 before report creation; @linhai has confirmed a replacement token is copied, and the accepted operation is resuming from secure preflight.
+- **Final result**: Completed — the resumed analysis for version `4d9c274` completed, and the overall Reliability view had zero active `mermaid-validation.mjs` target rows. The dashboard Quality Gate is `Failed` because of one New Code issue outside this OCR scope.
 - **Authorization review**: Pass — Accepted approval metadata is complete and precedes the first Execute action.
-- **Subtask and evidence review**: In progress — the first submission has HTTP 401 stop evidence; terminal review follows the resumed scanner completion and issue-view verification.
-- **Requirement-level review**: In progress — terminal review follows the resumed operation.
-- **Governance validation**: In progress — rerun `npm run validate --prefix tools/governance-validator` for this resumed OCR revision before Execute.
+- **Subtask and evidence review**: Pass — T-1 records preflight and replacement-token recovery, T-2 records successful scanner submission and task identifier, and T-3 records zero active target rows.
+- **Requirement-level review**: Pass — required and triggered fields contain the completed-operation evidence and the specific no-recovery result.
+- **Governance validation**: Pass — `npm run validate --prefix tools/governance-validator` exited 0 and reported `Governance validation passed.` for this terminal archived OCR revision.
 
 ## Supporting Notes [Optional]
 
-This OCR verifies only the one Mermaid-fence target. Fourteen overall Reliability findings in other validator modules remain intentionally outside this operation.
+This OCR verifies only the one Mermaid-fence target. Fourteen overall Reliability findings in other validator modules remain intentionally outside this operation. The dashboard's failed Quality Gate reports one New Code issue; it is outside the scoped target and is not a failure of this OCR.
 
 ## Archival [Conditionally Required — Decision Status is retired or Implementation Status is final]
 
-The accepted operation is not terminal. If it reaches a final implementation status, archive it under `docs/adr/ocr/archive/` in the same change that establishes the final status and index-path update.
+The operation is terminal and this record is archived under `docs/adr/ocr/archive/` in the same change as its `Complete` status and index-path update.
 
 ## Change Log [Required]
 
@@ -128,3 +128,4 @@ The accepted operation is not terminal. If it reaches a final implementation sta
 | 2026-08-31 | Preflight captured baseline version `81a7c51`, confirmed SonarScanner CLI 7.3.0.5189, and confirmed only non-empty secure token availability. | @codex |
 | 2026-08-31 | Stopped scanner submission before report creation after local SonarQube returned HTTP 401; no compute-engine task, new analysis, or scanner artifact was created. | @codex |
 | 2026-08-31 | @linhai confirmed a replacement token was copied; resumed the accepted operation from secure non-empty preflight. | @codex |
+| 2026-08-31 | Submitted task `8750c0aa-4639-4eed-93c4-6a22ff029b2d`, verified processed version `4d9c274` and zero active Mermaid-fence target rows, then removed the temporary scanner report directory. | @codex |
