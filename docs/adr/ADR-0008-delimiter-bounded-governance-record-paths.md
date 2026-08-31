@@ -2,19 +2,19 @@
 
 ## Metadata [Required]
 
-- **Decision Status**: Proposed
-- **Implementation Status**: Not Started
+- **Decision Status**: Accepted
+- **Implementation Status**: In Progress
 - **Date**: 2026-08-31
 - **Author**: @codex
 - **Decision Owner**: @linhai
 - **Required Approver**: @linhai
 - **Record Scope**: Project
-- **Approver [Conditionally Required — Decision Status is or has been `Accepted`]**: Pending — reapproval required
-- **Approval Time [Conditionally Required — Decision Status is or has been `Accepted`]**: Pending — reapproval required
-- **Approval Evidence [Conditionally Required — Decision Status is or has been `Accepted`]**: Pending — reapproval required
-- **Rejector [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is Proposed
-- **Rejection Time [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is Proposed
-- **Rejection Evidence [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is Proposed
+- **Approver [Conditionally Required — Decision Status is or has been `Accepted`]**: @linhai
+- **Approval Time [Conditionally Required — Decision Status is or has been `Accepted`]**: 2026-08-31T20:55:58+08:00
+- **Approval Evidence [Conditionally Required — Decision Status is or has been `Accepted`]**: Approve
+- **Rejector [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is `Accepted`
+- **Rejection Time [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is `Accepted`
+- **Rejection Evidence [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is `Accepted`
 - **Retired By [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — record is not retired
 - **Retirement Time [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — record is not retired
 - **Retirement Evidence [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — record is not retired
@@ -153,9 +153,9 @@ Allowed subtask statuses: `Not Started`, `In Progress`, `Blocked`, `Complete`, o
 
 | ID | Objective or deliverable | Included scope | Status | Actual implementation evidence |
 | --- | --- | --- | --- | --- |
-| T-1 | Establish the three-finding SonarQube Reliability baseline and retain the existing real-validator adversarial regression as the behavior-preservation guard. | Local issue evidence and `tools/governance-validator/test/index-path-validation.test.mjs`. | Not Started | Not run — reapproval required. |
-| T-2 | Replace the three reported extraction sites with delimiter-bounded procedural record-path recognition and update governed-file markers. | `tools/governance-validator/lib/relationship-validation.mjs` and `tools/governance-validator/validate.mjs`. | Not Started | Not run — reapproval required. |
-| T-3 | Verify the existing adversarial regression, complete test suite, and governance validation. | Existing Node.js tests and `npm` scripts in `tools/governance-validator`. | Not Started | Not run — reapproval required. |
+| T-1 | Establish the three-finding SonarQube Reliability baseline and retain the existing real-validator adversarial regression as the behavior-preservation guard. | Local issue evidence and `tools/governance-validator/test/index-path-validation.test.mjs`. | In Progress | The local issue list shows the three reported findings; focused behavior-preservation test not yet run. |
+| T-2 | Replace the three reported extraction sites with delimiter-bounded procedural record-path recognition and update governed-file markers. | `tools/governance-validator/lib/relationship-validation.mjs` and `tools/governance-validator/validate.mjs`. | Not Started | Not run — awaiting T-1 behavior guard. |
+| T-3 | Verify the existing adversarial regression, complete test suite, and governance validation. | Existing Node.js tests and `npm` scripts in `tools/governance-validator`. | Not Started | Not run — awaiting T-2 implementation. |
 
 **Affected paths**: `tools/governance-validator/test/index-path-validation.test.mjs`; `tools/governance-validator/lib/relationship-validation.mjs`; `tools/governance-validator/validate.mjs`; `docs/adr/ADR-0008-delimiter-bounded-governance-record-paths.md`; `docs/adr/INDEX.md`.
 
@@ -202,7 +202,7 @@ N/A — the planned localized helper and regression do not exceed or waive a sof
 
 | ID | Item | Completion Criterion | Expected Evidence | Status | Actual Evidence |
 | --- | --- | --- | --- | --- | --- |
-| A-1 | ADR approved | An eligible non-author approver, approval time, and exact `Approval Evidence: Approve` are recorded. | ADR metadata | Not Started | Pending — reapproval required. |
+| A-1 | ADR approved | An eligible non-author approver, approval time, and exact `Approval Evidence: Approve` are recorded. | ADR metadata | Complete | @linhai approved the revised ADR at 2026-08-31T20:55:58+08:00 with `Approval Evidence: Approve`. |
 | A-2 | Complete task delivered | T-1 through T-3 have implementation evidence and AC-1 through AC-3 are Pass. | Implementation Plan and Acceptance Checks | Not Started | Pending |
 | A-3 | Reciprocal ADD link synchronized, when applicable | N/A — the task is not derived from product demand and has no ADD candidate. | Metadata Architecture Source | N/A — no ADD applies | N/A — no product-demand ADD applies. |
 | A-4 | Requirement levels satisfied | Every required section is complete, and every conditional trigger is completed or has a specific N/A reason. | Structured document review | Not Started | Pending |
@@ -217,7 +217,7 @@ The new local SonarQube issue list shows exactly three Medium Reliability findin
 
 ## Archival [Conditionally Required — Decision Status is `Rejected`, or Decision Status is `Deprecated` or `Superseded` and Implementation Status is final]
 
-The record is Proposed and not archival-eligible. If a later rejection, deprecation, or supersession triggers archival, move it under `docs/adr/archive/`, update all governed-file markers and references in the same change, and update its single index row.
+The record is Accepted and not archival-eligible. If a later rejection, deprecation, or supersession triggers archival, move it under `docs/adr/archive/`, update all governed-file markers and references in the same change, and update its single index row.
 
 ## Change Log [Required]
 
@@ -226,3 +226,4 @@ The record is Proposed and not archival-eligible. If a later rejection, deprecat
 | 2026-08-31 | Drafted the Full ADR for the residual three SonarQube Reliability findings in governance-record path extraction. | @codex |
 | 2026-08-31 | Accepted by @linhai with approval evidence `Approve` at 2026-08-31T20:50:11+08:00. | @codex |
 | 2026-08-31 | Approval-invalidating correction: removed the unsupported trailing-punctuation behavior claim and restored Proposed status; previous approval by @linhai at 2026-08-31T20:50:11+08:00 with evidence `Approve` remains historical only. | @codex |
+| 2026-08-31 | Reaccepted by @linhai with approval evidence `Approve` at 2026-08-31T20:55:58+08:00. | @codex |
