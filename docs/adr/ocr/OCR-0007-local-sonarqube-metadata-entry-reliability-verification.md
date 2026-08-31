@@ -54,8 +54,8 @@ Allowed subtask statuses: `Not Started`, `In Progress`, `Blocked`, `Complete`, o
 
 | ID | Objective or deliverable | Included scope or target | Completion criterion | Expected evidence | Status | Actual evidence |
 | --- | --- | --- | --- | --- | --- | --- |
-| T-1 | Confirm authority, target baseline, scanner availability, and secure token availability. | Local SonarQube project `koduck` and source input `2bfdafd`. | Accepted OCR, known current analysis baseline, installed scanner, and non-empty scanner-process token availability without exposing its value. | Approval metadata and non-sensitive preflight record. | In Progress | Accepted approval metadata is recorded; preflight begins before scanner submission. |
-| T-2 | Submit exactly one analysis of the approved source input. | Isolated task worktree and existing local SonarQube project `koduck`. | Scanner exits 0 and the submitted compute-engine task completes successfully. | Scanner exit result, task identifier, and source version. | Not Started | Awaiting successful T-1 preflight. |
+| T-1 | Confirm authority, target baseline, scanner availability, and secure token availability. | Local SonarQube project `koduck` and source input `2bfdafd`. | Accepted OCR, known current analysis baseline, installed scanner, and non-empty scanner-process token availability without exposing its value. | Approval metadata and non-sensitive preflight record. | Complete | At 2026-08-31T23:04:34+08:00, the local activity view showed current version `4d9c274` (10:34 PM); SonarScanner CLI 7.3.0.5189 was available; only non-empty token availability was confirmed. |
+| T-2 | Submit exactly one analysis of the approved source input. | Isolated task worktree and existing local SonarQube project `koduck`. | Scanner exits 0 and the submitted compute-engine task completes successfully. | Scanner exit result, task identifier, and source version. | In Progress | T-1 completed; scanner submission for source input `2bfdafd` is beginning. |
 | T-3 | Verify the scoped Reliability result or recover the local analysis baseline. | Local Open/Confirmed overall Reliability issue view and its two Metadata target locations. | Zero active target rows; otherwise only the newly created analysis is deleted and the captured baseline is current again. | Issue-view result, analysis identifier, and recovery record when triggered. | Not Started | Awaiting successful T-2 analysis submission. |
 
 ## Eligibility [Required]
@@ -73,13 +73,13 @@ Allowed subtask statuses: `Not Started`, `In Progress`, `Blocked`, `Complete`, o
 
 **Planned action and criterion**: Confirm this OCR is Accepted before execution; confirm the local project exposes `koduck` and capture its current analysis identifier; confirm `sonar-scanner` is available; and confirm the scanner token is available only through its process environment without printing, storing, or transmitting it to any other destination.
 
-**Actual result and stable evidence**: In progress — approval is recorded; project baseline, scanner availability, and non-empty secure token availability will be confirmed without exposing the token value.
+**Actual result and stable evidence**: At 2026-08-31T23:04:34+08:00, the local activity view showed current version `4d9c274` (10:34 PM), SonarScanner CLI 7.3.0.5189 was available, and only non-empty secure token availability was confirmed. The token value was neither displayed nor recorded.
 
 ### Execute [Required]
 
 **Planned action**: Run the installed scanner from the isolated task worktree against source input `2bfdafd`, using the existing local project key and branch configuration. Supply the pre-provisioned token only through the scanner process environment. Do not log the token, scanner environment, or any copied credential.
 
-**Actual result and stable evidence**: Not started — T-1 preflight has not yet cleared submission.
+**Actual result and stable evidence**: In progress — T-1 preflight cleared; scanner submission for source input `2bfdafd` is beginning.
 
 ### Verify [Required]
 
@@ -105,7 +105,7 @@ N/A — this is a single local analysis with no production, multi-environment, p
 
 Allowed review statuses for Authorization review, Subtask and evidence review, and Requirement-level review are `Pass`, `Fail`, or `N/A — <specific reason>`.
 
-- **Final result**: In progress — accepted operation begins with T-1 preflight.
+- **Final result**: In progress — T-1 preflight completed and T-2 scanner submission is beginning.
 - **Authorization review**: Pass — Accepted approval metadata is complete and precedes the first Execute action.
 - **Subtask and evidence review**: In progress — terminal review follows scanner completion and issue-view verification.
 - **Requirement-level review**: In progress — terminal review follows the completed operation.
@@ -125,3 +125,4 @@ The accepted operation is not terminal. If it reaches a final implementation sta
 | --- | --- | --- |
 | 2026-08-31 | Drafted the OCR for one local Metadata-entry Reliability-remediation verification analysis. | @codex |
 | 2026-08-31 | Accepted by @linhai with approval evidence `Approve` at 2026-08-31T23:03:25+08:00. | @codex |
+| 2026-08-31 | Preflight captured baseline version `4d9c274`, confirmed SonarScanner CLI 7.3.0.5189, and confirmed only non-empty secure token availability. | @codex |
