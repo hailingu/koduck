@@ -5,6 +5,26 @@
  * caller's canonical fenced-code and section parsers.
  */
 export function createMetadataValidator({ stripFencedCode, sectionContent }) {
+  // Removes a trailing requirement-level suffix by its bounded delimiters while
+  // preserving the original whitespace and bracket-content constraints.
+  function fieldWithoutRequirementLevelSuffix(field) {
+    let end = field.length;
+    while (end > 0 && /\s/.test(field[end - 1])) end -= 1;
+    if (end === 0 || field[end - 1] !== "]") return field.trim();
+
+    let suffixStart = end - 2;
+    while (suffixStart >= 0) {
+      if (field[suffixStart] === "]") return field.trim();
+      if (field[suffixStart] === "[" && suffixStart > 0 && /\s/.test(field[suffixStart - 1])) break;
+      suffixStart -= 1;
+    }
+    if (suffixStart < 0 || suffixStart === end - 2) return field.trim();
+
+    let labelEnd = suffixStart;
+    while (labelEnd > 0 && /\s/.test(field[labelEnd - 1])) labelEnd -= 1;
+    return field.slice(0, labelEnd);
+  }
+
   // Parses one active Metadata list entry without an unbounded whole-line
   // expression, preserving the established marker, delimiter, and trimming
   // rules for the extracted field/value pair.
@@ -14,7 +34,7 @@ export function createMetadataValidator({ stripFencedCode, sectionContent }) {
     const labelEnd = line.indexOf("**:", prefix.length);
     if (labelEnd <= prefix.length) return undefined;
     return {
-      field: line.slice(prefix.length, labelEnd).replace(/\s+\[[^\]]+\]\s*$/, "").trim(),
+      field: fieldWithoutRequirementLevelSuffix(line.slice(prefix.length, labelEnd)),
       value: line.slice(labelEnd + 3).trim(),
     };
   }
