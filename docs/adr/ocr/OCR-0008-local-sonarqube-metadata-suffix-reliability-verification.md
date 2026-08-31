@@ -3,7 +3,7 @@
 ## Metadata [Required]
 
 - **Decision Status**: Accepted
-- **Implementation Status**: Blocked
+- **Implementation Status**: In Progress
 - **Date**: 2026-08-31
 - **Author**: @codex
 - **Decision Owner**: @linhai
@@ -19,10 +19,10 @@
 - **Retirement Time [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — record is not retired
 - **Retirement Evidence [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — record is not retired
 - **Retirement Reason [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — record is not retired
-- **Blocked From [Conditionally Required — Implementation Status is `Blocked`]**: In Progress
-- **Blocker And Evidence [Conditionally Required — Implementation Status is `Blocked`]**: The securely copied token was non-empty, but SonarScanner stopped at 2026-08-31T23:34:03+08:00 when local SonarQube returned HTTP 401 for its server-version check. No report upload, compute-engine task, or new analysis was created; no credential value was displayed or recorded.
-- **Blocker Owner [Conditionally Required — Implementation Status is `Blocked`]**: @linhai
-- **Blocker Exit Or Recheck Criterion [Conditionally Required — Implementation Status is `Blocked`]**: Copy a newly valid local project scanner token to the secure terminal and confirm it is copied. Recheck non-empty availability and resume this already accepted OCR; because no report was created, no recovery or reapproval is required for the unchanged operation.
+- **Blocked From [Conditionally Required — Implementation Status is `Blocked`]**: N/A — implementation resumed
+- **Blocker And Evidence [Conditionally Required — Implementation Status is `Blocked`]**: N/A — @linhai copied a replacement token and non-empty availability was reconfirmed at 2026-08-31T23:38:56+08:00.
+- **Blocker Owner [Conditionally Required — Implementation Status is `Blocked`]**: N/A — implementation resumed
+- **Blocker Exit Or Recheck Criterion [Conditionally Required — Implementation Status is `Blocked`]**: N/A — implementation resumed
 - **Operation Type**: Existing Runbook
 - **Target Scope / Operation Owner**: Local SonarQube project `koduck` / @codex
 - **Input Source or Version**: `c336192` — `fix(governance): bound Metadata suffix recognition`
@@ -55,8 +55,8 @@ Allowed subtask statuses: `Not Started`, `In Progress`, `Blocked`, `Complete`, o
 | ID | Objective or deliverable | Included scope or target | Completion criterion | Expected evidence | Status | Actual evidence |
 | --- | --- | --- | --- | --- | --- | --- |
 | T-1 | Confirm authority, the current baseline, scanner availability, and secure token availability. | Local SonarQube project `koduck` and source input `c336192`. | Accepted OCR, known current analysis baseline, installed scanner, and non-empty scanner-process token availability without exposing its value. | Approval metadata and non-sensitive preflight record. | Complete | At 2026-08-31T23:31:02+08:00, OCR approval was recorded. The local dashboard then showed current version `2bfdafd`, 13 Reliability issues, and its L17 Metadata-suffix row; SonarScanner CLI 7.3.0.5189 was available, and only non-empty token availability was confirmed. |
-| T-2 | Submit exactly one analysis of the approved source input. | Isolated task worktree and existing local SonarQube project `koduck`. | Scanner exits 0 and the submitted compute-engine task completes successfully. | Scanner exit result, task identifier, and source version. | Blocked | At 2026-08-31T23:34:03+08:00, the scanner stopped with HTTP 401 during server-version lookup. It uploaded no report and created no compute-engine task or analysis. |
-| T-3 | Verify the scoped Reliability result or restore the captured baseline analysis. | Local Open/Confirmed overall Reliability issue view and its Metadata-suffix target location. | Zero active target rows; otherwise the baseline source `2bfdafd` is reanalyzed and becomes current. | Issue-view result, analysis identifier, and recovery record when triggered. | N/A — no analysis created | Scanner authentication stopped before report creation, so no new analysis exists to verify or restore. |
+| T-2 | Submit exactly one analysis of the approved source input. | Isolated task worktree and existing local SonarQube project `koduck`. | Scanner exits 0 and the submitted compute-engine task completes successfully. | Scanner exit result, task identifier, and source version. | In Progress | The first invocation stopped with HTTP 401 before report creation. At 2026-08-31T23:38:56+08:00, @linhai's replacement token was confirmed non-empty and the accepted operation resumed. |
+| T-3 | Verify the scoped Reliability result or restore the captured baseline analysis. | Local Open/Confirmed overall Reliability issue view and its Metadata-suffix target location. | Zero active target rows; otherwise the baseline source `2bfdafd` is reanalyzed and becomes current. | Issue-view result, analysis identifier, and recovery record when triggered. | Not Started | Awaiting the resumed scanner result. |
 
 ## Eligibility [Required]
 
@@ -73,19 +73,19 @@ Allowed subtask statuses: `Not Started`, `In Progress`, `Blocked`, `Complete`, o
 
 **Planned action and criterion**: Confirm this OCR is Accepted before execution; use the local SonarQube UI to confirm project `koduck` and capture the current analysis version; confirm `sonar-scanner` is available; and confirm the scanner token is non-empty only at scanner-process setup without printing, storing, or transmitting its value elsewhere.
 
-**Actual result and stable evidence**: At 2026-08-31T23:31:02+08:00, @linhai approval was recorded. The local SonarQube dashboard showed current version `2bfdafd`, 13 overall Reliability issues, and its L17 Metadata-suffix row. SonarScanner CLI 7.3.0.5189 was available, and only non-empty secure token availability was confirmed. No token value was displayed or recorded.
+**Actual result and stable evidence**: At 2026-08-31T23:31:02+08:00, @linhai approval was recorded. The local SonarQube dashboard showed current version `2bfdafd`, 13 overall Reliability issues, and its L17 Metadata-suffix row. SonarScanner CLI 7.3.0.5189 was available, and only non-empty secure token availability was confirmed. After the first authentication stop, the dashboard still showed the same baseline and @linhai's replacement token was confirmed non-empty at 2026-08-31T23:38:56+08:00. No token value was displayed or recorded.
 
 ### Execute [Required]
 
 **Planned action**: Run the installed scanner from the isolated task worktree against source input `c336192`, using the existing local project key and branch configuration. Supply the pre-provisioned token only through the scanner process environment. Do not log the token, scanner environment, or any copied credential.
 
-**Actual result and stable evidence**: Blocked. From the isolated exact-source worktree at `c336192`, the scanner stopped at 2026-08-31T23:34:03+08:00 with HTTP 401 while reading the local server analysis version. It did not upload a report or create a compute-engine task or a new analysis. No credential was output, stored, or recorded.
+**Actual result and stable evidence**: In Progress. The first exact-source invocation at `c336192` stopped at 2026-08-31T23:34:03+08:00 with HTTP 401 before report creation. After secure-token replacement and non-empty recheck at 2026-08-31T23:38:56+08:00, the unchanged accepted operation resumed. No credential was output, stored, or recorded.
 
 ### Verify [Required]
 
 **Success criterion**: The scanner reports successful analysis submission and compute-engine completion; the resulting overall Reliability view has exactly zero active rows at the former `metadata-validation.mjs` Metadata-suffix location. Record only non-sensitive scanner/task and issue-view evidence.
 
-**Actual result and stable evidence**: Not reached — HTTP 401 stopped Execute before report creation. The captured `2bfdafd` analysis remains the local project baseline, with its one L17 Metadata-suffix target row unchanged.
+**Actual result and stable evidence**: Awaiting the resumed scanner result. Before resumption, the captured `2bfdafd` analysis remained the local project baseline, with its one L17 Metadata-suffix target row unchanged.
 
 ### Stop and Recovery [Required]
 
@@ -95,7 +95,7 @@ Allowed subtask statuses: `Not Started`, `In Progress`, `Blocked`, `Complete`, o
 
 **Recovery verification**: Confirm that the captured baseline version `2bfdafd` is again the current local project analysis and that the original Metadata-suffix target row is present as it was before Execute.
 
-**Actual result and stable evidence**: Recovery was not required because the scanner stopped before report creation and did not change SonarQube project state. The exact-source temporary worktree was clean and removed after the stop condition was recorded.
+**Actual result and stable evidence**: The first stop required no recovery because it created no report or analysis, and its clean exact-source temporary worktree was removed. Recovery remains available if the resumed analysis creates a report but does not meet the target result.
 
 ## Conditional Extensions [Conditionally Required — production, multi-environment, phased, user/downstream/SLO impact, or stated change-window operation]
 
@@ -105,15 +105,15 @@ N/A — this is a single local analysis with no production, multi-environment, p
 
 Allowed review statuses for Authorization review, Subtask and evidence review, and Requirement-level review are `Pass`, `Fail`, or `N/A — <specific reason>`.
 
-- **Final result**: Blocked — scanner authentication failed before report creation, so no local analysis of `c336192` was submitted.
+- **Final result**: In Progress — the first authentication stop created no analysis; the unchanged accepted operation resumed after replacement-token preflight.
 - **Authorization review**: Pass — @linhai approval at 2026-08-31T23:31:02+08:00 precedes execution.
-- **Subtask and evidence review**: Fail — T-2 has deterministic HTTP 401 evidence and cannot satisfy its submission criterion until the secure token is refreshed.
-- **Requirement-level review**: Pass — required and triggered fields contain the blocker, no-state-change evidence, recovery assessment, owner, and recheck criterion.
-- **Governance validation**: Pass — `npm run validate --prefix tools/governance-validator` exited 0 and reported `Governance validation passed.` for this blocked OCR revision.
+- **Subtask and evidence review**: In Progress — T-2 resumed after replacement-token preflight and T-3 awaits its result.
+- **Requirement-level review**: In Progress — terminal review follows execution and recovery, if triggered.
+- **Governance validation**: Pass — `npm run validate --prefix tools/governance-validator` exited 0 and reported `Governance validation passed.` for the resumed pre-execution revision.
 
 ## Supporting Notes [Optional]
 
-OCR-0007 proved the earlier whole-entry correction insufficient and documented that direct current-analysis deletion is unavailable to the scanner token. This record confines recovery to a scanner reanalysis of the captured source baseline, which uses the already exercised scanner capability without requiring new project-management permission. Its first execution stopped before report creation because the non-empty copied token was not accepted by the local server.
+OCR-0007 proved the earlier whole-entry correction insufficient and documented that direct current-analysis deletion is unavailable to the scanner token. This record confines recovery to a scanner reanalysis of the captured source baseline, which uses the already exercised scanner capability without requiring new project-management permission. Its first execution stopped before report creation because the copied token was not accepted by the local server; @linhai then supplied a replacement and the same accepted operation resumed.
 
 ## Archival [Conditionally Required — Decision Status is `Rejected`, or Decision Status is `Deprecated` or `Superseded` and Implementation Status is final]
 
@@ -126,3 +126,4 @@ The record is Accepted and not archival-eligible. If a later rejection, deprecat
 | 2026-08-31 | Drafted the reversible OCR for one local Metadata-suffix Reliability-remediation verification analysis of source revision `c336192`. | @codex |
 | 2026-08-31 | Accepted by @linhai with approval evidence `Approve` at 2026-08-31T23:31:02+08:00. | @codex |
 | 2026-08-31 | Captured baseline `2bfdafd` (13 Reliability issues and one L17 Metadata-suffix row), confirmed SonarScanner CLI 7.3.0.5189 and non-empty secure token availability, then stopped before report creation when local SonarQube returned HTTP 401. No task or analysis was created; the clean temporary source worktree was removed. | @codex |
+| 2026-08-31 | @linhai copied a replacement token; baseline `2bfdafd` remained current and non-empty secure-token availability was reconfirmed at 2026-08-31T23:38:56+08:00 before resuming the unchanged accepted operation. | @codex |
