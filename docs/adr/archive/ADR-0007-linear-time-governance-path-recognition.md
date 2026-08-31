@@ -2,7 +2,7 @@
 
 ## Metadata [Required]
 
-- **Decision Status**: Accepted
+- **Decision Status**: Deprecated
 - **Implementation Status**: Complete
 - **Date**: 2026-08-31
 - **Author**: @codex
@@ -15,10 +15,10 @@
 - **Rejector [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is Proposed
 - **Rejection Time [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is Proposed
 - **Rejection Evidence [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is Proposed
-- **Retired By [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — record is not retired
-- **Retirement Time [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — record is not retired
-- **Retirement Evidence [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — record is not retired
-- **Retirement Reason [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — record is not retired
+- **Retired By [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: @linhai
+- **Retirement Time [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: 2026-08-31T22:01:15+08:00
+- **Retirement Evidence [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: Deprecate
+- **Retirement Reason [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: The completed local Security remediation is retained as historical evidence; the Decision Owner directed archival before further Reliability remediation.
 - **Blocked From [Conditionally Required — Implementation Status is `Blocked`]**: N/A — implementation is not blocked
 - **Blocker And Evidence [Conditionally Required — Implementation Status is `Blocked`]**: N/A — implementation is not blocked
 - **Blocker Owner [Conditionally Required — Implementation Status is `Blocked`]**: N/A — implementation is not blocked
@@ -157,7 +157,7 @@ Allowed subtask statuses: `Not Started`, `In Progress`, `Blocked`, `Complete`, o
 | T-2 | Replace the reported expressions with slash-free path-segment patterns and update governed-file markers. | `tools/governance-validator/lib/relationship-validation.mjs` and `tools/governance-validator/validate.mjs`. | Complete | Replaced the three expressions with slash-free repeated path segments and changed each governed-file marker to this ADR; immutable source commit evidence is recorded before terminal completion. |
 | T-3 | Verify the focused regression, full validator suite, and repository governance validation. | Existing `npm` scripts in `tools/governance-validator`. | Complete | Focused regression passed; `npm test` passed 146 of 146 tests; `npm run validate` reported `Governance validation passed.` |
 
-**Affected paths**: `tools/governance-validator/test/validate.test.mjs`; `tools/governance-validator/lib/relationship-validation.mjs`; `tools/governance-validator/validate.mjs`; `docs/adr/ADR-0007-linear-time-governance-path-recognition.md`; `docs/adr/INDEX.md`.
+**Affected paths**: `tools/governance-validator/test/validate.test.mjs`; `tools/governance-validator/lib/relationship-validation.mjs`; `tools/governance-validator/validate.mjs`; `docs/adr/archive/ADR-0007-linear-time-governance-path-recognition.md`; `docs/adr/INDEX.md`.
 
 ### Stable Implementation Touchpoints [Conditionally Required — source or configuration implementation]
 
@@ -177,7 +177,7 @@ N/A — the planned localized changes do not exceed or waive a software-engineer
 
 | Clause ID | Authoritative contract path and heading | Exact normative requirement | Acceptance check or deterministic test IDs | Explicit coverage method |
 | --- | --- | --- | --- | --- |
-| TC-1 | `docs/adr/ADR-0007-linear-time-governance-path-recognition.md` — Decision | An adversarial repeated path-segment string passed through index validation must cause validation failure rather than a child-process timeout. | AC-1 | The real CLI processes a temporary index fixture containing 24 repeated path segments and the test asserts exit status 1 with no timeout error. |
+| TC-1 | `docs/adr/archive/ADR-0007-linear-time-governance-path-recognition.md` — Decision | An adversarial repeated path-segment string passed through index validation must cause validation failure rather than a child-process timeout. | AC-1 | The real CLI processes a temporary index fixture containing 24 repeated path segments and the test asserts exit status 1 with no timeout error. |
 | TC-2 | `tools/governance-validator/README.md` — Governance Validator | The validator enforces deterministic ADD, ADR, and OCR structure and lifecycle contracts. | AC-2, AC-3 | The package test suite exercises valid fixture paths and the repository validation command completes with exit status 0. |
 
 ## Risk Coverage Matrix [Conditionally Required — source or configuration implementation]
@@ -217,7 +217,7 @@ SonarQube classified all three findings as High Security issues and identified t
 
 ## Archival [Conditionally Required — Decision Status is `Rejected`, or Decision Status is `Deprecated` or `Superseded` and Implementation Status is final]
 
-The record is Accepted and not archival-eligible. If a later rejection, deprecation, or supersession triggers archival, move this file under `docs/adr/archive/`, update all governed-file markers and references in the same change, and update its single index row.
+The record is `Deprecated / Complete` and is archived under `docs/adr/archive/`; all governed-file markers, references, and its index row use the archived path.
 
 ## Change Log [Required]
 
@@ -227,3 +227,4 @@ The record is Accepted and not archival-eligible. If a later rejection, deprecat
 | 2026-08-31 | Accepted by @linhai with approval evidence `Approve` at 2026-08-31T17:22:50+08:00. | @codex |
 | 2026-08-31 | Recorded the red `ETIMEDOUT` regression, the green implementation result, and pre-commit verification evidence. | @codex |
 | 2026-08-31 | Completed the ADR with source evidence pinned to `109c478580d8ec41bdf65b43b68cb8a0e90c14a8`. | @codex |
+| 2026-08-31 | @linhai issued `Deprecate` at 2026-08-31T22:01:15+08:00; archived the completed Security remediation decision with no replacement record. | @codex |

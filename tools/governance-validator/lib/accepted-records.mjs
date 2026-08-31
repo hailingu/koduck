@@ -1,4 +1,4 @@
-// ADR: docs/adr/ADR-0009-accepted-record-validator-reliability.md
+// ADR: docs/adr/archive/ADR-0009-accepted-record-validator-reliability.md
 
 // Builds the accepted-stage ADR, OCR, and ADD content validator from shared
 // Markdown parsing and lifecycle helpers.

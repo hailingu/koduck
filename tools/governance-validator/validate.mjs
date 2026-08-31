@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// ADR: docs/adr/ADR-0008-delimiter-bounded-governance-record-paths.md
+// ADR: docs/adr/archive/ADR-0008-delimiter-bounded-governance-record-paths.md
 
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { relative, resolve, sep } from "node:path";

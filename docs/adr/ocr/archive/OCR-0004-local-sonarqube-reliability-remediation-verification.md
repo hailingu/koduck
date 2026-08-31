@@ -30,9 +30,9 @@
 - **Docker Image Coordinates or Input Identity [Conditionally Required — container operation]**: N/A — this is not a container operation.
 - **Kubernetes Target [Conditionally Required — Kubernetes operation]**: N/A — this is not a Kubernetes operation.
 - **Actual immutable artifact [Conditionally Required — operation builds or consumes an artifact]**: N/A — the scanner submits an analysis report but does not build or consume a reusable artifact.
-- **Dependencies**: Accepted `docs/adr/ADR-0008-delimiter-bounded-governance-record-paths.md`; locally installed `sonar-scanner`; an already-provisioned project token supplied only through the scanner process environment; reachable local SonarQube service.
+- **Dependencies**: Archived `docs/adr/archive/ADR-0008-delimiter-bounded-governance-record-paths.md`; locally installed `sonar-scanner`; an already-provisioned project token supplied only through the scanner process environment; reachable local SonarQube service.
 - **Related [Optional]**: Local SonarQube project `koduck`; three Medium Reliability issues observed in the requested new-code issue list on 2026-08-31.
-- **Architecture Source [Conditionally Required — a governing ADR or ADD task applies]**: `docs/adr/ADR-0008-delimiter-bounded-governance-record-paths.md`, subtask T-3
+- **Architecture Source [Conditionally Required — a governing ADR or ADD task applies]**: `docs/adr/archive/ADR-0008-delimiter-bounded-governance-record-paths.md`, subtask T-3
 - **Supersedes [Conditionally Required — this OCR replaces another]**: N/A — no OCR is replaced
 - **Superseded By [Conditionally Required — this OCR is replaced]**: None
 
@@ -59,7 +59,7 @@ Allowed subtask statuses: `Not Started`, `In Progress`, `Blocked`, `Complete`, o
 
 ## Eligibility [Required]
 
-- [x] Uses an accepted architecture, pipeline, artifact contract, security boundary, and data boundary: Accepted `docs/adr/ADR-0008-delimiter-bounded-governance-record-paths.md` defines the source correction and the established local project analysis pipeline; this operation neither produces a reusable artifact nor alters the token or data boundary.
+- [x] Uses an accepted architecture, pipeline, artifact contract, security boundary, and data boundary: archived `docs/adr/archive/ADR-0008-delimiter-bounded-governance-record-paths.md` records the completed source correction and established local project analysis pipeline; this operation neither produces a reusable artifact nor alters the token or data boundary.
 - [x] Is reversible: before Execute, capture the current analysis identifier; if Execute or Verify fails after a new analysis is created, delete only that new analysis through the local SonarQube analysis-management operation and restore the captured baseline as current.
 - [x] Does not modify a Dockerfile, Makefile, CI, pipeline, artifact format, signing, credentials, deployment topology, API/schema/protocol, authentication, security policy, data lifecycle, dependency, provider, or irreversible behavior.
 - [x] Has a defined preflight, success check, stop condition, and recovery path.

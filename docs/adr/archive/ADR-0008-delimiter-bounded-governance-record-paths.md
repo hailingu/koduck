@@ -2,7 +2,7 @@
 
 ## Metadata [Required]
 
-- **Decision Status**: Accepted
+- **Decision Status**: Deprecated
 - **Implementation Status**: Complete
 - **Date**: 2026-08-31
 - **Author**: @codex
@@ -15,17 +15,17 @@
 - **Rejector [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is `Accepted`
 - **Rejection Time [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is `Accepted`
 - **Rejection Evidence [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is `Accepted`
-- **Retired By [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — record is not retired
-- **Retirement Time [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — record is not retired
-- **Retirement Evidence [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — record is not retired
-- **Retirement Reason [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — record is not retired
+- **Retired By [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: @linhai
+- **Retirement Time [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: 2026-08-31T22:01:15+08:00
+- **Retirement Evidence [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: Deprecate
+- **Retirement Reason [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: The completed local Reliability remediation is retained as historical evidence; the Decision Owner directed archival before further Reliability remediation.
 - **Blocked From [Conditionally Required — Implementation Status is `Blocked`]**: N/A — implementation is not blocked
 - **Blocker And Evidence [Conditionally Required — Implementation Status is `Blocked`]**: N/A — implementation is not blocked
 - **Blocker Owner [Conditionally Required — Implementation Status is `Blocked`]**: N/A — implementation is not blocked
 - **Blocker Exit Or Recheck Criterion [Conditionally Required — Implementation Status is `Blocked`]**: N/A — implementation is not blocked
-- **Related [Optional]**: Local SonarQube new-code issue list for project `koduck`, observed 2026-08-31; preceding `docs/adr/ADR-0007-linear-time-governance-path-recognition.md`.
+- **Related [Optional]**: Local SonarQube new-code issue list for project `koduck`, observed 2026-08-31; preceding archived `docs/adr/archive/ADR-0007-linear-time-governance-path-recognition.md`.
 - **Architecture Source [Conditionally Required — product demand]**: N/A — corrective governance-validator work requested from the local SonarQube result, not derived from product demand
-- **Supersedes [Conditionally Required — this ADR replaces another]**: N/A — ADR-0007 remains complete; this is a separate residual-rule correction
+- **Supersedes [Conditionally Required — this ADR replaces another]**: N/A — archived ADR-0007 is a separate prior correction; this is a residual-rule correction
 - **Superseded By [Conditionally Required — this ADR is replaced]**: None
 
 ## Requirement Level Legend [Required]
@@ -157,7 +157,7 @@ Allowed subtask statuses: `Not Started`, `In Progress`, `Blocked`, `Complete`, o
 | T-2 | Replace the three reported extraction sites with delimiter-bounded procedural record-path recognition and update governed-file markers. | `tools/governance-validator/lib/relationship-validation.mjs` and `tools/governance-validator/validate.mjs`. | Complete | Commit `4be9383` adds `recordPathTokens` and `findRecordPath`, replaces the three expression-based extraction sites, removes the CLI pattern context, and updates both governed-file markers to this ADR. |
 | T-3 | Verify the existing adversarial regression, complete test suite, and governance validation. | Existing Node.js tests and `npm` scripts in `tools/governance-validator`. | Complete | The focused adversarial test passed after the change in about 311 ms; terminal `npm test` passed 146/146 tests; terminal `npm run validate` passed. Accepted OCR-0004 then verified the version `4be9383` local analysis and zero requested issue results. |
 
-**Affected paths**: `tools/governance-validator/test/index-path-validation.test.mjs`; `tools/governance-validator/lib/relationship-validation.mjs`; `tools/governance-validator/validate.mjs`; `docs/adr/ADR-0008-delimiter-bounded-governance-record-paths.md`; `docs/adr/INDEX.md`.
+**Affected paths**: `tools/governance-validator/test/index-path-validation.test.mjs`; `tools/governance-validator/lib/relationship-validation.mjs`; `tools/governance-validator/validate.mjs`; `docs/adr/archive/ADR-0008-delimiter-bounded-governance-record-paths.md`; `docs/adr/INDEX.md`.
 
 ### Stable Implementation Touchpoints [Conditionally Required — source or configuration implementation]
 
@@ -177,7 +177,7 @@ N/A — the planned localized helper and regression do not exceed or waive a sof
 
 | Clause ID | Authoritative contract path and heading | Exact normative requirement | Acceptance check or deterministic test IDs | Explicit coverage method |
 | --- | --- | --- | --- | --- |
-| TC-1 | `docs/adr/ADR-0008-delimiter-bounded-governance-record-paths.md` — Decision | Delimiter-bounded record-path extraction must preserve the existing malformed-input rejection behavior without expression backtracking. | AC-1 | The real CLI processes the existing adversarial index fixture with no timeout error and rejects it with exit status 1. |
+| TC-1 | `docs/adr/archive/ADR-0008-delimiter-bounded-governance-record-paths.md` — Decision | Delimiter-bounded record-path extraction must preserve the existing malformed-input rejection behavior without expression backtracking. | AC-1 | The real CLI processes the existing adversarial index fixture with no timeout error and rejects it with exit status 1. |
 | TC-2 | `tools/governance-validator/README.md` — Governance Validator | The validator enforces deterministic ADD, ADR, and OCR structure and lifecycle contracts. | AC-2, AC-3 | The focused regressions, complete package suite, and repository governance command complete with their exact expected results. |
 
 ## Risk Coverage Matrix [Conditionally Required — source or configuration implementation]
@@ -217,7 +217,7 @@ The pre-correction local issue list showed exactly three Medium Reliability find
 
 ## Archival [Conditionally Required — Decision Status is `Rejected`, or Decision Status is `Deprecated` or `Superseded` and Implementation Status is final]
 
-The record is Accepted and not archival-eligible. If a later rejection, deprecation, or supersession triggers archival, move it under `docs/adr/archive/`, update all governed-file markers and references in the same change, and update its single index row.
+The record is `Deprecated / Complete` and is archived under `docs/adr/archive/`; all governed-file markers, references, and its index row use the archived path.
 
 ## Change Log [Required]
 
@@ -229,3 +229,4 @@ The record is Accepted and not archival-eligible. If a later rejection, deprecat
 | 2026-08-31 | Reaccepted by @linhai with approval evidence `Approve` at 2026-08-31T20:55:58+08:00. | @codex |
 | 2026-08-31 | Implemented delimiter-bounded record path extraction in commit `4be9383`; focused regression, full package suite, and governance validation passed. | @codex |
 | 2026-08-31 | Accepted OCR-0004 verified local analysis version `4be9383` with Quality Gate `Passed` and zero issues in the requested new-code view. | @codex |
+| 2026-08-31 | @linhai issued `Deprecate` at 2026-08-31T22:01:15+08:00; archived the completed Reliability remediation decision with no replacement record. | @codex |

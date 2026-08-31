@@ -1,4 +1,4 @@
-// ADR: docs/adr/ADR-0008-delimiter-bounded-governance-record-paths.md
+// ADR: docs/adr/archive/ADR-0008-delimiter-bounded-governance-record-paths.md
 
 // Separates Markdown-delimited path candidates without matching through their
 // contents, so record recognition remains bounded by the existing delimiters.

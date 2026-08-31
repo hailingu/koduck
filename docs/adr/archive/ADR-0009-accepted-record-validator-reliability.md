@@ -2,7 +2,7 @@
 
 ## Metadata [Required]
 
-- **Decision Status**: Accepted
+- **Decision Status**: Deprecated
 - **Implementation Status**: Complete
 - **Date**: 2026-08-31
 - **Author**: @codex
@@ -15,15 +15,15 @@
 - **Rejector [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is `Proposed`
 - **Rejection Time [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is `Proposed`
 - **Rejection Evidence [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is `Proposed`
-- **Retired By [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — record is not retired
-- **Retirement Time [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — record is not retired
-- **Retirement Evidence [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — record is not retired
-- **Retirement Reason [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — record is not retired
+- **Retired By [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: @linhai
+- **Retirement Time [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: 2026-08-31T22:01:15+08:00
+- **Retirement Evidence [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: Deprecate
+- **Retirement Reason [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: The completed accepted-record remediation is retained as historical evidence; the Decision Owner directed archival before further Reliability remediation.
 - **Blocked From [Conditionally Required — Implementation Status is `Blocked`]**: N/A — implementation is not blocked
 - **Blocker And Evidence [Conditionally Required — Implementation Status is `Blocked`]**: N/A — implementation is not blocked
 - **Blocker Owner [Conditionally Required — Implementation Status is `Blocked`]**: N/A — implementation is not blocked
 - **Blocker Exit Or Recheck Criterion [Conditionally Required — Implementation Status is `Blocked`]**: N/A — implementation is not blocked
-- **Related [Optional]**: Local SonarQube overall Reliability issue list for project `koduck`, observed 2026-08-31; following `docs/adr/ADR-0008-delimiter-bounded-governance-record-paths.md`.
+- **Related [Optional]**: Local SonarQube overall Reliability issue list for project `koduck`, observed 2026-08-31; following archived `docs/adr/archive/ADR-0008-delimiter-bounded-governance-record-paths.md`.
 - **Architecture Source [Conditionally Required — product demand]**: N/A — corrective governance-validator work requested from the local SonarQube result, not derived from product demand
 - **Supersedes [Conditionally Required — this ADR replaces another]**: N/A — no ADR is replaced
 - **Superseded By [Conditionally Required — this ADR is replaced]**: None
@@ -156,7 +156,7 @@ Allowed subtask statuses: `Not Started`, `In Progress`, `Blocked`, `Complete`, o
 | T-1 | Replace the four local analyzer-reported patterns with behavior-preserving operations and update the governed-file marker. | `createAcceptedRecordValidator`, `isReasonedNa`, `validateStableImplementationTouchpoints`, `validateRiskMatrixDimensions`, and `validateAcceptedRiskMatrix` in `tools/governance-validator/lib/accepted-records.mjs`. | Complete | Commit `81a7c51` uses an explicit single-value callback, reuses `isReasonedNa` after `trimStart`, removes the redundant legacy-status branch, uses `replaceAll` for literal hyphens, and updates the file marker to this ADR. |
 | T-2 | Verify accepted-record behavior, the complete validator package, and governance documentation contracts. | Existing Node.js tests and `npm` scripts in `tools/governance-validator`. | Complete | The focused real-validator test passed in about 280 ms; `npm test` passed 146/146 tests; `npm run validate` passed. OCR verification remains required for AC-4. |
 
-**Affected paths**: `tools/governance-validator/lib/accepted-records.mjs`; `tools/governance-validator/test/validate-structure.test.mjs`; `docs/adr/ADR-0009-accepted-record-validator-reliability.md`; `docs/adr/INDEX.md`.
+**Affected paths**: `tools/governance-validator/lib/accepted-records.mjs`; `tools/governance-validator/test/validate-structure.test.mjs`; `docs/adr/archive/ADR-0009-accepted-record-validator-reliability.md`; `docs/adr/INDEX.md`.
 
 ### Stable Implementation Touchpoints [Conditionally Required — source or configuration implementation]
 
@@ -219,7 +219,7 @@ The remaining 15 overall Reliability findings are explicitly deferred so that th
 
 ## Archival [Conditionally Required — Decision Status is `Rejected`, or Decision Status is `Deprecated` or `Superseded` and Implementation Status is final]
 
-The record is Proposed and not archival-eligible. If a later rejection, deprecation, or supersession triggers archival, move it under `docs/adr/archive/`, update all governed-file markers and references in the same change, and update its single index row.
+The record is `Deprecated / Complete` and is archived under `docs/adr/archive/`; all governed-file markers, references, and its index row use the archived path.
 
 ## Change Log [Required]
 
@@ -229,3 +229,4 @@ The record is Proposed and not archival-eligible. If a later rejection, deprecat
 | 2026-08-31 | Accepted by @linhai with approval evidence `Approve` at 2026-08-31T21:33:34+08:00. | @codex |
 | 2026-08-31 | Implemented local accepted-record simplifications in commit `81a7c51`; focused test, full package suite, and governance validation passed. | @codex |
 | 2026-08-31 | Archived OCR-0005 after local analysis version `81a7c51` passed its Quality Gate and the overall Reliability view showed no active accepted-record target row. | @codex |
+| 2026-08-31 | @linhai issued `Deprecate` at 2026-08-31T22:01:15+08:00; archived the completed accepted-record remediation decision with no replacement record. | @codex |

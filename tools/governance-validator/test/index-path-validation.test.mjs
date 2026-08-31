@@ -1,4 +1,4 @@
-// ADR: docs/adr/ADR-0007-linear-time-governance-path-recognition.md
+// ADR: docs/adr/archive/ADR-0007-linear-time-governance-path-recognition.md
 
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
