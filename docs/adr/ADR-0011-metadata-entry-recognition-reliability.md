@@ -2,16 +2,16 @@
 
 ## Metadata [Required]
 
-- **Decision Status**: Proposed
-- **Implementation Status**: Not Started
+- **Decision Status**: Accepted
+- **Implementation Status**: In Progress
 - **Date**: 2026-08-31
 - **Author**: @codex
 - **Decision Owner**: @linhai
 - **Required Approver**: @linhai
 - **Record Scope**: Project
-- **Approver [Conditionally Required — Decision Status is or has been `Accepted`]**: Pending — reapproval required
-- **Approval Time [Conditionally Required — Decision Status is or has been `Accepted`]**: Pending — reapproval required
-- **Approval Evidence [Conditionally Required — Decision Status is or has been `Accepted`]**: Pending — reapproval required
+- **Approver [Conditionally Required — Decision Status is or has been `Accepted`]**: @linhai
+- **Approval Time [Conditionally Required — Decision Status is or has been `Accepted`]**: 2026-08-31T23:21:21+08:00
+- **Approval Evidence [Conditionally Required — Decision Status is or has been `Accepted`]**: Approve
 - **Rejector [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is `Proposed`
 - **Rejection Time [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is `Proposed`
 - **Rejection Evidence [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is `Proposed`
@@ -200,7 +200,7 @@ N/A — the localized replacement does not exceed or waive a software-engineerin
 
 | ID | Item | Completion Criterion | Expected Evidence | Status | Actual Evidence |
 | --- | --- | --- | --- | --- | --- |
-| A-1 | ADR approved | An eligible non-author approver, approval time, and exact `Approval Evidence: Approve` are recorded. | ADR metadata | Not Started | The prior @linhai approval at 2026-08-31T22:58:12+08:00 was invalidated by the clarified remaining-suffix scope. |
+| A-1 | ADR approved | An eligible non-author approver, approval time, and exact `Approval Evidence: Approve` are recorded. | ADR metadata | Complete | @linhai reapproved at 2026-08-31T23:21:21+08:00 with approval evidence `Approve`. |
 | A-2 | Complete task delivered | T-1 through T-2 have implementation evidence and AC-1 through AC-4 are Pass. | Implementation Plan and Acceptance Checks | Not Started | Not run — awaiting implementation and OCR verification. |
 | A-3 | Reciprocal ADD link synchronized, when applicable | N/A — the task is not derived from product demand and has no ADD candidate. | Metadata Architecture Source | N/A — no ADD applies | N/A — no product-demand ADD applies. |
 | A-4 | Requirement levels satisfied | Every required section is complete, and every conditional trigger is completed or has a specific N/A reason. | Structured document review | Not Started | Not run — terminal review follows implementation. |
@@ -215,7 +215,7 @@ Twelve unrelated overall Reliability findings are deferred so this remaining Met
 
 ## Archival [Conditionally Required — Decision Status is `Rejected`, or Decision Status is `Deprecated` or `Superseded` and Implementation Status is final]
 
-The record is Proposed and not archival-eligible. If a later rejection, deprecation, or supersession triggers archival, move it under `docs/adr/archive/`, update all governed-file markers and references in the same change, and update its single index row.
+The record is Accepted and not archival-eligible. If a later rejection, deprecation, or supersession triggers archival, move it under `docs/adr/archive/`, update all governed-file markers and references in the same change, and update its single index row.
 
 ## Change Log [Required]
 
@@ -225,3 +225,4 @@ The record is Proposed and not archival-eligible. If a later rejection, deprecat
 | 2026-08-31 | Accepted by @linhai with approval evidence `Approve` at 2026-08-31T22:58:12+08:00. | @codex |
 | 2026-08-31 | Implemented delimiter-aware Metadata-entry recognition in `2bfdafd`; focused and full checks passed. | @codex |
 | 2026-08-31 | OCR-0007 showed that the remaining suffix normalizer reports at L17; clarified the source scope and invalidated the prior approval. Previous approver: @linhai; previous approval time: 2026-08-31T22:58:12+08:00; previous approval evidence: `Approve`. | @codex |
+| 2026-08-31 | Reaccepted by @linhai with approval evidence `Approve` at 2026-08-31T23:21:21+08:00. | @codex |
