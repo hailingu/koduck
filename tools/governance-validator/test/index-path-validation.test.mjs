@@ -1,11 +1,15 @@
-// ADR: docs/adr/ADR-0002-required-ai-ci-postgres-verification.md
+// ADR: docs/adr/ADR-0007-linear-time-governance-path-recognition.md
 
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 import { run, validRepository } from "./validate.test.mjs";
+
+const validator = fileURLToPath(new URL("../validate.mjs", import.meta.url));
 
 test("rejects a blank index Path without trying to read the repository root", () => {
   const root = validRepository();
@@ -70,6 +74,25 @@ test("rejects an index pipe block without a Markdown separator", () => {
   const result = run(root);
   assert.equal(result.status, 1);
   assert.match(result.stderr, /index requires a structured Markdown table/i);
+});
+
+test("rejects an adversarial index-path without timing out", () => {
+  const root = validRepository();
+  const indexPath = join(root, "docs/adr/INDEX.md");
+  const adversarialPath = `${"segment/".repeat(24)}docs`;
+  writeFileSync(
+    indexPath,
+    readFileSync(indexPath, "utf8").replace("docs/adr/ADR-0001-example.md", adversarialPath),
+  );
+
+  const result = spawnSync(process.execPath, [validator, "--root", root], {
+    encoding: "utf8",
+    timeout: 1_000,
+  });
+
+  assert.equal(result.error, undefined, result.error?.message);
+  assert.equal(result.status, 1, result.stderr || result.stdout);
+  assert.match(result.stderr, /index path/i);
 });
 
 test("rejects a candidate ADR link that resolves to a directory without crashing", () => {

@@ -1,4 +1,4 @@
-// ADR: docs/adr/ADR-0002-required-ai-ci-postgres-verification.md
+// ADR: docs/adr/ADR-0007-linear-time-governance-path-recognition.md
 
 // Builds record-index and reciprocal-link validators from filesystem and
 // Markdown parsing dependencies supplied by the CLI entry point.
@@ -61,7 +61,7 @@ export function createRelationshipValidator(context) {
     }
     for (const cells of parsed.rows) {
       const rowText = `| ${cells.join(" | ")} |`;
-      const matches = [...rowText.matchAll(/`?((?:[^`|\s]+\/)*docs\/(?:adr|architecture)\/[^`|\s]+\.md)`?/g)];
+      const matches = [...rowText.matchAll(/`?((?:[^`|/\s]+\/)*docs\/(?:adr|architecture)\/[^`|/\s]+\.md)`?/g)];
       const indexed = columns.has("Path")
         ? cells[columns.get("Path")]
         : matches.at(-1)?.[1];

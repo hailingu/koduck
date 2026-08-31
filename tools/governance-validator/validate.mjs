@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// ADR: docs/adr/ADR-0002-required-ai-ci-postgres-verification.md
+// ADR: docs/adr/ADR-0007-linear-time-governance-path-recognition.md
 
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { relative, resolve, sep } from "node:path";
@@ -119,8 +119,8 @@ const ADD_CONDITIONAL_SECTIONS = [
   "Interaction Flow Design",
   "Assumptions And Open Questions",
 ];
-const ADR_PATH_PATTERN = /(?:[^|`\s]+\/)*docs\/adr\/(?:[^|`\s]+\/)*ADR-\d+[^|`\s]*\.md/;
-const ADD_PATH_PATTERN = /(?:[^|`\s]+\/)*docs\/architecture\/(?:[^|`\s]+\/)*ADD-\d+[^|`\s]*\.md/;
+const ADR_PATH_PATTERN = /(?:[^|`/\s]+\/)*docs\/adr\/(?:[^|`/\s]+\/)*ADR-\d+[^|`/\s]*\.md/;
+const ADD_PATH_PATTERN = /(?:[^|`/\s]+\/)*docs\/architecture\/(?:[^|`/\s]+\/)*ADD-\d+[^|`/\s]*\.md/;
 
 function parseArguments(argv) {
   const rootIndex = argv.indexOf("--root");
