@@ -3,7 +3,7 @@
 ## Metadata [Required]
 
 - **Decision Status**: Accepted
-- **Implementation Status**: In Progress
+- **Implementation Status**: Complete
 - **Date**: 2026-08-31
 - **Author**: @codex
 - **Decision Owner**: @linhai
@@ -19,10 +19,10 @@
 - **Retirement Time [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — record is not retired
 - **Retirement Evidence [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — record is not retired
 - **Retirement Reason [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — record is not retired
-- **Blocked From [Conditionally Required — Implementation Status is `Blocked`]**: N/A — implementation is in progress
-- **Blocker And Evidence [Conditionally Required — Implementation Status is `Blocked`]**: N/A — implementation is in progress; the token-availability blocker cleared at the rerun preflight.
-- **Blocker Owner [Conditionally Required — Implementation Status is `Blocked`]**: N/A — implementation is in progress
-- **Blocker Exit Or Recheck Criterion [Conditionally Required — Implementation Status is `Blocked`]**: N/A — implementation is in progress; scanner execution is underway.
+- **Blocked From [Conditionally Required — Implementation Status is `Blocked`]**: N/A — Implementation Status is `Complete`
+- **Blocker And Evidence [Conditionally Required — Implementation Status is `Blocked`]**: N/A — Implementation Status is `Complete`; the preflight token-availability blocker cleared before scanner submission.
+- **Blocker Owner [Conditionally Required — Implementation Status is `Blocked`]**: N/A — Implementation Status is `Complete`
+- **Blocker Exit Or Recheck Criterion [Conditionally Required — Implementation Status is `Blocked`]**: N/A — Implementation Status is `Complete`; secure scanner-process token availability was confirmed before submission.
 - **Operation Type**: Existing Runbook
 - **Target Scope / Operation Owner**: Local SonarQube project `koduck` / @codex
 - **Input Source or Version**: `4be9383` — `fix(governance): parse record paths without backtracking`
@@ -54,8 +54,8 @@ Allowed subtask statuses: `Not Started`, `In Progress`, `Blocked`, `Complete`, o
 
 | ID | Objective or deliverable | Included scope or target | Completion criterion | Expected evidence | Status | Actual evidence |
 | --- | --- | --- | --- | --- | --- | --- |
-| T-1 | Submit one source analysis to the existing local project. | Local SonarQube project `koduck`, source input `4be9383`, main branch analysis. | Scanner exits 0 and the submitted compute-engine task completes successfully. | Scanner result, task identifier, and source revision. | In Progress | At 2026-08-31T21:15:26+08:00, rerun preflight confirmed only non-empty scanner-process token availability; scanner submission is underway. |
-| T-2 | Verify the remediated Reliability finding state. | Existing local project new-code issue view, Reliability quality filter, Open/Confirmed statuses. | The filter returns exactly zero issues; no recovery action is required. | Issue-count result and target analysis timestamp or task identifier. | Not Started | Not started — awaiting T-1 analysis submission. |
+| T-1 | Submit one source analysis to the existing local project. | Local SonarQube project `koduck`, source input `4be9383`, main branch analysis. | Scanner exits 0 and the submitted compute-engine task completes successfully. | Scanner result, task identifier, and source revision. | Complete | At 2026-08-31T21:16:25+08:00, SonarScanner CLI 7.3.0.5189 submitted the analysis and created compute-engine task `21fd7ed0-311f-4db0-83dc-90d3688eb72f`; the local activity view completed version `4be9383` at 9:16 PM. |
+| T-2 | Verify the remediated Reliability finding state. | Existing local project new-code issue view, Reliability quality filter, Open/Confirmed statuses. | The filter returns exactly zero issues; no recovery action is required. | Issue-count result and target analysis timestamp or task identifier. | Complete | At 2026-08-31T21:18:08+08:00, the requested Open/Confirmed new-code issue view showed Reliability `0` and zero total issues; recovery was not required. |
 
 ## Eligibility [Required]
 
@@ -78,13 +78,13 @@ Allowed subtask statuses: `Not Started`, `In Progress`, `Blocked`, `Complete`, o
 
 **Planned action**: Run the installed scanner from the isolated task worktree against source input `4be9383`, using the existing local project key and branch configuration. Supply the pre-provisioned token only through the scanner process environment. Do not log the token, scanner environment, or any copied credential.
 
-**Actual result and stable evidence**: In progress — scanner submission is underway with the token available only to the scanner process.
+**Actual result and stable evidence**: Pass. At 2026-08-31T21:16:25+08:00, SonarScanner CLI 7.3.0.5189 submitted source input version `4be9383` to project `koduck`; its report recorded compute-engine task `21fd7ed0-311f-4db0-83dc-90d3688eb72f`. The local activity view subsequently showed the completed 9:16 PM analysis with Quality Gate `Passed`. No credential was output or persisted.
 
 ### Verify [Required]
 
 **Success criterion**: The scanner reports successful analysis submission and compute-engine completion; the resulting project state has exactly zero Reliability issues with status Open or Confirmed in the requested new-code view. Record only non-sensitive scanner/task and issue-count evidence.
 
-**Actual result and stable evidence**: Not started — awaiting the submitted analysis.
+**Actual result and stable evidence**: Pass. At 2026-08-31T21:18:08+08:00, the requested project issue view for Open and Confirmed new-code findings showed Reliability `0`, every other software-quality count `0`, and `0 issues`; it showed no matching results. The completed 9:16 PM activity entry identifies the verified analysis as version `4be9383`.
 
 ### Stop and Recovery [Required]
 
@@ -94,7 +94,7 @@ Allowed subtask statuses: `Not Started`, `In Progress`, `Blocked`, `Complete`, o
 
 **Recovery verification**: Confirm that the captured pre-operation analysis is again the current local project analysis and that no new analysis remains.
 
-**Actual result and stable evidence**: Not triggered — scanner execution is in progress.
+**Actual result and stable evidence**: Not triggered. The new analysis completed and the requested issue view reported zero issues, so the captured 5:51 PM baseline was not restored and no analysis was deleted.
 
 ## Conditional Extensions [Conditionally Required — production, multi-environment, phased, user/downstream/SLO impact, or stated change-window operation]
 
@@ -104,11 +104,11 @@ N/A — this is a single local analysis with no production, multi-environment, p
 
 Allowed review statuses for Authorization review, Subtask and evidence review, and Requirement-level review are `Pass`, `Fail`, or `N/A — <specific reason>`.
 
-- **Final result**: In progress — preflight succeeded and the approved scanner submission is underway.
+- **Final result**: Completed. The 9:16 PM analysis of version `4be9383` completed with Quality Gate `Passed`, and the requested Open/Confirmed new-code issue view reported zero issues; recovery was not triggered.
 - **Authorization review**: Pass — Accepted approval metadata is complete and precedes execution.
-- **Subtask and evidence review**: N/A — operation has not run.
-- **Requirement-level review**: N/A — terminal review occurs after the operation.
-- **Governance validation**: Pass — `npm run validate --prefix tools/governance-validator` exited zero for the proposed OCR revision; run again for the accepted revision before Execute.
+- **Subtask and evidence review**: Pass — T-1 records the scanner task and completed analysis, and T-2 records the zero-result issue view.
+- **Requirement-level review**: Pass — every required and triggered field is complete; recovery has a specific non-trigger result.
+- **Governance validation**: Pass — `npm run validate --prefix tools/governance-validator` exited zero before execution and again for this terminal, archived OCR revision.
 
 ## Supporting Notes [Optional]
 
@@ -116,7 +116,7 @@ The recovered baseline is the analysis immediately preceding Execute. It is capt
 
 ## Archival [Conditionally Required — Decision Status is retired or Implementation Status is final]
 
-The accepted operation is not terminal. On `Complete` or `Verified`, move this record under `docs/adr/ocr/archive/` in the same change as the terminal status and index-path update.
+The operation is terminal and this record must be archived under `docs/adr/ocr/archive/` in the same change as its `Complete` status and index-path update.
 
 ## Change Log [Required]
 
@@ -126,3 +126,4 @@ The accepted operation is not terminal. On `Complete` or `Verified`, move this r
 | 2026-08-31 | @linhai approved the unchanged planned local operation. | @linhai |
 | 2026-08-31 | Preflight captured baseline version `2df31f9` and stopped before submission because no scanner-process token was available. | @codex |
 | 2026-08-31 | @linhai confirmed the secure token was available; rerun preflight confirmed only non-empty availability and started scanner submission. | @codex |
+| 2026-08-31 | Submitted compute-engine task `21fd7ed0-311f-4db0-83dc-90d3688eb72f`, verified completed version `4be9383` with Quality Gate `Passed`, and observed zero issues in the requested new-code view. | @codex |

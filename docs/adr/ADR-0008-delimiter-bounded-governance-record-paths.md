@@ -3,7 +3,7 @@
 ## Metadata [Required]
 
 - **Decision Status**: Accepted
-- **Implementation Status**: In Progress
+- **Implementation Status**: Complete
 - **Date**: 2026-08-31
 - **Author**: @codex
 - **Decision Owner**: @linhai
@@ -153,9 +153,9 @@ Allowed subtask statuses: `Not Started`, `In Progress`, `Blocked`, `Complete`, o
 
 | ID | Objective or deliverable | Included scope | Status | Actual implementation evidence |
 | --- | --- | --- | --- | --- |
-| T-1 | Establish the three-finding SonarQube Reliability baseline and retain the existing real-validator adversarial regression as the behavior-preservation guard. | Local issue evidence and `tools/governance-validator/test/index-path-validation.test.mjs`. | In Progress | The local issue list shows the three reported findings; focused behavior-preservation test not yet run. |
-| T-2 | Replace the three reported extraction sites with delimiter-bounded procedural record-path recognition and update governed-file markers. | `tools/governance-validator/lib/relationship-validation.mjs` and `tools/governance-validator/validate.mjs`. | Not Started | Not run — awaiting T-1 behavior guard. |
-| T-3 | Verify the existing adversarial regression, complete test suite, and governance validation. | Existing Node.js tests and `npm` scripts in `tools/governance-validator`. | Not Started | Not run — awaiting T-2 implementation. |
+| T-1 | Establish the three-finding SonarQube Reliability baseline and retain the existing real-validator adversarial regression as the behavior-preservation guard. | Local issue evidence and `tools/governance-validator/test/index-path-validation.test.mjs`. | Complete | The local issue list showed three Medium Reliability findings at the reported locations. The existing adversarial-index test passed before the source change in about 304 ms, returning the expected validator exit status 1 without a timeout. |
+| T-2 | Replace the three reported extraction sites with delimiter-bounded procedural record-path recognition and update governed-file markers. | `tools/governance-validator/lib/relationship-validation.mjs` and `tools/governance-validator/validate.mjs`. | Complete | Commit `4be9383` adds `recordPathTokens` and `findRecordPath`, replaces the three expression-based extraction sites, removes the CLI pattern context, and updates both governed-file markers to this ADR. |
+| T-3 | Verify the existing adversarial regression, complete test suite, and governance validation. | Existing Node.js tests and `npm` scripts in `tools/governance-validator`. | Complete | The focused adversarial test passed after the change in about 311 ms; terminal `npm test` passed 146/146 tests; terminal `npm run validate` passed. Accepted OCR-0004 then verified the version `4be9383` local analysis and zero requested issue results. |
 
 **Affected paths**: `tools/governance-validator/test/index-path-validation.test.mjs`; `tools/governance-validator/lib/relationship-validation.mjs`; `tools/governance-validator/validate.mjs`; `docs/adr/ADR-0008-delimiter-bounded-governance-record-paths.md`; `docs/adr/INDEX.md`.
 
@@ -163,9 +163,9 @@ Allowed subtask statuses: `Not Started`, `In Progress`, `Blocked`, `Complete`, o
 
 | Path | Stable symbol or contract anchor | Key code excerpt, when needed | Purpose | Source revision |
 | --- | --- | --- | --- | --- |
-| `tools/governance-validator/test/index-path-validation.test.mjs` | `rejects an adversarial index-path without timing out` | N/A — stable test anchor is sufficient | Runs the production validator against a controlled malformed repository fixture. | `67807a4d26a77a4a3bff24317499289b0bba5882` |
-| `tools/governance-validator/lib/relationship-validation.mjs` | `createRelationshipValidator` > `validateIndex` and reciprocal relationship checks | N/A — stable symbols are sufficient | Owns index fallback and linked ADR/ADD record-path extraction. | `67807a4d26a77a4a3bff24317499289b0bba5882` |
-| `tools/governance-validator/validate.mjs` | `ADR_PATH_PATTERN` and `ADD_PATH_PATTERN` | N/A — stable symbols are sufficient | Supplies the current CLI relationship path recognizers that the correction removes. | `67807a4d26a77a4a3bff24317499289b0bba5882` |
+| `tools/governance-validator/test/index-path-validation.test.mjs` | `rejects an adversarial index-path without timing out` | N/A — stable test anchor is sufficient | Runs the production validator against a controlled malformed repository fixture. | `4be9383` |
+| `tools/governance-validator/lib/relationship-validation.mjs` | `recordPathTokens`, `findRecordPath`, and `createRelationshipValidator` | N/A — stable symbols are sufficient | Owns delimiter-bounded index fallback and linked ADR/ADD record-path extraction. | `4be9383` |
+| `tools/governance-validator/validate.mjs` | `relationshipValidator` construction | N/A — stable symbol is sufficient | Uses the shared relationship validator without CLI pattern context. | `4be9383` |
 
 **Migration and rollback strategy [Conditionally Required — this replaces or changes existing behavior]**: Replace only extraction of delimiter-bounded record tokens; stop if a valid project or service-relative fixture fails. Rollback is a Git revert of the implementation commit, restoring the prior expression-based extraction; no data or runtime migration is involved.
 
@@ -184,36 +184,36 @@ N/A — the planned localized helper and regression do not exceed or waive a sof
 
 | Risk dimension | Applicability and scenario, or specific N/A reason | Owning boundary | Deterministic verification method | Exact expected result | Acceptance check IDs | Status | Actual evidence |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| concurrency and ordering | N/A — the validator performs synchronous parsing with no shared mutable concurrent state. | Governance-validator CLI | Structured source review and AC-2. | No concurrent state or ordering contract is introduced. | AC-2 | N/A — no concurrent behavior | Not run — implementation not started. |
-| timeout and deadline | Applicable — the three current expressions are reported as potentially super-linear on malformed path text. | Governance record-path extraction | Existing adversarial timeout regression plus AC-2. | The existing adversarial fixture has no timeout error and the focused suite exits zero. | AC-2 | Not Started | Not run — implementation not started. |
-| cancellation and interruption | N/A — the CLI exposes no cancellation protocol and the correction does not add one. | Governance-validator CLI | Structured source review and AC-2. | No cancellation interface or lifecycle is introduced. | AC-2 | N/A — no cancellation protocol | Not run — implementation not started. |
-| resource bounds and backpressure | Applicable — delimiter tokenization must process malformed input without regex backtracking. | Governance record-path extraction | Existing adversarial timeout regression and AC-2. | The adversarial fixture completes within the existing 1,000 ms child-process timeout. | AC-2 | Not Started | Not run — implementation not started. |
-| framework or trust-boundary rejection | Applicable — candidate links and Markdown index cells are untrusted repository inputs. | `createRelationshipValidator` relationship extraction | Existing real-validator adversarial regression. | The malformed reference fails validation with exit status 1 and no timeout error. | AC-1 | Not Started | Not run — implementation not started. |
+| concurrency and ordering | N/A — the validator performs synchronous parsing with no shared mutable concurrent state. | Governance-validator CLI | Structured source review and AC-2. | No concurrent state or ordering contract is introduced. | AC-2 | N/A — no concurrent behavior | Source review confirms the helper processes one string synchronously and introduces no shared state. |
+| timeout and deadline | Applicable — the three current expressions are reported as potentially super-linear on malformed path text. | Governance record-path extraction | Existing adversarial timeout regression plus AC-2. | The existing adversarial fixture has no timeout error and the focused suite exits zero. | AC-2 | Pass | The focused adversarial test passed before and after the change; terminal `npm test` passed 146/146 tests with no timeout error. |
+| cancellation and interruption | N/A — the CLI exposes no cancellation protocol and the correction does not add one. | Governance-validator CLI | Structured source review and AC-2. | No cancellation interface or lifecycle is introduced. | AC-2 | N/A — no cancellation protocol | Source review confirms the helper adds no cancellation interface or lifecycle. |
+| resource bounds and backpressure | Applicable — delimiter tokenization must process malformed input without regex backtracking. | Governance record-path extraction | Existing adversarial timeout regression and AC-2. | The adversarial fixture completes within the existing 1,000 ms child-process timeout. | AC-2 | Pass | The adversarial test completed in about 311 ms after the change, within its existing 1,000 ms timeout. |
+| framework or trust-boundary rejection | Applicable — candidate links and Markdown index cells are untrusted repository inputs. | `createRelationshipValidator` relationship extraction | Existing real-validator adversarial regression. | The malformed reference fails validation with exit status 1 and no timeout error. | AC-1 | Pass | The focused test retained the expected validator exit status 1 and no `ETIMEDOUT` error after the helper replacement. |
 
 ## Acceptance Checks [Required]
 
 | Check ID | Subtask | Binary acceptance point | Preconditions or input | Verification method | Exact expected result | Expected evidence | Status | Actual result and evidence |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| AC-1 | T-1 | The actual validator rejects the existing adversarial index-path fixture without a child-process timeout. | A temporary valid repository with one index row containing `segment/` repeated 24 times followed by `docs` and no valid record path. | `node --test --test-name-pattern "adversarial index-path" test/index-path-validation.test.mjs` in `tools/governance-validator`. | Exit status 0; the selected test passes; its spawned validator result has exit status 1 and no `ETIMEDOUT` error. | Focused Node test report. | Not Started | Pending |
-| AC-2 | T-2 | The package regressions and complete test suite pass after replacing the three expression sites and governed-file markers. | Accepted implementation in the isolated task branch. | `npm test` in `tools/governance-validator`. | Exit status 0 with no failing test; the existing adversarial index-path regression has no timeout error. | Full package test report. | Not Started | Pending |
-| AC-3 | T-3 | Repository governance validation accepts the new ADR/index state and unchanged record contracts. | All task changes present in the isolated task branch. | `npm run validate` in `tools/governance-validator`. | Exit status 0 and no validation errors. | Governance-validation command output. | Not Started | Pending |
+| AC-1 | T-1 | The actual validator rejects the existing adversarial index-path fixture without a child-process timeout. | A temporary valid repository with one index row containing `segment/` repeated 24 times followed by `docs` and no valid record path. | `node --test --test-name-pattern "adversarial index-path" test/index-path-validation.test.mjs` in `tools/governance-validator`. | Exit status 0; the selected test passes; its spawned validator result has exit status 1 and no `ETIMEDOUT` error. | Focused Node test report. | Pass | Before and after the source change, the selected test passed in about 304 ms and 311 ms respectively; its spawned validator retained exit status 1 with no timeout. |
+| AC-2 | T-2 | The package regressions and complete test suite pass after replacing the three expression sites and governed-file markers. | Accepted implementation in the isolated task branch. | `npm test` in `tools/governance-validator`. | Exit status 0 with no failing test; the existing adversarial index-path regression has no timeout error. | Full package test report. | Pass | Terminal `npm test` exited 0 with 146/146 tests passing after commit `4be9383`; no timeout error occurred. |
+| AC-3 | T-3 | Repository governance validation accepts the new ADR/index state and unchanged record contracts. | All task changes present in the isolated task branch. | `npm run validate` in `tools/governance-validator`. | Exit status 0 and no validation errors. | Governance-validation command output. | Pass | Terminal `npm run validate` exited 0 with no validation errors against the completed ADR and archived OCR state. |
 
 ## Completion Checklist [Required]
 
 | ID | Item | Completion Criterion | Expected Evidence | Status | Actual Evidence |
 | --- | --- | --- | --- | --- | --- |
 | A-1 | ADR approved | An eligible non-author approver, approval time, and exact `Approval Evidence: Approve` are recorded. | ADR metadata | Complete | @linhai approved the revised ADR at 2026-08-31T20:55:58+08:00 with `Approval Evidence: Approve`. |
-| A-2 | Complete task delivered | T-1 through T-3 have implementation evidence and AC-1 through AC-3 are Pass. | Implementation Plan and Acceptance Checks | Not Started | Pending |
+| A-2 | Complete task delivered | T-1 through T-3 have implementation evidence and AC-1 through AC-3 are Pass. | Implementation Plan and Acceptance Checks | Complete | Commit `4be9383` and archived OCR-0004 record the correction, successful local analysis, and all acceptance outcomes. |
 | A-3 | Reciprocal ADD link synchronized, when applicable | N/A — the task is not derived from product demand and has no ADD candidate. | Metadata Architecture Source | N/A — no ADD applies | N/A — no product-demand ADD applies. |
-| A-4 | Requirement levels satisfied | Every required section is complete, and every conditional trigger is completed or has a specific N/A reason. | Structured document review | Not Started | Pending |
-| A-5 | Acceptance checks are decidable | Every check has one subtask, input, deterministic method, exact expected result, and evidence. | Acceptance Checks table | Not Started | Pending |
+| A-4 | Requirement levels satisfied | Every required section is complete, and every conditional trigger is completed or has a specific N/A reason. | Structured document review | Complete | Terminal ADR and OCR review records complete required content and specific non-trigger recovery evidence. |
+| A-5 | Acceptance checks are decidable | Every check has one subtask, input, deterministic method, exact expected result, and evidence. | Acceptance Checks table | Complete | AC-1 through AC-3 retain their declared subtask, input, deterministic method, exact expected result, and recorded evidence. |
 | A-6 | Engineering exceptions governed, when applicable | N/A — no engineering exception is planned. | Engineering Exceptions section | N/A — no exception applies | N/A — no engineering rule is exceeded or waived. |
-| A-7 | Contract and baseline risks covered, when applicable | TC-1 and TC-2 map to checks, and every applicable risk reaches Pass before completion. | Traceability, matrix, and command reports | Not Started | Pending |
-| A-8 | Governance validation passed | The independent validator reports no document or repository validation error. | `npm run validate` output | Not Started | Pending |
+| A-7 | Contract and baseline risks covered, when applicable | TC-1 and TC-2 map to checks, and every applicable risk reaches Pass before completion. | Traceability, matrix, and command reports | Complete | TC-1 and TC-2 map to passing AC-1 through AC-3; each applicable risk row is Pass. OCR-0004 verifies the external analyzer outcome. |
+| A-8 | Governance validation passed | The independent validator reports no document or repository validation error. | `npm run validate` output | Complete | Terminal `npm run validate` passed against the completed ADR and archived OCR state. |
 
 ## Supporting Notes [Optional]
 
-The new local SonarQube issue list shows exactly three Medium Reliability findings, one in `relationship-validation.mjs` and two in `validate.mjs`. Their source locations match the three findings previously classified as Security. The issue category is diagnostic context, not a source contract. The rejected trailing-punctuation test is intentionally not retained because current reciprocal-link behavior already rejects that input.
+The pre-correction local issue list showed exactly three Medium Reliability findings, one in `relationship-validation.mjs` and two in `validate.mjs`. After accepted OCR-0004 submitted source version `4be9383`, the requested Open/Confirmed new-code view showed zero Reliability findings and zero total issues. The rejected trailing-punctuation test is intentionally not retained because current reciprocal-link behavior already rejects that input.
 
 ## Archival [Conditionally Required — Decision Status is `Rejected`, or Decision Status is `Deprecated` or `Superseded` and Implementation Status is final]
 
@@ -227,3 +227,5 @@ The record is Accepted and not archival-eligible. If a later rejection, deprecat
 | 2026-08-31 | Accepted by @linhai with approval evidence `Approve` at 2026-08-31T20:50:11+08:00. | @codex |
 | 2026-08-31 | Approval-invalidating correction: removed the unsupported trailing-punctuation behavior claim and restored Proposed status; previous approval by @linhai at 2026-08-31T20:50:11+08:00 with evidence `Approve` remains historical only. | @codex |
 | 2026-08-31 | Reaccepted by @linhai with approval evidence `Approve` at 2026-08-31T20:55:58+08:00. | @codex |
+| 2026-08-31 | Implemented delimiter-bounded record path extraction in commit `4be9383`; focused regression, full package suite, and governance validation passed. | @codex |
+| 2026-08-31 | Accepted OCR-0004 verified local analysis version `4be9383` with Quality Gate `Passed` and zero issues in the requested new-code view. | @codex |
