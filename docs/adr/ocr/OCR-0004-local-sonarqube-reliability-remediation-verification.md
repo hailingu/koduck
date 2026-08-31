@@ -2,16 +2,16 @@
 
 ## Metadata [Required]
 
-- **Decision Status**: Proposed
+- **Decision Status**: Accepted
 - **Implementation Status**: Not Started
 - **Date**: 2026-08-31
 - **Author**: @codex
 - **Decision Owner**: @linhai
 - **Required Approver**: @linhai
 - **Record Scope**: Project
-- **Approver [Conditionally Required — Decision Status is or has been `Accepted`]**: N/A — Decision Status is `Proposed`
-- **Approval Time [Conditionally Required — Decision Status is or has been `Accepted`]**: N/A — Decision Status is `Proposed`
-- **Approval Evidence [Conditionally Required — Decision Status is or has been `Accepted`]**: N/A — Decision Status is `Proposed`
+- **Approver [Conditionally Required — Decision Status is or has been `Accepted`]**: @linhai
+- **Approval Time [Conditionally Required — Decision Status is or has been `Accepted`]**: 2026-08-31T21:07:39+08:00
+- **Approval Evidence [Conditionally Required — Decision Status is or has been `Accepted`]**: Approve
 - **Rejector [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is `Proposed`
 - **Rejection Time [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is `Proposed`
 - **Rejection Evidence [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is `Proposed`
@@ -72,19 +72,19 @@ Allowed subtask statuses: `Not Started`, `In Progress`, `Blocked`, `Complete`, o
 
 **Planned action and criterion**: Confirm this OCR is Accepted before execution; confirm the local service exposes project `koduck` with the prior analysis identifier captured; confirm `sonar-scanner` is available; and confirm the scanner token is available only through its process environment without printing, storing, or transmitting it to any other destination.
 
-**Actual result and stable evidence**: Pending — execution has not been authorized.
+**Actual result and stable evidence**: Not started — approved execution has not yet begun.
 
 ### Execute [Required]
 
 **Planned action**: Run the installed scanner from the isolated task worktree against source input `4be9383`, using the existing local project key and branch configuration. Supply the pre-provisioned token only through the scanner process environment. Do not log the token, scanner environment, or any copied credential.
 
-**Actual result and stable evidence**: Pending — execution has not been authorized.
+**Actual result and stable evidence**: Not started — approved execution has not yet begun.
 
 ### Verify [Required]
 
 **Success criterion**: The scanner reports successful analysis submission and compute-engine completion; the resulting project state has exactly zero Reliability issues with status Open or Confirmed in the requested new-code view. Record only non-sensitive scanner/task and issue-count evidence.
 
-**Actual result and stable evidence**: Pending — execution has not been authorized.
+**Actual result and stable evidence**: Not started — approved execution has not yet begun.
 
 ### Stop and Recovery [Required]
 
@@ -94,7 +94,7 @@ Allowed subtask statuses: `Not Started`, `In Progress`, `Blocked`, `Complete`, o
 
 **Recovery verification**: Confirm that the captured pre-operation analysis is again the current local project analysis and that no new analysis remains.
 
-**Actual result and stable evidence**: Pending — execution has not been authorized.
+**Actual result and stable evidence**: Not triggered — approved execution has not yet begun.
 
 ## Conditional Extensions [Conditionally Required — production, multi-environment, phased, user/downstream/SLO impact, or stated change-window operation]
 
@@ -104,11 +104,11 @@ N/A — this is a single local analysis with no production, multi-environment, p
 
 Allowed review statuses for Authorization review, Subtask and evidence review, and Requirement-level review are `Pass`, `Fail`, or `N/A — <specific reason>`.
 
-- **Final result**: Pending — execution has not been authorized.
-- **Authorization review**: N/A — Decision Status is `Proposed`.
+- **Final result**: Not started — the accepted local operation has not yet run.
+- **Authorization review**: Pass — Accepted approval metadata is complete and precedes execution.
 - **Subtask and evidence review**: N/A — operation has not run.
 - **Requirement-level review**: N/A — terminal review occurs after the operation.
-- **Governance validation**: Pending — draft validation has not run.
+- **Governance validation**: Pass — `npm run validate --prefix tools/governance-validator` exited zero for the proposed OCR revision; run again for the accepted revision before Execute.
 
 ## Supporting Notes [Optional]
 
@@ -116,10 +116,11 @@ The recovered baseline is the analysis immediately preceding Execute. It is capt
 
 ## Archival [Conditionally Required — Decision Status is retired or Implementation Status is final]
 
-N/A — the proposed operation is not terminal. On `Complete` or `Verified`, move this record under `docs/adr/ocr/archive/` in the same change as the terminal status and index-path update.
+The accepted operation is not terminal. On `Complete` or `Verified`, move this record under `docs/adr/ocr/archive/` in the same change as the terminal status and index-path update.
 
 ## Change Log [Required]
 
 | Date | Change | Author |
 | --- | --- | --- |
 | 2026-08-31 | Drafted the OCR for one local SonarQube Reliability-remediation verification analysis. | @codex |
+| 2026-08-31 | @linhai approved the unchanged planned local operation. | @linhai |
