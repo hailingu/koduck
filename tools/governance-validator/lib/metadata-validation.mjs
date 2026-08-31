@@ -1,18 +1,34 @@
-// ADR: docs/adr/ADR-0002-required-ai-ci-postgres-verification.md
+// ADR: docs/adr/ADR-0011-metadata-entry-recognition-reliability.md
 
 /**
  * Builds the active Metadata reader and duplicate-field validator using the
  * caller's canonical fenced-code and section parsers.
  */
 export function createMetadataValidator({ stripFencedCode, sectionContent }) {
+  // Parses one active Metadata list entry without an unbounded whole-line
+  // expression, preserving the established marker, delimiter, and trimming
+  // rules for the extracted field/value pair.
+  function metadataEntry(line) {
+    const prefix = "- **";
+    if (!line.startsWith(prefix)) return undefined;
+    const labelEnd = line.indexOf("**:", prefix.length);
+    if (labelEnd <= prefix.length) return undefined;
+    return {
+      field: line.slice(prefix.length, labelEnd).replace(/\s+\[[^\]]+\]\s*$/, "").trim(),
+      value: line.slice(labelEnd + 3).trim(),
+    };
+  }
+
   // Collects active fields only from the real Metadata section; historical or
   // narrative lookalikes outside that section remain excluded.
   function entries(markdown) {
     const content = sectionContent(stripFencedCode(markdown), "Metadata") ?? "";
-    return [...content.matchAll(/^- \*\*(.+?)\*\*:\s*(.*)$/gm)].map((match) => ({
-      field: match[1].replace(/\s+\[[^\]]+\]\s*$/, "").trim(),
-      value: match[2].trim(),
-    }));
+    const result = [];
+    for (const line of content.split("\n")) {
+      const entry = metadataEntry(line);
+      if (entry !== undefined) result.push(entry);
+    }
+    return result;
   }
 
   // Returns only the sole active value; duplicates never become canonical
