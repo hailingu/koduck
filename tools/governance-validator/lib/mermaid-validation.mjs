@@ -31,6 +31,43 @@ function closesFence(marker, fence, line) {
     && CLOSING_FENCE_PATTERN.test(line);
 }
 
+// Consumes one line inside an open fence: a closing marker closes the block
+// (pushing accumulated Mermaid content when the fence carried the `mermaid`
+// info string), and any other line accumulates into the current block.
+function consumeFencedLine(line, marker, fence, current, blocks) {
+  if (closesFence(marker, fence, line)) {
+    if (current !== null) blocks.push(current.join("\n"));
+    return { fence: null, current: null };
+  }
+  if (current !== null) current.push(line);
+  return { fence, current };
+}
+
+// Collects only real fenced Mermaid blocks: a fence opens on a triple-plus
+// backtick or tilde run whose info string is exactly `mermaid` and closes
+// only on a same-character run at least as long (CommonMark). A literal
+// ```mermaid example nested inside an outer longer fence is content of that
+// outer fence, never a diagram, so it can neither satisfy a diagram gate
+// nor be syntax-checked.
+function mermaidBlocks(text) {
+  const lines = text.split("\n");
+  let fence = null;
+  let current = null;
+  const blocks = [];
+  for (const line of lines) {
+    const marker = openingFenceMarker(line);
+    if (fence !== null) {
+      ({ fence, current } = consumeFencedLine(line, marker, fence, current, blocks));
+      continue;
+    }
+    if (marker) {
+      fence = { char: marker.char, length: marker.length };
+      current = marker.info.trim() === "mermaid" ? [] : null;
+    }
+  }
+  return blocks;
+}
+
 // Builds the Mermaid syntax and ADD diagram-completeness validator from the
 // configured parser and shared Markdown helpers.
 export function createMermaidValidator(context) {
@@ -42,37 +79,6 @@ export function createMermaidValidator(context) {
     stripFencedCode,
     tableFromContent,
   } = context;
-
-  // Collects only real fenced Mermaid blocks: a fence opens on a triple-plus
-  // backtick or tilde run whose info string is exactly `mermaid` and closes
-  // only on a same-character run at least as long (CommonMark). A literal
-  // ```mermaid example nested inside an outer longer fence is content of that
-  // outer fence, never a diagram, so it can neither satisfy a diagram gate
-  // nor be syntax-checked.
-  function mermaidBlocks(text) {
-    const lines = text.split("\n");
-    let fence = null;
-    let current = null;
-    const blocks = [];
-    for (const line of lines) {
-      const marker = openingFenceMarker(line);
-      if (fence !== null) {
-        if (closesFence(marker, fence, line)) {
-          if (current !== null) blocks.push(current.join("\n"));
-          current = null;
-          fence = null;
-        } else if (current !== null) {
-          current.push(line);
-        }
-        continue;
-      }
-      if (marker) {
-        fence = { char: marker.char, length: marker.length };
-        current = marker.info.trim() === "mermaid" ? [] : null;
-      }
-    }
-    return blocks;
-  }
 
   function tableIds(content, pattern) {
     const table = tableFromContent(content);

@@ -15,6 +15,31 @@ function closureField(content, field) {
   return new RegExp(String.raw`^- \*\*${escaped}\*\*:\s*(.+)$`, "m").exec(content)?.[1].trim();
 }
 
+// Locates a terminal table's ID, Status, and final actual-evidence columns.
+function terminalTableColumns(table) {
+  return {
+    id: table.header.findIndex((h) => /^Check ID$/i.test(h) || h === "ID"),
+    status: table.header.indexOf("Status"),
+    evidence: table.header.findLastIndex((h) => /^Actual.*evidence/i.test(h)),
+  };
+}
+
+// Collects the checklist's A-N rows by ID; duplicate IDs are reported.
+function collectChecklistItems(path, table, columns, errors) {
+  const seen = new Map();
+  for (const row of table.rows) {
+    const id = row[columns.id] ?? "";
+    if (!/^A-\d+$/.test(id)) continue;
+    if (seen.has(id)) {
+      errors.push(`${path}: Completion Checklist duplicates item ${id}`);
+      continue;
+    }
+    seen.set(id, { status: row[columns.status] ?? "", row });
+  }
+  return seen;
+}
+
+
 // Builds terminal ADR and OCR evidence validators from shared lifecycle and
 // Markdown table helpers.
 export function createTerminalValidator(context) {
@@ -86,15 +111,6 @@ export function createTerminalValidator(context) {
     }
   }
 
-  // Locates a terminal table's ID, Status, and final actual-evidence columns.
-  function terminalTableColumns(table) {
-    return {
-      id: table.header.findIndex((h) => /^Check ID$/i.test(h) || h === "ID"),
-      status: table.header.indexOf("Status"),
-      evidence: table.header.findLastIndex((h) => /^Actual.*evidence/i.test(h)),
-    };
-  }
-
   // Validates one terminal-table row and returns 1 when it declares a new
   // valid ID, 0 otherwise. Illegal or duplicate IDs are reported, not skipped.
   function terminalTableRowState(path, contract, columns, row, seen, errors) {
@@ -150,21 +166,6 @@ export function createTerminalValidator(context) {
     const seen = collectChecklistItems(path, table, columns, errors);
     validateExpectedChecklistItems(path, seen, errors);
     validateChecklistItemStatuses(path, seen, mustComplete, columns, errors);
-  }
-
-  // Collects the checklist's A-N rows by ID; duplicate IDs are reported.
-  function collectChecklistItems(path, table, columns, errors) {
-    const seen = new Map();
-    for (const row of table.rows) {
-      const id = row[columns.id] ?? "";
-      if (!/^A-\d+$/.test(id)) continue;
-      if (seen.has(id)) {
-        errors.push(`${path}: Completion Checklist duplicates item ${id}`);
-        continue;
-      }
-      seen.set(id, { status: row[columns.status] ?? "", row });
-    }
-    return seen;
   }
 
   // The checklist must contain exactly the template-defined items — no

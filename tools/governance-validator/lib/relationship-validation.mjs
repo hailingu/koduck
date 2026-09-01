@@ -54,6 +54,70 @@ export function findRecordPath(value, directory, filenamePrefix) {
   return undefined;
 }
 
+// The index columns each INDEX.md template must declare.
+function expectedIndexColumns(path) {
+  return path.endsWith("docs/architecture/INDEX.md")
+    ? ["ID", "Title", "Design Status", "Scope Level", "Scope", "Path", "Trello Source", "Superseded By"]
+    : ["Type", "ID", "Title", "Decision Status", "Implementation Status", "Scope", "Architecture Source", "Path", "Superseded By"];
+}
+
+// Resolves the row's record path from the Path column when present, falling
+// back to the last recognized record token in the row.
+function indexedRecordPath(cells, columns, rowText) {
+  if (columns.has("Path")) return cells[columns.get("Path")];
+  return recordPathTokens(rowText)
+    .findLast((token) =>
+      findRecordPath(token, "docs/adr/", "ADR-")
+      || findRecordPath(token, "docs/architecture/", "ADD-"),
+    );
+}
+
+// Title comparison
+function validateIndexedTitle(path, cells, columns, indexed, record, errors) {
+  if (!columns.has("Title")) return;
+  const indexedTitle = cells[columns.get("Title")];
+  const recordTitle = recordTitleFromHeading(record);
+  if (recordTitle && indexedTitle !== recordTitle) {
+    errors.push(`${path}: index Title disagrees with record for ${indexed}: ${indexedTitle} vs ${recordTitle}`);
+  }
+}
+
+// Derives an index row's record type from its filename and title heading.
+function indexRecordType(indexed, record) {
+  if (indexed.split("/").at(-1).startsWith("OCR-")) return "OCR";
+  if (/^#\s+Lightweight ADR-\d+/m.test(record)) return "Lightweight ADR";
+  return "Full ADR";
+}
+
+// Type comparison (ADR/OCR index)
+function validateIndexedType(path, cells, columns, indexed, record, errors) {
+  if (!columns.has("Type")) return;
+  const indexedType = cells[columns.get("Type")];
+  const recordType = indexRecordType(indexed, record);
+  if (indexedType !== recordType) {
+    errors.push(`${path}: index Type ${indexedType} disagrees with record ${recordType} for ${indexed}`);
+  }
+}
+
+// ID comparison — derive the record ID from its filename.
+function validateIndexedId(path, cells, columns, indexed, errors) {
+  if (!columns.has("ID")) return;
+  const indexedId = cells[columns.get("ID")];
+  const recordId = /^(?:ADR|ADD|OCR)-\d+/.exec(indexed.split("/").at(-1))?.[0] ?? "";
+  if (recordId && indexedId !== recordId) {
+    errors.push(`${path}: index ID ${indexedId} disagrees with record ${recordId} for ${indexed}`);
+  }
+}
+
+// For Trello Source, normalize Markdown links to their URL for comparison.
+function compareIndexedTrelloSource(path, column, indexed, indexedValue, recordValue, errors) {
+  const indexedUrl = /https?:\/\/[^\s)]+/.exec(indexedValue)?.[0] ?? indexedValue;
+  const recordUrl = /https?:\/\/[^\s)]+/.exec(recordValue)?.[0] ?? recordValue;
+  if (indexedUrl !== recordUrl) {
+    errors.push(`${path}: index ${column} disagrees with record for ${indexed}`);
+  }
+}
+
 // Builds record-index and reciprocal-link validators from filesystem and
 // Markdown parsing dependencies supplied by the CLI entry point.
 export function createRelationshipValidator(context) {
@@ -92,13 +156,6 @@ export function createRelationshipValidator(context) {
       table.set(id, { status: cells[statusCol] ?? "", path: cells[pathCol] ?? "" });
     }
     return { table, duplicateIds, malformedIds };
-  }
-
-  // The index columns each INDEX.md template must declare.
-  function expectedIndexColumns(path) {
-    return path.endsWith("docs/architecture/INDEX.md")
-      ? ["ID", "Title", "Design Status", "Scope Level", "Scope", "Path", "Trello Source", "Superseded By"]
-      : ["Type", "ID", "Title", "Decision Status", "Implementation Status", "Scope", "Architecture Source", "Path", "Superseded By"];
   }
 
   function validateIndex(root, path, markdown, errors) {
@@ -140,18 +197,6 @@ export function createRelationshipValidator(context) {
     validateIndexedFields(path, cells, columns, indexed, record, errors);
   }
 
-  // Resolves the row's record path from the Path column when present, falling
-  // back to the last recognized record token in the row.
-  function indexedRecordPath(cells, columns, rowText) {
-    if (columns.has("Path")) return cells[columns.get("Path")];
-    return recordPathTokens(rowText)
-      .filter((token) =>
-        findRecordPath(token, "docs/adr/", "ADR-")
-        || findRecordPath(token, "docs/architecture/", "ADD-"),
-      )
-      .at(-1);
-  }
-
   // Status columns must agree with the indexed record's active metadata.
   function validateIndexedStatus(path, cells, columns, indexed, record, errors) {
     for (const [column, field] of [
@@ -165,40 +210,6 @@ export function createRelationshipValidator(context) {
       if (recordStatus && indexedStatus !== recordStatus) {
         errors.push(`${path}: index ${column} ${indexedStatus} disagrees with record ${recordStatus} for ${indexed}`);
       }
-    }
-  }
-
-  // Title comparison
-  function validateIndexedTitle(path, cells, columns, indexed, record, errors) {
-    if (!columns.has("Title")) return;
-    const indexedTitle = cells[columns.get("Title")];
-    const recordTitle = recordTitleFromHeading(record);
-    if (recordTitle && indexedTitle !== recordTitle) {
-      errors.push(`${path}: index Title disagrees with record for ${indexed}: ${indexedTitle} vs ${recordTitle}`);
-    }
-  }
-
-  // Type comparison (ADR/OCR index)
-  function validateIndexedType(path, cells, columns, indexed, record, errors) {
-    if (!columns.has("Type")) return;
-    const indexedType = cells[columns.get("Type")];
-    const recordType = indexed.split("/").at(-1).startsWith("OCR-")
-      ? "OCR"
-      : /^#\s+Lightweight ADR-\d+/m.test(record)
-        ? "Lightweight ADR"
-        : "Full ADR";
-    if (indexedType !== recordType) {
-      errors.push(`${path}: index Type ${indexedType} disagrees with record ${recordType} for ${indexed}`);
-    }
-  }
-
-  // ID comparison — derive the record ID from its filename.
-  function validateIndexedId(path, cells, columns, indexed, errors) {
-    if (!columns.has("ID")) return;
-    const indexedId = cells[columns.get("ID")];
-    const recordId = /^(?:ADR|ADD|OCR)-\d+/.exec(indexed.split("/").at(-1))?.[0] ?? "";
-    if (recordId && indexedId !== recordId) {
-      errors.push(`${path}: index ID ${indexedId} disagrees with record ${recordId} for ${indexed}`);
     }
   }
 
@@ -218,15 +229,6 @@ export function createRelationshipValidator(context) {
       } else if (indexedValue !== recordValue) {
         errors.push(`${path}: index ${column} disagrees with record for ${indexed}`);
       }
-    }
-  }
-
-  // For Trello Source, normalize Markdown links to their URL for comparison.
-  function compareIndexedTrelloSource(path, column, indexed, indexedValue, recordValue, errors) {
-    const indexedUrl = /https?:\/\/[^\s)]+/.exec(indexedValue)?.[0] ?? indexedValue;
-    const recordUrl = /https?:\/\/[^\s)]+/.exec(recordValue)?.[0] ?? recordValue;
-    if (indexedUrl !== recordUrl) {
-      errors.push(`${path}: index ${column} disagrees with record for ${indexed}`);
     }
   }
 

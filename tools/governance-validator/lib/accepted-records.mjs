@@ -58,6 +58,74 @@ function runbookFieldPattern(escapedField) {
   );
 }
 
+
+// The template columns an Accepted subtask plan table must declare.
+function subtaskRequiredHeaders(isOcr) {
+  return isOcr
+    ? [/^ID$/, /^Objective/i, /^Included scope/i, /^Completion criterion/i, /^Expected evidence/i, /^Status$/, /^Actual.*evidence/i]
+    : [/^ID$/, /^Objective/i, /^Included scope/i, /^Status$/, /^Actual.*evidence/i];
+}
+
+// The template columns an Accepted acceptance-checks table must declare.
+function acceptanceCheckRequiredHeaders() {
+  return [
+    /^Check ID$/i, /^Subtask$/i, /^Binary acceptance point$/i,
+    /^Preconditions? or input$/i, /^Verification method$/i,
+    /^Exact expected result$/i, /^Expected evidence$/i, /^Status$/i,
+    /^Actual result and evidence$/i,
+  ];
+}
+
+// The former three-column traceability shape preserved for completed
+// historical records.
+function isLegacyTraceabilityTable(table) {
+  return table.header.some((header) => /^Normative contract clause$/i.test(header))
+    && table.header.some((header) => /^Acceptance check or deterministic test$/i.test(header));
+}
+
+// Resolves the matrix's status, check-reference, applicability, and header
+// columns, accepting the legacy terminal matrix shape; returns undefined
+// when neither the current nor the legacy header contract is satisfied.
+function riskMatrixColumns(table, isTerminalRecord) {
+  const currentHeaders = [
+    /^Risk dimension$/i,
+    /^Applicability and scenario, or specific N\/A reason$/i,
+    /^Owning boundary$/i,
+    /^Deterministic verification method$/i,
+    /^Exact expected result$/i,
+    /^Acceptance check IDs$/i,
+    /^Status$/i,
+    /^Actual evidence$/i,
+  ];
+  const hasCurrentHeaders = currentHeaders.every((pattern) =>
+    table.header.some((header) => pattern.test(header)),
+  );
+  const legacyHeaders = [
+    /^Risk dimension$/i,
+    /^Applicability and scenario$/i,
+    /^Owning boundary$/i,
+    /^Deterministic verification$/i,
+    /^Exact expected result$/i,
+    /^Checks$/i,
+    /^Status and stable evidence$/i,
+  ];
+  const usesLegacyTerminalMatrix = isTerminalRecord
+    && legacyHeaders.every((pattern) => table.header.some((header) => pattern.test(header)));
+  if (!hasCurrentHeaders && !usesLegacyTerminalMatrix) return undefined;
+  return {
+    status: table.header.findIndex((header) => (
+      usesLegacyTerminalMatrix ? /^Status and stable evidence$/i.test(header) : /^Status$/i.test(header)
+    )),
+    checkRefs: table.header.findIndex((header) => (
+      usesLegacyTerminalMatrix ? /^Checks$/i.test(header) : /^Acceptance check IDs$/i.test(header)
+    )),
+    applicability: table.header.findIndex((header) => /^Applicability and scenario/i.test(header)),
+    headers: table.header,
+    usesLegacyTerminalMatrix,
+  };
+}
+
+
 // Builds the accepted-stage ADR, OCR, and ADD content validator from shared
 // Markdown parsing and lifecycle helpers.
 export function createAcceptedRecordValidator(context) {
@@ -202,13 +270,6 @@ export function createAcceptedRecordValidator(context) {
     return declared;
   }
 
-  // The template columns an Accepted subtask plan table must declare.
-  function subtaskRequiredHeaders(isOcr) {
-    return isOcr
-      ? [/^ID$/, /^Objective/i, /^Included scope/i, /^Completion criterion/i, /^Expected evidence/i, /^Status$/, /^Actual.*evidence/i]
-      : [/^ID$/, /^Objective/i, /^Included scope/i, /^Status$/, /^Actual.*evidence/i];
-  }
-
   // Validates one subtask row and declares its ID; illegal or duplicate IDs
   // are rejected rather than silently skipped.
   function validateSubtaskRow(path, section, row, columns, declared, errors) {
@@ -326,16 +387,6 @@ export function createAcceptedRecordValidator(context) {
     return declared;
   }
 
-  // The template columns an Accepted acceptance-checks table must declare.
-  function acceptanceCheckRequiredHeaders() {
-    return [
-      /^Check ID$/i, /^Subtask$/i, /^Binary acceptance point$/i,
-      /^Preconditions? or input$/i, /^Verification method$/i,
-      /^Exact expected result$/i, /^Expected evidence$/i, /^Status$/i,
-      /^Actual result and evidence$/i,
-    ];
-  }
-
   // Validates one acceptance-check row and declares its ID; illegal or
   // duplicate IDs are rejected rather than silently skipped.
   function validateAcceptanceCheckRow(path, row, columns, subtaskIds, declared, errors) {
@@ -399,13 +450,6 @@ export function createAcceptedRecordValidator(context) {
     if (seen.size === 0) {
       errors.push(`${path}: Contract-To-Check Traceability requires at least one valid clause row for an Accepted ADR`);
     }
-  }
-
-  // The former three-column traceability shape preserved for completed
-  // historical records.
-  function isLegacyTraceabilityTable(table) {
-    return table.header.some((header) => /^Normative contract clause$/i.test(header))
-      && table.header.some((header) => /^Acceptance check or deterministic test$/i.test(header));
   }
 
   // Validates one traceability row and declares its clause ID; illegal or
@@ -609,48 +653,6 @@ export function createAcceptedRecordValidator(context) {
         validateRiskMatrixRow(path, row, dimension, columns, declaredCheckIds, errors);
       }
     }
-  }
-
-  // Resolves the matrix's status, check-reference, applicability, and header
-  // columns, accepting the legacy terminal matrix shape; returns undefined
-  // when neither the current nor the legacy header contract is satisfied.
-  function riskMatrixColumns(table, isTerminalRecord) {
-    const currentHeaders = [
-      /^Risk dimension$/i,
-      /^Applicability and scenario, or specific N\/A reason$/i,
-      /^Owning boundary$/i,
-      /^Deterministic verification method$/i,
-      /^Exact expected result$/i,
-      /^Acceptance check IDs$/i,
-      /^Status$/i,
-      /^Actual evidence$/i,
-    ];
-    const hasCurrentHeaders = currentHeaders.every((pattern) =>
-      table.header.some((header) => pattern.test(header)),
-    );
-    const legacyHeaders = [
-      /^Risk dimension$/i,
-      /^Applicability and scenario$/i,
-      /^Owning boundary$/i,
-      /^Deterministic verification$/i,
-      /^Exact expected result$/i,
-      /^Checks$/i,
-      /^Status and stable evidence$/i,
-    ];
-    const usesLegacyTerminalMatrix = isTerminalRecord
-      && legacyHeaders.every((pattern) => table.header.some((header) => pattern.test(header)));
-    if (!hasCurrentHeaders && !usesLegacyTerminalMatrix) return undefined;
-    return {
-      status: table.header.findIndex((header) => (
-        usesLegacyTerminalMatrix ? /^Status and stable evidence$/i.test(header) : /^Status$/i.test(header)
-      )),
-      checkRefs: table.header.findIndex((header) => (
-        usesLegacyTerminalMatrix ? /^Checks$/i.test(header) : /^Acceptance check IDs$/i.test(header)
-      )),
-      applicability: table.header.findIndex((header) => /^Applicability and scenario/i.test(header)),
-      headers: table.header,
-      usesLegacyTerminalMatrix,
-    };
   }
 
   // Validates one baseline-dimension row's status, planned columns, and

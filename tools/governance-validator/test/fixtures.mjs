@@ -5,7 +5,6 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 const validator = fileURLToPath(new URL("../validate.mjs", import.meta.url));
