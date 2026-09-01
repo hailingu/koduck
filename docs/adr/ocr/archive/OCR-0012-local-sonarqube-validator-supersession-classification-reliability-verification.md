@@ -3,7 +3,7 @@
 ## Metadata [Required]
 
 - **Decision Status**: Accepted
-- **Implementation Status**: Not Started
+- **Implementation Status**: Complete
 - **Date**: 2026-09-01
 - **Author**: @codex
 - **Decision Owner**: @linhai
@@ -19,10 +19,10 @@
 - **Retirement Time [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — record is not retired.
 - **Retirement Evidence [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — record is not retired.
 - **Retirement Reason [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — record is not retired.
-- **Blocked From [Conditionally Required — Implementation Status is `Blocked`]**: N/A — implementation has not started.
-- **Blocker And Evidence [Conditionally Required — Implementation Status is `Blocked`]**: N/A — implementation has not started.
-- **Blocker Owner [Conditionally Required — Implementation Status is `Blocked`]**: N/A — implementation has not started.
-- **Blocker Exit Or Recheck Criterion [Conditionally Required — Implementation Status is `Blocked`]**: N/A — implementation has not started.
+- **Blocked From [Conditionally Required — Implementation Status is `Blocked`]**: N/A — the operation completed without a stop condition.
+- **Blocker And Evidence [Conditionally Required — Implementation Status is `Blocked`]**: N/A — scanner task `25169a5c-7ed9-42e5-a602-0c5ff19e09bd` completed successfully and the scoped issue view is clear.
+- **Blocker Owner [Conditionally Required — Implementation Status is `Blocked`]**: N/A — no blocker occurred.
+- **Blocker Exit Or Recheck Criterion [Conditionally Required — Implementation Status is `Blocked`]**: N/A — no recheck is required for this completed OCR.
 - **Operation Type**: Existing Runbook
 - **Target Scope / Operation Owner**: Local SonarQube project `koduck` / @codex
 - **Input Source or Version**: `31328ab` — bounded supersession record-type classification in `validateSupersession`; it includes ADR-0013 source commit `f2cc310` and ADR-0014's prior source commits.
@@ -54,9 +54,9 @@ Allowed subtask statuses: `Not Started`, `In Progress`, `Blocked`, `Complete`, o
 
 | ID | Objective or deliverable | Included scope or target | Completion criterion | Expected evidence | Status | Actual evidence |
 | --- | --- | --- | --- | --- | --- | --- |
-| T-1 | Confirm authority, baseline, source identity, scanner availability, and secure token availability. | Local SonarQube project `koduck`; source `31328ab`; existing analysis baseline. | OCR is Accepted; dashboard baseline and source ancestry are captured; scanner is available; only non-empty scanner-process token availability is confirmed. | Approval metadata and non-sensitive preflight record. | Not Started | Pending — requires Accepted OCR. |
-| T-2 | Submit exactly one approved-source local analysis. | Isolated clean worktree at `31328ab`; existing local project `koduck`. | Scanner submits the report and its compute-engine task completes successfully. | Scanner result, task identifier when retained, and processed source version. | Not Started | Pending — requires successful preflight. |
-| T-3 | Verify scoped Reliability clearance or restore the captured baseline analysis. | Overall Open/Confirmed Reliability issue view and the nine former `validate.mjs` locations. | Zero active scoped rows; otherwise the captured baseline source is reanalyzed and becomes current. | Issue-view result, analysis identifier when retained, and recovery evidence when triggered. | Not Started | Pending — requires successful submission. |
+| T-1 | Confirm authority, baseline, source identity, scanner availability, and secure token availability. | Local SonarQube project `koduck`; source `31328ab`; existing analysis baseline. | OCR is Accepted; dashboard baseline and source ancestry are captured; scanner is available; only non-empty scanner-process token availability is confirmed. | Approval metadata and non-sensitive preflight record. | Complete | OCR approval at 2026-09-01T11:03:13+08:00 preceded preflight. Dashboard baseline was `f2cc310` with nine open Reliability rows; `31328ab` contains `f2cc310`; scanner 7.3.0.5189 was available; the interactive profile confirmed only non-empty `KODUCK_SONAR_TOKEN` availability. |
+| T-2 | Submit exactly one approved-source local analysis. | Isolated clean worktree at `31328ab`; existing local project `koduck`. | Scanner submits the report and its compute-engine task completes successfully. | Scanner result, task identifier when retained, and processed source version. | Complete | The scanner uploaded source `31328ab5930362735d97885568371ade3ab42d16`; task `25169a5c-7ed9-42e5-a602-0c5ff19e09bd` completed successfully with a Passed Quality Gate. |
+| T-3 | Verify scoped Reliability clearance or restore the captured baseline analysis. | Overall Open/Confirmed Reliability issue view and the nine former `validate.mjs` locations. | Zero active scoped rows; otherwise the captured baseline source is reanalyzed and becomes current. | Issue-view result, analysis identifier when retained, and recovery evidence when triggered. | Complete | Dashboard version is `31328ab5930362735d97885568371ade3ab42d16`; the overall Open/Confirmed Reliability view has zero rows and no `validate.mjs` group. Recovery was not triggered. |
 
 ## Eligibility [Required]
 
@@ -73,19 +73,19 @@ Allowed subtask statuses: `Not Started`, `In Progress`, `Blocked`, `Complete`, o
 
 **Planned action and criterion**: After this OCR is Accepted, confirm the local dashboard project key `koduck`, capture its current analysis source revision and the scoped Reliability baseline, confirm `31328ab` is clean in a detached worktree and includes `f2cc310`, confirm `sonar-scanner` is available, and confirm only that `KODUCK_SONAR_TOKEN` is non-empty for scanner-process setup. Do not print, persist, or transmit the token value.
 
-**Actual result and stable evidence**: Pending — execute only after this OCR is Accepted.
+**Actual result and stable evidence**: @linhai approval at 2026-09-01T11:03:13+08:00 preceded preflight. The dashboard identified baseline version `f2cc310` with nine Reliability rows. A clean detached worktree at `31328ab5930362735d97885568371ade3ab42d16` includes `f2cc310`; scanner 7.3.0.5189 was available. The interactive profile confirmed only non-empty `KODUCK_SONAR_TOKEN` availability; no token value was displayed or retained.
 
 ### Execute [Required]
 
 **Planned action**: From a clean detached worktree at `31328ab`, invoke `sonar-scanner` exactly once against the existing local project with `SONAR_HOST_URL=http://localhost:9000`, project key `koduck`, source revision `31328ab`, external disposable scanner working directory, excluded dependency/generated paths, and quality-gate wait enabled. Supply `KODUCK_SONAR_TOKEN` only by assigning it to the scanner process's `SONAR_TOKEN` environment variable; do not enable debug output, log the environment, or retry automatically.
 
-**Actual result and stable evidence**: Pending — execute only after successful preflight.
+**Actual result and stable evidence**: One scanner execution from the detached `31328ab` worktree uploaded the report and recorded task `25169a5c-7ed9-42e5-a602-0c5ff19e09bd`. The compute engine completed successfully and quality-gate waiting reported Passed. No token value, scanner environment, or credential was displayed or recorded.
 
 ### Verify [Required]
 
 **Success criterion**: The scanner reports successful analysis submission and compute-engine completion, and the resulting overall Open/Confirmed Reliability view has zero active scoped rows in `tools/governance-validator/validate.mjs` for all nine ADR-0014 findings. Record only non-sensitive scanner, task, source-version, and issue-view evidence; a failed project Quality Gate is an observation, not a failure of this scoped criterion.
 
-**Actual result and stable evidence**: Pending — verify only after the submitted task reaches a terminal state.
+**Actual result and stable evidence**: Pass. The dashboard's current version is `31328ab5930362735d97885568371ade3ab42d16` with a Passed Quality Gate, and the overall Open/Confirmed Reliability view reports zero rows, including zero scoped `validate.mjs` rows.
 
 ### Stop and Recovery [Required]
 
@@ -95,7 +95,7 @@ Allowed subtask statuses: `Not Started`, `In Progress`, `Blocked`, `Complete`, o
 
 **Recovery verification**: Confirm that the captured baseline source revision is again the current local project analysis and that its scoped target findings match the preflight baseline.
 
-**Actual result and stable evidence**: Pending — if recovery is not triggered, record `Not triggered` with the successful task and scoped-result evidence.
+**Actual result and stable evidence**: Not triggered — task `25169a5c-7ed9-42e5-a602-0c5ff19e09bd` processed `31328ab` successfully and the scoped Reliability view is clear. The detached worktree and external scanner-output directory were removed after verification.
 
 ## Conditional Extensions [Conditionally Required — production, multi-environment, phased, user/downstream/SLO impact, or stated change-window operation]
 
@@ -103,11 +103,11 @@ N/A — this is one local analysis with no production, multi-environment, phased
 
 ## Closure [Required]
 
-- **Final result**: Not started — the proposed operation awaits acceptance.
+- **Final result**: Complete — version `31328ab5930362735d97885568371ade3ab42d16` is current and has zero active scoped Reliability rows.
 - **Authorization review**: Pass — @linhai approval at 2026-09-01T11:03:13+08:00 precedes Execute.
-- **Subtask and evidence review**: Not started — T-1 through T-3 await operational evidence.
-- **Requirement-level review**: Pass — proposed-stage planned content is complete; terminal review follows execution or an evidenced stop.
-- **Governance validation**: Pass — `npm run validate --prefix tools/governance-validator` reports `Governance validation passed.` for this draft.
+- **Subtask and evidence review**: Pass — T-1 through T-3 have complete non-sensitive preflight, task, scoped-result, and cleanup evidence.
+- **Requirement-level review**: Pass — all required terminal content is complete and every conditional trigger has a specific disposition.
+- **Governance validation**: Pass — `npm run validate --prefix tools/governance-validator` reports `Governance validation passed.` after terminal evidence and archival updates.
 
 ## Supporting Notes [Optional]
 
@@ -115,7 +115,7 @@ The source change is limited to the one residual `validateSupersession` classifi
 
 ## Archival [Conditionally Required — Decision Status is retired or Implementation Status is final]
 
-The record is Proposed and Not Started, so archival is inactive future-lifecycle guidance. If it reaches an archival-eligible state, move it under `docs/adr/ocr/archive/`, update its index row and every marker or reciprocal reference in the same change, retain `Superseded By: None` unless a replacement is identified, and confirm no active reference remains to the pre-archive path.
+The operation is terminal and this record is archived under `docs/adr/ocr/archive/` in the same change as its `Complete` status and index-path update. `Superseded By` remains `None`; active references now use the archived path.
 
 ## Change Log [Required]
 
@@ -124,3 +124,4 @@ The record is Proposed and Not Started, so archival is inactive future-lifecycle
 | 2026-09-01 | Drafted the reversible local SonarQube verification for ADR-0014 source correction `31328ab` after OCR-0011 restored its baseline. | @codex |
 | 2026-09-01 | Governance validation passed before approval was requested. | @codex |
 | 2026-09-01 | Accepted by @linhai with approval evidence `Approve` at 2026-09-01T11:03:13+08:00. | @linhai |
+| 2026-09-01 | Submitted task `25169a5c-7ed9-42e5-a602-0c5ff19e09bd`, verified `31328ab` with zero Reliability rows, and removed the disposable temporary worktree and scanner output. | @codex |
