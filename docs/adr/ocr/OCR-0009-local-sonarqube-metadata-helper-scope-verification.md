@@ -3,7 +3,7 @@
 ## Metadata [Required]
 
 - **Decision Status**: Accepted
-- **Implementation Status**: In Progress
+- **Implementation Status**: Blocked
 - **Date**: 2026-09-01
 - **Author**: @codex
 - **Decision Owner**: @linhai
@@ -19,10 +19,10 @@
 - **Retirement Time [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — record is not retired
 - **Retirement Evidence [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — record is not retired
 - **Retirement Reason [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — record is not retired
-- **Blocked From [Conditionally Required — Implementation Status is `Blocked`]**: N/A — execution has resumed through one isolated secure-terminal input session.
-- **Blocker And Evidence [Conditionally Required — Implementation Status is `Blocked`]**: N/A — the prior clipboard-availability blocker is bypassed by the repository owner's requested masked terminal input, which supplies the token only to the Scanner process environment.
-- **Blocker Owner [Conditionally Required — Implementation Status is `Blocked`]**: N/A — no active blocker.
-- **Blocker Exit Or Recheck Criterion [Conditionally Required — Implementation Status is `Blocked`]**: N/A — no active blocker.
+- **Blocked From [Conditionally Required — Implementation Status is `Blocked`]**: In Progress
+- **Blocker And Evidence [Conditionally Required — Implementation Status is `Blocked`]**: Interactive profile preflight confirmed that `KODUCK_SONAR_TOKEN` was non-empty without displaying it. Scanner invocation at 09:14:19 local time then received HTTP 401 from `GET /api/v2/analysis/version` before report creation. No credential value, report, compute-engine task, or new analysis was created.
+- **Blocker Owner [Conditionally Required — Implementation Status is `Blocked`]**: @linhai
+- **Blocker Exit Or Recheck Criterion [Conditionally Required — Implementation Status is `Blocked`]**: Update `KODUCK_SONAR_TOKEN` in the interactive zsh profile with a valid pre-provisioned local SonarQube project token, then request continuation; recheck only non-empty availability and rerun this unchanged accepted OCR.
 - **Operation Type**: Existing Runbook
 - **Target Scope / Operation Owner**: Local SonarQube project `koduck` / @codex
 - **Input Source or Version**: `9ebf6a7` — `refactor(governance): extract Metadata suffix helper`
@@ -54,9 +54,9 @@ Allowed subtask statuses: `Not Started`, `In Progress`, `Blocked`, `Complete`, o
 
 | ID | Objective or deliverable | Included scope or target | Completion criterion | Expected evidence | Status | Actual evidence |
 | --- | --- | --- | --- | --- | --- | --- |
-| T-1 | Confirm authority, local analysis baseline, scanner availability, and secure token availability. | Local SonarQube project `koduck`; input `9ebf6a7`; captured baseline source revision. | OCR is Accepted, a baseline source revision is captured, the scanner is available, and only non-empty scanner-process token availability is confirmed. | Approval metadata and non-sensitive preflight record. | In Progress | Approval was recorded at 2026-09-01T08:52:00+08:00; dashboard baseline was `c336192` with one target finding; Scanner CLI 7.3.0.5189 was available. Prior clipboard rechecks were empty, so the repository owner requested one masked terminal-input session that supplies the token only to the Scanner process. |
-| T-2 | Submit the approved exact-source local analysis. | Temporary isolated worktree at `9ebf6a7` and existing project `koduck`. | Scanner exits 0 and its compute-engine task completes successfully. | Scanner exit result, task identifier, and processed source version. | Not Started | Not run — awaiting hidden terminal input. |
-| T-3 | Verify the scoped New Code finding or restore the captured baseline analysis. | Open/Confirmed New Code issue view and the helper-scope target finding. | Zero active target rows; otherwise the captured baseline source is reanalyzed and becomes current. | Issue-view result, analysis identifier, and recovery evidence when triggered. | Not Started | Not run — awaiting scanner task result. |
+| T-1 | Confirm authority, local analysis baseline, scanner availability, and secure token availability. | Local SonarQube project `koduck`; input `9ebf6a7`; captured baseline source revision. | OCR is Accepted, a baseline source revision is captured, the scanner is available, and only non-empty scanner-process token availability is confirmed. | Approval metadata and non-sensitive preflight record. | Blocked | Approval was recorded at 2026-09-01T08:52:00+08:00; dashboard baseline was `c336192` with one target finding; Scanner CLI 7.3.0.5189 was available. `KODUCK_SONAR_TOKEN` was non-empty in the interactive profile but the local server rejected its authentication before report creation. |
+| T-2 | Submit the approved exact-source local analysis. | Temporary isolated worktree at `9ebf6a7` and existing project `koduck`. | Scanner exits 0 and its compute-engine task completes successfully. | Scanner exit result, task identifier, and processed source version. | Blocked | At 09:14:19 local time, Scanner received HTTP 401 from the local server before report creation, so no compute-engine task or analysis was submitted. |
+| T-3 | Verify the scoped New Code finding or restore the captured baseline analysis. | Open/Confirmed New Code issue view and the helper-scope target finding. | Zero active target rows; otherwise the captured baseline source is reanalyzed and becomes current. | Issue-view result, analysis identifier, and recovery evidence when triggered. | Not Started | Not run — no new analysis was created, so the preflight baseline `c336192` remains current. |
 
 ## Eligibility [Required]
 
@@ -73,13 +73,13 @@ Allowed subtask statuses: `Not Started`, `In Progress`, `Blocked`, `Complete`, o
 
 **Planned action and criterion**: Confirm this OCR is Accepted before execution; use the local SonarQube UI to confirm project `koduck` and capture the current analysis source revision and helper-scope issue baseline; confirm `sonar-scanner` is available; and confirm non-empty token availability only at scanner-process setup without displaying, storing, or transmitting its value.
 
-**Actual result and stable evidence**: At 2026-09-01T08:52:00+08:00, @linhai approval was recorded. The local dashboard showed current version `c336192` with one Open/Confirmed New Code Maintainability issue at `metadata-validation.mjs` line 10 requiring the helper to move to outer scope. SonarScanner CLI 7.3.0.5189 was available. Clipboard availability was empty initially and on the 2026-09-01T08:59:01+08:00 recheck. At @linhai's request, an isolated masked terminal input will instead provide the token only to the Scanner process; no token value is displayed, stored, or recorded.
+**Actual result and stable evidence**: At 2026-09-01T08:52:00+08:00, @linhai approval was recorded. The local dashboard showed current version `c336192` with one Open/Confirmed New Code Maintainability issue at `metadata-validation.mjs` line 10 requiring the helper to move to outer scope. SonarScanner CLI 7.3.0.5189 was available. Clipboard availability was empty initially and on the 2026-09-01T08:59:01+08:00 recheck. Interactive profile preflight instead confirmed only that `KODUCK_SONAR_TOKEN` was non-empty; no value was displayed, stored, or recorded.
 
 ### Execute [Required]
 
 **Planned action**: Create an isolated temporary Git worktree at `9ebf6a7`, then run the installed scanner against the existing local project with project version `9ebf6a7`. Supply the pre-provisioned token only through the scanner process environment. Do not log the token, scanner environment, or copied credential.
 
-**Actual result and stable evidence**: Not run — the secure-token stop condition occurred before temporary-worktree creation, scanner invocation, report creation, or compute-engine task submission.
+**Actual result and stable evidence**: Stop condition met. The Scanner invocation from the isolated `9ebf6a7` worktree reached the local server but received HTTP 401 from `GET /api/v2/analysis/version` at 09:14:19 local time, before report creation, upload, compute-engine task submission, or analysis creation. The token value was not displayed or recorded.
 
 ### Verify [Required]
 
@@ -95,7 +95,7 @@ Allowed subtask statuses: `Not Started`, `In Progress`, `Blocked`, `Complete`, o
 
 **Recovery verification**: Confirm that the captured baseline source revision is again the current local project analysis and that its helper-scope target finding matches the preflight baseline.
 
-**Actual result and stable evidence**: Not triggered — the stop occurred before report creation or analysis submission, so no recovery action is needed and the captured baseline remains current.
+**Actual result and stable evidence**: Not triggered — the stop occurred before report creation or analysis submission, so no recovery action is needed and the captured baseline remains current. The clean temporary `9ebf6a7` worktree was removed; no `.scannerwork` directory was present.
 
 ## Conditional Extensions [Conditionally Required — production, multi-environment, phased, user/downstream/SLO impact, or stated change-window operation]
 
@@ -103,7 +103,11 @@ N/A — this is one local analysis with no production, multi-environment, phased
 
 ## Closure [Required]
 
-The OCR remains Accepted and is resuming after a preflight-only stop. Its final result and review fields will be updated after the masked terminal input, exact-source submission, issue-view verification, and any required recovery.
+- **Final result**: Blocked — an interactive-profile token was non-empty but local SonarQube returned HTTP 401 before report creation; no analysis was created.
+- **Authorization review**: Pass — @linhai approval at 2026-09-01T08:52:00+08:00 preceded scanner invocation.
+- **Subtask and evidence review**: Pass — T-1 and T-2 record the server-authentication stop without exposing credentials; T-3 accurately records that no new analysis exists to verify.
+- **Requirement-level review**: Pass — required content records the blocker, owner, exit criterion, no-analysis result, and recovery disposition.
+- **Governance validation**: Pass — `npm run validate --prefix tools/governance-validator` reported `Governance validation passed.` for the resumed accepted OCR revision before scanner invocation.
 
 ## Supporting Notes [Optional]
 
@@ -111,7 +115,7 @@ The scope is limited to the one New Code Maintainability finding introduced by t
 
 ## Archival [Conditionally Required — Decision Status is retired or Implementation Status is final]
 
-The accepted operation is in progress and not archival-eligible. If it reaches a final status, archive it under `docs/adr/ocr/archive/` in the same change that establishes that final status and index-path update.
+The accepted operation is Blocked while a valid profile token is restored, and a further attempt is planned; it is not archival-eligible. If it reaches a final status without a further attempt, archive it under `docs/adr/ocr/archive/` in the same change that establishes that final status and index-path update.
 
 ## Change Log [Required]
 
@@ -122,3 +126,4 @@ The accepted operation is in progress and not archival-eligible. If it reaches a
 | 2026-09-01 | Captured baseline `c336192` (one New Code helper-scope finding), confirmed SonarScanner CLI 7.3.0.5189, then stopped before worktree creation or report submission because non-empty secure-token availability was not present. | @codex |
 | 2026-09-01 | After @linhai confirmed a replacement copy, rechecked only non-empty secure-token availability at 2026-09-01T08:59:01+08:00; it remained unavailable, so the accepted OCR remained blocked without scanner execution. | @codex |
 | 2026-09-01 | @linhai requested a masked secure-terminal input session. Resumed the unchanged accepted OCR; the token will be supplied only to the Scanner process environment and never recorded. | @codex |
+| 2026-09-01 | Interactive-profile preflight confirmed only that `KODUCK_SONAR_TOKEN` was non-empty. Scanner then stopped at 09:14:19 local time with HTTP 401 before report creation, task submission, or analysis creation; the clean temporary worktree was removed. | @codex |
