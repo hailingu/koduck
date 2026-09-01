@@ -1,4 +1,4 @@
-// ADR: docs/adr/archive/ADR-0007-linear-time-governance-path-recognition.md
+// ADR: docs/adr/ADR-0013-relationship-validation-reliability.md
 
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -74,6 +74,44 @@ test("rejects an index pipe block without a Markdown separator", () => {
   const result = run(root);
   assert.equal(result.status, 1);
   assert.match(result.stderr, /index requires a structured Markdown table/i);
+});
+
+test("rejects relationship index titles that disagree with recognized record H1 forms", () => {
+  for (const heading of [
+    "# ADR-0001: Updated title",
+    "# OCR-0001: Updated title",
+    "# ADD-0001: Updated title",
+    "# Lightweight ADR-0001: Updated title",
+  ]) {
+    const root = validRepository();
+    const recordPath = join(root, "docs/adr/ADR-0001-example.md");
+    writeFileSync(
+      recordPath,
+      readFileSync(recordPath, "utf8").replace("# ADR-0001: Example", heading),
+    );
+
+    const result = run(root);
+    assert.equal(result.status, 1);
+    assert.match(
+      result.stderr,
+      /index Title disagrees with record for docs\/adr\/ADR-0001-example\.md: Example vs Updated title/i,
+    );
+  }
+});
+
+test("accepts relationship values that differ only by Markdown backticks", () => {
+  const root = validRepository();
+  const indexPath = join(root, "docs/adr/INDEX.md");
+  writeFileSync(
+    indexPath,
+    readFileSync(indexPath, "utf8").replace(
+      "N/A — governance-only example | docs/adr/ADR-0001-example.md |",
+      "N/A — `governance-only` example | docs/adr/ADR-0001-example.md |",
+    ),
+  );
+
+  const result = run(root);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
 });
 
 test("rejects an adversarial index-path without timing out", () => {
