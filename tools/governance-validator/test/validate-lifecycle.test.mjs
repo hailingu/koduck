@@ -270,6 +270,31 @@ test("rejects supersession checklist and risk contracts with trailing path conte
   assert.equal(checklistResult.status, 1);
   assert.match(checklistResult.stderr, /Eligibility item .* must be present and confirmed/i);
 
+  const riskRoot = validRepository();
+  const riskPath = join(riskRoot, "docs/adr/ADR-0001-example.md");
+  writeFileSync(
+    riskPath,
+    readFileSync(riskPath, "utf8")
+      .replace("Decision Status**: Proposed", "Decision Status**: Accepted")
+      .replace("Implementation Status**: Not Started", "Implementation Status**: Complete")
+      .replace(
+        /## Risk Coverage Matrix \[Required\][\s\S]*?(?=## Acceptance Checks)/,
+        "## Risk Coverage Matrix [Required]\n| Risk dimension | Status |\n| --- | --- |\n| concurrency - and ordering | Not Started |\n| timeout and deadline | Pass |\n| cancellation and interruption | Pass |\n| resource bounds and backpressure | Pass |\n| framework or trust-boundary rejection | Pass |\n\n",
+      )
+      .replace(
+        "Architecture Source**: N/A — governance-only example",
+        "Architecture Source**: N/A — governance-only example\n- **Approver**: @linhai\n- **Approval Time**: 2026-08-13T00:00:00Z\n- **Approval Evidence**: Approve",
+      ),
+  );
+  const riskIndexPath = join(riskRoot, "docs/adr/INDEX.md");
+  writeFileSync(
+    riskIndexPath,
+    readFileSync(riskIndexPath, "utf8").replace("| Proposed |", "| Accepted |").replace("| Not Started |", "| Complete |"),
+  );
+  const riskResult = run(riskRoot);
+  assert.equal(riskResult.status, 1);
+  assert.match(riskResult.stderr, /Risk Coverage Matrix dimension concurrency - and ordering must be Pass or N\/A/i);
+
   const root = validRepository();
   acceptedAdr(root, "0002");
   const activePath = join(root, "docs/adr/ADR-0001-example.md");
