@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// ADR: docs/adr/archive/ADR-0008-delimiter-bounded-governance-record-paths.md
+// ADR: docs/adr/ADR-0014-validator-structural-parsing-reliability.md
 
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { relative, resolve, sep } from "node:path";
@@ -222,28 +222,56 @@ function stripFencedCode(markdown) {
   return kept.join("\n");
 }
 
-// Reads a Markdown record through the same inactive-comment boundary used by
-// the primary validation loop and cross-record relationship checks.
+// Reads a Markdown record through the primary loop's inactive-comment and fenced-code boundaries.
 function readActiveMarkdown(path, encoding = "utf8") {
-  return stripHtmlComments(readFileSync(path, encoding));
+  return stripFencedCode(stripHtmlComments(readFileSync(path, encoding)));
 }
-
+// Finds a trailing bracketed suffix separated from its heading text.
+function trailingBracketSuffixStart(heading) {
+  const trimmed = heading.trim();
+  const opening = trimmed.lastIndexOf("[");
+  return trimmed.endsWith("]") && opening > 0 && [" ", "\t"].includes(trimmed[opening - 1]) ? opening : -1;
+}
+// Collects only same-line level-two Markdown headings outside fenced code.
 function headingTexts(markdown) {
-  return [...stripFencedCode(markdown).matchAll(/^##\s+(.+?)\s*$/gm)]
-    .map((match) => match[1]);
+  const found = [];
+  for (const line of stripFencedCode(markdown).split("\n")) {
+    const heading = line.slice(2).trim();
+    if (line.startsWith("##") && [" ", "\t"].includes(line[2]) && heading) found.push(heading);
+  }
+  return found;
 }
-
 function headings(markdown) {
   return headingTexts(markdown).map(sectionName);
 }
-
 function sectionName(heading) {
-  return heading.replace(/\s+\[[^\]]+\]\s*$/, "").trim();
+  const suffix = trailingBracketSuffixStart(heading);
+  return (suffix === -1 ? heading : heading.slice(0, suffix)).trim();
 }
-
+// Determines whether a heading ends with a supported requirement-level label.
+function hasRequirementLevel(heading) {
+  const suffix = trailingBracketSuffixStart(heading);
+  if (suffix === -1) return false;
+  const label = heading.trim().slice(suffix + 1, -1);
+  return label === "Required" || label === "Optional" || (label.startsWith("Conditionally Required — ") && label !== "Conditionally Required — ");
+}
+// Determines whether a value begins with a decimal governance-record identifier.
+function hasRecordIdentifier(value, prefix) {
+  const first = value[prefix.length];
+  return value.startsWith(prefix) && first !== undefined && first >= "0" && first <= "9";
+}
+// Determines whether a filename belongs to a recognized governance record type.
+function isRecordFilename(filename, prefix) {
+  return filename.endsWith(".md") && hasRecordIdentifier(filename, prefix);
+}
+// Determines whether the active document title selects the Lightweight ADR template.
+function isLightweightAdr(markdown) {
+  const title = stripFencedCode(markdown).split("\n").find((line) => line.startsWith("# "));
+  return title !== undefined && hasRecordIdentifier(title.slice(2).trim(), "Lightweight ADR-");
+}
 function validateRequirementLevels(path, markdown, errors) {
   for (const text of headingTexts(markdown)) {
-    if (!/\s+\[(?:Required|Optional|Conditionally Required — [^\]]+)\]\s*$/.test(text)) {
+    if (!hasRequirementLevel(text)) {
       errors.push(`${path}: section ${sectionName(text)} must declare a requirement level`);
     }
   }
@@ -519,16 +547,32 @@ function validateRetiredCandidates(path, markdown, errors) {
   }
 }
 
-// Matches a repository-relative ADD/ADR/OCR record path, ignoring surrounding
-// backticks or prose.
-const RECORD_PATH_PATTERN = /docs\/(?:adr|architecture)\/[^\s|`]+\.md/;
+// Determines whether text after a record path leaves its Markdown boundary intact.
+function hasRecordPathBoundary(value, index) {
+  const next = value[index];
+  return next === undefined || [" ", "\t", "|", "`"].includes(next) || (next === "." && (index + 1 === value.length || [" ", "\t"].includes(value[index + 1])));
+}
+
+// Extracts a safely delimited repository-relative ADD, ADR, or OCR path.
+function recordPathFromValue(value) {
+  if (typeof value !== "string") return undefined;
+  const start = value.indexOf("docs/");
+  if (start === -1) return undefined;
+  for (let index = start; index <= value.length - 3; index += 1) {
+    if (!value.startsWith(".md", index)) continue;
+    const end = index + 3;
+    const candidate = value.slice(start, end);
+    if ((candidate.startsWith("docs/adr/") || candidate.startsWith("docs/architecture/")) && ![" ", "\t", "|", "`"].some((character) => candidate.includes(character)) && hasRecordPathBoundary(value, end)) return candidate;
+  }
+  return undefined;
+}
 
 // A Superseded record must name its replacement (`Superseded By`), the
 // replacement must be Accepted (ADR/OCR) or Current (ADD), and the replacement
 // must reciprocally `Supersede` this exact record (AGENTS.md).
 function validateSupersession(root, path, markdown, errors) {
   const raw = metadata(markdown, "Superseded By");
-  const replacementPath = raw?.match(RECORD_PATH_PATTERN)?.[0];
+  const replacementPath = recordPathFromValue(raw);
   if (!replacementPath) {
     errors.push(`${path}: Superseded requires a Superseded By replacement record path`);
     return;
@@ -568,7 +612,7 @@ function validateSupersession(root, path, markdown, errors) {
       `${path}: Superseded By replacement ${replacementPath} must be ${requiredStatus} (is ${status ?? "<missing>"})`,
     );
   }
-  const supersedes = metadata(replacement, "Supersedes")?.match(RECORD_PATH_PATTERN)?.[0];
+  const supersedes = recordPathFromValue(metadata(replacement, "Supersedes"));
   if (supersedes !== path) {
     errors.push(
       `${path}: Superseded By replacement ${replacementPath} does not reciprocally Supersede this record`,
@@ -641,6 +685,18 @@ function tableFromContent(markdown) {
   };
 }
 
+// Parses a Markdown task-list item at the list margin or after three spaces.
+function checklistItem(line) {
+  let index = 0;
+  while (line[index] === " " && index < 3) index += 1;
+  if (line[index] !== "-" || ![" ", "\t"].includes(line[index + 1]) || line[index + 2] !== "[") return undefined;
+  const state = line[index + 3];
+  if ((state !== " " && state !== "x" && state !== "X") || line[index + 4] !== "]") return undefined;
+  const textStart = index + 5;
+  if (line[textStart] !== undefined && ![" ", "\t"].includes(line[textStart])) return undefined;
+  return { checked: state.toLowerCase() === "x", text: line.slice(textStart).trim() };
+}
+
 // Parses Markdown task-list items without letting a later item satisfy the
 // requirement of an earlier checked item. Indented continuation lines remain
 // part of the preceding item.
@@ -648,11 +704,8 @@ function checklistItems(content) {
   const items = [];
   let current;
   for (const line of content.split("\n")) {
-    const match = line.match(/^\s*-\s*\[([ xX])\]\s*(.*)$/);
-    if (match) {
-      current = { checked: match[1].toLowerCase() === "x", text: match[2].trim() };
-      items.push(current);
-    } else if (current && line.trim()) {
+    const item = checklistItem(line);
+    if (item) { current = item; items.push(current); } else if (current && line.trim()) {
       current.text += ` ${line.trim()}`;
     }
   }
@@ -665,7 +718,7 @@ function checklistItems(content) {
 // Coverage Matrix; OCRs use the Task Definition subtasks, Core Runbook stages,
 // and Closure review fields (AGENTS.md).
 function normalizeDimension(value) {
-  return value.toLowerCase().replace(/-/g, "").replace(/\s+/g, " ").trim();
+  return value.toLowerCase().replaceAll("-", "").replace(/\s+/g, " ").trim();
 }
 
 function escapeRegExp(value) {
@@ -799,9 +852,9 @@ async function validate(root) {
     }
 
     const filename = path.split("/").at(-1);
-    if (/^ADR-\d+.*\.md$/.test(filename)) {
+    if (isRecordFilename(filename, "ADR-")) {
       records.push({ path, index: "adr" });
-      const requiredSections = /^#\s+Lightweight ADR-\d+/m.test(markdown)
+      const requiredSections = isLightweightAdr(markdown)
         ? LIGHTWEIGHT_ADR_REQUIRED_SECTIONS
         : FULL_ADR_REQUIRED_SECTIONS;
       validateRequirementLevels(path, markdown, errors);
@@ -809,12 +862,12 @@ async function validate(root) {
       validateStatus(root, path, markdown, errors);
       relationshipValidator.validateArchitectureSource(root, path, markdown, errors);
       acceptedRecordValidator.validateRiskMatrixDimensions(path, markdown, errors);
-    } else if (/^OCR-\d+.*\.md$/.test(filename)) {
+    } else if (isRecordFilename(filename, "OCR-")) {
       records.push({ path, index: "adr" });
       validateRequirementLevels(path, markdown, errors);
       validateRequiredSections(path, markdown, OCR_REQUIRED_SECTIONS, errors);
       validateStatus(root, path, markdown, errors);
-    } else if (/^ADD-\d+.*\.md$/.test(filename)) {
+    } else if (isRecordFilename(filename, "ADD-")) {
       records.push({ path, index: "architecture" });
       validateRequirementLevels(path, markdown, errors);
       validateRequiredSections(path, markdown, ADD_REQUIRED_SECTIONS, errors);
