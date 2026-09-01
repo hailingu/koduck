@@ -3,7 +3,7 @@
 ## Metadata [Required]
 
 - **Decision Status**: Accepted
-- **Implementation Status**: In Progress
+- **Implementation Status**: Blocked
 - **Date**: 2026-09-01
 - **Author**: @codex
 - **Decision Owner**: @linhai
@@ -19,10 +19,10 @@
 - **Retirement Time [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — record is not retired
 - **Retirement Evidence [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — record is not retired
 - **Retirement Reason [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — record is not retired
-- **Blocked From [Conditionally Required — Implementation Status is `Blocked`]**: N/A — implementation has not started
-- **Blocker And Evidence [Conditionally Required — Implementation Status is `Blocked`]**: N/A — implementation has not started
-- **Blocker Owner [Conditionally Required — Implementation Status is `Blocked`]**: N/A — implementation has not started
-- **Blocker Exit Or Recheck Criterion [Conditionally Required — Implementation Status is `Blocked`]**: N/A — implementation has not started
+- **Blocked From [Conditionally Required — Implementation Status is `Blocked`]**: Not Started
+- **Blocker And Evidence [Conditionally Required — Implementation Status is `Blocked`]**: Before source-worktree creation or scanner submission, secure-token preflight found no non-empty scanner token in the local clipboard. The local dashboard baseline remains version `c336192` with one New Code Maintainability helper-scope finding; no credential value was displayed or recorded.
+- **Blocker Owner [Conditionally Required — Implementation Status is `Blocked`]**: @linhai
+- **Blocker Exit Or Recheck Criterion [Conditionally Required — Implementation Status is `Blocked`]**: Copy a valid pre-provisioned local scanner token into the secure clipboard and request continuation; recheck only non-empty availability before resuming this unchanged accepted OCR.
 - **Operation Type**: Existing Runbook
 - **Target Scope / Operation Owner**: Local SonarQube project `koduck` / @codex
 - **Input Source or Version**: `9ebf6a7` — `refactor(governance): extract Metadata suffix helper`
@@ -54,9 +54,9 @@ Allowed subtask statuses: `Not Started`, `In Progress`, `Blocked`, `Complete`, o
 
 | ID | Objective or deliverable | Included scope or target | Completion criterion | Expected evidence | Status | Actual evidence |
 | --- | --- | --- | --- | --- | --- | --- |
-| T-1 | Confirm authority, local analysis baseline, scanner availability, and secure token availability. | Local SonarQube project `koduck`; input `9ebf6a7`; captured baseline source revision. | OCR is Accepted, a baseline source revision is captured, the scanner is available, and only non-empty scanner-process token availability is confirmed. | Approval metadata and non-sensitive preflight record. | Not Started | Pending — operation is not authorized yet. |
-| T-2 | Submit the approved exact-source local analysis. | Temporary isolated worktree at `9ebf6a7` and existing project `koduck`. | Scanner exits 0 and its compute-engine task completes successfully. | Scanner exit result, task identifier, and processed source version. | Not Started | Pending — operation is not authorized yet. |
-| T-3 | Verify the scoped New Code finding or restore the captured baseline analysis. | Open/Confirmed New Code issue view and the helper-scope target finding. | Zero active target rows; otherwise the captured baseline source is reanalyzed and becomes current. | Issue-view result, analysis identifier, and recovery evidence when triggered. | Not Started | Pending — operation is not authorized yet. |
+| T-1 | Confirm authority, local analysis baseline, scanner availability, and secure token availability. | Local SonarQube project `koduck`; input `9ebf6a7`; captured baseline source revision. | OCR is Accepted, a baseline source revision is captured, the scanner is available, and only non-empty scanner-process token availability is confirmed. | Approval metadata and non-sensitive preflight record. | Blocked | Approval was recorded at 2026-09-01T08:52:00+08:00; dashboard baseline was `c336192` with one target finding; Scanner CLI 7.3.0.5189 was available; secure token availability was empty. |
+| T-2 | Submit the approved exact-source local analysis. | Temporary isolated worktree at `9ebf6a7` and existing project `koduck`. | Scanner exits 0 and its compute-engine task completes successfully. | Scanner exit result, task identifier, and processed source version. | Not Started | Not run — secure-token preflight stopped before worktree creation and scanner submission. |
+| T-3 | Verify the scoped New Code finding or restore the captured baseline analysis. | Open/Confirmed New Code issue view and the helper-scope target finding. | Zero active target rows; otherwise the captured baseline source is reanalyzed and becomes current. | Issue-view result, analysis identifier, and recovery evidence when triggered. | Not Started | Not run — no new analysis was created, so the captured baseline remains current. |
 
 ## Eligibility [Required]
 
@@ -73,19 +73,19 @@ Allowed subtask statuses: `Not Started`, `In Progress`, `Blocked`, `Complete`, o
 
 **Planned action and criterion**: Confirm this OCR is Accepted before execution; use the local SonarQube UI to confirm project `koduck` and capture the current analysis source revision and helper-scope issue baseline; confirm `sonar-scanner` is available; and confirm non-empty token availability only at scanner-process setup without displaying, storing, or transmitting its value.
 
-**Actual result and stable evidence**: Pending
+**Actual result and stable evidence**: At 2026-09-01T08:52:00+08:00, @linhai approval was recorded. The local dashboard showed current version `c336192` with one Open/Confirmed New Code Maintainability issue at `metadata-validation.mjs` line 10 requiring the helper to move to outer scope. SonarScanner CLI 7.3.0.5189 was available. Secure preflight found no non-empty scanner token; no token value was displayed or recorded.
 
 ### Execute [Required]
 
 **Planned action**: Create an isolated temporary Git worktree at `9ebf6a7`, then run the installed scanner against the existing local project with project version `9ebf6a7`. Supply the pre-provisioned token only through the scanner process environment. Do not log the token, scanner environment, or copied credential.
 
-**Actual result and stable evidence**: Pending
+**Actual result and stable evidence**: Not run — the secure-token stop condition occurred before temporary-worktree creation, scanner invocation, report creation, or compute-engine task submission.
 
 ### Verify [Required]
 
 **Success criterion**: The scanner reports successful analysis submission and compute-engine completion; the resulting Open/Confirmed New Code issue view has exactly zero active findings requiring `fieldWithoutRequirementLevelSuffix` to move to outer scope. Record only non-sensitive scanner, task, and issue-view evidence.
 
-**Actual result and stable evidence**: Pending
+**Actual result and stable evidence**: Not run — no analysis was submitted, so the preflight baseline `c336192` remains current and the scoped target cannot yet be rechecked.
 
 ### Stop and Recovery [Required]
 
@@ -95,7 +95,7 @@ Allowed subtask statuses: `Not Started`, `In Progress`, `Blocked`, `Complete`, o
 
 **Recovery verification**: Confirm that the captured baseline source revision is again the current local project analysis and that its helper-scope target finding matches the preflight baseline.
 
-**Actual result and stable evidence**: Pending — recovery is conditional on a post-submission stop condition.
+**Actual result and stable evidence**: Not triggered — the stop occurred before report creation or analysis submission, so no recovery action is needed and the captured baseline remains current.
 
 ## Conditional Extensions [Conditionally Required — production, multi-environment, phased, user/downstream/SLO impact, or stated change-window operation]
 
@@ -103,7 +103,11 @@ N/A — this is one local analysis with no production, multi-environment, phased
 
 ## Closure [Required]
 
-The OCR is Accepted and execution has not begun. Its final result and review fields will be recorded after preflight, submission, issue-view verification, and any required recovery.
+- **Final result**: Blocked — secure-token preflight found no non-empty token before scanner execution; no analysis was created.
+- **Authorization review**: Pass — @linhai approval at 2026-09-01T08:52:00+08:00 preceded preflight and no Execute action occurred.
+- **Subtask and evidence review**: Pass — T-1 records the preflight stop, while T-2 and T-3 truthfully record that no submission or verification occurred.
+- **Requirement-level review**: Pass — required content records the blocker, owner, exit criterion, and no-analysis result without exposing credentials.
+- **Governance validation**: Pass — `npm run validate --prefix tools/governance-validator` reported `Governance validation passed.` for the accepted preflight revision.
 
 ## Supporting Notes [Optional]
 
@@ -111,7 +115,7 @@ The scope is limited to the one New Code Maintainability finding introduced by t
 
 ## Archival [Conditionally Required — Decision Status is retired or Implementation Status is final]
 
-The record is Accepted and not archival-eligible. When it reaches a final status, move it under `docs/adr/ocr/archive/`, update its one index row and any references in the same change, and confirm no active record or governed marker cites the former path.
+The accepted operation is Blocked while secure-token availability is restored, and a further attempt is planned; it is not archival-eligible. If it reaches a final status without a further attempt, archive it under `docs/adr/ocr/archive/` in the same change that establishes that final status and index-path update.
 
 ## Change Log [Required]
 
@@ -119,3 +123,4 @@ The record is Accepted and not archival-eligible. When it reaches a final status
 | --- | --- | --- |
 | 2026-09-01 | Drafted the reversible OCR for one local helper-scope New Code verification analysis of source revision `9ebf6a7`. | @codex |
 | 2026-09-01 | Accepted by @linhai with approval evidence `Approve` at 2026-09-01T08:52:00+08:00. | @codex |
+| 2026-09-01 | Captured baseline `c336192` (one New Code helper-scope finding), confirmed SonarScanner CLI 7.3.0.5189, then stopped before worktree creation or report submission because non-empty secure-token availability was not present. | @codex |
