@@ -1153,132 +1153,60 @@ fn validated_approver_identity_is_required_for_durable_terminals() {
     // (schema_rejects_illegal_terminal_tuples).
 }
 
+/// Composes one schema-check `INSERT` whose accepted terminal tuple is
+/// illegal; `$approver` and `$decided_at` splice the SQL tokens under test
+/// into the shared fixed prefix, so each case's variation stays visible.
+macro_rules! illegal_terminal_statement {
+    ($approver:literal, $decided_at:literal) => {
+        concat!(
+            "INSERT INTO tool_approvals (\n",
+            "    tenant_id, approval_id, requester_subject, thread_id, turn_id, attempt_id,\n",
+            "    lease_generation, descriptor_id, descriptor_version, effect,\n",
+            "    action_digest, profile_id, profile_version,\n",
+            "    requested_at_millis, expires_at_millis,\n",
+            "    status, decision, approver, decided_at_millis, version\n",
+            ") VALUES (\n",
+            "    'schema-check-tenant', $1,\n",
+            "    '00000000-0000-0000-0000-000000000000',\n",
+            "    '00000000-0000-0000-0000-000000000000',\n",
+            "    '00000000-0000-0000-0000-000000000000',\n",
+            "    1, 'fixture.tool', 'v1', 'read_data',\n",
+            "    'decoy', 'profile-default', 'v1', 1, 2,\n",
+            "    'accepted', 'accepted', ",
+            $approver,
+            ", ",
+            $decided_at,
+            ", 1\n",
+            ")",
+        )
+    };
+}
+
 const ILLEGAL_TERMINAL_STATEMENTS: [(&str, &str); 7] = [
-    (
-        "blank approver",
-        "INSERT INTO tool_approvals (
-            tenant_id, approval_id, requester_subject, thread_id, turn_id, attempt_id,
-            lease_generation, descriptor_id, descriptor_version, effect,
-            action_digest, profile_id, profile_version,
-            requested_at_millis, expires_at_millis,
-            status, decision, approver, decided_at_millis, version
-        ) VALUES (
-            'schema-check-tenant', $1,
-            '00000000-0000-0000-0000-000000000000',
-            '00000000-0000-0000-0000-000000000000',
-            '00000000-0000-0000-0000-000000000000',
-            1, 'fixture.tool', 'v1', 'read_data',
-            'decoy', 'profile-default', 'v1', 1, 2,
-            'accepted', 'accepted', '', 1, 1
-        )",
-    ),
+    ("blank approver", illegal_terminal_statement!("''", "1")),
     (
         "whitespace-only approver",
-        "INSERT INTO tool_approvals (
-            tenant_id, approval_id, requester_subject, thread_id, turn_id, attempt_id,
-            lease_generation, descriptor_id, descriptor_version, effect,
-            action_digest, profile_id, profile_version,
-            requested_at_millis, expires_at_millis,
-            status, decision, approver, decided_at_millis, version
-        ) VALUES (
-            'schema-check-tenant', $1,
-            '00000000-0000-0000-0000-000000000000',
-            '00000000-0000-0000-0000-000000000000',
-            '00000000-0000-0000-0000-000000000000',
-            1, 'fixture.tool', 'v1', 'read_data',
-            'decoy', 'profile-default', 'v1', 1, 2,
-            'accepted', 'accepted', '   ', 1, 1
-        )",
+        illegal_terminal_statement!("'   '", "1"),
     ),
     (
         "decided terminal without a decision timestamp",
-        "INSERT INTO tool_approvals (
-            tenant_id, approval_id, requester_subject, thread_id, turn_id, attempt_id,
-            lease_generation, descriptor_id, descriptor_version, effect,
-            action_digest, profile_id, profile_version,
-            requested_at_millis, expires_at_millis,
-            status, decision, approver, decided_at_millis, version
-        ) VALUES (
-            'schema-check-tenant', $1,
-            '00000000-0000-0000-0000-000000000000',
-            '00000000-0000-0000-0000-000000000000',
-            '00000000-0000-0000-0000-000000000000',
-            1, 'fixture.tool', 'v1', 'read_data',
-            'decoy', 'profile-default', 'v1', 1, 2,
-            'accepted', 'accepted', 'approver-a', NULL, 1
-        )",
+        illegal_terminal_statement!("'approver-a'", "NULL"),
     ),
     (
         "decided timestamp at expiry",
-        "INSERT INTO tool_approvals (
-            tenant_id, approval_id, requester_subject, thread_id, turn_id, attempt_id,
-            lease_generation, descriptor_id, descriptor_version, effect,
-            action_digest, profile_id, profile_version,
-            requested_at_millis, expires_at_millis,
-            status, decision, approver, decided_at_millis, version
-        ) VALUES (
-            'schema-check-tenant', $1,
-            '00000000-0000-0000-0000-000000000000',
-            '00000000-0000-0000-0000-000000000000',
-            '00000000-0000-0000-0000-000000000000',
-            1, 'fixture.tool', 'v1', 'read_data',
-            'decoy', 'profile-default', 'v1', 1, 2,
-            'accepted', 'accepted', 'approver-a', 2, 1
-        )",
+        illegal_terminal_statement!("'approver-a'", "2"),
     ),
     (
         "decided timestamp after expiry",
-        "INSERT INTO tool_approvals (
-            tenant_id, approval_id, requester_subject, thread_id, turn_id, attempt_id,
-            lease_generation, descriptor_id, descriptor_version, effect,
-            action_digest, profile_id, profile_version,
-            requested_at_millis, expires_at_millis,
-            status, decision, approver, decided_at_millis, version
-        ) VALUES (
-            'schema-check-tenant', $1,
-            '00000000-0000-0000-0000-000000000000',
-            '00000000-0000-0000-0000-000000000000',
-            '00000000-0000-0000-0000-000000000000',
-            1, 'fixture.tool', 'v1', 'read_data',
-            'decoy', 'profile-default', 'v1', 1, 2,
-            'accepted', 'accepted', 'approver-a', 3, 1
-        )",
+        illegal_terminal_statement!("'approver-a'", "3"),
     ),
     (
         "tab-only approver",
-        "INSERT INTO tool_approvals (
-            tenant_id, approval_id, requester_subject, thread_id, turn_id, attempt_id,
-            lease_generation, descriptor_id, descriptor_version, effect,
-            action_digest, profile_id, profile_version,
-            requested_at_millis, expires_at_millis,
-            status, decision, approver, decided_at_millis, version
-        ) VALUES (
-            'schema-check-tenant', $1,
-            '00000000-0000-0000-0000-000000000000',
-            '00000000-0000-0000-0000-000000000000',
-            '00000000-0000-0000-0000-000000000000',
-            1, 'fixture.tool', 'v1', 'read_data',
-            'decoy', 'profile-default', 'v1', 1, 2,
-            'accepted', 'accepted', E'\t', 1, 1
-        )",
+        illegal_terminal_statement!("E'\\t'", "1"),
     ),
     (
         "newline-only approver",
-        "INSERT INTO tool_approvals (
-            tenant_id, approval_id, requester_subject, thread_id, turn_id, attempt_id,
-            lease_generation, descriptor_id, descriptor_version, effect,
-            action_digest, profile_id, profile_version,
-            requested_at_millis, expires_at_millis,
-            status, decision, approver, decided_at_millis, version
-        ) VALUES (
-            'schema-check-tenant', $1,
-            '00000000-0000-0000-0000-000000000000',
-            '00000000-0000-0000-0000-000000000000',
-            '00000000-0000-0000-0000-000000000000',
-            1, 'fixture.tool', 'v1', 'read_data',
-            'decoy', 'profile-default', 'v1', 1, 2,
-            'accepted', 'accepted', E'\n', 1, 1
-        )",
+        illegal_terminal_statement!("E'\\n'", "1"),
     ),
 ];
 

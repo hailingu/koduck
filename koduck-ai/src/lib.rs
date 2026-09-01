@@ -20,6 +20,10 @@ pub(crate) mod test_support;
 pub(crate) mod test_migrations;
 
 #[cfg(test)]
+#[path = "../tests/internal/postgres_fixtures.rs"]
+pub(crate) mod postgres_fixtures;
+
+#[cfg(test)]
 #[path = "../tests/internal/cand_2_approval.rs"]
 mod cand_2_approval_tests;
 #[cfg(test)]
