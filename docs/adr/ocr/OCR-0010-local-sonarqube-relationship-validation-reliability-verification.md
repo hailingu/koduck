@@ -2,19 +2,19 @@
 
 ## Metadata [Required]
 
-- **Decision Status**: Proposed
+- **Decision Status**: Accepted
 - **Implementation Status**: Not Started
 - **Date**: 2026-09-01
 - **Author**: @codex
 - **Decision Owner**: @linhai
 - **Required Approver**: @linhai
 - **Record Scope**: Project
-- **Approver [Conditionally Required — Decision Status is or has been `Accepted`]**: N/A — Decision Status is Proposed and no approval has occurred
-- **Approval Time [Conditionally Required — Decision Status is or has been `Accepted`]**: N/A — Decision Status is Proposed and no approval has occurred
-- **Approval Evidence [Conditionally Required — Decision Status is or has been `Accepted`]**: N/A — Decision Status is Proposed and no approval has occurred
-- **Rejector [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is Proposed
-- **Rejection Time [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is Proposed
-- **Rejection Evidence [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is Proposed
+- **Approver [Conditionally Required — Decision Status is or has been `Accepted`]**: @linhai
+- **Approval Time [Conditionally Required — Decision Status is or has been `Accepted`]**: 2026-09-01T09:56:30+08:00
+- **Approval Evidence [Conditionally Required — Decision Status is or has been `Accepted`]**: Approve
+- **Rejector [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is Accepted
+- **Rejection Time [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is Accepted
+- **Rejection Evidence [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is Accepted
 - **Retired By [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — record is not retired
 - **Retirement Time [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — record is not retired
 - **Retirement Evidence [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — record is not retired
@@ -61,7 +61,7 @@ Allowed subtask statuses: `Not Started`, `In Progress`, `Blocked`, `Complete`, o
 ## Eligibility [Required]
 
 - [x] Uses an accepted architecture, pipeline, artifact contract, security boundary, and data boundary: `docs/adr/ADR-0013-relationship-validation-reliability.md` authorizes the source correction; the existing local scanner workflow submits no reusable artifact and changes no security or data boundary.
-- [x] Is reversible: capture the current analysis source revision before Execute; if a stop condition occurs after a new analysis is created, create an isolated temporary worktree at that captured revision and resubmit it through the same scanner workflow, then remove only the temporary worktree.
+- [x] Is reversible: capture the current analysis source revision before Execute; if a stop condition occurs after a new analysis is created, create an isolated temporary worktree at that captured revision and resubmit it as recovery through the same scanner workflow, then remove only the temporary worktree.
 - [x] Does not modify a Dockerfile, Makefile, CI, pipeline, artifact format, signing, credentials, deployment topology, API/schema/protocol, authentication, security policy, data lifecycle, dependency, provider, or irreversible behavior.
 - [x] Has a defined preflight, success check, stop condition, and recovery path.
 - [x] Contains no secret, credential, private endpoint, or sensitive user data. The scanner token is not recorded, displayed, or passed in this OCR.
@@ -103,11 +103,11 @@ N/A — this is one local analysis with no production, multi-environment, phased
 
 ## Closure [Required]
 
-- **Final result**: Pending — completed / stopped / rolled back / not promoted
-- **Authorization review**: Pending — execution has not occurred
-- **Subtask and evidence review**: Pending — execution has not occurred
-- **Requirement-level review**: Pending — execution has not occurred
-- **Governance validation**: Pending — the terminal record revision does not yet exist
+- **Final result**: Not Started — execution awaits the accepted OCR preflight.
+- **Authorization review**: Pass — @linhai approval at 2026-09-01T09:56:30+08:00 precedes the first Execute action.
+- **Subtask and evidence review**: N/A — operation has not executed.
+- **Requirement-level review**: Pass — the Accepted OCR contains complete planned content and specific inactive-trigger assessments.
+- **Governance validation**: Pass — `npm run validate` reported `Governance validation passed.` for the Accepted OCR revision.
 
 ## Supporting Notes [Optional]
 
@@ -115,10 +115,11 @@ The remaining nine Reliability findings in `tools/governance-validator/validate.
 
 ## Archival [Conditionally Required — Decision Status is retired or Implementation Status is final]
 
-The record is Proposed and not final, so archival is inactive future-lifecycle guidance. If the operation reaches an archival-eligible state, move it under `docs/adr/ocr/archive/`, update its index row and every relevant reference in the same change, retain `Superseded By: None` unless a replacement is identified, and confirm no active reference remains to the pre-archive path.
+The record is Accepted and not final, so archival is inactive future-lifecycle guidance. If the operation reaches an archival-eligible state, move it under `docs/adr/ocr/archive/`, update its index row and every relevant reference in the same change, retain `Superseded By: None` unless a replacement is identified, and confirm no active reference remains to the pre-archive path.
 
 ## Change Log [Required]
 
 | Date | Change | Author |
 | --- | --- | --- |
 | 2026-09-01 | Drafted the reversible local SonarQube verification for relationship-validation Reliability remediation commit `f2cc310`. | @codex |
+| 2026-09-01 | Accepted by @linhai with approval evidence `Approve` at 2026-09-01T09:56:30+08:00. | @linhai |
