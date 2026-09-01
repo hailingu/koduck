@@ -2,19 +2,19 @@
 
 ## Metadata [Required]
 
-- **Decision Status**: Proposed
+- **Decision Status**: Accepted
 - **Implementation Status**: Not Started
 - **Date**: 2026-09-01
 - **Author**: @codex
 - **Decision Owner**: @linhai
 - **Required Approver**: @linhai
 - **Record Scope**: Project
-- **Approver [Conditionally Required — Decision Status is or has been `Accepted`]**: N/A — Decision Status is Proposed.
-- **Approval Time [Conditionally Required — Decision Status is or has been `Accepted`]**: N/A — Decision Status is Proposed.
-- **Approval Evidence [Conditionally Required — Decision Status is or has been `Accepted`]**: N/A — Decision Status is Proposed.
-- **Rejector [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is Proposed.
-- **Rejection Time [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is Proposed.
-- **Rejection Evidence [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is Proposed.
+- **Approver [Conditionally Required — Decision Status is or has been `Accepted`]**: @linhai
+- **Approval Time [Conditionally Required — Decision Status is or has been `Accepted`]**: 2026-09-01T11:03:13+08:00
+- **Approval Evidence [Conditionally Required — Decision Status is or has been `Accepted`]**: Approve
+- **Rejector [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is Accepted.
+- **Rejection Time [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is Accepted.
+- **Rejection Evidence [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is Accepted.
 - **Retired By [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — record is not retired.
 - **Retirement Time [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — record is not retired.
 - **Retirement Evidence [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — record is not retired.
@@ -104,7 +104,7 @@ N/A — this is one local analysis with no production, multi-environment, phased
 ## Closure [Required]
 
 - **Final result**: Not started — the proposed operation awaits acceptance.
-- **Authorization review**: Pending — @linhai approval is required before execution.
+- **Authorization review**: Pass — @linhai approval at 2026-09-01T11:03:13+08:00 precedes Execute.
 - **Subtask and evidence review**: Not started — T-1 through T-3 await operational evidence.
 - **Requirement-level review**: Pass — proposed-stage planned content is complete; terminal review follows execution or an evidenced stop.
 - **Governance validation**: Pass — `npm run validate --prefix tools/governance-validator` reports `Governance validation passed.` for this draft.
@@ -123,3 +123,4 @@ The record is Proposed and Not Started, so archival is inactive future-lifecycle
 | --- | --- | --- |
 | 2026-09-01 | Drafted the reversible local SonarQube verification for ADR-0014 source correction `31328ab` after OCR-0011 restored its baseline. | @codex |
 | 2026-09-01 | Governance validation passed before approval was requested. | @codex |
+| 2026-09-01 | Accepted by @linhai with approval evidence `Approve` at 2026-09-01T11:03:13+08:00. | @linhai |
