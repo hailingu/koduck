@@ -3,7 +3,7 @@
 ## Metadata [Required]
 
 - **Decision Status**: Accepted
-- **Implementation Status**: Not Started
+- **Implementation Status**: In Progress
 - **Date**: 2026-09-01
 - **Author**: @codex
 - **Decision Owner**: @linhai
@@ -19,10 +19,10 @@
 - **Retirement Time [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — record is not retired
 - **Retirement Evidence [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — record is not retired
 - **Retirement Reason [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — record is not retired
-- **Blocked From [Conditionally Required — Implementation Status is `Blocked`]**: N/A — implementation is not blocked
-- **Blocker And Evidence [Conditionally Required — Implementation Status is `Blocked`]**: N/A — implementation is not blocked
-- **Blocker Owner [Conditionally Required — Implementation Status is `Blocked`]**: N/A — implementation is not blocked
-- **Blocker Exit Or Recheck Criterion [Conditionally Required — Implementation Status is `Blocked`]**: N/A — implementation is not blocked
+- **Blocked From [Conditionally Required — Implementation Status is `Blocked`]**: N/A — implementation is in progress and not blocked
+- **Blocker And Evidence [Conditionally Required — Implementation Status is `Blocked`]**: N/A — implementation is in progress and not blocked
+- **Blocker Owner [Conditionally Required — Implementation Status is `Blocked`]**: N/A — implementation is in progress and not blocked
+- **Blocker Exit Or Recheck Criterion [Conditionally Required — Implementation Status is `Blocked`]**: N/A — implementation is in progress and not blocked
 - **Operation Type**: Existing Runbook
 - **Target Scope / Operation Owner**: Local SonarQube project `koduck` / @codex
 - **Input Source or Version**: `f2cc310` — `fix(governance): harden relationship title validation`
@@ -54,7 +54,7 @@ Allowed subtask statuses: `Not Started`, `In Progress`, `Blocked`, `Complete`, o
 
 | ID | Objective or deliverable | Included scope or target | Completion criterion | Expected evidence | Status | Actual evidence |
 | --- | --- | --- | --- | --- | --- | --- |
-| T-1 | Confirm authority, current baseline, scanner availability, and secure token availability. | Local SonarQube project `koduck`; source input `f2cc310`; baseline analysis source revision. | OCR is Accepted; baseline source is captured; scanner is available; only non-empty scanner-process token availability is confirmed. | Approval metadata and non-sensitive preflight record. | Not Started | Pending — execution awaits acceptance. |
+| T-1 | Confirm authority, current baseline, scanner availability, and secure token availability. | Local SonarQube project `koduck`; source input `f2cc310`; baseline analysis source revision. | OCR is Accepted; baseline source is captured; scanner is available; only non-empty scanner-process token availability is confirmed. | Approval metadata and non-sensitive preflight record. | Complete | OCR approval preceded preflight; dashboard baseline is version `9ebf6a7` with 12 Reliability issues and all three scoped targets; scanner is 7.3.0.5189; the interactive profile confirmed only non-empty `KODUCK_SONAR_TOKEN` availability. |
 | T-2 | Submit exactly one approved-source local analysis. | Temporary isolated worktree at `f2cc310`; existing local project `koduck`. | Scanner exits 0 and its compute-engine task completes successfully. | Scanner exit result, task identifier, and processed source version. | Not Started | Pending — execution awaits acceptance. |
 | T-3 | Verify the scoped Reliability result or restore the captured baseline analysis. | Open/Confirmed overall Reliability issue view and the three scoped target findings. | Zero active scoped rows; otherwise the captured baseline source is reanalyzed and becomes current. | Issue-view result, analysis identifier, and recovery evidence when triggered. | Not Started | Pending — execution awaits acceptance. |
 
@@ -73,7 +73,7 @@ Allowed subtask statuses: `Not Started`, `In Progress`, `Blocked`, `Complete`, o
 
 **Planned action and criterion**: Confirm this OCR is Accepted before execution; use the local SonarQube UI to confirm project `koduck` and capture its current analysis source revision and the three scoped Reliability rows; confirm the installed scanner is available; and confirm only that `KODUCK_SONAR_TOKEN` is non-empty at scanner-process setup without printing, storing, or transmitting its value.
 
-**Actual result and stable evidence**: Pending — execution awaits acceptance.
+**Actual result and stable evidence**: @linhai approval was recorded at 2026-09-01T09:56:30+08:00. The local dashboard showed current version `9ebf6a7` (last analysis 38 minutes earlier), 12 overall Reliability issues, and the three scoped Open targets at `relationship-validation.mjs` lines 117, 151, and 152. The scanner reported version 7.3.0.5189. The initial non-interactive shell had no token, while the interactive local profile confirmed only non-empty `KODUCK_SONAR_TOKEN` availability; no token value was displayed or recorded.
 
 ### Execute [Required]
 
@@ -103,7 +103,7 @@ N/A — this is one local analysis with no production, multi-environment, phased
 
 ## Closure [Required]
 
-- **Final result**: Not Started — execution awaits the accepted OCR preflight.
+- **Final result**: In Progress — preflight passed and one approved source analysis remains to be submitted.
 - **Authorization review**: Pass — @linhai approval at 2026-09-01T09:56:30+08:00 precedes the first Execute action.
 - **Subtask and evidence review**: N/A — operation has not executed.
 - **Requirement-level review**: Pass — the Accepted OCR contains complete planned content and specific inactive-trigger assessments.
@@ -123,3 +123,4 @@ The record is Accepted and not final, so archival is inactive future-lifecycle g
 | --- | --- | --- |
 | 2026-09-01 | Drafted the reversible local SonarQube verification for relationship-validation Reliability remediation commit `f2cc310`. | @codex |
 | 2026-09-01 | Accepted by @linhai with approval evidence `Approve` at 2026-09-01T09:56:30+08:00. | @linhai |
+| 2026-09-01 | Captured baseline version `9ebf6a7` with 12 Reliability issues and all three scoped targets; confirmed scanner 7.3.0.5189 and non-empty interactive-profile token availability without exposing its value. | @codex |
