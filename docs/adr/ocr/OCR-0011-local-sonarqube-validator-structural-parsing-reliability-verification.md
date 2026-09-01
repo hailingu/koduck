@@ -2,16 +2,16 @@
 
 ## Metadata [Required]
 
-- **Decision Status**: Proposed
+- **Decision Status**: Accepted
 - **Implementation Status**: Not Started
 - **Date**: 2026-09-01
 - **Author**: @codex
 - **Decision Owner**: @linhai
 - **Required Approver**: @linhai
 - **Record Scope**: Project
-- **Approver [Conditionally Required — Decision Status is or has been `Accepted`]**: N/A — Decision Status is Proposed.
-- **Approval Time [Conditionally Required — Decision Status is or has been `Accepted`]**: N/A — Decision Status is Proposed.
-- **Approval Evidence [Conditionally Required — Decision Status is or has been `Accepted`]**: N/A — Decision Status is Proposed.
+- **Approver [Conditionally Required — Decision Status is or has been `Accepted`]**: @linhai
+- **Approval Time [Conditionally Required — Decision Status is or has been `Accepted`]**: 2026-09-01T10:46:28+08:00
+- **Approval Evidence [Conditionally Required — Decision Status is or has been `Accepted`]**: Approve
 - **Rejector [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is Proposed.
 - **Rejection Time [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is Proposed.
 - **Rejection Evidence [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is Proposed.
@@ -61,7 +61,7 @@ Allowed subtask statuses: `Not Started`, `In Progress`, `Blocked`, `Complete`, o
 ## Eligibility [Required]
 
 - [x] Uses an accepted architecture, pipeline, artifact contract, security boundary, and data boundary: `docs/adr/ADR-0014-validator-structural-parsing-reliability.md` authorizes the source correction, and this existing local scanner workflow changes neither a reusable artifact nor a security or data boundary.
-- [x] Is reversible: capture the current analysis source revision before Execute; if a stop condition occurs after a new analysis is created, use an isolated worktree at that captured revision to resubmit the baseline through the same scanner workflow, then remove only the temporary worktree and scanner output.
+- [x] Is reversible: capture the current analysis source revision before Execute; if a stop condition occurs after a new analysis is created, use an isolated worktree at that captured revision to resubmit the baseline through the same scanner workflow as recovery, then remove only the temporary worktree and scanner output.
 - [x] Does not modify a Dockerfile, Makefile, CI, pipeline, artifact format, signing, credentials, deployment topology, API/schema/protocol, authentication, security policy, data lifecycle, dependency, provider, or irreversible behavior.
 - [x] Has a defined preflight, success check, stop condition, and recovery path.
 - [x] Contains no secret, credential, private endpoint, or sensitive user data. The token is neither recorded nor displayed in this OCR, commands, logs, or evidence.
@@ -103,11 +103,11 @@ N/A — this is one local analysis with no production, multi-environment, phased
 
 ## Closure [Required]
 
-- **Final result**: Pending — operation has not run.
-- **Authorization review**: Pending — requires Accepted OCR before Execute.
-- **Subtask and evidence review**: Pending — requires T-1 through T-3 evidence.
-- **Requirement-level review**: Pending — terminal review follows execution or an evidenced stop.
-- **Governance validation**: Pending — terminal review follows the OCR evidence update.
+- **Final result**: Not started — the accepted operation awaits preflight.
+- **Authorization review**: Pass — @linhai accepted this OCR before execution.
+- **Subtask and evidence review**: Not started — T-1 through T-3 await operational evidence.
+- **Requirement-level review**: Pass — accepted-stage planned content is complete; terminal review follows execution or an evidenced stop.
+- **Governance validation**: Pass — governance validation passes for this accepted OCR revision before Execute.
 
 ## Supporting Notes [Optional]
 
@@ -115,10 +115,11 @@ This OCR does not alter the SonarQube project configuration or finding workflow.
 
 ## Archival [Conditionally Required — Decision Status is retired or Implementation Status is final]
 
-The record is Proposed and Not Started, so archival is inactive future-lifecycle guidance. If it reaches an archival-eligible state, move it under `docs/adr/ocr/archive/`, update its index row and every marker or reciprocal reference in the same change, retain `Superseded By: None` unless a replacement is identified, and confirm no active reference remains to the pre-archive path.
+The record is Accepted and Not Started, so archival is inactive future-lifecycle guidance. If it reaches an archival-eligible state, move it under `docs/adr/ocr/archive/`, update its index row and every marker or reciprocal reference in the same change, retain `Superseded By: None` unless a replacement is identified, and confirm no active reference remains to the pre-archive path.
 
 ## Change Log [Required]
 
 | Date | Change | Author |
 | --- | --- | --- |
 | 2026-09-01 | Drafted the reversible local SonarQube verification for ADR-0014 source input `f9d08d5`. | @codex |
+| 2026-09-01 | Accepted by @linhai with approval evidence `Approve` at 2026-09-01T10:46:28+08:00. | @linhai |
