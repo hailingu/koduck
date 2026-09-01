@@ -3,7 +3,7 @@
 ## Metadata [Required]
 
 - **Decision Status**: Accepted
-- **Implementation Status**: Blocked
+- **Implementation Status**: In Progress
 - **Date**: 2026-09-01
 - **Author**: @codex
 - **Decision Owner**: @linhai
@@ -19,10 +19,10 @@
 - **Retirement Time [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — record is not retired
 - **Retirement Evidence [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — record is not retired
 - **Retirement Reason [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — record is not retired
-- **Blocked From [Conditionally Required — Implementation Status is `Blocked`]**: Not Started
-- **Blocker And Evidence [Conditionally Required — Implementation Status is `Blocked`]**: Before source-worktree creation or scanner submission, secure-token preflight found no non-empty scanner token in the local clipboard. After @linhai confirmed a replacement copy, the 2026-09-01T08:59:01+08:00 non-empty recheck remained unavailable. The local dashboard baseline remains version `c336192` with one New Code Maintainability helper-scope finding; no credential value was displayed or recorded.
-- **Blocker Owner [Conditionally Required — Implementation Status is `Blocked`]**: @linhai
-- **Blocker Exit Or Recheck Criterion [Conditionally Required — Implementation Status is `Blocked`]**: Copy a valid pre-provisioned local scanner token into the secure clipboard and request continuation; recheck only non-empty availability before resuming this unchanged accepted OCR.
+- **Blocked From [Conditionally Required — Implementation Status is `Blocked`]**: N/A — execution has resumed through one isolated secure-terminal input session.
+- **Blocker And Evidence [Conditionally Required — Implementation Status is `Blocked`]**: N/A — the prior clipboard-availability blocker is bypassed by the repository owner's requested masked terminal input, which supplies the token only to the Scanner process environment.
+- **Blocker Owner [Conditionally Required — Implementation Status is `Blocked`]**: N/A — no active blocker.
+- **Blocker Exit Or Recheck Criterion [Conditionally Required — Implementation Status is `Blocked`]**: N/A — no active blocker.
 - **Operation Type**: Existing Runbook
 - **Target Scope / Operation Owner**: Local SonarQube project `koduck` / @codex
 - **Input Source or Version**: `9ebf6a7` — `refactor(governance): extract Metadata suffix helper`
@@ -54,9 +54,9 @@ Allowed subtask statuses: `Not Started`, `In Progress`, `Blocked`, `Complete`, o
 
 | ID | Objective or deliverable | Included scope or target | Completion criterion | Expected evidence | Status | Actual evidence |
 | --- | --- | --- | --- | --- | --- | --- |
-| T-1 | Confirm authority, local analysis baseline, scanner availability, and secure token availability. | Local SonarQube project `koduck`; input `9ebf6a7`; captured baseline source revision. | OCR is Accepted, a baseline source revision is captured, the scanner is available, and only non-empty scanner-process token availability is confirmed. | Approval metadata and non-sensitive preflight record. | Blocked | Approval was recorded at 2026-09-01T08:52:00+08:00; dashboard baseline was `c336192` with one target finding; Scanner CLI 7.3.0.5189 was available; secure-token availability was empty both initially and on the 2026-09-01T08:59:01+08:00 resumed recheck. |
-| T-2 | Submit the approved exact-source local analysis. | Temporary isolated worktree at `9ebf6a7` and existing project `koduck`. | Scanner exits 0 and its compute-engine task completes successfully. | Scanner exit result, task identifier, and processed source version. | Not Started | Not run — secure-token preflight stopped before worktree creation and scanner submission. |
-| T-3 | Verify the scoped New Code finding or restore the captured baseline analysis. | Open/Confirmed New Code issue view and the helper-scope target finding. | Zero active target rows; otherwise the captured baseline source is reanalyzed and becomes current. | Issue-view result, analysis identifier, and recovery evidence when triggered. | Not Started | Not run — no new analysis was created, so the captured baseline remains current. |
+| T-1 | Confirm authority, local analysis baseline, scanner availability, and secure token availability. | Local SonarQube project `koduck`; input `9ebf6a7`; captured baseline source revision. | OCR is Accepted, a baseline source revision is captured, the scanner is available, and only non-empty scanner-process token availability is confirmed. | Approval metadata and non-sensitive preflight record. | In Progress | Approval was recorded at 2026-09-01T08:52:00+08:00; dashboard baseline was `c336192` with one target finding; Scanner CLI 7.3.0.5189 was available. Prior clipboard rechecks were empty, so the repository owner requested one masked terminal-input session that supplies the token only to the Scanner process. |
+| T-2 | Submit the approved exact-source local analysis. | Temporary isolated worktree at `9ebf6a7` and existing project `koduck`. | Scanner exits 0 and its compute-engine task completes successfully. | Scanner exit result, task identifier, and processed source version. | Not Started | Not run — awaiting hidden terminal input. |
+| T-3 | Verify the scoped New Code finding or restore the captured baseline analysis. | Open/Confirmed New Code issue view and the helper-scope target finding. | Zero active target rows; otherwise the captured baseline source is reanalyzed and becomes current. | Issue-view result, analysis identifier, and recovery evidence when triggered. | Not Started | Not run — awaiting scanner task result. |
 
 ## Eligibility [Required]
 
@@ -73,7 +73,7 @@ Allowed subtask statuses: `Not Started`, `In Progress`, `Blocked`, `Complete`, o
 
 **Planned action and criterion**: Confirm this OCR is Accepted before execution; use the local SonarQube UI to confirm project `koduck` and capture the current analysis source revision and helper-scope issue baseline; confirm `sonar-scanner` is available; and confirm non-empty token availability only at scanner-process setup without displaying, storing, or transmitting its value.
 
-**Actual result and stable evidence**: At 2026-09-01T08:52:00+08:00, @linhai approval was recorded. The local dashboard showed current version `c336192` with one Open/Confirmed New Code Maintainability issue at `metadata-validation.mjs` line 10 requiring the helper to move to outer scope. SonarScanner CLI 7.3.0.5189 was available. Secure preflight found no non-empty scanner token; after @linhai confirmed a replacement copy, the 2026-09-01T08:59:01+08:00 resumed recheck was also unavailable. No token value was displayed or recorded.
+**Actual result and stable evidence**: At 2026-09-01T08:52:00+08:00, @linhai approval was recorded. The local dashboard showed current version `c336192` with one Open/Confirmed New Code Maintainability issue at `metadata-validation.mjs` line 10 requiring the helper to move to outer scope. SonarScanner CLI 7.3.0.5189 was available. Clipboard availability was empty initially and on the 2026-09-01T08:59:01+08:00 recheck. At @linhai's request, an isolated masked terminal input will instead provide the token only to the Scanner process; no token value is displayed, stored, or recorded.
 
 ### Execute [Required]
 
@@ -103,11 +103,7 @@ N/A — this is one local analysis with no production, multi-environment, phased
 
 ## Closure [Required]
 
-- **Final result**: Blocked — secure-token preflight found no non-empty token before scanner execution; no analysis was created.
-- **Authorization review**: Pass — @linhai approval at 2026-09-01T08:52:00+08:00 preceded preflight and no Execute action occurred.
-- **Subtask and evidence review**: Pass — T-1 records the preflight stop, while T-2 and T-3 truthfully record that no submission or verification occurred.
-- **Requirement-level review**: Pass — required content records the blocker, owner, exit criterion, and no-analysis result without exposing credentials.
-- **Governance validation**: Pass — `npm run validate --prefix tools/governance-validator` reported `Governance validation passed.` for the accepted preflight revision.
+The OCR remains Accepted and is resuming after a preflight-only stop. Its final result and review fields will be updated after the masked terminal input, exact-source submission, issue-view verification, and any required recovery.
 
 ## Supporting Notes [Optional]
 
@@ -115,7 +111,7 @@ The scope is limited to the one New Code Maintainability finding introduced by t
 
 ## Archival [Conditionally Required — Decision Status is retired or Implementation Status is final]
 
-The accepted operation is Blocked while secure-token availability is restored, and a further attempt is planned; it is not archival-eligible. If it reaches a final status without a further attempt, archive it under `docs/adr/ocr/archive/` in the same change that establishes that final status and index-path update.
+The accepted operation is in progress and not archival-eligible. If it reaches a final status, archive it under `docs/adr/ocr/archive/` in the same change that establishes that final status and index-path update.
 
 ## Change Log [Required]
 
@@ -125,3 +121,4 @@ The accepted operation is Blocked while secure-token availability is restored, a
 | 2026-09-01 | Accepted by @linhai with approval evidence `Approve` at 2026-09-01T08:52:00+08:00. | @codex |
 | 2026-09-01 | Captured baseline `c336192` (one New Code helper-scope finding), confirmed SonarScanner CLI 7.3.0.5189, then stopped before worktree creation or report submission because non-empty secure-token availability was not present. | @codex |
 | 2026-09-01 | After @linhai confirmed a replacement copy, rechecked only non-empty secure-token availability at 2026-09-01T08:59:01+08:00; it remained unavailable, so the accepted OCR remained blocked without scanner execution. | @codex |
+| 2026-09-01 | @linhai requested a masked secure-terminal input session. Resumed the unchanged accepted OCR; the token will be supplied only to the Scanner process environment and never recorded. | @codex |
