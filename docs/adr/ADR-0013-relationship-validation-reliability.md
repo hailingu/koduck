@@ -2,19 +2,19 @@
 
 ## Metadata [Required]
 
-- **Decision Status**: Proposed
+- **Decision Status**: Accepted
 - **Implementation Status**: Not Started
 - **Date**: 2026-09-01
 - **Author**: @codex
 - **Decision Owner**: @linhai
 - **Required Approver**: @linhai
 - **Record Scope**: Project
-- **Approver [Conditionally Required — Decision Status is or has been `Accepted`]**: N/A — Decision Status is Proposed and no approval has occurred
-- **Approval Time [Conditionally Required — Decision Status is or has been `Accepted`]**: N/A — Decision Status is Proposed and no approval has occurred
-- **Approval Evidence [Conditionally Required — Decision Status is or has been `Accepted`]**: N/A — Decision Status is Proposed and no approval has occurred
-- **Rejector [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is Proposed
-- **Rejection Time [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is Proposed
-- **Rejection Evidence [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is Proposed
+- **Approver [Conditionally Required — Decision Status is or has been `Accepted`]**: @linhai
+- **Approval Time [Conditionally Required — Decision Status is or has been `Accepted`]**: 2026-09-01T09:42:39+08:00
+- **Approval Evidence [Conditionally Required — Decision Status is or has been `Accepted`]**: Approve
+- **Rejector [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is Accepted
+- **Rejection Time [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is Accepted
+- **Rejection Evidence [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is Accepted
 - **Retired By [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — record is not retired
 - **Retirement Time [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — record is not retired
 - **Retirement Evidence [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — record is not retired
@@ -155,7 +155,7 @@ Mitigations:
 Allowed subtask statuses: `Not Started`, `In Progress`, `Blocked`, `Complete`, or `N/A — <specific reason>`.
 
 | ID | Objective or deliverable | Included scope | Status | Actual implementation evidence |
-| --- | --- | --- | --- |
+| --- | --- | --- | --- | --- |
 | T-1 | Replace the title-comparison matcher with bounded record-H1 parsing and update the governed-file marker. | `tools/governance-validator/lib/relationship-validation.mjs` title path and a focused index-title regression. | Not Started | Pending — implementation awaits acceptance. |
 | T-2 | Replace literal-backtick normalizers with `replaceAll` and verify relationship comparison contracts. | `tools/governance-validator/lib/relationship-validation.mjs` metadata values; focused index test; package and governance checks. | Not Started | Pending — implementation awaits acceptance. |
 | T-3 | Confirm that local SonarQube no longer reports the three scoped Reliability rows. | A separately accepted OCR and the local `koduck` Reliability issue view. | Not Started | Pending — operational verification awaits completed source checks and an accepted OCR. |
@@ -206,7 +206,7 @@ N/A — the bounded helper and focused behavioral tests follow the software-engi
 
 | ID | Item | Completion Criterion | Expected Evidence | Status | Actual Evidence |
 | --- | --- | --- | --- | --- | --- |
-| A-1 | ADR approved | An eligible non-author approver, approval time, and exact `Approval Evidence: Approve` are recorded. | ADR metadata | Not Started | Pending — approval has not occurred. |
+| A-1 | ADR approved | An eligible non-author approver, approval time, and exact `Approval Evidence: Approve` are recorded. | ADR metadata | Complete | @linhai approved at 2026-09-01T09:42:39+08:00 with approval evidence `Approve`. |
 | A-2 | Complete task delivered | T-1 through T-3 have implementation evidence and AC-1 through AC-4 are Pass. | Implementation Plan and Acceptance Checks | Not Started | Pending — implementation has not started. |
 | A-3 | Reciprocal ADD link synchronized, when applicable | N/A — this task is not derived from product demand and has no ADD candidate. | Metadata Architecture Source | N/A — no ADD applies | N/A — no product-demand ADD applies. |
 | A-4 | Requirement levels satisfied | Every required section is complete, and every conditional trigger is completed or has a specific N/A reason. | Structured document review | Not Started | Pending — terminal review follows implementation. |
@@ -228,3 +228,4 @@ The record is Proposed, so archival is inactive future-lifecycle guidance. If a 
 | Date | Change | Author |
 | --- | --- | --- |
 | 2026-09-01 | Drafted the isolated relationship-validation Reliability remediation for the three scoped local SonarQube findings. | @codex |
+| 2026-09-01 | Accepted by @linhai with approval evidence `Approve`. | @linhai |
