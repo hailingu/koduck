@@ -3,7 +3,7 @@
 ## Metadata [Required]
 
 - **Decision Status**: Accepted
-- **Implementation Status**: In Progress
+- **Implementation Status**: Complete
 - **Date**: 2026-09-01
 - **Author**: @codex
 - **Decision Owner**: @linhai
@@ -19,10 +19,10 @@
 - **Retirement Time [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — record is not retired
 - **Retirement Evidence [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — record is not retired
 - **Retirement Reason [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — record is not retired
-- **Blocked From [Conditionally Required — Implementation Status is `Blocked`]**: N/A — implementation is in progress and not blocked
-- **Blocker And Evidence [Conditionally Required — Implementation Status is `Blocked`]**: N/A — implementation is in progress and not blocked
-- **Blocker Owner [Conditionally Required — Implementation Status is `Blocked`]**: N/A — implementation is in progress and not blocked
-- **Blocker Exit Or Recheck Criterion [Conditionally Required — Implementation Status is `Blocked`]**: N/A — implementation is in progress and not blocked
+- **Blocked From [Conditionally Required — Implementation Status is `Blocked`]**: N/A — implementation is complete
+- **Blocker And Evidence [Conditionally Required — Implementation Status is `Blocked`]**: N/A — all scoped targets cleared without recovery
+- **Blocker Owner [Conditionally Required — Implementation Status is `Blocked`]**: N/A — implementation is complete
+- **Blocker Exit Or Recheck Criterion [Conditionally Required — Implementation Status is `Blocked`]**: N/A — implementation is complete
 - **Operation Type**: Existing Runbook
 - **Target Scope / Operation Owner**: Local SonarQube project `koduck` / @codex
 - **Input Source or Version**: `f2cc310` — `fix(governance): harden relationship title validation`
@@ -30,8 +30,8 @@
 - **Docker Image Coordinates or Input Identity [Conditionally Required — container operation]**: N/A — this is not a container operation.
 - **Kubernetes Target [Conditionally Required — Kubernetes operation]**: N/A — this is not a Kubernetes operation.
 - **Actual immutable artifact [Conditionally Required — operation builds or consumes an artifact]**: N/A — the scanner submits a disposable analysis report and neither builds nor consumes a reusable artifact.
-- **Dependencies**: Accepted `docs/adr/ADR-0013-relationship-validation-reliability.md`; locally installed SonarScanner CLI; reachable local SonarQube project `koduck`; the pre-provisioned `KODUCK_SONAR_TOKEN` supplied only through the scanner process environment; the baseline source revision captured during preflight for recovery.
-- **Related [Optional]**: Local SonarQube project `koduck`; source remediation commit `f2cc310`; three scoped Reliability findings observed at `relationship-validation.mjs:L117`, `:L151`, and `:L152`.
+- **Dependencies**: Accepted `docs/adr/ADR-0013-relationship-validation-reliability.md`; locally installed SonarScanner CLI; reachable local SonarQube project `koduck`; the pre-provisioned `KODUCK_SONAR_TOKEN` supplied only through the scanner process environment; captured baseline source revision `9ebf6a7` for recovery.
+- **Related [Optional]**: Local SonarQube project `koduck`; source remediation commit `f2cc310`; scanner task `a8216111-a30a-4081-b572-405664f6f18d`; three scoped Reliability findings formerly observed at `relationship-validation.mjs:L117`, `:L151`, and `:L152`.
 - **Architecture Source [Conditionally Required — a governing ADR or ADD task applies]**: `docs/adr/ADR-0013-relationship-validation-reliability.md`, subtask T-3
 - **Supersedes [Conditionally Required — this OCR replaces another]**: N/A — this is a new scoped verification and does not replace a prior OCR.
 - **Superseded By [Conditionally Required — this OCR is replaced]**: None
@@ -55,8 +55,8 @@ Allowed subtask statuses: `Not Started`, `In Progress`, `Blocked`, `Complete`, o
 | ID | Objective or deliverable | Included scope or target | Completion criterion | Expected evidence | Status | Actual evidence |
 | --- | --- | --- | --- | --- | --- | --- |
 | T-1 | Confirm authority, current baseline, scanner availability, and secure token availability. | Local SonarQube project `koduck`; source input `f2cc310`; baseline analysis source revision. | OCR is Accepted; baseline source is captured; scanner is available; only non-empty scanner-process token availability is confirmed. | Approval metadata and non-sensitive preflight record. | Complete | OCR approval preceded preflight; dashboard baseline is version `9ebf6a7` with 12 Reliability issues and all three scoped targets; scanner is 7.3.0.5189; the interactive profile confirmed only non-empty `KODUCK_SONAR_TOKEN` availability. |
-| T-2 | Submit exactly one approved-source local analysis. | Temporary isolated worktree at `f2cc310`; existing local project `koduck`. | Scanner exits 0 and its compute-engine task completes successfully. | Scanner exit result, task identifier, and processed source version. | Not Started | Pending — execution awaits acceptance. |
-| T-3 | Verify the scoped Reliability result or restore the captured baseline analysis. | Open/Confirmed overall Reliability issue view and the three scoped target findings. | Zero active scoped rows; otherwise the captured baseline source is reanalyzed and becomes current. | Issue-view result, analysis identifier, and recovery evidence when triggered. | Not Started | Pending — execution awaits acceptance. |
+| T-2 | Submit exactly one approved-source local analysis. | Temporary isolated worktree at `f2cc310`; existing local project `koduck`. | Scanner exits 0 and its compute-engine task completes successfully. | Scanner exit result, task identifier, and processed source version. | Complete | The scanner completed after uploading the `f2cc310` report. `report-task.txt` recorded task `a8216111-a30a-4081-b572-405664f6f18d`; the dashboard processed version `f2cc310` at 10:00 AM. |
+| T-3 | Verify the scoped Reliability result or restore the captured baseline analysis. | Open/Confirmed overall Reliability issue view and the three scoped target findings. | Zero active scoped rows; otherwise the captured baseline source is reanalyzed and becomes current. | Issue-view result, analysis identifier, and recovery evidence when triggered. | Complete | The overall Reliability view shows 9 open rows, all in `tools/governance-validator/validate.mjs`; no `relationship-validation.mjs` target row remains. Recovery was not triggered. |
 
 ## Eligibility [Required]
 
@@ -79,13 +79,13 @@ Allowed subtask statuses: `Not Started`, `In Progress`, `Blocked`, `Complete`, o
 
 **Planned action**: Create an isolated temporary Git worktree at `f2cc310`, then invoke the installed scanner once against the existing local project using its current project and branch configuration. Supply `KODUCK_SONAR_TOKEN` only through the scanner process environment. Do not log the token, scanner environment, or copied credential.
 
-**Actual result and stable evidence**: Pending — execution awaits acceptance.
+**Actual result and stable evidence**: The scanner completed from a detached temporary worktree at `f2cc310` and uploaded one report. Its generated `report-task.txt` recorded SonarQube task `a8216111-a30a-4081-b572-405664f6f18d`; the dashboard then showed version `f2cc310` as the current analysis. No token value, scanner environment, or copied credential was displayed or recorded.
 
 ### Verify [Required]
 
 **Success criterion**: The scanner reports successful analysis submission and compute-engine completion; the resulting overall Open/Confirmed Reliability view has exactly zero active target rows for the title matcher and both literal-backtick replacements. Record only non-sensitive scanner, task, and issue-view evidence.
 
-**Actual result and stable evidence**: Pending — execution awaits acceptance.
+**Actual result and stable evidence**: Pass. The local dashboard processed `f2cc310` at 10:00 AM. Overall Reliability fell from 12 to 9, and the resulting Open/Confirmed list contains only the nine deferred `tools/governance-validator/validate.mjs` rows. The three scoped `relationship-validation.mjs` rows are absent. The overall Quality Gate remains Failed because of remaining project issues; that does not alter this OCR's scoped success criterion.
 
 ### Stop and Recovery [Required]
 
@@ -95,7 +95,7 @@ Allowed subtask statuses: `Not Started`, `In Progress`, `Blocked`, `Complete`, o
 
 **Recovery verification**: Confirm that the captured baseline source revision is again the current local project analysis and that its scoped target findings match the preflight baseline.
 
-**Actual result and stable evidence**: Pending — if recovery is not triggered, record `Not triggered` with the successful scoped verification result.
+**Actual result and stable evidence**: Not triggered — task `a8216111-a30a-4081-b572-405664f6f18d` processed `f2cc310` and the scoped target view is clear. The temporary worktree and its `.scannerwork` output were removed after verification.
 
 ## Conditional Extensions [Conditionally Required — production, multi-environment, phased, user/downstream/SLO impact, or stated change-window operation]
 
@@ -103,11 +103,11 @@ N/A — this is one local analysis with no production, multi-environment, phased
 
 ## Closure [Required]
 
-- **Final result**: In Progress — preflight passed and one approved source analysis remains to be submitted.
+- **Final result**: Complete — version `f2cc310` is current and has zero active scoped Reliability rows.
 - **Authorization review**: Pass — @linhai approval at 2026-09-01T09:56:30+08:00 precedes the first Execute action.
-- **Subtask and evidence review**: N/A — operation has not executed.
-- **Requirement-level review**: Pass — the Accepted OCR contains complete planned content and specific inactive-trigger assessments.
-- **Governance validation**: Pass — `npm run validate` reported `Governance validation passed.` for the Accepted OCR revision.
+- **Subtask and evidence review**: Pass — T-1 through T-3 have complete non-sensitive preflight, task, scoped-result, and cleanup evidence.
+- **Requirement-level review**: Pass — required content is complete and every conditional trigger is complete or has a specific N/A reason.
+- **Governance validation**: Pass — `npm run validate` reported `Governance validation passed.` for the completed OCR revision.
 
 ## Supporting Notes [Optional]
 
@@ -115,7 +115,7 @@ The remaining nine Reliability findings in `tools/governance-validator/validate.
 
 ## Archival [Conditionally Required — Decision Status is retired or Implementation Status is final]
 
-The record is Accepted and not final, so archival is inactive future-lifecycle guidance. If the operation reaches an archival-eligible state, move it under `docs/adr/ocr/archive/`, update its index row and every relevant reference in the same change, retain `Superseded By: None` unless a replacement is identified, and confirm no active reference remains to the pre-archive path.
+The operation is terminal and this record is archived under `docs/adr/ocr/archive/` in the same change as its `Complete` status and index-path update.
 
 ## Change Log [Required]
 
@@ -124,3 +124,4 @@ The record is Accepted and not final, so archival is inactive future-lifecycle g
 | 2026-09-01 | Drafted the reversible local SonarQube verification for relationship-validation Reliability remediation commit `f2cc310`. | @codex |
 | 2026-09-01 | Accepted by @linhai with approval evidence `Approve` at 2026-09-01T09:56:30+08:00. | @linhai |
 | 2026-09-01 | Captured baseline version `9ebf6a7` with 12 Reliability issues and all three scoped targets; confirmed scanner 7.3.0.5189 and non-empty interactive-profile token availability without exposing its value. | @codex |
+| 2026-09-01 | Submitted task `a8216111-a30a-4081-b572-405664f6f18d`, verified `f2cc310` as current with zero scoped rows, and removed the disposable temporary worktree. | @codex |

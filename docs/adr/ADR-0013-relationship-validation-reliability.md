@@ -3,7 +3,7 @@
 ## Metadata [Required]
 
 - **Decision Status**: Accepted
-- **Implementation Status**: In Progress
+- **Implementation Status**: Complete
 - **Date**: 2026-09-01
 - **Author**: @codex
 - **Decision Owner**: @linhai
@@ -19,10 +19,10 @@
 - **Retirement Time [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — record is not retired
 - **Retirement Evidence [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — record is not retired
 - **Retirement Reason [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — record is not retired
-- **Blocked From [Conditionally Required — Implementation Status is `Blocked`]**: N/A — implementation is in progress and not blocked
-- **Blocker And Evidence [Conditionally Required — Implementation Status is `Blocked`]**: N/A — implementation is in progress and not blocked
-- **Blocker Owner [Conditionally Required — Implementation Status is `Blocked`]**: N/A — implementation is in progress and not blocked
-- **Blocker Exit Or Recheck Criterion [Conditionally Required — Implementation Status is `Blocked`]**: N/A — implementation is in progress and not blocked
+- **Blocked From [Conditionally Required — Implementation Status is `Blocked`]**: N/A — implementation is complete
+- **Blocker And Evidence [Conditionally Required — Implementation Status is `Blocked`]**: N/A — all three scoped findings cleared through OCR-0010
+- **Blocker Owner [Conditionally Required — Implementation Status is `Blocked`]**: N/A — implementation is complete
+- **Blocker Exit Or Recheck Criterion [Conditionally Required — Implementation Status is `Blocked`]**: N/A — implementation is complete
 - **Related [Optional]**: Local SonarQube project `koduck` Reliability view observed 2026-09-01: one Medium super-linear regular-expression finding at `tools/governance-validator/lib/relationship-validation.mjs:L117`, and two Low findings at `:L151` and `:L152` requesting `String#replaceAll()`.
 - **Architecture Source [Conditionally Required — product demand]**: N/A — corrective governance-validator work requested from local SonarQube results, not derived from product demand
 - **Supersedes [Conditionally Required — this ADR replaces another]**: N/A — no ADR is replaced
@@ -158,7 +158,7 @@ Allowed subtask statuses: `Not Started`, `In Progress`, `Blocked`, `Complete`, o
 | --- | --- | --- | --- | --- |
 | T-1 | Replace the title-comparison matcher with bounded record-H1 parsing and update the governed-file marker. | `tools/governance-validator/lib/relationship-validation.mjs` title path and a focused index-title regression. | Complete | Commit `f2cc310` adds `recordTitleFromHeading`, updates the governed-file marker, and preserves all four focused record-H1 title forms. |
 | T-2 | Replace literal-backtick normalizers with `replaceAll` and verify relationship comparison contracts. | `tools/governance-validator/lib/relationship-validation.mjs` metadata values; focused index test; package and governance checks. | Complete | Commit `f2cc310` replaces both normalizers and passes AC-1 through AC-3: two focused tests, 148 package tests, and governance validation. |
-| T-3 | Confirm that local SonarQube no longer reports the three scoped Reliability rows. | A separately accepted OCR and the local `koduck` Reliability issue view. | Not Started | Pending — operational verification awaits completed source checks and an accepted OCR. |
+| T-3 | Confirm that local SonarQube no longer reports the three scoped Reliability rows. | Archived OCR-0010 and the local `koduck` Reliability issue view. | Complete | Archived OCR-0010 task `a8216111-a30a-4081-b572-405664f6f18d` processed `f2cc310`; the overall Reliability view has 9 deferred `validate.mjs` rows and zero scoped `relationship-validation.mjs` rows. |
 
 **Affected paths**: `tools/governance-validator/lib/relationship-validation.mjs`; `tools/governance-validator/test/index-path-validation.test.mjs`; `docs/adr/ADR-0013-relationship-validation-reliability.md`; `docs/adr/INDEX.md`; a later OCR path under `docs/adr/ocr/`.
 
@@ -187,11 +187,11 @@ N/A — the bounded helper and focused behavioral tests follow the software-engi
 
 | Risk dimension | Applicability and scenario, or specific N/A reason | Owning boundary | Deterministic verification method | Exact expected result | Acceptance check IDs | Status | Actual evidence |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| concurrency and ordering | N/A — `validateIndex` validates each record synchronously and the change introduces no shared state or cross-record ordering contract. | `createRelationshipValidator` | Structured source review and AC-3. | No shared mutable state or ordering behavior is introduced. | AC-3 | N/A — no concurrent behavior | Not run — implementation not started. |
-| timeout and deadline | Applicable — repository Markdown may include a malformed or oversized candidate heading. | `validateIndex` title parser | AC-1 focused behavior plus AC-3 complete suite. | Focused and complete checks exit 0 without changing title-mismatch semantics. | AC-1, AC-3 | Not Started | Pending — implementation awaits acceptance. |
-| cancellation and interruption | N/A — the validator CLI has no cancellation protocol and this synchronous parser adds none. | Governance-validator CLI | Structured source review and AC-3. | No cancellation interface or lifecycle is introduced. | AC-3 | N/A — no cancellation protocol | Not run — implementation not started. |
-| resource bounds and backpressure | Applicable — the bounded parser must process repository-controlled H1 text without whole-document greedy capture. | `validateIndex` title parser | AC-1 focused behavior and AC-3 complete suite. | The parser preserves the canonical diagnostic for a recognized record heading. | AC-1, AC-3 | Not Started | Pending — implementation awaits acceptance. |
-| framework or trust-boundary rejection | Applicable — Markdown index and record content are untrusted repository inputs whose normalized relationships must be rejected on disagreement. | `createRelationshipValidator` > `validateIndex` | AC-1 and AC-2 focused temporary-repository tests. | A title disagreement exits 1 with the canonical diagnostic; values differing only by backticks validate successfully. | AC-1, AC-2 | Not Started | Pending — implementation awaits acceptance. |
+| concurrency and ordering | N/A — `validateIndex` validates each record synchronously and the change introduces no shared state or cross-record ordering contract. | `createRelationshipValidator` | Structured source review and AC-3. | No shared mutable state or ordering behavior is introduced. | AC-3 | N/A — no concurrent behavior | N/A — source review confirms no concurrent state or ordering path. |
+| timeout and deadline | Applicable — repository Markdown may include a malformed or oversized candidate heading. | `validateIndex` title parser | AC-1 focused behavior, AC-3 complete suite, and AC-4 scoped analyzer result. | Focused and complete checks exit 0; the local analyzer no longer reports the super-linear title matcher. | AC-1, AC-3, AC-4 | Pass | AC-1 and AC-3 passed after `f2cc310`; OCR-0010 task `a8216111-a30a-4081-b572-405664f6f18d` processed that revision with no scoped matcher row. |
+| cancellation and interruption | N/A — the validator CLI has no cancellation protocol and this synchronous parser adds none. | Governance-validator CLI | Structured source review and AC-3. | No cancellation interface or lifecycle is introduced. | AC-3 | N/A — no cancellation protocol | N/A — source review confirms no cancellation protocol was introduced. |
+| resource bounds and backpressure | Applicable — the bounded parser must process repository-controlled H1 text without whole-document greedy capture. | `validateIndex` title parser | AC-1 focused behavior, AC-3 complete suite, and AC-4 scoped analyzer result. | Focused and complete checks exit 0 and the three scoped analyzer rows are absent. | AC-1, AC-3, AC-4 | Pass | AC-1 and AC-3 passed after `f2cc310`; OCR-0010 records zero scoped `relationship-validation.mjs` Reliability rows. |
+| framework or trust-boundary rejection | Applicable — Markdown index and record content are untrusted repository inputs whose normalized relationships must be rejected on disagreement. | `createRelationshipValidator` > `validateIndex` | AC-1 and AC-2 focused temporary-repository tests. | A title disagreement exits 1 with the canonical diagnostic; values differing only by backticks validate successfully. | AC-1, AC-2 | Pass | AC-1 passed all four recognized H1 forms; AC-2 accepted normalized backtick-only value differences after `f2cc310`. |
 
 ## Acceptance Checks [Required]
 
@@ -200,20 +200,20 @@ N/A — the bounded helper and focused behavioral tests follow the software-engi
 | AC-1 | T-1 | The real validator rejects an index whose referenced ADR H1 title differs from the index title. | A focused `index-path-validation` temporary repository with recognized ADR, OCR, ADD, and Lightweight ADR H1 forms, each using a different title from the unchanged index title. | `node --test --test-name-pattern "index title" test/index-path-validation.test.mjs` in `tools/governance-validator`. | Process exits 0; exactly the selected test passes; each inner validator result exits 1 and contains `index Title disagrees with record`. | Focused Node test report. | Pass | Passed one selected test in 1.22 seconds after commit `f2cc310`; all four H1 forms produced the canonical disagreement diagnostic. |
 | AC-2 | T-2 | The real validator accepts equivalent index and record authoritative values that differ only by literal Markdown backticks. | A focused `index-path-validation` temporary repository whose `Architecture Source` index and record values are equivalent after backtick removal. | `node --test --test-name-pattern "backticks" test/index-path-validation.test.mjs` in `tools/governance-validator`. | Process exits 0; exactly the selected test passes; its inner validator result exits 0. | Focused Node test report. | Pass | Passed one selected test in 0.33 seconds after commit `f2cc310`; the inner validator exited 0. |
 | AC-3 | T-2 | The complete governance-validator suite and repository governance validation preserve all existing contracts. | Approved source and test changes in the isolated task branch. | Run `npm test`, then `npm run validate`, in `tools/governance-validator`. | Both commands exit 0; the test suite has zero failures and validation reports `Governance validation passed.` | Complete package and governance-validation outputs. | Pass | `npm test` passed 148/148 tests in 19.95 seconds and `npm run validate` reported `Governance validation passed.` after commit `f2cc310`. |
-| AC-4 | T-3 | A separately accepted OCR confirms that all three scoped analyzer rows are absent. | AC-1 through AC-3 passed, source revision committed, and an accepted local SonarQube verification OCR. | Run the OCR-defined local scanner command and inspect the scoped Reliability issue view after processing completes. | Zero active Reliability rows remain for `relationship-validation.mjs` title matcher and both literal-backtick replacement findings. | OCR task identifier and issue-view evidence without credentials. | Not Started | Pending — implementation awaits acceptance. |
+| AC-4 | T-3 | A separately accepted OCR confirms that all three scoped analyzer rows are absent. | AC-1 through AC-3 passed, source revision committed, and an accepted local SonarQube verification OCR. | Run the OCR-defined local scanner command and inspect the scoped Reliability issue view after processing completes. | Zero active Reliability rows remain for `relationship-validation.mjs` title matcher and both literal-backtick replacement findings. | OCR task identifier and issue-view evidence without credentials. | Pass | OCR-0010 task `a8216111-a30a-4081-b572-405664f6f18d` processed `f2cc310`; overall Reliability decreased from 12 to 9 and no relationship-validation target row remains. |
 
 ## Completion Checklist [Required]
 
 | ID | Item | Completion Criterion | Expected Evidence | Status | Actual Evidence |
 | --- | --- | --- | --- | --- | --- |
 | A-1 | ADR approved | An eligible non-author approver, approval time, and exact `Approval Evidence: Approve` are recorded. | ADR metadata | Complete | @linhai approved at 2026-09-01T09:42:39+08:00 with approval evidence `Approve`. |
-| A-2 | Complete task delivered | T-1 through T-3 have implementation evidence and AC-1 through AC-4 are Pass. | Implementation Plan and Acceptance Checks | Not Started | Pending — implementation has not started. |
+| A-2 | Complete task delivered | T-1 through T-3 have implementation evidence and AC-1 through AC-4 are Pass. | Implementation Plan and Acceptance Checks | Complete | T-1 and T-2 are commit `f2cc310`; T-3 and AC-4 are complete through archived OCR-0010. |
 | A-3 | Reciprocal ADD link synchronized, when applicable | N/A — this task is not derived from product demand and has no ADD candidate. | Metadata Architecture Source | N/A — no ADD applies | N/A — no product-demand ADD applies. |
-| A-4 | Requirement levels satisfied | Every required section is complete, and every conditional trigger is completed or has a specific N/A reason. | Structured document review | Not Started | Pending — terminal review follows implementation. |
-| A-5 | Acceptance checks are decidable | Every check has one subtask, input, deterministic method, exact expected result, and evidence. | Acceptance Checks table | Not Started | Pending — approval review required. |
+| A-4 | Requirement levels satisfied | Every required section is complete, and every conditional trigger is completed or has a specific N/A reason. | Structured document review | Complete | Terminal structured review and governance validation passed. |
+| A-5 | Acceptance checks are decidable | Every check has one subtask, input, deterministic method, exact expected result, and evidence. | Acceptance Checks table | Complete | AC-1 through AC-4 each records a declared subtask, deterministic method, exact result, and evidence. |
 | A-6 | Engineering exceptions governed, when applicable | N/A — no engineering exception is planned. | Engineering Exceptions section | N/A — no exception applies | N/A — no engineering rule is exceeded or waived. |
-| A-7 | Contract and baseline risks covered, when applicable | RVC-1 through RVC-2 map to checks, and every applicable risk reaches Pass before completion. | Traceability, matrix, and command reports | Not Started | Pending — implementation has not started. |
-| A-8 | Governance validation passed | The independent validator reports no document or repository validation error. | `npm run validate` output | Not Started | Pending — validation follows implementation. |
+| A-7 | Contract and baseline risks covered, when applicable | RVC-1 through RVC-2 map to checks, and every applicable risk reaches Pass before completion. | Traceability, matrix, and command reports | Complete | AC-1 through AC-4 cover RVC-1 through RVC-2; applicable risk rows are Pass and non-applicable rows have specific reasons. |
+| A-8 | Governance validation passed | The independent validator reports no document or repository validation error. | `npm run validate` output | Complete | Terminal `npm run validate` reported `Governance validation passed.` after the OCR archival transition. |
 
 ## Supporting Notes [Optional]
 
@@ -221,7 +221,7 @@ The remaining nine Reliability findings in `tools/governance-validator/validate.
 
 ## Archival [Conditionally Required — Decision Status is `Rejected`, or Decision Status is `Deprecated` or `Superseded` and Implementation Status is final]
 
-The record is Accepted and In Progress, so archival is inactive future-lifecycle guidance. If a qualifying retirement occurs, move this file under `docs/adr/archive/`, update its index row and every marker or reciprocal reference in the same change, retain `Superseded By: None` unless a replacement is identified, and confirm no active reference remains to the pre-archive path.
+The record is Accepted and Complete, so archival is inactive future-lifecycle guidance. If a qualifying retirement occurs, move this file under `docs/adr/archive/`, update its index row and every marker or reciprocal reference in the same change, retain `Superseded By: None` unless a replacement is identified, and confirm no active reference remains to the pre-archive path.
 
 ## Change Log [Required]
 
@@ -231,3 +231,4 @@ The record is Accepted and In Progress, so archival is inactive future-lifecycle
 | 2026-09-01 | Accepted by @linhai with approval evidence `Approve`. | @linhai |
 | 2026-09-01 | Began the accepted source remediation after focused behavioral tests, the package suite, and governance validation passed. | @codex |
 | 2026-09-01 | Completed source subtasks T-1 and T-2 in commit `f2cc310`; local SonarQube verification remains separately authorized work. | @codex |
+| 2026-09-01 | Archived OCR-0010 verified `f2cc310` through task `a8216111-a30a-4081-b572-405664f6f18d`; all three scoped Reliability findings are cleared. | @codex |
