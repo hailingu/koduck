@@ -68,6 +68,15 @@ function mermaidBlocks(text) {
   return blocks;
 }
 
+// Concatenates a section's Mermaid diagrams with `%%` comment lines removed:
+// a Mermaid comment renders nothing, so an ID mentioned only in a comment
+// does not cover its flow or interaction.
+function commentStrippedDiagrams(content) {
+  return mermaidBlocks(content)
+    .map((block) => block.split("\n").filter((line) => !line.trimStart().startsWith("%%")).join("\n"))
+    .join("\n");
+}
+
 // Builds the Mermaid syntax and ADD diagram-completeness validator from the
 // configured parser and shared Markdown helpers.
 export function createMermaidValidator(context) {
@@ -101,15 +110,6 @@ export function createMermaidValidator(context) {
     return path.includes("/architecture/")
       && path.split("/").at(-1).startsWith("ADD-")
       && metadata(markdown, "Design Status") === "Current";
-  }
-
-  // Concatenates a section's Mermaid diagrams with `%%` comment lines removed:
-  // a Mermaid comment renders nothing, so an ID mentioned only in a comment
-  // does not cover its flow or interaction.
-  function commentStrippedDiagrams(content) {
-    return mermaidBlocks(content)
-      .map((block) => block.split("\n").filter((line) => !line.trimStart().startsWith("%%")).join("\n"))
-      .join("\n");
   }
 
   async function validateMermaid(path, markdown, errors) {
