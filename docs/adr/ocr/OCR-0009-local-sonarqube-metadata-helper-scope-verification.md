@@ -2,16 +2,16 @@
 
 ## Metadata [Required]
 
-- **Decision Status**: Proposed
-- **Implementation Status**: Not Started
+- **Decision Status**: Accepted
+- **Implementation Status**: In Progress
 - **Date**: 2026-09-01
 - **Author**: @codex
 - **Decision Owner**: @linhai
 - **Required Approver**: @linhai
 - **Record Scope**: Project
-- **Approver [Conditionally Required — Decision Status is or has been `Accepted`]**: N/A — Decision Status is `Proposed`
-- **Approval Time [Conditionally Required — Decision Status is or has been `Accepted`]**: N/A — Decision Status is `Proposed`
-- **Approval Evidence [Conditionally Required — Decision Status is or has been `Accepted`]**: N/A — Decision Status is `Proposed`
+- **Approver [Conditionally Required — Decision Status is or has been `Accepted`]**: @linhai
+- **Approval Time [Conditionally Required — Decision Status is or has been `Accepted`]**: 2026-09-01T08:52:00+08:00
+- **Approval Evidence [Conditionally Required — Decision Status is or has been `Accepted`]**: Approve
 - **Rejector [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is `Proposed`
 - **Rejection Time [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is `Proposed`
 - **Rejection Evidence [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is `Proposed`
@@ -61,7 +61,7 @@ Allowed subtask statuses: `Not Started`, `In Progress`, `Blocked`, `Complete`, o
 ## Eligibility [Required]
 
 - [x] Uses an accepted architecture, pipeline, artifact contract, security boundary, and data boundary: `docs/adr/ADR-0012-metadata-helper-scope-maintainability.md` authorizes the source correction; the existing local scanner workflow submits no reusable artifact and changes no security or data boundary.
-- [x] Is reversible: capture the current analysis source revision before Execute; if a stop condition occurs after a new analysis is created, create an isolated temporary worktree at that captured revision and resubmit it through the same scanner workflow, then remove only the temporary worktree.
+- [x] Is reversible: capture the current analysis source revision before Execute; if a stop condition occurs after a new analysis is created, recovery creates an isolated temporary worktree at that captured revision and resubmits it through the same scanner workflow, then removes only the temporary worktree.
 - [x] Does not modify a Dockerfile, Makefile, CI, pipeline, artifact format, signing, credentials, deployment topology, API/schema/protocol, authentication, security policy, data lifecycle, dependency, provider, or irreversible behavior.
 - [x] Has a defined preflight, success check, stop condition, and recovery path.
 - [x] Contains no secret, credential, private endpoint, or sensitive user data. The scanner token is not recorded, displayed, or passed in this OCR.
@@ -103,13 +103,7 @@ N/A — this is one local analysis with no production, multi-environment, phased
 
 ## Closure [Required]
 
-Allowed review statuses for Authorization review, Subtask and evidence review, and Requirement-level review are `Pass`, `Fail`, or `N/A — <specific reason>`.
-
-- **Final result**: Pending — operation is not authorized yet.
-- **Authorization review**: Pending — operation is not authorized yet.
-- **Subtask and evidence review**: Pending — operation is not authorized yet.
-- **Requirement-level review**: Pending — operation is not authorized yet.
-- **Governance validation**: Pending — terminal review follows execution and archival.
+The OCR is Accepted and execution has not begun. Its final result and review fields will be recorded after preflight, submission, issue-view verification, and any required recovery.
 
 ## Supporting Notes [Optional]
 
@@ -117,10 +111,11 @@ The scope is limited to the one New Code Maintainability finding introduced by t
 
 ## Archival [Conditionally Required — Decision Status is retired or Implementation Status is final]
 
-The record is Proposed and not archival-eligible. When it reaches a final status, move it under `docs/adr/ocr/archive/`, update its one index row and any references in the same change, and confirm no active record or governed marker cites the former path.
+The record is Accepted and not archival-eligible. When it reaches a final status, move it under `docs/adr/ocr/archive/`, update its one index row and any references in the same change, and confirm no active record or governed marker cites the former path.
 
 ## Change Log [Required]
 
 | Date | Change | Author |
 | --- | --- | --- |
 | 2026-09-01 | Drafted the reversible OCR for one local helper-scope New Code verification analysis of source revision `9ebf6a7`. | @codex |
+| 2026-09-01 | Accepted by @linhai with approval evidence `Approve` at 2026-09-01T08:52:00+08:00. | @codex |
