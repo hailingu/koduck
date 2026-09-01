@@ -123,9 +123,12 @@ test("rejects an adversarial index-path without timing out", () => {
     readFileSync(indexPath, "utf8").replace("docs/adr/ADR-0001-example.md", adversarialPath),
   );
 
+  // The budget guards against exponential path-resolution blowups (minutes),
+  // not total runtime: a cold validator start already costs ~1s on shared CI
+  // runners, so a tighter ceiling reports the harness, not the code.
   const result = spawnSync(process.execPath, [validator, "--root", root], {
     encoding: "utf8",
-    timeout: 1_000,
+    timeout: 30_000,
   });
 
   assert.equal(result.error, undefined, result.error?.message);
