@@ -1,4 +1,5 @@
 <!-- ADR: docs/adr/ADR-0001-provider-neutral-turn-kernel.md -->
+<!-- ADR: docs/adr/ADR-0015-local-sonarqube-feature-completion-gate.md -->
 # Koduck Agent Guide
 
 > Language: English
@@ -89,6 +90,55 @@ informative and never override a rule.
   content unless the configured workflow explicitly requires it.
 - Run non-interactive checks for every affected path and report commands,
   results, and anything not run.
+
+### Local SonarQube Feature Completion Gate
+
+Authorized by `docs/adr/ADR-0015-local-sonarqube-feature-completion-gate.md`;
+this section routes that decision and carries no independent authority.
+
+- This gate applies to a source-code feature only when the affected path's
+  Scope Routing row records a canonical, non-interactive scanner workflow for
+  the local SonarQube project `koduck` at
+  `http://localhost:9000/dashboard?id=koduck` — the exact scanner command,
+  its source and exclusion inputs, its terminal-state wait behavior, the New
+  Code baseline definition that matches each analyzed feature diff, and an
+  immutable source guarantee that scans from a clean detached worktree at the
+  exact feature revision or verifies the uploaded content against that
+  revision equivalently, and that binds coverage generation and report
+  import to the same immutable feature revision as the scan when the
+  workflow imports coverage, following the clean-checkout practice of
+  `docs/adr/ocr/archive/OCR-0011-local-sonarqube-validator-structural-parsing-reliability-verification.md`
+  — established through an accepted decision record. Until a path records
+  that workflow, this gate is advisory guidance for that path rather than a
+  completion requirement, and completion relies on the path's routed checks.
+- Where the gate applies, an analysis of the exact feature revision is
+  submitted only through the recorded workflow, never through improvised
+  scanner parameters; improvised source, exclusion, or wait inputs produce
+  incomparable analyses and invalid evidence. This gate supplements every
+  focused, routed, acceptance, and CI check; it does not replace any of them
+  or waive any authorization required for the analysis operation.
+- Where the gate applies, a source-code feature MUST NOT be reported as
+  complete unless the analysis succeeds, the Quality Gate status is `Passed`,
+  and — only after the recorded workflow also generates and imports coverage —
+  SonarQube reports New Code Coverage (`new_coverage`) greater than or equal
+  to `80%` for the new lines that diff introduces. The recorded workflow and
+  the reported evidence MUST identify the base revision, or an equivalent
+  explicit New Code definition, that matches the analyzed feature diff, so
+  the metric isolates that feature's new code rather than an unrelated
+  rolling project period. When the pinned feature diff introduces no
+  coverable new lines, SonarQube reports no `new_coverage` measure; that
+  absent value with a `Passed` Quality Gate satisfies the coverage clause
+  instead of the numeric threshold. Until coverage import is part of the
+  recorded workflow, a missing or zero `new_coverage` value is reported as
+  supporting evidence and MUST NOT by itself block completion.
+- Use `KODUCK_SONAR_TOKEN` from the process environment initialized by
+  `~/.zshrc` when authentication is required. Never print the token, place it
+  in command arguments or repository files, include it in captured output, or
+  persist it outside the existing shell configuration.
+- Report non-secret evidence for the exact analyzed revision where the gate
+  applies: the compute-task or analysis identifier, terminal processing
+  result, Quality Gate result, the actual `new_coverage` value when the
+  workflow provides one, and the project dashboard URL.
 
 ### Design Source Of Truth
 
@@ -892,9 +942,13 @@ implementation or operation continues.
 9. Apply the automatic-review rule in Work Coordination after each push and
    before merge or operational use.
 10. Run the narrowest relevant non-interactive checks, then the broader checks
-    required by the affected routing rows. No separate approval or OCR is
-    required when these checks satisfy Disposable Verification Execution; clean
-    their disposable output and report the result.
+    required by the affected routing rows. For a source-code feature whose
+    path's Scope Routing row records the Local SonarQube scanner workflow,
+    also satisfy the Local SonarQube Feature Completion Gate for the exact
+    feature revision. No separate approval or OCR is required when checks satisfy
+    Disposable Verification Execution; clean their disposable output and
+    report the result. A SonarQube submission remains subject to its applicable
+    operational authorization because it mutates a running analysis system.
 11. For a governed build, release, Git tag, or local Kubernetes action, read
     its applicable delivery or platform standards, create and accept an OCR
     before execution, then bind its actual source, artifact or tag, target,
@@ -1033,7 +1087,16 @@ multi-environment promotion is needed. Release and Git tag operations follow
   is insufficient. It MUST NOT require current source to preserve an exact
   physical line count, function arrangement, or ordinary wording.
 - Completion requires the requested behavior, required documentation, required
-  checks, and required evidence — not merely an implementation attempt.
+  checks, and required evidence — not merely an implementation attempt. A
+  source-code feature on a path whose Scope Routing row records the Local
+  SonarQube scanner workflow additionally requires a successful analysis of
+  its exact revision through that workflow with a `Passed` Quality Gate, and
+  once the recorded workflow also imports coverage either reported New Code
+  Coverage of at least `80%` or, when the feature diff introduces no
+  coverable new lines, an absent measure with that `Passed` Quality Gate —
+  until then a missing or zero coverage value is supporting evidence, not a
+  completion blocker, and paths without a recorded workflow rely on their
+  routed checks.
 - ADR verification MUST be reproducible from each declared acceptance check's
   preconditions, method, and expected result. Evidence without a predetermined,
   binary acceptance point does not prove completion.
