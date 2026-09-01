@@ -1,4 +1,4 @@
-// ADR: docs/adr/ADR-0002-required-ai-ci-postgres-verification.md
+// ADR: docs/adr/archive/ADR-0009-accepted-record-validator-reliability.md
 
 // Builds the accepted-stage ADR, OCR, and ADD content validator from shared
 // Markdown parsing and lifecycle helpers.
@@ -245,7 +245,8 @@ export function createAcceptedRecordValidator(context) {
       const [pathValue, anchor, excerpt, purpose, revision] = columns.map((column) => (row[column] ?? "").trim());
       const hasAnchor = isCompleteTableValue(anchor);
       const hasExcerpt = isCompleteTableValue(excerpt);
-      const requiredValuesComplete = [pathValue, purpose, revision].every(isCompleteTableValue);
+      const requiredValuesComplete = [pathValue, purpose, revision]
+        .every((value) => isCompleteTableValue(value));
       const anchorsValid = (hasAnchor || isReasonedNa(anchor))
         && (hasExcerpt || isReasonedNa(excerpt))
         && (hasAnchor || hasExcerpt);
@@ -495,7 +496,7 @@ export function createAcceptedRecordValidator(context) {
     if (rows.length === 0) {
       // A matrix with no table is only allowed as an explicit N/A with a reason;
       // otherwise the five-dimension coverage is mandatory.
-      if (!/^\s*N\/A\s+—\s+\S/m.test(content)) {
+      if (!isReasonedNa(content.trimStart())) {
         errors.push(`${path}: Risk Coverage Matrix must contain a five-dimension table or N/A — <reason>`);
       }
       return;
@@ -582,7 +583,7 @@ export function createAcceptedRecordValidator(context) {
       const status = (row[statusCol] ?? "").trim();
       const normalizedStatus = usesLegacyTerminalMatrix
         ? (status.match(/^(Pass|Fail|Not Started|In Progress|Blocked)(?:\s+[—-].*)?$/)?.[1]
-          ?? ( /^N\/A\s+—\s+\S/.test(status) ? status : status ))
+          ?? status)
         : status;
       if (!CHECK_STATUSES.has(normalizedStatus) && !/^N\/A\s+—\s+\S/.test(normalizedStatus)) {
         errors.push(`${path}: Risk Coverage Matrix dimension ${dimension} has an illegal Status (${status || "<missing>"})`);
@@ -615,7 +616,7 @@ export function createAcceptedRecordValidator(context) {
   }
   
   function normalizeDimension(value) {
-    return value.toLowerCase().replace(/-/g, "").replace(/\s+/g, " ").trim();
+    return value.toLowerCase().replaceAll("-", "").replace(/\s+/g, " ").trim();
   }
   
   

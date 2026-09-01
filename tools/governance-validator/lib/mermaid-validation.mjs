@@ -1,4 +1,4 @@
-// ADR: docs/adr/ADR-0002-required-ai-ci-postgres-verification.md
+// ADR: docs/adr/ADR-0010-mermaid-fence-recognition-reliability.md
 
 // Builds the Mermaid syntax and ADD diagram-completeness validator from the
 // configured parser and shared Markdown helpers.
@@ -25,16 +25,35 @@ export function createMermaidValidator(context) {
   // ```mermaid example nested inside an outer longer fence is content of that
   // outer fence, never a diagram, so it can neither satisfy a diagram gate
   // nor be syntax-checked.
+  // Recognizes an opening CommonMark fence without an unbounded marker-and-tail
+  // expression, preserving the existing indentation, marker, and info rules.
+  function openingFenceMarker(line) {
+    let indentationLength = 0;
+    while (indentationLength < 3 && /\s/.test(line[indentationLength] ?? "")) {
+      indentationLength += 1;
+    }
+    const char = line[indentationLength];
+    if (char !== "`" && char !== "~") return null;
+    let markerEnd = indentationLength + 1;
+    while (line[markerEnd] === char) markerEnd += 1;
+    if (markerEnd - indentationLength < 3) return null;
+    return {
+      char,
+      length: markerEnd - indentationLength,
+      info: line.slice(markerEnd),
+    };
+  }
+
   function mermaidBlocks(text) {
     const lines = text.split("\n");
     let fence = null;
     let current = null;
     const blocks = [];
     for (const line of lines) {
-      const marker = line.match(/^\s{0,3}(`{3,}|~{3,})(.*)$/);
+      const marker = openingFenceMarker(line);
       if (fence !== null) {
         if (
-          marker && marker[1][0] === fence.char && marker[1].length >= fence.length
+          marker && marker.char === fence.char && marker.length >= fence.length
           && /^\s{0,3}(`{3,}|~{3,})\s*$/.test(line)
         ) {
           if (current !== null) blocks.push(current.join("\n"));
@@ -46,8 +65,8 @@ export function createMermaidValidator(context) {
         continue;
       }
       if (marker) {
-        fence = { char: marker[1][0], length: marker[1].length };
-        current = marker[2].trim() === "mermaid" ? [] : null;
+        fence = { char: marker.char, length: marker.length };
+        current = marker.info.trim() === "mermaid" ? [] : null;
       }
     }
     return blocks;
