@@ -3,7 +3,7 @@
 ## Metadata [Required]
 
 - **Decision Status**: Accepted
-- **Implementation Status**: In Progress
+- **Implementation Status**: Complete
 - **Date**: 2026-09-01
 - **Author**: @codex
 - **Decision Owner**: @linhai
@@ -153,7 +153,7 @@ Allowed subtask statuses: `Not Started`, `In Progress`, `Blocked`, `Complete`, o
 | ID | Objective or deliverable | Included scope | Status | Actual implementation evidence |
 | --- | --- | --- | --- | --- |
 | T-1 | Move the closure-independent suffix helper to module scope and update the governed-file marker. | `tools/governance-validator/lib/metadata-validation.mjs` > `fieldWithoutRequirementLevelSuffix`; file marker. | Complete | Commit `9ebf6a7` moves the unchanged helper to module scope and changes the governed-file marker to ADR-0012. |
-| T-2 | Verify behavior, complete package contracts, and governance records. | Existing Node.js Metadata tests and `npm` scripts in `tools/governance-validator`. | In Progress | AC-1 through AC-3 pass against commit `9ebf6a7`; separately accepted OCR verification remains required for AC-4. |
+| T-2 | Verify behavior, complete package contracts, and governance records. | Existing Node.js Metadata tests and `npm` scripts in `tools/governance-validator`. | Complete | AC-1 through AC-3 passed against commit `9ebf6a7`; archived OCR-0009 submitted task `f93402e0-1256-42f8-829b-9c515eb7653f` and passed AC-4. |
 
 **Affected paths**: `tools/governance-validator/lib/metadata-validation.mjs`; `tools/governance-validator/test/validation-boundary-regressions.test.mjs`; `docs/adr/ADR-0012-metadata-helper-scope-maintainability.md`; `docs/adr/INDEX.md`.
 
@@ -182,7 +182,7 @@ N/A — the module-scope extraction follows the software-engineering standard wi
 | Risk dimension | Applicability and scenario, or specific N/A reason | Owning boundary | Deterministic verification method | Exact expected result | Acceptance check IDs | Status | Actual evidence |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | concurrency and ordering | N/A — Metadata entry extraction processes one document synchronously and helper placement adds no state. | `createMetadataValidator` | Structured source review and AC-2. | No shared mutable state or ordering contract is introduced. | AC-2 | N/A — no concurrent behavior | Not run — terminal review follows implementation. |
-| timeout and deadline | Applicable — a repository Metadata line may contain arbitrarily long requirement-level suffix text. | `fieldWithoutRequirementLevelSuffix` | AC-2 package suite and separately authorized analyzer reanalysis. | Package suite exits 0 and reanalysis has no active helper-scope finding. | AC-2, AC-4 | In Progress | AC-2 passed against commit `9ebf6a7`; OCR verification for AC-4 is not yet authorized. |
+| timeout and deadline | Applicable — a repository Metadata line may contain arbitrarily long requirement-level suffix text. | `fieldWithoutRequirementLevelSuffix` | AC-2 package suite and separately authorized analyzer reanalysis. | Package suite exits 0 and reanalysis has no active helper-scope finding. | AC-2, AC-4 | Pass | AC-2 passed 146/146 tests and OCR-0009 processed `9ebf6a7` with zero scoped helper-scope rows. |
 | cancellation and interruption | N/A — the validator CLI has no cancellation protocol and helper placement adds none. | Governance-validator CLI | Structured source review and AC-2. | No cancellation interface or lifecycle is introduced. | AC-2 | N/A — no cancellation protocol | Not run — terminal review follows implementation. |
 | resource bounds and backpressure | Applicable — Metadata labels and suffixes remain repository-controlled input. | `fieldWithoutRequirementLevelSuffix` | AC-1 and AC-2. | Focused and complete real-validator checks exit 0 while preserving duplicate-entry behavior. | AC-1, AC-2 | Pass | AC-1 passed 3/3 selected tests and AC-2 passed 146/146 tests against commit `9ebf6a7`. |
 | framework or trust-boundary rejection | Applicable — repository Markdown remains validator input that must retain canonical field/value extraction. | `createMetadataValidator` | AC-1 focused real-validator tests. | Focused tests exit 0 and retain existing duplicate-field diagnostics. | AC-1 | Pass | AC-1 passed 3/3 selected tests against commit `9ebf6a7`. |
@@ -194,20 +194,20 @@ N/A — the module-scope extraction follows the software-engineering standard wi
 | AC-1 | T-1 | The real validator continues to reject duplicate active Metadata fields with its canonical diagnostic. | Existing `rejects duplicate active <field> metadata` tests. | `node --test --test-name-pattern "rejects duplicate active" test/validation-boundary-regressions.test.mjs` in `tools/governance-validator`. | Process exits 0 with exactly three passing selected tests and no failed selected test. | Focused Node test report. | Pass | Passed 3/3 selected tests, 0 failures, after the helper extraction in commit `9ebf6a7`. |
 | AC-2 | T-2 | The complete governance-validator suite preserves existing Metadata and governance-record contracts. | Approved implementation in the isolated task branch. | `npm test` in `tools/governance-validator`. | Process exits 0 with zero failed tests. | Full package test report. | Pass | Passed 146/146 tests, 0 failures, in 19.73 seconds after commit `9ebf6a7`. |
 | AC-3 | T-2 | Repository governance validation accepts the ADR/index state and unchanged record contracts. | All task changes present in the isolated task branch. | `npm run validate` in `tools/governance-validator`. | Process exits 0 and reports `Governance validation passed.` | Governance-validation command output. | Pass | Passed after source commit `9ebf6a7`, reporting `Governance validation passed.` |
-| AC-4 | T-2 | A separate accepted OCR verifies the analyzer outcome. | Approved source correction, AC-1 through AC-3 passed, and an accepted local SonarQube verification OCR. | The specified local New Code issue view after the OCR analysis completes. | Zero active New Code findings remain for `fieldWithoutRequirementLevelSuffix` helper scope. | OCR task and issue-view evidence without credentials. | Not Started | Not run — OCR may be drafted only after approved source work and deterministic checks. |
+| AC-4 | T-2 | A separate accepted OCR verifies the analyzer outcome. | Approved source correction, AC-1 through AC-3 passed, and an accepted local SonarQube verification OCR. | The specified local New Code issue view after the OCR analysis completes. | Zero active New Code findings remain for `fieldWithoutRequirementLevelSuffix` helper scope. | OCR task and issue-view evidence without credentials. | Pass | OCR-0009 task `f93402e0-1256-42f8-829b-9c515eb7653f` processed version `9ebf6a7`; the New Code view has zero scoped helper-scope rows. |
 
 ## Completion Checklist [Required]
 
 | ID | Item | Completion Criterion | Expected Evidence | Status | Actual Evidence |
-| --- | --- | --- | --- | --- |
+| --- | --- | --- | --- | --- | --- |
 | A-1 | ADR approved | An eligible non-author approver, approval time, and exact `Approval Evidence: Approve` are recorded. | ADR metadata | Complete | @linhai approved at 2026-09-01T00:02:55+08:00 with approval evidence `Approve`. |
-| A-2 | Complete task delivered | T-1 through T-2 have implementation evidence and AC-1 through AC-4 are Pass. | Implementation Plan and Acceptance Checks | Not Started | Not run — awaiting implementation and OCR verification. |
+| A-2 | Complete task delivered | T-1 through T-2 have implementation evidence and AC-1 through AC-4 are Pass. | Implementation Plan and Acceptance Checks | Complete | T-1 is commit `9ebf6a7`; T-2 and AC-4 are complete through archived OCR-0009. |
 | A-3 | Reciprocal ADD link synchronized, when applicable | N/A — the task is not derived from product demand and has no ADD candidate. | Metadata Architecture Source | N/A — no ADD applies | N/A — no product-demand ADD applies. |
-| A-4 | Requirement levels satisfied | Every required section is complete, and every conditional trigger is completed or has a specific N/A reason. | Structured document review | Not Started | Not run — terminal review follows implementation. |
-| A-5 | Acceptance checks are decidable | Every check has one subtask, input, deterministic method, exact expected result, and evidence. | Acceptance Checks table | Not Started | Not run — terminal review follows implementation. |
+| A-4 | Requirement levels satisfied | Every required section is complete, and every conditional trigger is completed or has a specific N/A reason. | Structured document review | Complete | Terminal structured review and governance validation passed. |
+| A-5 | Acceptance checks are decidable | Every check has one subtask, input, deterministic method, exact expected result, and evidence. | Acceptance Checks table | Complete | AC-1 through AC-4 each record a declared subtask, deterministic method, exact result, and evidence. |
 | A-6 | Engineering exceptions governed, when applicable | N/A — no engineering exception is planned. | Engineering Exceptions section | N/A — no exception applies | N/A — no engineering rule is exceeded or waived. |
-| A-7 | Contract and baseline risks covered, when applicable | TC-1 through TC-2 map to checks, and every applicable risk reaches Pass before completion. | Traceability, matrix, and command reports | Not Started | Not run — awaiting implementation and analyzer verification. |
-| A-8 | Governance validation passed | The independent validator reports no document or repository validation error. | `npm run validate` output | Not Started | Not run — draft validation follows document creation. |
+| A-7 | Contract and baseline risks covered, when applicable | TC-1 through TC-2 map to checks, and every applicable risk reaches Pass before completion. | Traceability, matrix, and command reports | Complete | AC-1 through AC-4 cover TC-1 through TC-2; applicable risk rows are Pass. |
+| A-8 | Governance validation passed | The independent validator reports no document or repository validation error. | `npm run validate` output | Complete | Terminal `npm run validate` reports `Governance validation passed.` |
 
 ## Supporting Notes [Optional]
 
@@ -215,7 +215,7 @@ The remaining two source slices are deliberately deferred: three Reliability iss
 
 ## Archival [Conditionally Required — Decision Status is `Rejected`, or Decision Status is `Deprecated` or `Superseded` and Implementation Status is final]
 
-The record is Accepted and not archival-eligible. If a later rejection, deprecation, or supersession triggers archival, move it under `docs/adr/archive/`, update all governed-file markers and references in the same change, and update its single index row.
+The record is Accepted and Complete, but archival is not triggered. If a later rejection, deprecation, or supersession triggers archival, move it under `docs/adr/archive/`, update all governed-file markers and references in the same change, and update its single index row.
 
 ## Change Log [Required]
 
@@ -223,3 +223,4 @@ The record is Accepted and not archival-eligible. If a later rejection, deprecat
 | --- | --- | --- |
 | 2026-09-01 | Drafted the Full ADR for the local SonarQube New Code Metadata-helper scope finding. | @codex |
 | 2026-09-01 | Accepted by @linhai with approval evidence `Approve` at 2026-09-01T00:02:55+08:00. | @codex |
+| 2026-09-01 | Completed the module-scope correction with all deterministic checks passing and archived OCR-0009 verification of zero scoped New Code helper-scope findings. | @codex |
