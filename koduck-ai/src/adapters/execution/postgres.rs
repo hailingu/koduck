@@ -211,8 +211,9 @@ impl PendingApprovalCanceller for SqlxApprovalRecordStore {
                 .begin()
                 .await
                 .map_err(|_| ApprovalStoreError::Unavailable)?;
-            let row = sqlx::query(
-                "UPDATE tool_approvals approval
+            let row = bind_cancellation_identity(
+                sqlx::query(
+                    "UPDATE tool_approvals approval
                  SET status = 'cancelled', version = approval.version + 1
                  FROM turns owner
                  WHERE approval.tenant_id = $1 AND approval.thread_id = $2
@@ -230,44 +231,30 @@ impl PendingApprovalCanceller for SqlxApprovalRecordStore {
                            approval.descriptor_id, approval.descriptor_version,
                            approval.action_digest, approval.profile_id,
                            approval.profile_version, approval.version",
-            )
-            .bind(binding.tenant_id().as_str())
-            .bind(binding.thread_id().as_uuid())
-            .bind(binding.turn_id().as_uuid())
-            .bind(binding.attempt_id().as_uuid())
-            .bind(millis(binding.lease_generation().get())?)
-            .bind(binding.action().descriptor_id())
-            .bind(binding.action().descriptor_version())
-            .bind(effect_code(binding.action().effect()))
-            .bind(hex_digest(binding.action_digest().as_bytes()))
-            .bind(binding.profile_id())
-            .bind(binding.profile_version())
+                ),
+                binding,
+            )?
             .fetch_optional(&mut *transaction)
             .await
             .map_err(|_| ApprovalStoreError::Unavailable)?;
             let Some(row) = row else {
                 drop(transaction);
-                let status: Option<String> = sqlx::query_scalar(
-                    "SELECT status FROM tool_approvals
+                let status: Option<String> = bind_cancellation_identity(
+                    sqlx::query(
+                        "SELECT status FROM tool_approvals
                      WHERE tenant_id = $1 AND thread_id = $2 AND turn_id = $3
                        AND attempt_id = $4 AND lease_generation = $5
                        AND descriptor_id = $6 AND descriptor_version = $7
                        AND effect = $8 AND action_digest = $9
                        AND profile_id = $10 AND profile_version = $11",
-                )
-                .bind(binding.tenant_id().as_str())
-                .bind(binding.thread_id().as_uuid())
-                .bind(binding.turn_id().as_uuid())
-                .bind(binding.attempt_id().as_uuid())
-                .bind(millis(binding.lease_generation().get())?)
-                .bind(binding.action().descriptor_id())
-                .bind(binding.action().descriptor_version())
-                .bind(effect_code(binding.action().effect()))
-                .bind(hex_digest(binding.action_digest().as_bytes()))
-                .bind(binding.profile_id())
-                .bind(binding.profile_version())
+                    ),
+                    binding,
+                )?
                 .fetch_optional(&self.pool)
                 .await
+                .map_err(|_| ApprovalStoreError::Unavailable)?
+                .map(|row| row.try_get::<String, _>("status"))
+                .transpose()
                 .map_err(|_| ApprovalStoreError::Unavailable)?;
                 return status
                     .filter(|status| status != "requested")
@@ -463,6 +450,29 @@ fn existing_terminal_resolution(
 /// durable column domain.
 fn millis(value: u64) -> Result<i64, ApprovalStoreError> {
     i64::try_from(value).map_err(|_| ApprovalStoreError::Unavailable)
+}
+
+/// Binds the full immutable cancellation identity — tenant through profile
+/// version, in the column order both conditional cancellation statements
+/// reference — to one already-constructed query.
+fn bind_cancellation_identity<'q>(
+    query: sqlx::query::Query<'q, sqlx::Postgres, sqlx::postgres::PgArguments>,
+    binding: &'q crate::domain::execution::ExactActionBinding,
+) -> Result<sqlx::query::Query<'q, sqlx::Postgres, sqlx::postgres::PgArguments>, ApprovalStoreError>
+{
+    let action = binding.action();
+    Ok(query
+        .bind(binding.tenant_id().as_str())
+        .bind(binding.thread_id().as_uuid())
+        .bind(binding.turn_id().as_uuid())
+        .bind(binding.attempt_id().as_uuid())
+        .bind(millis(binding.lease_generation().get())?)
+        .bind(action.descriptor_id())
+        .bind(action.descriptor_version())
+        .bind(effect_code(action.effect()))
+        .bind(hex_digest(binding.action_digest().as_bytes()))
+        .bind(binding.profile_id())
+        .bind(binding.profile_version()))
 }
 
 fn decision_code(decision: ApprovalDecision) -> &'static str {

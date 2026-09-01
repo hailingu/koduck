@@ -22,46 +22,9 @@ use koduck_ai::domain::{
     TurnStatus,
 };
 
-/// Provider stub that serves one scripted stream per request and records
-/// every request input, so tests can prove the continuation request and its
-/// carried committed results.
-#[derive(Clone, Default)]
-struct ScriptedProvider {
-    scripts: Arc<Mutex<VecDeque<Vec<ProviderEvent>>>>,
-    inputs: Arc<Mutex<Vec<ModelInput>>>,
-}
+mod runner_doubles;
 
-impl ScriptedProvider {
-    fn scripted(scripts: Vec<Vec<ProviderEvent>>) -> Self {
-        Self {
-            scripts: Arc::new(Mutex::new(scripts.into())),
-            inputs: Arc::new(Mutex::new(Vec::new())),
-        }
-    }
-
-    fn recorded_inputs(&self) -> Vec<ModelInput> {
-        self.inputs.lock().expect("inputs lock").clone()
-    }
-}
-
-impl ModelProvider for ScriptedProvider {
-    fn stream(&mut self, input: ModelInput) -> Result<ProviderStream<'_>, ProviderError> {
-        self.inputs.lock().expect("inputs lock").push(input);
-        let events = self
-            .scripts
-            .lock()
-            .expect("scripts lock")
-            .pop_front()
-            .expect("one scripted stream per provider request");
-        Ok(Box::new(events.into_iter()))
-    }
-}
-
-/// Appends and publishes one projection, mirroring the production emit order.
-fn emit_projection(sink: &mut dyn ToolProjectionSink, projection: &ToolProjection) {
-    sink.append(projection).expect("fixture projection appends");
-    sink.publish(projection);
-}
+use runner_doubles::{ScriptedProvider, emit_projection};
 
 #[derive(Clone, Default)]
 struct RecordingToolExecutor {
