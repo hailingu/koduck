@@ -3,7 +3,7 @@
 ## Metadata [Required]
 
 - **Decision Status**: Accepted
-- **Implementation Status**: Not Started
+- **Implementation Status**: In Progress
 - **Date**: 2026-09-01
 - **Author**: @codex
 - **Decision Owner**: @linhai
@@ -19,10 +19,10 @@
 - **Retirement Time [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — record is not retired
 - **Retirement Evidence [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — record is not retired
 - **Retirement Reason [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — record is not retired
-- **Blocked From [Conditionally Required — Implementation Status is `Blocked`]**: N/A — implementation is not blocked
-- **Blocker And Evidence [Conditionally Required — Implementation Status is `Blocked`]**: N/A — implementation is not blocked
-- **Blocker Owner [Conditionally Required — Implementation Status is `Blocked`]**: N/A — implementation is not blocked
-- **Blocker Exit Or Recheck Criterion [Conditionally Required — Implementation Status is `Blocked`]**: N/A — implementation is not blocked
+- **Blocked From [Conditionally Required — Implementation Status is `Blocked`]**: N/A — implementation is in progress and not blocked
+- **Blocker And Evidence [Conditionally Required — Implementation Status is `Blocked`]**: N/A — implementation is in progress and not blocked
+- **Blocker Owner [Conditionally Required — Implementation Status is `Blocked`]**: N/A — implementation is in progress and not blocked
+- **Blocker Exit Or Recheck Criterion [Conditionally Required — Implementation Status is `Blocked`]**: N/A — implementation is in progress and not blocked
 - **Related [Optional]**: Local SonarQube project `koduck` Reliability view observed 2026-09-01: one Medium super-linear regular-expression finding at `tools/governance-validator/lib/relationship-validation.mjs:L117`, and two Low findings at `:L151` and `:L152` requesting `String#replaceAll()`.
 - **Architecture Source [Conditionally Required — product demand]**: N/A — corrective governance-validator work requested from local SonarQube results, not derived from product demand
 - **Supersedes [Conditionally Required — this ADR replaces another]**: N/A — no ADR is replaced
@@ -156,8 +156,8 @@ Allowed subtask statuses: `Not Started`, `In Progress`, `Blocked`, `Complete`, o
 
 | ID | Objective or deliverable | Included scope | Status | Actual implementation evidence |
 | --- | --- | --- | --- | --- |
-| T-1 | Replace the title-comparison matcher with bounded record-H1 parsing and update the governed-file marker. | `tools/governance-validator/lib/relationship-validation.mjs` title path and a focused index-title regression. | Not Started | Pending — implementation awaits acceptance. |
-| T-2 | Replace literal-backtick normalizers with `replaceAll` and verify relationship comparison contracts. | `tools/governance-validator/lib/relationship-validation.mjs` metadata values; focused index test; package and governance checks. | Not Started | Pending — implementation awaits acceptance. |
+| T-1 | Replace the title-comparison matcher with bounded record-H1 parsing and update the governed-file marker. | `tools/governance-validator/lib/relationship-validation.mjs` title path and a focused index-title regression. | In Progress | Source and regression test are present in the task working tree; immutable commit evidence follows. |
+| T-2 | Replace literal-backtick normalizers with `replaceAll` and verify relationship comparison contracts. | `tools/governance-validator/lib/relationship-validation.mjs` metadata values; focused index test; package and governance checks. | In Progress | Both focused tests, 148 package tests, and governance validation passed in the task working tree; immutable commit evidence follows. |
 | T-3 | Confirm that local SonarQube no longer reports the three scoped Reliability rows. | A separately accepted OCR and the local `koduck` Reliability issue view. | Not Started | Pending — operational verification awaits completed source checks and an accepted OCR. |
 
 **Affected paths**: `tools/governance-validator/lib/relationship-validation.mjs`; `tools/governance-validator/test/index-path-validation.test.mjs`; `docs/adr/ADR-0013-relationship-validation-reliability.md`; `docs/adr/INDEX.md`; a later OCR path under `docs/adr/ocr/`.
@@ -229,3 +229,4 @@ The record is Proposed, so archival is inactive future-lifecycle guidance. If a 
 | --- | --- | --- |
 | 2026-09-01 | Drafted the isolated relationship-validation Reliability remediation for the three scoped local SonarQube findings. | @codex |
 | 2026-09-01 | Accepted by @linhai with approval evidence `Approve`. | @linhai |
+| 2026-09-01 | Began the accepted source remediation after focused behavioral tests, the package suite, and governance validation passed. | @codex |
