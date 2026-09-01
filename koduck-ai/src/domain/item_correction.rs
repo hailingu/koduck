@@ -89,6 +89,15 @@ pub enum RawReplayStructureError {
 ///
 /// Returns the first [`RawReplayStructureError`] violation, if any.
 pub fn validate_raw_replay(items: &[Item]) -> Result<(), RawReplayStructureError> {
+    validate_replay_order(items)?;
+    validate_correction_structure(items)
+}
+
+/// Requires every Item identity to appear exactly once in strictly increasing
+/// sequence order (ADR-0003 CR-02).
+///
+/// Sequence adjacency is not required. Validation never mutates the replay.
+fn validate_replay_order(items: &[Item]) -> Result<(), RawReplayStructureError> {
     let mut identities = HashSet::with_capacity(items.len());
     let mut previous_sequence = 0_u64;
     for item in items {
@@ -100,6 +109,17 @@ pub fn validate_raw_replay(items: &[Item]) -> Result<(), RawReplayStructureError
             return Err(RawReplayStructureError::DuplicateItemIdentity);
         }
     }
+    Ok(())
+}
+
+/// Requires every correction relationship to stay inside the replayed Turn,
+/// never identify the correcting Item itself, and grant its predecessor at
+/// most one direct successor (ADR-0003 CR-03 through CR-05).
+///
+/// Target ordering is deliberately not judged here: CAND-11 admission owns
+/// predecessor currency and CAND-12 owns effective-order semantics.
+fn validate_correction_structure(items: &[Item]) -> Result<(), RawReplayStructureError> {
+    let identities: HashSet<ItemId> = items.iter().map(|item| item.item_id).collect();
     let mut targets = HashSet::new();
     for item in items {
         if let ItemPayload::Correction(correction) = &item.payload {

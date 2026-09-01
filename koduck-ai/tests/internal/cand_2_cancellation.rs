@@ -36,6 +36,8 @@ mod durable_evidence;
 mod interrupt_barrier;
 #[path = "cand_2_cancellation_interruption_seal.rs"]
 mod interruption_seal;
+#[path = "cand_2_cancellation_pinning.rs"]
+mod pinning;
 #[path = "cand_2_cancellation_post_claim_lease.rs"]
 mod post_claim_lease;
 #[path = "cand_2_cancellation_pre_dispatch.rs"]

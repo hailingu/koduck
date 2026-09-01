@@ -200,7 +200,13 @@ Classify requested work before editing:
 | Verification Execution | Disposable Verification Execution as defined above |
 | Operational | A Governed Build or a reversible release/deploy/rollback/runbook action against a running, shared, external, or artifact-producing system |
 
-Read-only work needs no decision record. Drafting or updating an Architecture
+Read-only work needs no decision record. A direct, source-only remediation of a
+SonarQube-reported code issue — including its focused regression test — needs
+no ADR, OCR, or `Approve`; it may be implemented immediately. This exception
+applies to issues in every SonarQube software-quality category, but does not
+extend to configuration, dependency, deployment, data, public-contract, or
+governance changes required alongside the remediation; classify those changes
+normally. Drafting or updating an Architecture
 Design Document (ADD) needs no prior ADR because an ADD is a non-authorizing
 solution and planning artifact; implementation still requires an Accepted ADR
 selected from the ADD as defined below. Normative/governance documentation,
@@ -436,9 +442,14 @@ precedence and stop at the first matching row:
 | Full ADR | Architecture, governance, cross-service behavior, public API/schema/protocol, security, data, dependency, or build/release/deployment strategy, pipeline, configuration, service-boundary, or irreversible decisions | Accepted before implementation |
 | Lightweight ADR | A localized, reversible source behavior change whose checklist proves no Full ADR concern applies | Accepted before implementation |
 | Operational Change Record (OCR) | A Governed Build, release, deployment, rollback, or existing runbook operation within an accepted architecture, pipeline, artifact contract, and security/data boundary | Accepted before the operation |
-| No record | Read-only work, Disposable Verification Execution, non-normative editorial documentation, routine coordination metadata under an Accepted policy, or a provably semantics-neutral formatting/comment-only edit | No decision-record gate; normal authorization and verification still apply |
+| No record | Read-only work, Disposable Verification Execution, non-normative editorial documentation, routine coordination metadata under an Accepted policy, a direct source-only SonarQube code remediation with its focused regression test, or a provably semantics-neutral formatting/comment-only edit | No decision-record gate; direct SonarQube remediation requires neither ADR/OCR nor `Approve`; normal verification still applies |
 
-Normative Markdown about governance, contracts, security, deployment, or
+Direct source-only remediation of a SonarQube-reported code issue requires no
+ADR, OCR, or `Approve`, including issues categorized as Security, Reliability,
+or Maintainability. The exception does not cover accompanying configuration,
+dependency, deployment, data, public-contract, or governance changes; those
+changes remain subject to their normal classification and gates. Normative
+Markdown about governance, contracts, security, deployment, or
 process is not editorial. A formatting/comment-only edit qualifies only when
 its diff proves there is no semantic change. Test source, snapshots, generated
 artifacts, lock files, dependencies, config, and mixed-scope changes are not

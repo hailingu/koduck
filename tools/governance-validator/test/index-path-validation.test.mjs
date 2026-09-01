@@ -1,11 +1,15 @@
-// ADR: docs/adr/ADR-0002-required-ai-ci-postgres-verification.md
+// ADR: docs/adr/ADR-0013-relationship-validation-reliability.md
 
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
-import { run, validRepository } from "./validate.test.mjs";
+import { run, validRepository } from "./fixtures.mjs";
+
+const validator = fileURLToPath(new URL("../validate.mjs", import.meta.url));
 
 test("rejects a blank index Path without trying to read the repository root", () => {
   const root = validRepository();
@@ -70,6 +74,66 @@ test("rejects an index pipe block without a Markdown separator", () => {
   const result = run(root);
   assert.equal(result.status, 1);
   assert.match(result.stderr, /index requires a structured Markdown table/i);
+});
+
+test("rejects relationship index titles that disagree with recognized record H1 forms", () => {
+  for (const heading of [
+    "# ADR-0001: Updated title",
+    "# OCR-0001: Updated title",
+    "# ADD-0001: Updated title",
+    "# Lightweight ADR-0001: Updated title",
+  ]) {
+    const root = validRepository();
+    const recordPath = join(root, "docs/adr/ADR-0001-example.md");
+    writeFileSync(
+      recordPath,
+      readFileSync(recordPath, "utf8").replace("# ADR-0001: Example", heading),
+    );
+
+    const result = run(root);
+    assert.equal(result.status, 1);
+    assert.match(
+      result.stderr,
+      /index Title disagrees with record for docs\/adr\/ADR-0001-example\.md: Example vs Updated title/i,
+    );
+  }
+});
+
+test("accepts relationship values that differ only by Markdown backticks", () => {
+  const root = validRepository();
+  const indexPath = join(root, "docs/adr/INDEX.md");
+  writeFileSync(
+    indexPath,
+    readFileSync(indexPath, "utf8").replace(
+      "N/A — governance-only example | docs/adr/ADR-0001-example.md |",
+      "N/A — `governance-only` example | docs/adr/ADR-0001-example.md |",
+    ),
+  );
+
+  const result = run(root);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+});
+
+test("rejects an adversarial index-path without timing out", () => {
+  const root = validRepository();
+  const indexPath = join(root, "docs/adr/INDEX.md");
+  const adversarialPath = `${"segment/".repeat(24)}docs`;
+  writeFileSync(
+    indexPath,
+    readFileSync(indexPath, "utf8").replace("docs/adr/ADR-0001-example.md", adversarialPath),
+  );
+
+  // The budget guards against exponential path-resolution blowups (minutes),
+  // not total runtime: a cold validator start already costs ~1s on shared CI
+  // runners, so a tighter ceiling reports the harness, not the code.
+  const result = spawnSync(process.execPath, [validator, "--root", root], {
+    encoding: "utf8",
+    timeout: 30_000,
+  });
+
+  assert.equal(result.error, undefined, result.error?.message);
+  assert.equal(result.status, 1, result.stderr || result.stdout);
+  assert.match(result.stderr, /index path/i);
 });
 
 test("rejects a candidate ADR link that resolves to a directory without crashing", () => {

@@ -1,10 +1,10 @@
-// ADR: docs/adr/ADR-0002-required-ai-ci-postgres-verification.md
+// ADR: docs/adr/ADR-0014-validator-structural-parsing-reliability.md
 
 import assert from "node:assert/strict";
 import { readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
-import { ACCEPTED_RISK_MATRIX_TABLE, RISK_MATRIX_TABLE, acceptedAdr, acceptedOcr, completeOcr, replaceSection, run, validRepository, write } from "./validate.test.mjs";
+import { ACCEPTED_RISK_MATRIX_TABLE, RISK_MATRIX_TABLE, acceptedAdr, acceptedOcr, completeOcr, replaceSection, run, validRepository, write } from "./fixtures.mjs";
 test("rejects Pending as a Retirement Reason", () => {
   const root = validRepository();
   const path = join(root, "docs/adr/ADR-0001-example.md");
@@ -253,6 +253,84 @@ test("rejects a Superseded By target that is not an indexed record", () => {
   const result = run(root);
   assert.equal(result.status, 1);
   assert.match(result.stderr, /Superseded By must name an ADR, ADD, or OCR record/i);
+});
+
+test("rejects supersession checklist and risk contracts with trailing path content", () => {
+  const checklistRoot = validRepository();
+  acceptedOcr(checklistRoot, "0002");
+  const checklistPath = join(checklistRoot, "docs/adr/ocr/OCR-0002-example.md");
+  writeFileSync(
+    checklistPath,
+    readFileSync(checklistPath, "utf8").replace(
+      "- [x] Uses an accepted architecture",
+      "\t- [x] Uses an accepted architecture",
+    ),
+  );
+  const checklistResult = run(checklistRoot);
+  assert.equal(checklistResult.status, 1);
+  assert.match(checklistResult.stderr, /Eligibility item .* must be present and confirmed/i);
+
+  const riskRoot = validRepository();
+  const riskPath = join(riskRoot, "docs/adr/ADR-0001-example.md");
+  writeFileSync(
+    riskPath,
+    readFileSync(riskPath, "utf8")
+      .replace("Decision Status**: Proposed", "Decision Status**: Accepted")
+      .replace("Implementation Status**: Not Started", "Implementation Status**: Complete")
+      .replace(
+        /## Risk Coverage Matrix \[Required\][\s\S]*?(?=## Acceptance Checks)/,
+        "## Risk Coverage Matrix [Required]\n| Risk dimension | Status |\n| --- | --- |\n| concurrency - and ordering | Not Started |\n| timeout and deadline | Pass |\n| cancellation and interruption | Pass |\n| resource bounds and backpressure | Pass |\n| framework or trust-boundary rejection | Pass |\n\n",
+      )
+      .replace(
+        "Architecture Source**: N/A — governance-only example",
+        "Architecture Source**: N/A — governance-only example\n- **Approver**: @linhai\n- **Approval Time**: 2026-08-13T00:00:00Z\n- **Approval Evidence**: Approve",
+      ),
+  );
+  const riskIndexPath = join(riskRoot, "docs/adr/INDEX.md");
+  writeFileSync(
+    riskIndexPath,
+    readFileSync(riskIndexPath, "utf8").replace("| Proposed |", "| Accepted |").replace("| Not Started |", "| Complete |"),
+  );
+  const riskResult = run(riskRoot);
+  assert.equal(riskResult.status, 1);
+  assert.match(riskResult.stderr, /Risk Coverage Matrix dimension concurrency - and ordering must be Pass or N\/A/i);
+
+  const root = validRepository();
+  acceptedAdr(root, "0002");
+  const activePath = join(root, "docs/adr/ADR-0001-example.md");
+  const archivedPath = "docs/adr/archive/ADR-0001-example.md";
+  const replacementPath = join(root, "docs/adr/ADR-0002-example.md");
+  writeFileSync(
+    replacementPath,
+    readFileSync(replacementPath, "utf8").replace(
+      "Superseded By**: None",
+      "Superseded By**: None\n- **Supersedes**: docs/adr/archive/ADR-0001-example.md",
+    ),
+  );
+  const retired = readFileSync(activePath, "utf8")
+    .replace("Decision Status**: Proposed", "Decision Status**: Superseded")
+    .replace("Implementation Status**: Not Started", "Implementation Status**: Not Applicable")
+    .replace(
+      "Superseded By**: None",
+      "Superseded By**: docs/adr/ADR-0002-example.md.trailing",
+    )
+    .replace(
+      "Architecture Source**: N/A — governance-only example",
+      "Architecture Source**: N/A — governance-only example\n- **Retired By**: @linhai\n- **Retirement Time**: 2026-09-01T00:00:00Z\n- **Retirement Evidence**: Supersede\n- **Retirement Reason**: replacement created",
+    );
+  write(root, archivedPath, retired);
+  unlinkSync(activePath);
+  const indexPath = join(root, "docs/adr/INDEX.md");
+  writeFileSync(
+    indexPath,
+    readFileSync(indexPath, "utf8")
+      .replace("| Full ADR | ADR-0001 | Example | Proposed | Not Started |", "| Full ADR | ADR-0001 | Example | Superseded | Not Applicable |")
+      .replace("docs/adr/ADR-0001-example.md | None |", "docs/adr/archive/ADR-0001-example.md | docs/adr/ADR-0002-example.md.trailing |"),
+  );
+
+  const result = run(root);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Superseded By.*replacement record path/i);
 });
 
 test("rejects a Complete ADR whose Implementation Plan has no table", () => {

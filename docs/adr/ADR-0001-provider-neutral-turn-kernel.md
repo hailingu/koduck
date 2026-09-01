@@ -23,7 +23,7 @@
 - **Blocker And Evidence [Conditionally Required — Implementation Status is `Blocked`]**: N/A — Implementation Status is `Complete`
 - **Blocker Owner [Conditionally Required — Implementation Status is `Blocked`]**: N/A — Implementation Status is `Complete`
 - **Blocker Exit Or Recheck Criterion [Conditionally Required — Implementation Status is `Blocked`]**: N/A — Implementation Status is `Complete`
-- **Related [Optional]**: [Koduck Trello card 4WI4sszw](https://trello.com/c/4WI4sszw/2-%E8%B0%83%E7%A0%94-adr-%E6%98%8E%E7%A1%AE-ai-%E6%9C%8D%E5%8A%A1%E9%87%8D%E6%9E%84%E8%BE%B9%E7%95%8C%E4%B8%8E-codex-%E5%AF%B9%E9%BD%90%E7%9B%AE%E6%A0%87)
+- **Related [Optional]**: [Koduck Trello card 4WI4sszw](https://trello.com/c/4WI4sszw/2-%E8%B0%83%E7%A0%94-adr-%E6%98%8E%E7%A1%AE-ai-%E6%9C%8D%E5%8A%A1%E9%87%8D%E6%9E%84%E8%BE%B9%E7%95%8C%E4%B8%8E-codex-%E5%AF%B9%E9%BD%90%E7%9B%AE%E6%A0%87); `docs/adr/ADR-0005-provider-delta-coalescing-and-512-item-turn-budget.md`
 - **Architecture Source [Conditionally Required — product demand]**: `docs/architecture/ADD-0001-ai-service-codex-alignment.md` — CAND-1
 - **Supersedes [Conditionally Required — this ADR replaces another]**: None
 - **Superseded By [Conditionally Required — this ADR is replaced]**: None
@@ -598,6 +598,7 @@ implementation completion. When triggered:
 
 | Date | Change | Author |
 | --- | --- | --- |
+| 2026-08-28 | Added approval-preserving cross-record navigation after ADR-0005 merged in `8a9c5c8`. For current behavior, `docs/adr/ADR-0005-provider-delta-coalescing-and-512-item-turn-budget.md` PLB-1 through PLB-9 amend this record's CT-9, AC-9, T-3 evidence, and Supporting Notes only where they describe one raw provider delta per durable Item, the 64-Item post-acceptance budget, or resource-limit exhaustion as `durability-unavailable`: provider deltas are now coalesced, the shared post-acceptance budget is exactly 512 Items including its mandatory terminal, and count/payload exhaustion uses durable `RESOURCE_LIMIT_EXCEEDED` plus synchronous `422 resource-limit-exceeded`; the independent 1-MiB cap and actual durability-outage behavior remain unchanged. The original clauses and evidence remain intact as the approved historical baseline, so Decision Status, Implementation Status, acceptance evidence, and approval metadata do not change. | @codex |
 | 2026-08-11 | Created the Proposed project Full ADR by selecting CAND-1, including detailed boundaries, exact timing and buffering decisions, three subtasks, deterministic acceptance checks, and unresolved acceptance preconditions. | @codex |
 | 2026-08-11 | Added a non-authoritative Chinese translation and linked it from the authoritative English ADR without creating a second decision identity or index row. | @codex |
 | 2026-08-11 | Reset Completion Checklist items A-3 through A-5 from `In Progress` to `Not Started` and aligned their evidence with unresolved approval prerequisites. | @codex |

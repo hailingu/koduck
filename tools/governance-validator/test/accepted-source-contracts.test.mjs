@@ -10,7 +10,7 @@ import {
   replaceSection,
   run,
   validRepository,
-} from "./validate.test.mjs";
+} from "./fixtures.mjs";
 
 // Replaces all three source/configuration-only sections with the explicit
 // non-applicability form required for a governance-only Full ADR.

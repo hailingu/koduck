@@ -1,10 +1,29 @@
 #!/usr/bin/env node
-// ADR: docs/adr/ADR-0002-required-ai-ci-postgres-verification.md
+// ADR: docs/adr/ADR-0014-validator-structural-parsing-reliability.md
 
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { relative, resolve, sep } from "node:path";
 import { JSDOM } from "jsdom";
 import { createAcceptedRecordValidator } from "./lib/accepted-records.mjs";
+import { escapeRegExp } from "./lib/escape-regexp.mjs";
+import {
+  checklistItems,
+  hasRequirementLevel,
+  headingTexts,
+  headings,
+  isLightweightAdr,
+  isRecordFilename,
+  isSeparatorRow,
+  sectionContent,
+  sectionName,
+  sectionTable,
+  stripFencedCode,
+  stripHtmlComments,
+  subsectionContent,
+  subsectionTable,
+  tableCells,
+  tableFromContent,
+} from "./lib/markdown-parsing.mjs";
 import { createMermaidValidator } from "./lib/mermaid-validation.mjs";
 import { createMetadataValidator } from "./lib/metadata-validation.mjs";
 import { createRelationshipValidator } from "./lib/relationship-validation.mjs";
@@ -119,9 +138,6 @@ const ADD_CONDITIONAL_SECTIONS = [
   "Interaction Flow Design",
   "Assumptions And Open Questions",
 ];
-const ADR_PATH_PATTERN = /(?:[^|`\s]+\/)*docs\/adr\/(?:[^|`\s]+\/)*ADR-\d+[^|`\s]*\.md/;
-const ADD_PATH_PATTERN = /(?:[^|`\s]+\/)*docs\/architecture\/(?:[^|`\s]+\/)*ADD-\d+[^|`\s]*\.md/;
-
 function parseArguments(argv) {
   const rootIndex = argv.indexOf("--root");
   if (rootIndex === -1 || !argv[rootIndex + 1]) {
@@ -148,105 +164,13 @@ function repositoryPath(root, path) {
   return relative(root, path).split(sep).join("/");
 }
 
-// Removes HTML comments outside real code fences before any structural parser
-// sees Markdown. Fence parsing takes precedence, so comment markers in literal
-// examples remain inert. Newlines are retained to preserve block boundaries.
-function stripHtmlComments(markdown) {
-  const lines = markdown.split("\n");
-  let fence = null;
-  let htmlComment = false;
-  const kept = [];
-  for (const line of lines) {
-    const marker = line.match(/^\s{0,3}(`{3,}|~{3,})/);
-    if (fence !== null) {
-      if (
-        marker && marker[1][0] === fence.char && marker[1].length >= fence.length
-        && /^\s{0,3}(`{3,}|~{3,})\s*$/.test(line)
-      ) {
-        fence = null;
-      }
-      kept.push(line);
-      continue;
-    }
-    let active = "";
-    let cursor = 0;
-    while (cursor < line.length) {
-      if (htmlComment) {
-        const end = line.indexOf("-->", cursor);
-        if (end === -1) {
-          cursor = line.length;
-          continue;
-        }
-        htmlComment = false;
-        cursor = end + 3;
-        continue;
-      }
-      const start = line.indexOf("<!--", cursor);
-      if (start === -1) {
-        active += line.slice(cursor);
-        break;
-      }
-      active += line.slice(cursor, start);
-      htmlComment = true;
-      cursor = start + 4;
-    }
-    const activeMarker = active.match(/^\s{0,3}(`{3,}|~{3,})/);
-    if (activeMarker) {
-      fence = { char: activeMarker[1][0], length: activeMarker[1].length };
-    }
-    kept.push(active);
-  }
-  return kept.join("\n");
-}
-
-// Removes fenced examples after global HTML-comment sanitization so headings,
-// metadata, tables, and checklists inside examples cannot become structure.
-function stripFencedCode(markdown) {
-  const lines = stripHtmlComments(markdown).split("\n");
-  let fence = null;
-  const kept = [];
-  for (const line of lines) {
-    const marker = line.match(/^\s{0,3}(`{3,}|~{3,})/);
-    if (fence !== null) {
-      if (
-        marker && marker[1][0] === fence.char && marker[1].length >= fence.length
-        && /^\s{0,3}(`{3,}|~{3,})\s*$/.test(line)
-      ) {
-        fence = null;
-      }
-      continue;
-    }
-    if (marker) {
-      fence = { char: marker[1][0], length: marker[1].length };
-      continue;
-    }
-    kept.push(line);
-  }
-  return kept.join("\n");
-}
-
-// Reads a Markdown record through the same inactive-comment boundary used by
-// the primary validation loop and cross-record relationship checks.
+// Reads a Markdown record through the primary loop's inactive-comment and fenced-code boundaries.
 function readActiveMarkdown(path, encoding = "utf8") {
-  return stripHtmlComments(readFileSync(path, encoding));
+  return stripFencedCode(stripHtmlComments(readFileSync(path, encoding)));
 }
-
-function headingTexts(markdown) {
-  return [...stripFencedCode(markdown).matchAll(/^##\s+(.+?)\s*$/gm)]
-    .map((match) => match[1]);
-}
-
-function headings(markdown) {
-  return headingTexts(markdown).map(sectionName);
-}
-
-function sectionName(heading) {
-  return heading.replace(/\s+\[[^\]]+\]\s*$/, "").trim();
-}
-
 function validateRequirementLevels(path, markdown, errors) {
   for (const text of headingTexts(markdown)) {
-    if (!/\s+\[(?:Required|Optional|Conditionally Required — [^\]]+)\]\s*$/.test(text)) {
+    if (!hasRequirementLevel(text)) {
       errors.push(`${path}: section ${sectionName(text)} must declare a requirement level`);
     }
   }
@@ -281,41 +205,36 @@ function validateStatus(root, path, markdown, errors) {
   validateUniqueMetadata(path, markdown, errors);
   validateRequiredMetadata(path, markdown, errors);
   if (path.includes("/architecture/") && path.split("/").at(-1).startsWith("ADD-")) {
-    const status = metadata(markdown, "Design Status");
-    if (!ADD_STATUSES.has(status)) {
-      errors.push(`${path}: illegal Design Status ${status ?? "<missing>"}`);
-    }
-    if (status === "Current") {
-      validateApprovalMetadata(path, markdown, "Current", errors);
-      acceptedRecordValidator.validateRequiredBodyContent(path, markdown, errors);
-    }
-    if (["Deprecated", "Superseded"].includes(status)) {
-      validateRetirementMetadata(path, markdown, status, errors);
-      validateRetiredCandidates(path, markdown, errors);
-    }
-    if (status === "Superseded") validateSupersession(root, path, markdown, errors);
-    if (["Deprecated", "Superseded"].includes(status) && !path.includes("/archive/")) {
-      errors.push(`${path}: a retired (${status}) record must reside under an archive/ directory`);
-    }
+    validateAddStatus(root, path, markdown, errors);
     return;
   }
-
   const decision = metadata(markdown, "Decision Status");
   const implementation = metadata(markdown, "Implementation Status");
+  validateStatusCombination(path, decision, implementation, errors);
+  validateAcceptedStages(path, markdown, decision, implementation, errors);
+  validateTerminalStages(root, path, markdown, decision, implementation, errors);
+}
+
+// Only an Accepted record may enter In Progress or Blocked; a Proposed record
+// has not been approved and must remain Not Started (AGENTS.md).
+function validateStatusCombination(path, decision, implementation, errors) {
   if (!ADR_DECISION_STATUSES.has(decision)) {
     errors.push(`${path}: illegal Decision Status ${decision ?? "<missing>"}`);
   }
   if (!IMPLEMENTATION_STATUSES.has(implementation)) {
     errors.push(`${path}: illegal Implementation Status ${implementation ?? "<missing>"}`);
   }
-  // Only an Accepted record may enter In Progress or Blocked; a Proposed record
-  // has not been approved and must remain Not Started.
   if (["In Progress", "Blocked"].includes(implementation) && decision !== "Accepted") {
     errors.push(`${path}: Implementation Status ${implementation} requires Decision Status Accepted`);
   }
   if (decision === "Proposed" && implementation !== "Not Started") {
     errors.push(`${path}: Proposed requires Implementation Status Not Started`);
   }
+}
+
+// Approval evidence, accepted-stage content, and Blocked metadata gates for an
+// approved record (AGENTS.md).
+function validateAcceptedStages(path, markdown, decision, implementation, errors) {
   if (decision === "Accepted") {
     validateApprovalMetadata(path, markdown, "Accepted", errors);
   }
@@ -325,6 +244,11 @@ function validateStatus(root, path, markdown, errors) {
   if (decision === "Accepted" && implementation === "Blocked") {
     validateBlockedMetadata(path, markdown, errors);
   }
+}
+
+// Rejection, retirement, supersession, terminal-evidence, and archival
+// residence gates keyed by the record's terminal lifecycle states (AGENTS.md).
+function validateTerminalStages(root, path, markdown, decision, implementation, errors) {
   if (decision === "Rejected") {
     validateRejectionMetadata(path, markdown, errors);
     if (implementation !== "Not Applicable") {
@@ -350,7 +274,30 @@ function validateStatus(root, path, markdown, errors) {
   );
 }
 
+// ADD lifecycle validation: legal Design Status values, approval evidence for
+// a Current design, retirement gates, supersession reciprocity, and archival
+// residence for retired designs (AGENTS.md).
+function validateAddStatus(root, path, markdown, errors) {
+  const status = metadata(markdown, "Design Status");
+  if (!ADD_STATUSES.has(status)) {
+    errors.push(`${path}: illegal Design Status ${status ?? "<missing>"}`);
+  }
+  if (status === "Current") {
+    validateApprovalMetadata(path, markdown, "Current", errors);
+    acceptedRecordValidator.validateRequiredBodyContent(path, markdown, errors);
+  }
+  if (["Deprecated", "Superseded"].includes(status)) {
+    validateRetirementMetadata(path, markdown, status, errors);
+    validateRetiredCandidates(path, markdown, errors);
+  }
+  if (status === "Superseded") validateSupersession(root, path, markdown, errors);
+  if (["Deprecated", "Superseded"].includes(status) && !path.includes("/archive/")) {
+    errors.push(`${path}: a retired (${status}) record must reside under an archive/ directory`);
+  }
+}
+
 const TIMESTAMP_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2})$/;
+const TIMESTAMP_PARTS_PATTERN = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?(?:Z|([+-])(\d{2}):(\d{2}))$/;
 
 // A concrete `@<actor-id>` identity is required. The identifier must be a
 // stable token of allowed characters; role/type labels and template,
@@ -370,9 +317,7 @@ function isValidActor(value) {
 // range, so `2026-99-99T99:99:99+99:99` is rejected.
 function isValidTimestamp(value) {
   if (typeof value !== "string" || !TIMESTAMP_PATTERN.test(value)) return false;
-  const match = value.match(
-    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?(?:Z|([+-])(\d{2}):(\d{2}))$/,
-  );
+  const match = TIMESTAMP_PARTS_PATTERN.exec(value);
   const year = Number(match[1]);
   const month = Number(match[2]);
   const day = Number(match[3]);
@@ -491,21 +436,31 @@ function validateRequiredMetadata(path, markdown, errors) {
   const isOcr = filename.startsWith("OCR-");
   const ownerField = isAdd ? "Architecture Owner" : "Decision Owner";
   const actorFields = ["Author", ownerField, "Required Approver"];
-  const otherFields = isAdd ? ["Scope Level", "Scope"] : isOcr
-    ? ["Record Scope", "Operation Type", "Target Scope / Operation Owner", "Input Source or Version", "Expected Output or Target State"]
-    : ["Record Scope"];
   for (const field of actorFields) {
     if (!isValidActor(metadata(markdown, field))) {
       errors.push(`${path}: metadata field ${field} must be a concrete @<actor-id>`);
     }
   }
-  for (const field of otherFields) {
+  for (const field of requiredScopeFields(isAdd, isOcr)) {
     if (!isCompleteValue(metadata(markdown, field))) {
       errors.push(`${path}: missing required metadata field ${field}`);
     }
   }
 }
 
+// Scope-defining fields beyond actor identity, keyed by record type: ADDs
+// declare design scope, OCRs declare operation scope, ADRs declare record
+// scope only.
+function requiredScopeFields(isAdd, isOcr) {
+  if (isAdd) return ["Scope Level", "Scope"];
+  if (isOcr) {
+    return [
+      "Record Scope", "Operation Type", "Target Scope / Operation Owner",
+      "Input Source or Version", "Expected Output or Target State",
+    ];
+  }
+  return ["Record Scope"];
+}
 
 // Before an ADD retires, every task candidate must be Deferred or Complete
 // (AGENTS.md); a retired ADD cannot leave a Ready or Selected candidate behind.
@@ -522,25 +477,41 @@ function validateRetiredCandidates(path, markdown, errors) {
   }
 }
 
-// Matches a repository-relative ADD/ADR/OCR record path, ignoring surrounding
-// backticks or prose.
-const RECORD_PATH_PATTERN = /docs\/(?:adr|architecture)\/[^\s|`]+\.md/;
+// Determines whether text after a record path leaves its Markdown boundary intact.
+function hasRecordPathBoundary(value, index) {
+  const next = value[index];
+  return next === undefined || [" ", "\t", "|", "`"].includes(next) || (next === "." && (index + 1 === value.length || [" ", "\t"].includes(value[index + 1])));
+}
 
+// Extracts a safely delimited repository-relative ADD, ADR, or OCR path.
+function recordPathFromValue(value) {
+  if (typeof value !== "string") return undefined;
+  const start = value.indexOf("docs/");
+  if (start === -1) return undefined;
+  for (let index = start; index <= value.length - 3; index += 1) {
+    if (!value.startsWith(".md", index)) continue;
+    const end = index + 3;
+    const candidate = value.slice(start, end);
+    if ((candidate.startsWith("docs/adr/") || candidate.startsWith("docs/architecture/")) && ![" ", "\t", "|", "`"].some((character) => candidate.includes(character)) && hasRecordPathBoundary(value, end)) return candidate;
+  }
+  return undefined;
+}
 // A Superseded record must name its replacement (`Superseded By`), the
 // replacement must be Accepted (ADR/OCR) or Current (ADD), and the replacement
 // must reciprocally `Supersede` this exact record (AGENTS.md).
 function validateSupersession(root, path, markdown, errors) {
   const raw = metadata(markdown, "Superseded By");
-  const replacementPath = raw?.match(RECORD_PATH_PATTERN)?.[0];
+  const replacementPath = recordPathFromValue(raw);
   if (!replacementPath) {
     errors.push(`${path}: Superseded requires a Superseded By replacement record path`);
     return;
   }
   // The replacement must be a real, indexed ADR/ADD/OCR record — not a
   // translations helper or arbitrary markdown file that merely declares a status.
+  const filename = replacementPath.slice(replacementPath.lastIndexOf("/") + 1);
   if (
     replacementPath.includes("/translations/")
-    || !/(?:ADR|ADD|OCR)-\d+[^/]*\.md$/.test(replacementPath)
+    || !["ADR-", "ADD-", "OCR-"].some((prefix) => isRecordFilename(filename, prefix))
   ) {
     errors.push(`${path}: Superseded By must name an ADR, ADD, or OCR record: ${replacementPath}`);
     return;
@@ -571,7 +542,7 @@ function validateSupersession(root, path, markdown, errors) {
       `${path}: Superseded By replacement ${replacementPath} must be ${requiredStatus} (is ${status ?? "<missing>"})`,
     );
   }
-  const supersedes = metadata(replacement, "Supersedes")?.match(RECORD_PATH_PATTERN)?.[0];
+  const supersedes = recordPathFromValue(metadata(replacement, "Supersedes"));
   if (supersedes !== path) {
     errors.push(
       `${path}: Superseded By replacement ${replacementPath} does not reciprocally Supersede this record`,
@@ -598,101 +569,13 @@ function requireArchived(path, decision, implementation, isOcr, errors) {
   }
 }
 
-function tableCells(line) {
-  return line
-    .slice(1, line.endsWith("|") ? -1 : undefined)
-    .split("|")
-    .map((cell) => cell.trim().replace(/^`|`$/g, ""));
-}
-
-function isSeparatorRow(line) {
-  return line.startsWith("|") && tableCells(line).every((cell) => /^:?-+:?$/.test(cell));
-}
-
-// Returns { header, rows } for the first markdown table in the section, with
-// fenced code stripped so example tables inside code blocks cannot satisfy a
-// structural check. Returns undefined when the section or its table is absent.
-function sectionTable(markdown, sectionName) {
-  return tableFromContent(sectionContent(markdown, sectionName) ?? "");
-}
-
-function subsectionTable(markdown, sectionName, subsectionName) {
-  const section = sectionContent(markdown, sectionName) ?? "";
-  return tableFromContent(subsectionContent(section, subsectionName) ?? "");
-}
-
-function tableFromContent(markdown) {
-  const content = stripFencedCode(markdown);
-  if (!content) return undefined;
-  const lines = content.split("\n");
-  const headerIdx = lines.findIndex((line, index) => {
-    const separator = lines[index + 1];
-    return line.startsWith("|")
-      && !isSeparatorRow(line)
-      && separator !== undefined
-      && isSeparatorRow(separator)
-      && tableCells(separator).length === tableCells(line).length;
-  });
-  if (headerIdx === -1) return undefined;
-  const tableLines = [];
-  for (let index = headerIdx; index < lines.length && lines[index].startsWith("|"); index++) {
-    tableLines.push(lines[index]);
-  }
-  return {
-    header: tableCells(tableLines[0]),
-    rows: tableLines.slice(1).filter((line) => !isSeparatorRow(line)).map(tableCells),
-  };
-}
-
-// Parses Markdown task-list items without letting a later item satisfy the
-// requirement of an earlier checked item. Indented continuation lines remain
-// part of the preceding item.
-function checklistItems(content) {
-  const items = [];
-  let current;
-  for (const line of content.split("\n")) {
-    const match = line.match(/^\s*-\s*\[([ xX])\]\s*(.*)$/);
-    if (match) {
-      current = { checked: match[1].toLowerCase() === "x", text: match[2].trim() };
-      items.push(current);
-    } else if (current && line.trim()) {
-      current.text += ` ${line.trim()}`;
-    }
-  }
-  return items;
-}
-
 // A terminal implementation status requires actual completion evidence. The
 // record type determines which tables carry that evidence: ADRs use the
 // Implementation Plan, Acceptance Checks, Completion Checklist, and Risk
 // Coverage Matrix; OCRs use the Task Definition subtasks, Core Runbook stages,
 // and Closure review fields (AGENTS.md).
 function normalizeDimension(value) {
-  return value.toLowerCase().replace(/-/g, "").replace(/\s+/g, " ").trim();
-}
-
-function escapeRegExp(value) {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-function sectionContent(markdown, section) {
-  const escaped = section.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const match = new RegExp(`^## ${escaped}(?:\\s+\\[[^\\]]+\\])?\\s*\\n`, "m").exec(markdown);
-  if (!match) return undefined;
-  const remainder = markdown.slice(match.index + match[0].length);
-  const next = remainder.search(/^## /m);
-  return next === -1 ? remainder : remainder.slice(0, next);
-}
-
-// Returns the content under a named level-three subsection until the next
-// level-two or level-three heading.
-function subsectionContent(content, heading) {
-  const escaped = heading.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const match = new RegExp(`^### ${escaped}\\b[^\\n]*\\n`, "m").exec(content);
-  if (!match) return undefined;
-  const remainder = content.slice(match.index + match[0].length);
-  const next = remainder.search(/^#{2,3} /m);
-  return next === -1 ? remainder : remainder.slice(0, next);
+  return value.toLowerCase().replaceAll("-", "").replace(/\s+/g, " ").trim();
 }
 
 function validateTemplateVariables(path, markdown, isTemplate, errors) {
@@ -743,20 +626,16 @@ const acceptedRecordValidator = createAcceptedRecordValidator({
 
 const terminalValidator = createTerminalValidator({
   RISK_DIMENSIONS,
-  checklistItems,
   isCompleteValue,
-  metadata,
   normalizeDimension,
   sectionContent,
   sectionTable,
   stripFencedCode,
+  subsectionContent,
 });
 
 const relationshipValidator = createRelationshipValidator({
-  ADD_PATH_PATTERN,
-  ADR_PATH_PATTERN,
   CANDIDATE_STATUSES,
-  isCompleteValue,
   metadata,
   readFileSync: readActiveMarkdown,
   resolveRepositoryFile,
@@ -773,6 +652,68 @@ const mermaidValidator = createMermaidValidator({
   tableFromContent,
 });
 
+// Validates one recognized ADR record's structural, lifecycle, source, and
+// risk-dimension contracts.
+function validateAdrRecord(root, path, markdown, errors) {
+  const requiredSections = isLightweightAdr(markdown)
+    ? LIGHTWEIGHT_ADR_REQUIRED_SECTIONS
+    : FULL_ADR_REQUIRED_SECTIONS;
+  validateRequirementLevels(path, markdown, errors);
+  validateRequiredSections(path, markdown, requiredSections, errors);
+  validateStatus(root, path, markdown, errors);
+  relationshipValidator.validateArchitectureSource(root, path, markdown, errors);
+  acceptedRecordValidator.validateRiskMatrixDimensions(path, markdown, errors);
+}
+
+// Validates one recognized OCR record's structural and lifecycle contracts.
+function validateOcrRecord(root, path, markdown, errors) {
+  validateRequirementLevels(path, markdown, errors);
+  validateRequiredSections(path, markdown, OCR_REQUIRED_SECTIONS, errors);
+  validateStatus(root, path, markdown, errors);
+}
+
+// Validates one recognized ADD record's structural, lifecycle, reciprocal-link,
+// and Mermaid diagram contracts.
+async function validateAddRecord(root, path, markdown, errors) {
+  validateRequirementLevels(path, markdown, errors);
+  validateRequiredSections(path, markdown, ADD_REQUIRED_SECTIONS, errors);
+  validateStatus(root, path, markdown, errors);
+  relationshipValidator.validateReciprocalLinks(root, path, markdown, errors);
+  await mermaidValidator.validateMermaid(path, markdown, errors);
+}
+
+// Validates one repository Markdown file as an index, translation page, or
+// governance record, registering recognized records for index-coverage checks.
+async function validateMarkdownFile(root, path, rawMarkdown, indexed, records, errors) {
+  const markdown = stripHtmlComments(rawMarkdown);
+  const isTemplate = path.includes("/template/") || path === "AGENTS.template.md";
+  // Template variable declarations intentionally live in authoring-only
+  // HTML comments; validate that dedicated contract from raw template text.
+  validateTemplateVariables(path, rawMarkdown, isTemplate, errors);
+
+  if (path.endsWith("/INDEX.md")) {
+    const paths = relationshipValidator.validateIndex(root, path, markdown, errors);
+    if (path === "docs/adr/INDEX.md") indexed.adr = paths;
+    if (path === "docs/architecture/INDEX.md") indexed.architecture = paths;
+  }
+  if (path.includes("/translations/")) {
+    if (markdown.includes("```mermaid")) await mermaidValidator.validateMermaid(path, markdown, errors);
+    return;
+  }
+
+  const filename = path.split("/").at(-1);
+  if (isRecordFilename(filename, "ADR-")) {
+    records.push({ path, index: "adr" });
+    validateAdrRecord(root, path, markdown, errors);
+  } else if (isRecordFilename(filename, "OCR-")) {
+    records.push({ path, index: "adr" });
+    validateOcrRecord(root, path, markdown, errors);
+  } else if (isRecordFilename(filename, "ADD-")) {
+    records.push({ path, index: "architecture" });
+    await validateAddRecord(root, path, markdown, errors);
+  }
+}
+
 async function validate(root) {
   mermaid.initialize({ startOnLoad: false, securityLevel: "strict" });
   const errors = [];
@@ -787,46 +728,7 @@ async function validate(root) {
   for (const absolute of markdownFiles) {
     const path = repositoryPath(root, absolute);
     const rawMarkdown = readFileSync(absolute, "utf8");
-    const markdown = stripHtmlComments(rawMarkdown);
-    const isTemplate = path.includes("/template/") || path === "AGENTS.template.md";
-    // Template variable declarations intentionally live in authoring-only
-    // HTML comments; validate that dedicated contract from raw template text.
-    validateTemplateVariables(path, rawMarkdown, isTemplate, errors);
-
-    if (path.endsWith("/INDEX.md")) {
-      const paths = relationshipValidator.validateIndex(root, path, markdown, errors);
-      if (path === "docs/adr/INDEX.md") indexed.adr = paths;
-      if (path === "docs/architecture/INDEX.md") indexed.architecture = paths;
-    }
-    if (path.includes("/translations/")) {
-      if (markdown.includes("```mermaid")) await mermaidValidator.validateMermaid(path, markdown, errors);
-      continue;
-    }
-
-    const filename = path.split("/").at(-1);
-    if (/^ADR-\d+.*\.md$/.test(filename)) {
-      records.push({ path, index: "adr" });
-      const requiredSections = /^#\s+Lightweight ADR-\d+/m.test(markdown)
-        ? LIGHTWEIGHT_ADR_REQUIRED_SECTIONS
-        : FULL_ADR_REQUIRED_SECTIONS;
-      validateRequirementLevels(path, markdown, errors);
-      validateRequiredSections(path, markdown, requiredSections, errors);
-      validateStatus(root, path, markdown, errors);
-      relationshipValidator.validateArchitectureSource(root, path, markdown, errors);
-      acceptedRecordValidator.validateRiskMatrixDimensions(path, markdown, errors);
-    } else if (/^OCR-\d+.*\.md$/.test(filename)) {
-      records.push({ path, index: "adr" });
-      validateRequirementLevels(path, markdown, errors);
-      validateRequiredSections(path, markdown, OCR_REQUIRED_SECTIONS, errors);
-      validateStatus(root, path, markdown, errors);
-    } else if (/^ADD-\d+.*\.md$/.test(filename)) {
-      records.push({ path, index: "architecture" });
-      validateRequirementLevels(path, markdown, errors);
-      validateRequiredSections(path, markdown, ADD_REQUIRED_SECTIONS, errors);
-      validateStatus(root, path, markdown, errors);
-      relationshipValidator.validateReciprocalLinks(root, path, markdown, errors);
-      await mermaidValidator.validateMermaid(path, markdown, errors);
-    }
+    await validateMarkdownFile(root, path, rawMarkdown, indexed, records, errors);
   }
   for (const record of records) {
     const indexPath = record.index === "adr" ? "docs/adr/INDEX.md" : "docs/architecture/INDEX.md";

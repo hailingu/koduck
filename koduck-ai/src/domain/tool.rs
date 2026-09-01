@@ -167,46 +167,68 @@ impl JsonNumber {
 fn valid_json_number(value: &str) -> bool {
     let bytes = value.as_bytes();
     let mut index = usize::from(bytes.first() == Some(&b'-'));
-    if index == bytes.len() {
+    if !scan_json_integer(bytes, &mut index) {
         return false;
     }
-    if bytes[index] == b'0' {
-        index += 1;
-        if bytes.get(index).is_some_and(u8::is_ascii_digit) {
-            return false;
-        }
-    } else if bytes[index].is_ascii_digit() && bytes[index] != b'0' {
-        index += 1;
-        while bytes.get(index).is_some_and(u8::is_ascii_digit) {
-            index += 1;
-        }
-    } else {
+    if !scan_json_fraction(bytes, &mut index) {
         return false;
     }
-    if bytes.get(index) == Some(&b'.') {
-        index += 1;
-        let fraction_start = index;
-        while bytes.get(index).is_some_and(u8::is_ascii_digit) {
-            index += 1;
-        }
-        if index == fraction_start {
-            return false;
-        }
-    }
-    if matches!(bytes.get(index), Some(b'e' | b'E')) {
-        index += 1;
-        if matches!(bytes.get(index), Some(b'+' | b'-')) {
-            index += 1;
-        }
-        let exponent_start = index;
-        while bytes.get(index).is_some_and(u8::is_ascii_digit) {
-            index += 1;
-        }
-        if index == exponent_start {
-            return false;
-        }
+    if !scan_json_exponent(bytes, &mut index) {
+        return false;
     }
     index == bytes.len()
+}
+
+/// Scans the integer part: `0` alone or a digit run that does not start with
+/// `0`. Returns whether at least one digit was present.
+fn scan_json_integer(bytes: &[u8], index: &mut usize) -> bool {
+    if *index == bytes.len() {
+        return false;
+    }
+    if bytes[*index] == b'0' {
+        *index += 1;
+        // A leading zero may not be followed by another digit.
+        return !bytes.get(*index).is_some_and(u8::is_ascii_digit);
+    }
+    if !bytes[*index].is_ascii_digit() {
+        return false;
+    }
+    *index += 1;
+    while bytes.get(*index).is_some_and(u8::is_ascii_digit) {
+        *index += 1;
+    }
+    true
+}
+
+/// Scans the optional fraction part: `.` followed by at least one digit.
+/// Returns whether the part is absent or complete.
+fn scan_json_fraction(bytes: &[u8], index: &mut usize) -> bool {
+    if bytes.get(*index) != Some(&b'.') {
+        return true;
+    }
+    *index += 1;
+    let fraction_start = *index;
+    while bytes.get(*index).is_some_and(u8::is_ascii_digit) {
+        *index += 1;
+    }
+    *index > fraction_start
+}
+
+/// Scans the optional exponent part: `e`/`E`, an optional sign, and at least
+/// one digit. Returns whether the part is absent or complete.
+fn scan_json_exponent(bytes: &[u8], index: &mut usize) -> bool {
+    if !matches!(bytes.get(*index), Some(b'e' | b'E')) {
+        return true;
+    }
+    *index += 1;
+    if matches!(bytes.get(*index), Some(b'+' | b'-')) {
+        *index += 1;
+    }
+    let exponent_start = *index;
+    while bytes.get(*index).is_some_and(u8::is_ascii_digit) {
+        *index += 1;
+    }
+    *index > exponent_start
 }
 
 /// Structurally valid, canonically serialized action parameters.

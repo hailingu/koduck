@@ -1,4 +1,130 @@
-// ADR: docs/adr/ADR-0002-required-ai-ci-postgres-verification.md
+// ADR: docs/adr/archive/ADR-0009-accepted-record-validator-reliability.md
+
+import { escapeRegExp } from "./escape-regexp.mjs";
+
+// Classifies a record path and title so downstream validators share one source
+// of truth for its template and lifecycle-specific requirements.
+function recordKind(path, markdown) {
+  const filename = path.split("/").at(-1);
+  const isAdd = filename.startsWith("ADD-");
+  const isOcr = filename.startsWith("OCR-");
+  const isLightweight = !isAdd && !isOcr && /^#\s+Lightweight ADR-\d+/m.test(markdown);
+  return { isAdd, isOcr, isLightweight };
+}
+
+// A standalone Pending placeholder anywhere in the body — not only as its
+// first token — leaves a lifecycle-gated required section deliberately
+// incomplete.
+function containsStandalonePending(body) {
+  // The placeholder is the capitalized token `Pending`, either as a whole
+  // line or as the value of a Markdown field (`- **Owner**: Pending`); a
+  // label prefix, bullet, quote, or emphasis never hides it. Lowercase
+  // prose wrapping onto a line starting with "pending" is content.
+  return body.split(/\n+/).some((line) => {
+    const trimmed = line.trim();
+    // Strip markdown scaffolding — bullets, quotes, emphasis, and a
+    // field label ending in ":" — then require the placeholder at the
+    // value position.
+    const stripped = trimmed
+      .replace(/^[-*_>]+\s*/, "")
+      .replace(/^\*\*([^*]*)\*\*\s*:\s*/, "")
+      .replace(/^[^:*]{0,80}:\s*/, "");
+    if (/^\|.*\|$/.test(trimmed)) {
+      const cells = trimmed
+        .slice(1, -1)
+        .split("|")
+        .map((cell) => cell.trim());
+      // Two-column field/value tables are narrative section content. Their
+      // values cannot retain a lifecycle placeholder. Structured plan and
+      // acceptance tables have their own status-aware validation below,
+      // where Pending remains valid before a terminal implementation state.
+      return cells.length === 2 && cells.some((cell) => /^Pending\b/.test(cell));
+    }
+    return /^Pending\b/.test(stripped);
+  });
+}
+
+// Recognizes the repository's only valid table-level omission form: a
+// reasoned N/A using the required em dash delimiter.
+function isReasonedNa(value) {
+  return /^N\/A\s+—\s+\S/.test(value);
+}
+
+// A runbook field's `**Field**:` value capture, from the field label through
+// the next field label, stage heading, or section heading.
+function runbookFieldPattern(escapedField) {
+  return new RegExp(
+    String.raw`\*\*${escapedField}\*\*:\s*([\s\S]*?)(?=\*\*[^*]+\*\*:\s*|^### |^## |$)`,
+  );
+}
+
+
+// The template columns an Accepted subtask plan table must declare.
+function subtaskRequiredHeaders(isOcr) {
+  return isOcr
+    ? [/^ID$/, /^Objective/i, /^Included scope/i, /^Completion criterion/i, /^Expected evidence/i, /^Status$/, /^Actual.*evidence/i]
+    : [/^ID$/, /^Objective/i, /^Included scope/i, /^Status$/, /^Actual.*evidence/i];
+}
+
+// The template columns an Accepted acceptance-checks table must declare.
+function acceptanceCheckRequiredHeaders() {
+  return [
+    /^Check ID$/i, /^Subtask$/i, /^Binary acceptance point$/i,
+    /^Preconditions? or input$/i, /^Verification method$/i,
+    /^Exact expected result$/i, /^Expected evidence$/i, /^Status$/i,
+    /^Actual result and evidence$/i,
+  ];
+}
+
+// The former three-column traceability shape preserved for completed
+// historical records.
+function isLegacyTraceabilityTable(table) {
+  return table.header.some((header) => /^Normative contract clause$/i.test(header))
+    && table.header.some((header) => /^Acceptance check or deterministic test$/i.test(header));
+}
+
+// Resolves the matrix's status, check-reference, applicability, and header
+// columns, accepting the legacy terminal matrix shape; returns undefined
+// when neither the current nor the legacy header contract is satisfied.
+function riskMatrixColumns(table, isTerminalRecord) {
+  const currentHeaders = [
+    /^Risk dimension$/i,
+    /^Applicability and scenario, or specific N\/A reason$/i,
+    /^Owning boundary$/i,
+    /^Deterministic verification method$/i,
+    /^Exact expected result$/i,
+    /^Acceptance check IDs$/i,
+    /^Status$/i,
+    /^Actual evidence$/i,
+  ];
+  const hasCurrentHeaders = currentHeaders.every((pattern) =>
+    table.header.some((header) => pattern.test(header)),
+  );
+  const legacyHeaders = [
+    /^Risk dimension$/i,
+    /^Applicability and scenario$/i,
+    /^Owning boundary$/i,
+    /^Deterministic verification$/i,
+    /^Exact expected result$/i,
+    /^Checks$/i,
+    /^Status and stable evidence$/i,
+  ];
+  const usesLegacyTerminalMatrix = isTerminalRecord
+    && legacyHeaders.every((pattern) => table.header.some((header) => pattern.test(header)));
+  if (!hasCurrentHeaders && !usesLegacyTerminalMatrix) return undefined;
+  return {
+    status: table.header.findIndex((header) => (
+      usesLegacyTerminalMatrix ? /^Status and stable evidence$/i.test(header) : /^Status$/i.test(header)
+    )),
+    checkRefs: table.header.findIndex((header) => (
+      usesLegacyTerminalMatrix ? /^Checks$/i.test(header) : /^Acceptance check IDs$/i.test(header)
+    )),
+    applicability: table.header.findIndex((header) => /^Applicability and scenario/i.test(header)),
+    headers: table.header,
+    usesLegacyTerminalMatrix,
+  };
+}
+
 
 // Builds the accepted-stage ADR, OCR, and ADD content validator from shared
 // Markdown parsing and lifecycle helpers.
@@ -16,6 +142,7 @@ export function createAcceptedRecordValidator(context) {
     checklistItems,
     isCompleteTableValue,
     metadata,
+    normalizeDimension,
     sectionContent,
     sectionTable,
     stripFencedCode,
@@ -38,26 +165,18 @@ export function createAcceptedRecordValidator(context) {
     "Risk Coverage Matrix",
   ]);
 
-  // Classifies an accepted record so downstream validators share one source of
-  // truth for its template and lifecycle-specific requirements.
-  function recordKind(path, markdown) {
-    const filename = path.split("/").at(-1);
-    const isAdd = filename.startsWith("ADD-");
-    const isOcr = filename.startsWith("OCR-");
-    const isLightweight = !isAdd && !isOcr && /^#\s+Lightweight ADR-\d+/m.test(markdown);
-    return { isAdd, isOcr, isLightweight };
+  // The template's required top-level sections for one classified record kind.
+  function requiredSectionsForKind(kind) {
+    if (kind.isAdd) return ADD_REQUIRED_SECTIONS;
+    if (kind.isOcr) return OCR_REQUIRED_SECTIONS;
+    if (kind.isLightweight) return LIGHTWEIGHT_ADR_REQUIRED_SECTIONS;
+    return FULL_ADR_REQUIRED_SECTIONS;
   }
 
   // Requires every top-level section mandated by the record template to carry
   // substantive accepted-stage content.
   function validateRequiredSectionBodies(path, markdown, kind, errors) {
-    const required = kind.isAdd
-      ? ADD_REQUIRED_SECTIONS
-      : kind.isOcr
-        ? OCR_REQUIRED_SECTIONS
-        : kind.isLightweight
-          ? LIGHTWEIGHT_ADR_REQUIRED_SECTIONS
-          : FULL_ADR_REQUIRED_SECTIONS;
+    const required = requiredSectionsForKind(kind);
     for (const section of required) {
       const raw = sectionContent(markdown, section);
       if (raw === undefined) continue;
@@ -74,38 +193,6 @@ export function createAcceptedRecordValidator(context) {
       }
     }
     validateRetainedOptionalSections(path, markdown, errors);
-  }
-
-  // A standalone Pending placeholder anywhere in the body — not only as its
-  // first token — leaves a lifecycle-gated required section deliberately
-  // incomplete.
-  function containsStandalonePending(body) {
-    // The placeholder is the capitalized token `Pending`, either as a whole
-    // line or as the value of a Markdown field (`- **Owner**: Pending`); a
-    // label prefix, bullet, quote, or emphasis never hides it. Lowercase
-    // prose wrapping onto a line starting with "pending" is content.
-    return body.split(/\n+/).some((line) => {
-      const trimmed = line.trim();
-      // Strip markdown scaffolding — bullets, quotes, emphasis, and a
-      // field label ending in ":" — then require the placeholder at the
-      // value position.
-      const stripped = trimmed
-        .replace(/^[-*_>]+\s*/, "")
-        .replace(/^\*\*([^*]*)\*\*\s*:\s*/, "")
-        .replace(/^[^:*]{0,80}:\s*/, "");
-      if (/^\|.*\|$/.test(trimmed)) {
-        const cells = trimmed
-          .slice(1, -1)
-          .split("|")
-          .map((cell) => cell.trim());
-        // Two-column field/value tables are narrative section content. Their
-        // values cannot retain a lifecycle placeholder. Structured plan and
-        // acceptance tables have their own status-aware validation below,
-        // where Pending remains valid before a terminal implementation state.
-        return cells.length === 2 && cells.some((cell) => /^Pending\b/.test(cell));
-      }
-      return /^Pending\b/.test(stripped);
-    });
   }
 
   // Retained optional sections must carry complete content at final
@@ -149,12 +236,6 @@ export function createAcceptedRecordValidator(context) {
     }
   }
 
-  // Recognizes the repository's only valid table-level omission form: a
-  // reasoned N/A using the required em dash delimiter.
-  function isReasonedNa(value) {
-    return /^N\/A\s+—\s+\S/.test(value);
-  }
-
   // Validates the one-to-three accepted subtasks and returns their declared IDs
   // for acceptance-check reference validation.
   function validateSubtaskPlan(path, markdown, isOcr, errors) {
@@ -165,42 +246,21 @@ export function createAcceptedRecordValidator(context) {
       errors.push(`${path}: ${section} requires a structured table for an Accepted record`);
       return declared;
     }
-    const idCol = table.header.findIndex((header) => header === "ID");
-    const statusCol = table.header.findIndex((header) => header === "Status");
-    const requiredHeaders = isOcr
-      ? [/^ID$/, /^Objective/i, /^Included scope/i, /^Completion criterion/i, /^Expected evidence/i, /^Status$/, /^Actual.*evidence/i]
-      : [/^ID$/, /^Objective/i, /^Included scope/i, /^Status$/, /^Actual.*evidence/i];
-    if (idCol === -1 || statusCol === -1
+    const columns = {
+      id: table.header.indexOf("ID"),
+      status: table.header.indexOf("Status"),
+      evidence: new Set(table.header.flatMap((header, index) =>
+        /^Actual.*evidence/i.test(header) ? [index] : [],
+      )),
+    };
+    const requiredHeaders = subtaskRequiredHeaders(isOcr);
+    if (columns.id === -1 || columns.status === -1
       || !requiredHeaders.every((pattern) => table.header.some((header) => pattern.test(header)))) {
       errors.push(`${path}: ${section} table is missing required template columns for an Accepted record`);
       return declared;
     }
-    const evidenceColumns = new Set();
-    table.header.forEach((header, index) => {
-      if (/^Actual.*evidence/i.test(header)) evidenceColumns.add(index);
-    });
     for (const row of table.rows) {
-      const id = row[idCol] ?? "";
-      if (!/^T-\d+$/.test(id)) {
-        errors.push(`${path}: ${section} has a row with a missing or illegal ID (${id || "<missing>"})`);
-        continue;
-      }
-      if (declared.has(id)) {
-        errors.push(`${path}: ${section} duplicates subtask ID ${id}`);
-        continue;
-      }
-      declared.add(id);
-      const status = (row[statusCol] ?? "").trim();
-      if (!SUBTASK_STATUSES.has(status) && !/^N\/A\s+—\s+\S/.test(status)) {
-        errors.push(`${path}: subtask ${id} has an illegal Status (${status})`);
-      }
-      for (let index = 0; index < row.length; index++) {
-        if (index === idCol || index === statusCol || evidenceColumns.has(index)) continue;
-        if (!isCompleteTableValue((row[index] ?? "").trim())) {
-          errors.push(`${path}: ${section} has an incomplete cell in a planned column for ${id}`);
-          break;
-        }
-      }
+      validateSubtaskRow(path, section, row, columns, declared, errors);
     }
     if (declared.size === 0) {
       errors.push(`${path}: ${section} requires at least one T-N subtask row for an Accepted record`);
@@ -208,6 +268,32 @@ export function createAcceptedRecordValidator(context) {
       errors.push(`${path}: ${section} must have at most 3 subtasks for an Accepted record (has ${declared.size})`);
     }
     return declared;
+  }
+
+  // Validates one subtask row and declares its ID; illegal or duplicate IDs
+  // are rejected rather than silently skipped.
+  function validateSubtaskRow(path, section, row, columns, declared, errors) {
+    const id = row[columns.id] ?? "";
+    if (!/^T-\d+$/.test(id)) {
+      errors.push(`${path}: ${section} has a row with a missing or illegal ID (${id || "<missing>"})`);
+      return;
+    }
+    if (declared.has(id)) {
+      errors.push(`${path}: ${section} duplicates subtask ID ${id}`);
+      return;
+    }
+    declared.add(id);
+    const status = (row[columns.status] ?? "").trim();
+    if (!SUBTASK_STATUSES.has(status) && !/^N\/A\s+—\s+\S/.test(status)) {
+      errors.push(`${path}: subtask ${id} has an illegal Status (${status})`);
+    }
+    for (let index = 0; index < row.length; index++) {
+      if (index === columns.id || index === columns.status || columns.evidence.has(index)) continue;
+      if (!isCompleteTableValue((row[index] ?? "").trim())) {
+        errors.push(`${path}: ${section} has an incomplete cell in a planned column for ${id}`);
+        break;
+      }
+    }
   }
 
   // Requires source ADRs to identify stable implementation touchpoints while
@@ -245,7 +331,8 @@ export function createAcceptedRecordValidator(context) {
       const [pathValue, anchor, excerpt, purpose, revision] = columns.map((column) => (row[column] ?? "").trim());
       const hasAnchor = isCompleteTableValue(anchor);
       const hasExcerpt = isCompleteTableValue(excerpt);
-      const requiredValuesComplete = [pathValue, purpose, revision].every(isCompleteTableValue);
+      const requiredValuesComplete = [pathValue, purpose, revision]
+        .every((value) => isCompleteTableValue(value));
       const anchorsValid = (hasAnchor || isReasonedNa(anchor))
         && (hasExcerpt || isReasonedNa(excerpt))
         && (hasAnchor || hasExcerpt);
@@ -279,47 +366,20 @@ export function createAcceptedRecordValidator(context) {
       errors.push(`${path}: Acceptance Checks requires a structured table for an Accepted ADR`);
       return declared;
     }
-    const idCol = table.header.findIndex((header) => /^Check ID$/i.test(header));
-    const subtaskCol = table.header.findIndex((header) => /^Subtask$/i.test(header));
-    const statusCol = table.header.findIndex((header) => /^Status$/i.test(header));
-    const requiredHeaders = [
-      /^Check ID$/i, /^Subtask$/i, /^Binary acceptance point$/i,
-      /^Preconditions? or input$/i, /^Verification method$/i,
-      /^Exact expected result$/i, /^Expected evidence$/i, /^Status$/i,
-      /^Actual result and evidence$/i,
-    ];
-    if (idCol === -1 || subtaskCol === -1
+    const columns = {
+      id: table.header.findIndex((header) => /^Check ID$/i.test(header)),
+      subtask: table.header.findIndex((header) => /^Subtask$/i.test(header)),
+      status: table.header.findIndex((header) => /^Status$/i.test(header)),
+      headers: table.header,
+    };
+    const requiredHeaders = acceptanceCheckRequiredHeaders();
+    if (columns.id === -1 || columns.subtask === -1
       || !requiredHeaders.every((pattern) => table.header.some((header) => pattern.test(header)))) {
       errors.push(`${path}: Acceptance Checks table is missing required template columns`);
       return declared;
     }
     for (const row of table.rows) {
-      const id = row[idCol] ?? "";
-      if (!/^AC-\d+$/.test(id)) {
-        errors.push(`${path}: Acceptance Checks has a row with a missing or illegal Check ID (${id || "<missing>"})`);
-        continue;
-      }
-      if (declared.has(id)) {
-        errors.push(`${path}: Acceptance Checks duplicates ${id}`);
-        continue;
-      }
-      declared.add(id);
-      if (!subtaskIds.has((row[subtaskCol] ?? "").trim())) {
-        errors.push(`${path}: acceptance check ${id} Subtask must reference a declared T-N ID`);
-      }
-      const status = (row[statusCol] ?? "").trim();
-      if (!CHECK_STATUSES.has(status) && !/^N\/A\s+—\s+\S/.test(status)) {
-        errors.push(`${path}: acceptance check ${id} has an illegal Status (${status || "<missing>"})`);
-      }
-      for (let index = 0; index < table.header.length; index++) {
-        const header = table.header[index];
-        if (index === idCol || index === subtaskCol || /^Status$/i.test(header)
-          || /^Actual result and evidence$/i.test(header)) continue;
-        if (!isCompleteTableValue((row[index] ?? "").trim())) {
-          errors.push(`${path}: acceptance check ${id} has an incomplete planned column`);
-          break;
-        }
-      }
+      validateAcceptanceCheckRow(path, row, columns, subtaskIds, declared, errors);
     }
     if (declared.size === 0) {
       errors.push(`${path}: Acceptance Checks requires at least one AC-N row for an Accepted ADR`);
@@ -327,59 +387,103 @@ export function createAcceptedRecordValidator(context) {
     return declared;
   }
 
+  // Validates one acceptance-check row and declares its ID; illegal or
+  // duplicate IDs are rejected rather than silently skipped.
+  function validateAcceptanceCheckRow(path, row, columns, subtaskIds, declared, errors) {
+    const id = row[columns.id] ?? "";
+    if (!/^AC-\d+$/.test(id)) {
+      errors.push(`${path}: Acceptance Checks has a row with a missing or illegal Check ID (${id || "<missing>"})`);
+      return;
+    }
+    if (declared.has(id)) {
+      errors.push(`${path}: Acceptance Checks duplicates ${id}`);
+      return;
+    }
+    declared.add(id);
+    if (!subtaskIds.has((row[columns.subtask] ?? "").trim())) {
+      errors.push(`${path}: acceptance check ${id} Subtask must reference a declared T-N ID`);
+    }
+    const status = (row[columns.status] ?? "").trim();
+    if (!CHECK_STATUSES.has(status) && !/^N\/A\s+—\s+\S/.test(status)) {
+      errors.push(`${path}: acceptance check ${id} has an illegal Status (${status || "<missing>"})`);
+    }
+    for (let index = 0; index < columns.headers.length; index++) {
+      const header = columns.headers[index];
+      if (index === columns.id || index === columns.subtask || /^Status$/i.test(header)
+        || /^Actual result and evidence$/i.test(header)) continue;
+      if (!isCompleteTableValue((row[index] ?? "").trim())) {
+        errors.push(`${path}: acceptance check ${id} has an incomplete planned column`);
+        break;
+      }
+    }
+  }
+
   // Enforces current traceability columns for active ADRs while preserving the
   // former three-column shape of completed historical records.
   function validateTraceability(path, markdown, checkIds, errors) {
     const table = sectionTable(markdown, "Contract-To-Check Traceability");
     const isTerminal = ["Complete", "Verified"].includes(metadata(markdown, "Implementation Status"));
-    const isLegacy = Boolean(isTerminal && table
-      && table.header.some((header) => /^Normative contract clause$/i.test(header))
-      && table.header.some((header) => /^Acceptance check or deterministic test$/i.test(header)));
+    const isLegacy = isTerminal && table !== undefined && isLegacyTraceabilityTable(table);
     if (!table) {
       errors.push(`${path}: Contract-To-Check Traceability requires a structured table for an Accepted ADR`);
       return;
     }
-    const clauseCol = table.header.findIndex((header) => /^Clause ID$/i.test(header));
-    const checkCol = table.header.findIndex((header) => /Acceptance check/i.test(header));
+    const columns = {
+      clause: table.header.findIndex((header) => /^Clause ID$/i.test(header)),
+      check: table.header.findIndex((header) => /Acceptance check/i.test(header)),
+      columnCount: table.header.length,
+    };
     const requiredHeaders = [
       /^Clause ID$/i, /^Authoritative contract path and heading$/i,
       /^Exact normative requirement$/i, /^Acceptance check or deterministic test IDs$/i,
       /^Explicit coverage method$/i,
     ];
-    if (clauseCol === -1 || checkCol === -1
+    if (columns.clause === -1 || columns.check === -1
       || (!isLegacy && !requiredHeaders.every((pattern) => table.header.some((header) => pattern.test(header))))) {
       errors.push(`${path}: Contract-To-Check Traceability table is missing required template columns`);
       return;
     }
     const seen = new Set();
     for (const row of table.rows) {
-      const clauseId = row[clauseCol] ?? "";
-      if (!/^[A-Z]{2,}-\d+$/.test(clauseId)) {
-        errors.push(`${path}: Contract-To-Check Traceability has a row with a missing or illegal Clause ID (${clauseId || "<missing>"})`);
-        continue;
-      }
-      if (seen.has(clauseId)) {
-        errors.push(`${path}: Contract-To-Check Traceability duplicates ${clauseId}`);
-        continue;
-      }
-      seen.add(clauseId);
-      const references = [...(row[checkCol] ?? "").matchAll(/\bAC-\d+\b/g)].map((match) => match[0]);
-      if (references.length === 0) {
-        errors.push(`${path}: clause ${clauseId} must reference at least one AC-N check`);
-      } else {
-        for (const checkId of references) {
-          if (!checkIds.has(checkId)) errors.push(`${path}: clause ${clauseId} must reference declared acceptance check ${checkId}`);
-        }
-      }
-      if (!isLegacy && table.header.some((_, index) =>
-        !isCompleteTableValue((row[index] ?? "").trim()),
-      )) {
-        errors.push(`${path}: clause ${clauseId} has an incomplete planned column`);
-      }
+      validateTraceabilityRow(path, row, columns, isLegacy, checkIds, seen, errors);
     }
     if (seen.size === 0) {
       errors.push(`${path}: Contract-To-Check Traceability requires at least one valid clause row for an Accepted ADR`);
     }
+  }
+
+  // Validates one traceability row and declares its clause ID; illegal or
+  // duplicate IDs are rejected rather than silently skipped.
+  function validateTraceabilityRow(path, row, columns, isLegacy, checkIds, seen, errors) {
+    const clauseId = row[columns.clause] ?? "";
+    if (!/^[A-Z]{2,}-\d+$/.test(clauseId)) {
+      errors.push(`${path}: Contract-To-Check Traceability has a row with a missing or illegal Clause ID (${clauseId || "<missing>"})`);
+      return;
+    }
+    if (seen.has(clauseId)) {
+      errors.push(`${path}: Contract-To-Check Traceability duplicates ${clauseId}`);
+      return;
+    }
+    seen.add(clauseId);
+    const references = [...(row[columns.check] ?? "").matchAll(/\bAC-\d+\b/g)].map((match) => match[0]);
+    if (references.length === 0) {
+      errors.push(`${path}: clause ${clauseId} must reference at least one AC-N check`);
+    } else {
+      for (const checkId of references) {
+        if (!checkIds.has(checkId)) errors.push(`${path}: clause ${clauseId} must reference declared acceptance check ${checkId}`);
+      }
+    }
+    if (!isLegacy && hasIncompletePlannedColumn(row, columns.columnCount)) {
+      errors.push(`${path}: clause ${clauseId} has an incomplete planned column`);
+    }
+  }
+
+  // Returns whether any planned table cell is incomplete.
+  function hasIncompletePlannedColumn(row, columnCount) {
+    for (let index = 0; index < columnCount; index++) {
+      if (!isCompleteTableValue((row[index] ?? "").trim())) return true;
+    }
+    return false;
   }
 
   // Requires the six template-defined OCR eligibility assertions to be checked
@@ -392,7 +496,7 @@ export function createAcceptedRecordValidator(context) {
         label: "boundary",
         matches: (text) => /\buses?\s+(?:(?:an?|the)\s+)?accepted\b/i.test(text)
           && ["architecture", "pipeline", "artifact", "contract", "security", "data"]
-            .filter((term) => new RegExp(`\\b${term}`, "i").test(text)).length >= 3,
+            .filter((term) => new RegExp(String.raw`\b${term}`, "i").test(text)).length >= 3,
       },
       { label: "reversible", matches: (text) => /\bis reversible\b/i.test(text) && /(recovery|rollback|discard|restore)/i.test(text) },
       {
@@ -448,10 +552,8 @@ export function createAcceptedRecordValidator(context) {
         continue;
       }
       for (const field of fields) {
-        const escaped = field.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-        const match = stageBody.match(
-          new RegExp(`\\*\\*${escaped}\\*\\*:\\s*([\\s\\S]*?)(?=\\*\\*[^*]+\\*\\*:\\s*|^### |^## |$)`),
-        );
+        const escaped = escapeRegExp(field);
+        const match = runbookFieldPattern(escaped).exec(stageBody);
         if (!match || !isCompleteValue(match[1].trim())) {
           errors.push(`${path}: Core Runbook stage ${stage} field ${field} must be present and complete`);
         }
@@ -495,7 +597,7 @@ export function createAcceptedRecordValidator(context) {
     if (rows.length === 0) {
       // A matrix with no table is only allowed as an explicit N/A with a reason;
       // otherwise the five-dimension coverage is mandatory.
-      if (!/^\s*N\/A\s+—\s+\S/m.test(content)) {
+      if (!isReasonedNa(content.trimStart())) {
         errors.push(`${path}: Risk Coverage Matrix must contain a five-dimension table or N/A — <reason>`);
       }
       return;
@@ -530,94 +632,70 @@ export function createAcceptedRecordValidator(context) {
   // Enforces the approval-stage Risk Coverage Matrix contract: every baseline
   // dimension must describe its scenario, owner, deterministic check, exact
   // result, and declared acceptance-check linkage before an ADR is Accepted.
-  
   function validateAcceptedRiskMatrix(path, markdown, declaredCheckIds, errors) {
     const table = sectionTable(markdown, "Risk Coverage Matrix");
     if (!table) {
       errors.push(`${path}: Risk Coverage Matrix requires a structured table for an Accepted ADR`);
       return;
     }
-    const requiredHeaders = [
-      /^Risk dimension$/i,
-      /^Applicability and scenario, or specific N\/A reason$/i,
-      /^Owning boundary$/i,
-      /^Deterministic verification method$/i,
-      /^Exact expected result$/i,
-      /^Acceptance check IDs$/i,
-      /^Status$/i,
-      /^Actual evidence$/i,
-    ];
-    const hasAllHeaders = requiredHeaders.every((pattern) =>
-      table.header.some((header) => pattern.test(header)),
-    );
     const isTerminalRecord = ["Complete", "Verified"].includes(
       metadata(markdown, "Implementation Status"),
     );
-    const legacyHeaders = [
-      /^Risk dimension$/i,
-      /^Applicability and scenario$/i,
-      /^Owning boundary$/i,
-      /^Deterministic verification$/i,
-      /^Exact expected result$/i,
-      /^Checks$/i,
-      /^Status and stable evidence$/i,
-    ];
-    const usesLegacyTerminalMatrix = isTerminalRecord
-      && legacyHeaders.every((pattern) => table.header.some((header) => pattern.test(header)));
-    if (!hasAllHeaders && !usesLegacyTerminalMatrix) {
+    const columns = riskMatrixColumns(table, isTerminalRecord);
+    if (!columns) {
       errors.push(`${path}: Risk Coverage Matrix table is missing required template columns`);
       return;
     }
-    const statusCol = table.header.findIndex((header) => (
-      usesLegacyTerminalMatrix ? /^Status and stable evidence$/i.test(header) : /^Status$/i.test(header)
-    ));
-    const checkRefsCol = table.header.findIndex((header) => (
-      usesLegacyTerminalMatrix ? /^Checks$/i.test(header) : /^Acceptance check IDs$/i.test(header)
-    ));
-    const applicabilityCol = table.header.findIndex((header) => /^Applicability and scenario/i.test(header));
     const baseline = new Set(RISK_DIMENSIONS.map(normalizeDimension));
     for (const row of table.rows) {
       const dimension = row[0] ?? "";
-      if (!baseline.has(normalizeDimension(dimension))) continue;
-      const status = (row[statusCol] ?? "").trim();
-      const normalizedStatus = usesLegacyTerminalMatrix
-        ? (status.match(/^(Pass|Fail|Not Started|In Progress|Blocked)(?:\s+[—-].*)?$/)?.[1]
-          ?? ( /^N\/A\s+—\s+\S/.test(status) ? status : status ))
-        : status;
-      if (!CHECK_STATUSES.has(normalizedStatus) && !/^N\/A\s+—\s+\S/.test(normalizedStatus)) {
-        errors.push(`${path}: Risk Coverage Matrix dimension ${dimension} has an illegal Status (${status || "<missing>"})`);
-      }
-      for (let i = 0; i < table.header.length; i++) {
-        const header = table.header[i];
-        if (
-          /^Status$/i.test(header)
-          || /^Actual evidence$/i.test(header)
-          || (usesLegacyTerminalMatrix && /^Status and stable evidence$/i.test(header))
-        ) continue;
-        const value = (row[i] ?? "").trim();
-        if (i === applicabilityCol && isReasonedNa(value)) continue;
-        if (!isCompleteTableValue(value)) {
-          errors.push(`${path}: Risk Coverage Matrix dimension ${dimension} has an incomplete planned column`);
-          break;
-        }
-      }
-      const references = [...(row[checkRefsCol] ?? "").matchAll(/\bAC-\d+\b/g)].map((match) => match[0]);
-      if (references.length === 0) {
-        errors.push(`${path}: Risk Coverage Matrix dimension ${dimension} must reference at least one AC-N check`);
-        continue;
-      }
-      for (const checkId of references) {
-        if (!declaredCheckIds.has(checkId)) {
-          errors.push(`${path}: Risk Coverage Matrix dimension ${dimension} must reference declared acceptance check ${checkId}`);
-        }
+      if (baseline.has(normalizeDimension(dimension))) {
+        validateRiskMatrixRow(path, row, dimension, columns, declaredCheckIds, errors);
       }
     }
   }
-  
-  function normalizeDimension(value) {
-    return value.toLowerCase().replace(/-/g, "").replace(/\s+/g, " ").trim();
+
+  // Validates one baseline-dimension row's status, planned columns, and
+  // declared acceptance-check references.
+  function validateRiskMatrixRow(path, row, dimension, columns, declaredCheckIds, errors) {
+    const status = (row[columns.status] ?? "").trim();
+    const normalizedStatus = columns.usesLegacyTerminalMatrix
+      ? (status.match(/^(Pass|Fail|Not Started|In Progress|Blocked)(?:\s+[—-].*)?$/)?.[1]
+        ?? status)
+      : status;
+    if (!CHECK_STATUSES.has(normalizedStatus) && !/^N\/A\s+—\s+\S/.test(normalizedStatus)) {
+      errors.push(`${path}: Risk Coverage Matrix dimension ${dimension} has an illegal Status (${status || "<missing>"})`);
+    }
+    validateRiskMatrixPlannedColumns(path, row, dimension, columns, errors);
+    const references = [...(row[columns.checkRefs] ?? "").matchAll(/\bAC-\d+\b/g)].map((match) => match[0]);
+    if (references.length === 0) {
+      errors.push(`${path}: Risk Coverage Matrix dimension ${dimension} must reference at least one AC-N check`);
+      return;
+    }
+    for (const checkId of references) {
+      if (!declaredCheckIds.has(checkId)) {
+        errors.push(`${path}: Risk Coverage Matrix dimension ${dimension} must reference declared acceptance check ${checkId}`);
+      }
+    }
   }
-  
-  
+
+  // Every planned column must be complete; the applicability column may carry
+  // a reasoned N/A, and status/evidence columns carry stage-dependent values.
+  function validateRiskMatrixPlannedColumns(path, row, dimension, columns, errors) {
+    for (let i = 0; i < columns.headers.length; i++) {
+      const header = columns.headers[i];
+      if (
+        /^Status$/i.test(header)
+        || /^Actual evidence$/i.test(header)
+        || (columns.usesLegacyTerminalMatrix && /^Status and stable evidence$/i.test(header))
+      ) continue;
+      const value = (row[i] ?? "").trim();
+      if (i === columns.applicability && isReasonedNa(value)) continue;
+      if (!isCompleteTableValue(value)) {
+        errors.push(`${path}: Risk Coverage Matrix dimension ${dimension} has an incomplete planned column`);
+        break;
+      }
+    }
+  }
   return { validateRequiredBodyContent, validateRiskMatrixDimensions };
 }

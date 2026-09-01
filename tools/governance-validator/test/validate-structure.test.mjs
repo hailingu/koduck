@@ -1,10 +1,10 @@
-// ADR: docs/adr/ADR-0002-required-ai-ci-postgres-verification.md
+// ADR: docs/adr/ADR-0014-validator-structural-parsing-reliability.md
 
 import assert from "node:assert/strict";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
-import { ACCEPTED_RISK_MATRIX_TABLE, RISK_MATRIX_TABLE, acceptedAdr, acceptedOcr, completeOcr, replaceSection, run, validRepository, write } from "./validate.test.mjs";
+import { ACCEPTED_RISK_MATRIX_TABLE, RISK_MATRIX_TABLE, acceptedAdr, acceptedOcr, completeOcr, replaceSection, run, validRepository, write } from "./fixtures.mjs";
 test("accepts a structurally valid governance repository", () => {
   const result = run(validRepository());
   assert.equal(result.status, 0, result.stderr || result.stdout);
@@ -40,6 +40,22 @@ test("rejects a required section without a requirement-level label", () => {
   const result = run(root);
   assert.equal(result.status, 1);
   assert.match(result.stderr, /section Decision must declare a requirement level/i);
+});
+
+test("rejects structural parsing contracts split across lines", () => {
+  const root = validRepository();
+  const path = join(root, "docs/adr/ADR-0001-example.md");
+  writeFileSync(
+    path,
+    readFileSync(path, "utf8").replace(
+      "## Decision [Required]\nDecision.\n",
+      "##\nDecision [Required]\nDecision.\n",
+    ),
+  );
+
+  const result = run(root);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /missing required section.*Decision/i);
 });
 
 test("rejects an illegal lifecycle status", () => {
@@ -217,6 +233,23 @@ test("ignores pseudo-headings inside fenced code blocks", () => {
       "## Context [Required]\nContext.\n\n```\n## Example\nthis is code, not a section\n```\n",
     ),
   );
+
+  const result = run(root);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+});
+
+test("accepts record classification contracts outside fenced code", () => {
+  const root = validRepository();
+  acceptedOcr(root, "0002");
+  const adrPath = join(root, "docs/adr/ADR-0001-example.md");
+  writeFileSync(
+    adrPath,
+    readFileSync(adrPath, "utf8").replace(
+      "## Context [Required]\nContext.",
+      "## Context [Required]\nContext.\n\n```md\n# Lightweight ADR-0001: Example\n```",
+    ),
+  );
+  write(root, "docs/notes.md", "# Note\n\nThis is not a decision record.\n");
 
   const result = run(root);
   assert.equal(result.status, 0, result.stderr || result.stdout);

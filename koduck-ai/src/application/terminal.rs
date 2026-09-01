@@ -2,12 +2,15 @@
 
 //! Shared C-5 conditional commitment for an already-reserved D-7 terminal.
 
-use crate::domain::execution::{ExecutionAttempt, ExecutionStatus, TurnExecutionAuthority};
+use crate::domain::execution::{
+    ExactActionBinding, ExecutionAttempt, ExecutionStatus, TurnExecutionAuthority,
+};
 
 use super::attempt_store::DurableAttemptTransitions;
 use super::execution::{
-    AttemptCommitError, AttemptCommitResult, AttemptCommitter, DispatchPhase, ExecutionCoordinator,
-    ExecutionPending, IsolatedExecutor, LeaseValidator, ToolExecutionOutcome,
+    AttemptCommitError, AttemptCommitResult, AttemptCommitter, CanonicalAttemptTerminal,
+    DispatchPhase, ExecutionCoordinator, ExecutionPending, IsolatedExecutor, LeaseValidator,
+    ToolExecutionOutcome,
 };
 use super::executor_envelope::ExecutionFailure;
 use super::tool_projection::attempt_version;
@@ -54,75 +57,13 @@ where
             self.committer.commit_outcome(&binding, &outcome)
         };
         let (result, canonical_terminal_known) = match committer_result {
-            Ok(AttemptCommitResult::Won) => (
-                if authority.mirror_terminal(attempt, status).is_err() {
-                    Err(ExecutionPending::ReconciliationRequired {
-                        code: ExecutionFailure::TerminalConflict,
-                        effect_state: outcome.effect_state(),
-                    })
-                } else {
-                    Ok(outcome)
-                },
-                true,
-            ),
+            Ok(AttemptCommitResult::Won) => {
+                won_terminal_result(authority, attempt, outcome, status)
+            }
             Ok(AttemptCommitResult::Existing(existing)) => {
-                if existing.binding() != &binding {
-                    return Err(ExecutionPending::ReconciliationRequired {
-                        code: ExecutionFailure::TerminalConflict,
-                        effect_state: outcome.effect_state(),
-                    });
-                }
-                let persisted_version = existing.version();
-                let existing = existing.outcome().clone();
-                if persisted_version != attempt_version(existing.status()) {
-                    // A replayed or competing-writer terminal whose
-                    // persisted version contradicts the canonical D-7
-                    // transition version is a conflict: projecting it
-                    // would fabricate a canonical version, so
-                    // reconciliation owns the next transition.
-                    return Err(ExecutionPending::ReconciliationRequired {
-                        code: ExecutionFailure::TerminalConflict,
-                        effect_state: existing.effect_state(),
-                    });
-                }
-                (
-                    if authority
-                        .mirror_terminal(attempt, existing.status())
-                        .is_err()
-                    {
-                        Err(ExecutionPending::ReconciliationRequired {
-                            code: ExecutionFailure::TerminalConflict,
-                            effect_state: existing.effect_state(),
-                        })
-                    } else {
-                        Ok(existing)
-                    },
-                    true,
-                )
+                existing_terminal_result(authority, attempt, &binding, &outcome, &existing)
             }
-            Err(error) => {
-                let canonical_terminal_known = matches!(error, AttemptCommitError::Conflict);
-                (
-                    Err(ExecutionPending::ReconciliationRequired {
-                        code: match error {
-                            AttemptCommitError::Fenced => match dispatch_phase {
-                                DispatchPhase::BeforeDispatch => {
-                                    ExecutionFailure::OwnerFencedBeforeDispatch
-                                }
-                                DispatchPhase::AfterDispatch => {
-                                    ExecutionFailure::OwnerFencedAfterDispatch
-                                }
-                            },
-                            AttemptCommitError::Unavailable => {
-                                ExecutionFailure::DurabilityUnavailable
-                            }
-                            AttemptCommitError::Conflict => ExecutionFailure::TerminalConflict,
-                        },
-                        effect_state: outcome.effect_state(),
-                    }),
-                    canonical_terminal_known,
-                )
-            }
+            Err(error) => commit_error_result(error, &outcome, dispatch_phase),
         };
         if result.is_err()
             && !canonical_terminal_known
@@ -135,4 +76,102 @@ where
         }
         result
     }
+}
+
+/// Mirrors the won terminal into the local catalog and returns it; the
+/// canonical terminal is known even when the mirror conflicts.
+fn won_terminal_result(
+    authority: &mut TurnExecutionAuthority,
+    attempt: &mut ExecutionAttempt,
+    outcome: ToolExecutionOutcome,
+    status: ExecutionStatus,
+) -> (Result<ToolExecutionOutcome, ExecutionPending>, bool) {
+    if authority.mirror_terminal(attempt, status).is_err() {
+        return (
+            Err(ExecutionPending::ReconciliationRequired {
+                code: ExecutionFailure::TerminalConflict,
+                effect_state: outcome.effect_state(),
+            }),
+            true,
+        );
+    }
+    (Ok(outcome), true)
+}
+
+/// Adopts an idempotent canonical terminal that already existed: its binding
+/// and persisted version must agree with the canonical D-7 transition before
+/// it is mirrored and returned. A binding or version disagreement conflicts
+/// without resolving the canonical terminal, so the caller retains the
+/// reservation (reported as terminal-known, matching the immediate error
+/// return this path replaces).
+fn existing_terminal_result(
+    authority: &mut TurnExecutionAuthority,
+    attempt: &mut ExecutionAttempt,
+    binding: &ExactActionBinding,
+    outcome: &ToolExecutionOutcome,
+    existing: &CanonicalAttemptTerminal,
+) -> (Result<ToolExecutionOutcome, ExecutionPending>, bool) {
+    if existing.binding() != binding {
+        return (
+            Err(ExecutionPending::ReconciliationRequired {
+                code: ExecutionFailure::TerminalConflict,
+                effect_state: outcome.effect_state(),
+            }),
+            true,
+        );
+    }
+    let persisted_version = existing.version();
+    let existing = existing.outcome().clone();
+    if persisted_version != attempt_version(existing.status()) {
+        // A replayed or competing-writer terminal whose persisted version
+        // contradicts the canonical D-7 transition version is a conflict:
+        // projecting it would fabricate a canonical version, so
+        // reconciliation owns the next transition.
+        return (
+            Err(ExecutionPending::ReconciliationRequired {
+                code: ExecutionFailure::TerminalConflict,
+                effect_state: existing.effect_state(),
+            }),
+            true,
+        );
+    }
+    if authority
+        .mirror_terminal(attempt, existing.status())
+        .is_err()
+    {
+        return (
+            Err(ExecutionPending::ReconciliationRequired {
+                code: ExecutionFailure::TerminalConflict,
+                effect_state: existing.effect_state(),
+            }),
+            true,
+        );
+    }
+    (Ok(existing), true)
+}
+
+/// Maps a failed terminal commit to its reconciliation requirement. The
+/// canonical terminal is known only for a plain conflict, which proves another
+/// writer's terminal existed.
+fn commit_error_result(
+    error: AttemptCommitError,
+    outcome: &ToolExecutionOutcome,
+    dispatch_phase: DispatchPhase,
+) -> (Result<ToolExecutionOutcome, ExecutionPending>, bool) {
+    let canonical_terminal_known = matches!(error, AttemptCommitError::Conflict);
+    let code = match error {
+        AttemptCommitError::Fenced => match dispatch_phase {
+            DispatchPhase::BeforeDispatch => ExecutionFailure::OwnerFencedBeforeDispatch,
+            DispatchPhase::AfterDispatch => ExecutionFailure::OwnerFencedAfterDispatch,
+        },
+        AttemptCommitError::Unavailable => ExecutionFailure::DurabilityUnavailable,
+        AttemptCommitError::Conflict => ExecutionFailure::TerminalConflict,
+    };
+    (
+        Err(ExecutionPending::ReconciliationRequired {
+            code,
+            effect_state: outcome.effect_state(),
+        }),
+        canonical_terminal_known,
+    )
 }
