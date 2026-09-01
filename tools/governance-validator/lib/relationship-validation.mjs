@@ -1,4 +1,4 @@
-// ADR: docs/adr/archive/ADR-0008-delimiter-bounded-governance-record-paths.md
+// ADR: docs/adr/ADR-0013-relationship-validation-reliability.md
 
 // Separates Markdown-delimited path candidates without matching through their
 // contents, so record recognition remains bounded by the existing delimiters.
@@ -21,6 +21,31 @@ export function findRecordPath(value, directory, filenamePrefix) {
     }
   }
   return undefined;
+}
+
+// Returns the non-empty title from a recognized record H1 without matching a
+// greedy pattern across the full Markdown document.
+function recordTitleFromHeading(markdown) {
+  for (const line of String(markdown).split("\n")) {
+    if (!line.startsWith("#")) continue;
+
+    let index = 1;
+    while (line[index] === " " || line[index] === "\t") index += 1;
+    if (index === 1) continue;
+
+    if (line.startsWith("Lightweight ", index)) index += "Lightweight ".length;
+    const recordPrefix = ["ADR-", "OCR-", "ADD-"].find((prefix) => line.startsWith(prefix, index));
+    if (!recordPrefix) continue;
+    index += recordPrefix.length;
+
+    const idStart = index;
+    while (line[index] >= "0" && line[index] <= "9") index += 1;
+    if (index === idStart || line[index] !== ":") continue;
+
+    const title = line.slice(index + 1).trim();
+    if (title) return title;
+  }
+  return "";
 }
 
 // Builds record-index and reciprocal-link validators from filesystem and
@@ -114,8 +139,7 @@ export function createRelationshipValidator(context) {
       // Title comparison
       if (columns.has("Title")) {
         const indexedTitle = cells[columns.get("Title")];
-        const h1Match = record.match(/^#\s+(?:Lightweight\s+)?(?:ADR|OCR|ADD)-\d+:\s*(.+)$/m);
-        const recordTitle = h1Match ? h1Match[1].trim() : "";
+        const recordTitle = recordTitleFromHeading(record);
         if (recordTitle && indexedTitle !== recordTitle) {
           errors.push(`${path}: index Title disagrees with record for ${indexed}: ${indexedTitle} vs ${recordTitle}`);
         }
@@ -148,8 +172,8 @@ export function createRelationshipValidator(context) {
         : [["Scope", "Record Scope"], ["Architecture Source", "Architecture Source"], ["Superseded By", "Superseded By"]];
       for (const [column, field] of fieldMap) {
         if (!columns.has(column)) continue; // missing columns caught at header
-        const indexedValue = (cells[columns.get(column)] ?? "").replace(/`/g, "");
-        const recordValue = (metadata(record, field) ?? "").replace(/`/g, "");
+        const indexedValue = (cells[columns.get(column)] ?? "").replaceAll("`", "");
+        const recordValue = (metadata(record, field) ?? "").replaceAll("`", "");
         // For Trello Source, normalize Markdown links to their URL for comparison.
         if (column === "Trello Source") {
           const indexedUrl = indexedValue.match(/https?:\/\/[^\s)]+/)?.[0] ?? indexedValue;
