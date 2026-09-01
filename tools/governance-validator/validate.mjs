@@ -566,7 +566,6 @@ function recordPathFromValue(value) {
   }
   return undefined;
 }
-
 // A Superseded record must name its replacement (`Superseded By`), the
 // replacement must be Accepted (ADR/OCR) or Current (ADD), and the replacement
 // must reciprocally `Supersede` this exact record (AGENTS.md).
@@ -579,9 +578,10 @@ function validateSupersession(root, path, markdown, errors) {
   }
   // The replacement must be a real, indexed ADR/ADD/OCR record — not a
   // translations helper or arbitrary markdown file that merely declares a status.
+  const filename = replacementPath.slice(replacementPath.lastIndexOf("/") + 1);
   if (
     replacementPath.includes("/translations/")
-    || !/(?:ADR|ADD|OCR)-\d+[^/]*\.md$/.test(replacementPath)
+    || !["ADR-", "ADD-", "OCR-"].some((prefix) => isRecordFilename(filename, prefix))
   ) {
     errors.push(`${path}: Superseded By must name an ADR, ADD, or OCR record: ${replacementPath}`);
     return;
