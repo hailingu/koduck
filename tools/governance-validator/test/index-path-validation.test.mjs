@@ -7,7 +7,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { run, validRepository } from "./validate.test.mjs";
+import { run, validRepository } from "./fixtures.mjs";
 
 const validator = fileURLToPath(new URL("../validate.mjs", import.meta.url));
 

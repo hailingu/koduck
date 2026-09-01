@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
-import { ACCEPTED_RISK_MATRIX_TABLE, RISK_MATRIX_TABLE, acceptedAdr, acceptedOcr, completeOcr, replaceSection, run, validRepository, write } from "./validate.test.mjs";
+import { ACCEPTED_RISK_MATRIX_TABLE, RISK_MATRIX_TABLE, acceptedAdr, acceptedOcr, completeOcr, replaceSection, run, validRepository, write } from "./fixtures.mjs";
 test("accepts a structurally valid governance repository", () => {
   const result = run(validRepository());
   assert.equal(result.status, 0, result.stderr || result.stdout);

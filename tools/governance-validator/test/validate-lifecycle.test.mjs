@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
-import { ACCEPTED_RISK_MATRIX_TABLE, RISK_MATRIX_TABLE, acceptedAdr, acceptedOcr, completeOcr, replaceSection, run, validRepository, write } from "./validate.test.mjs";
+import { ACCEPTED_RISK_MATRIX_TABLE, RISK_MATRIX_TABLE, acceptedAdr, acceptedOcr, completeOcr, replaceSection, run, validRepository, write } from "./fixtures.mjs";
 test("rejects Pending as a Retirement Reason", () => {
   const root = validRepository();
   const path = join(root, "docs/adr/ADR-0001-example.md");

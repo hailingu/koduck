@@ -21,24 +21,26 @@ function fieldWithoutRequirementLevelSuffix(field) {
 }
 
 /**
+ * Parses one active Metadata list entry without an unbounded whole-line
+ * expression, preserving the established marker, delimiter, and trimming
+ * rules for the extracted field/value pair.
+ */
+function metadataEntry(line) {
+  const prefix = "- **";
+  if (!line.startsWith(prefix)) return undefined;
+  const labelEnd = line.indexOf("**:", prefix.length);
+  if (labelEnd <= prefix.length) return undefined;
+  return {
+    field: fieldWithoutRequirementLevelSuffix(line.slice(prefix.length, labelEnd)),
+    value: line.slice(labelEnd + 3).trim(),
+  };
+}
+
+/**
  * Builds the active Metadata reader and duplicate-field validator using the
  * caller's canonical fenced-code and section parsers.
  */
 export function createMetadataValidator({ stripFencedCode, sectionContent }) {
-  // Parses one active Metadata list entry without an unbounded whole-line
-  // expression, preserving the established marker, delimiter, and trimming
-  // rules for the extracted field/value pair.
-  function metadataEntry(line) {
-    const prefix = "- **";
-    if (!line.startsWith(prefix)) return undefined;
-    const labelEnd = line.indexOf("**:", prefix.length);
-    if (labelEnd <= prefix.length) return undefined;
-    return {
-      field: fieldWithoutRequirementLevelSuffix(line.slice(prefix.length, labelEnd)),
-      value: line.slice(labelEnd + 3).trim(),
-    };
-  }
-
   // Collects active fields only from the real Metadata section; historical or
   // narrative lookalikes outside that section remain excluded.
   function entries(markdown) {

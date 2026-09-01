@@ -5,7 +5,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 
-import { acceptedAdr, acceptedOcr, run, validRepository } from "./validate.test.mjs";
+import { acceptedAdr, acceptedOcr, run, validRepository } from "./fixtures.mjs";
 
 // Exercises lifecycle and structured-table boundaries that must not accept
 // lookalike content outside the authoritative section or Markdown grammar.
