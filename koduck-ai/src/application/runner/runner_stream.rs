@@ -31,6 +31,11 @@ use crate::application::runner_terminals::{
 /// Maximum frequency of persisted interruption checks during provider streams.
 const INTERRUPTION_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
+/// Appends one provider terminal, adopting the terminal a competing writer
+/// already committed when this owner's append is fenced or already terminal.
+///
+/// Fencing means a durable terminal exists, so replaying it is the only
+/// truthful publication left (ADR-0001 durable-before-visible ordering).
 pub(super) fn append_terminal_or_replay_fenced<H: TurnHistory>(
     history: &mut H,
     accepted: &AcceptedTurn,
@@ -46,6 +51,13 @@ pub(super) fn append_terminal_or_replay_fenced<H: TurnHistory>(
     }
 }
 
+/// Drives one provider stream to its end, arbitrating every event's durable
+/// publication, and returns whether the Turn closed.
+///
+/// Each event is bounded by the latency-deadline delta flush and the persisted
+/// interruption poll before its handler runs; a stream that ends without a
+/// terminal either hands its Tool-call round to a continuation (the caller
+/// decides) or is closed by the caller's stream-ended terminal.
 #[allow(
     clippy::too_many_arguments,
     reason = "each parameter is one independently validated orchestration input"
