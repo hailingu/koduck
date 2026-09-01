@@ -20,8 +20,9 @@ use crate::domain::execution::{
 };
 use crate::domain::{TenantId, ThreadId, TurnId};
 
-use super::attempt_store::DurableAttemptTransitions;
+use super::attempt_store::{AttemptStoreError, DurableAttemptTransitions, PreparedCloseResolution};
 use super::audit::{ToolAuditRecord, ToolAuditTrail, record_audit};
+use super::canonical_dispatch::{reconciliation_required, reconciliation_required_with_effect};
 use super::deadline::{ActionDeadline, MAX_ACTION_DURATION_MILLIS};
 use super::execution::{
     AttemptCommitter, DispatchPhase, ExecutionCoordinator, ExecutionPending, IsolatedExecutor,
@@ -239,44 +240,8 @@ impl ExecutionInterrupter {
         let mut closed = Vec::with_capacity(attempts.len());
         let mut projections = Vec::with_capacity(attempts.len());
         for attempt in &mut attempts {
-            let outcome = match attempt.status() {
-                ExecutionStatus::Prepared => {
-                    if matches!(
-                        attempt.binding().approval_requirement(),
-                        Some(ApprovalRequirement::Required)
-                    ) {
-                        if let Err(pending) = approvals.cancel_requested(attempt.binding()) {
-                            return partial_or_error(closed, pending)
-                                .map(|outcome| (outcome, projections));
-                        }
-                    }
-                    match cancellations.cancel_prepared(&mut authority, attempt) {
-                        Err(
-                            pending @ ExecutionPending::ReconciliationRequired {
-                                code: ExecutionFailure::TerminalConflict,
-                                ..
-                            },
-                        ) => {
-                            let Some(mut running_attempt) =
-                                authority.live_attempts().into_iter().find(|candidate| {
-                                    candidate.binding() == attempt.binding()
-                                        && candidate.status() == ExecutionStatus::Running
-                                })
-                            else {
-                                return partial_or_error(closed, pending)
-                                    .map(|outcome| (outcome, projections));
-                            };
-                            cancellations.cancel_running(&mut authority, &mut running_attempt, now)
-                        }
-                        result => result,
-                    }
-                }
-                // `live_attempts` only mirrors prepared or running catalog entries.
-                ExecutionStatus::Running => {
-                    cancellations.cancel_running(&mut authority, attempt, now)
-                }
-                _ => unreachable!("live attempt lookup filters terminal states"),
-            };
+            let outcome =
+                close_live_attempt(cancellations, approvals, &mut authority, attempt, now);
             match outcome {
                 Ok(value) => {
                     // Durable committers append this terminal audit in their
@@ -307,6 +272,73 @@ impl ExecutionInterrupter {
     }
 }
 
+/// Closes one live attempt: a prepared D-7 closes without dispatch (cancelling
+/// its requested approval first when approval is required), and a running D-7
+/// receives exactly one bounded cancellation whose acknowledgement determines
+/// the committed terminal (TC-10).
+fn close_live_attempt(
+    cancellations: &mut dyn AttemptCancellationService,
+    approvals: &mut dyn PendingApprovalCanceller,
+    authority: &mut TurnExecutionAuthority,
+    attempt: &mut ExecutionAttempt,
+    now: &mut dyn FnMut() -> u64,
+) -> Result<ToolExecutionOutcome, ExecutionPending> {
+    match attempt.status() {
+        ExecutionStatus::Prepared => {
+            close_prepared_attempt(cancellations, approvals, authority, attempt, now)
+        }
+        // `live_attempts` only mirrors prepared or running catalog entries.
+        ExecutionStatus::Running => cancellations.cancel_running(authority, attempt, now),
+        _ => unreachable!("live attempt lookup filters terminal states"),
+    }
+}
+
+/// Closes one prepared D-7: cancel its requested D-6 first when approval is
+/// required, then close without dispatch; a terminal conflict retries through
+/// the running attempt the D-7 may have become.
+fn close_prepared_attempt(
+    cancellations: &mut dyn AttemptCancellationService,
+    approvals: &mut dyn PendingApprovalCanceller,
+    authority: &mut TurnExecutionAuthority,
+    attempt: &mut ExecutionAttempt,
+    now: &mut dyn FnMut() -> u64,
+) -> Result<ToolExecutionOutcome, ExecutionPending> {
+    if matches!(
+        attempt.binding().approval_requirement(),
+        Some(ApprovalRequirement::Required)
+    ) && let Err(pending) = approvals.cancel_requested(attempt.binding())
+    {
+        return Err(pending);
+    }
+    match cancellations.cancel_prepared(authority, attempt) {
+        Err(
+            pending @ ExecutionPending::ReconciliationRequired {
+                code: ExecutionFailure::TerminalConflict,
+                ..
+            },
+        ) => cancel_conflict_replacement(cancellations, authority, attempt, pending, now),
+        result => result,
+    }
+}
+
+/// A prepared close that lost to a terminal conflict may have become a running
+/// attempt claimed elsewhere; cancel that running attempt, or surface the
+/// original pending error.
+fn cancel_conflict_replacement(
+    cancellations: &mut dyn AttemptCancellationService,
+    authority: &mut TurnExecutionAuthority,
+    attempt: &mut ExecutionAttempt,
+    pending: ExecutionPending,
+    now: &mut dyn FnMut() -> u64,
+) -> Result<ToolExecutionOutcome, ExecutionPending> {
+    let Some(mut running_attempt) = authority.live_attempts().into_iter().find(|candidate| {
+        candidate.binding() == attempt.binding() && candidate.status() == ExecutionStatus::Running
+    }) else {
+        return Err(pending);
+    };
+    cancellations.cancel_running(authority, &mut running_attempt, now)
+}
+
 /// On a mid-loop interruption failure, earlier D-7s may already be durably
 /// closed. Return those partial results so the caller observes the real durable
 /// state instead of a misleading total error. If nothing closed yet, the failure
@@ -320,6 +352,82 @@ fn partial_or_error(
     } else {
         Ok(InterruptionOutcome::PartiallyClosed { closed, pending })
     }
+}
+
+/// A locally running attempt may have started its effect, so a fenced or
+/// unavailable lease reports `unknown`; a prepared one proves `not_started`.
+fn unknown_if_running(was_running: bool) -> EffectState {
+    if was_running {
+        EffectState::Unknown
+    } else {
+        EffectState::NotStarted
+    }
+}
+
+/// Maps a lost or unavailable lease check to its reconciliation requirement,
+/// retaining a running attempt's unresolved reservation first so a competing
+/// terminal cannot be overwritten (ADR-0003 TC-10). Returns `None` while the
+/// lease is current.
+fn fenced_lease_failure(
+    authority: &mut TurnExecutionAuthority,
+    attempt: &mut ExecutionAttempt,
+    check: LeaseCheck,
+    was_running: bool,
+) -> Option<ExecutionPending> {
+    let failure = match check {
+        LeaseCheck::Current => return None,
+        LeaseCheck::Fenced => ExecutionFailure::OwnerFencedBeforeDispatch,
+        LeaseCheck::Unavailable => ExecutionFailure::LeaseUnavailable,
+    };
+    if was_running && authority.reserve_terminal(attempt).is_err() {
+        return Some(reconciliation_required_with_effect(
+            ExecutionFailure::TerminalConflict,
+            EffectState::Unknown,
+        ));
+    }
+    Some(reconciliation_required_with_effect(
+        failure,
+        unknown_if_running(was_running),
+    ))
+}
+
+/// Maps a lost prepared close to its reconciliation requirement, releasing a
+/// prepared attempt's unresolved reservation; a running durable-claim loser
+/// retains its reservation so interruption cannot cancel work this coordinator
+/// never dispatched (ADR-0003 TC-10/TC-12).
+fn prepared_close_failure(
+    authority: &mut TurnExecutionAuthority,
+    attempt: &mut ExecutionAttempt,
+    outcome: Result<PreparedCloseResolution, AttemptStoreError>,
+    was_running: bool,
+) -> ExecutionPending {
+    if !was_running {
+        authority.release_terminal_reservation(attempt);
+    }
+    let (code, effect_state) = match outcome {
+        Ok(PreparedCloseResolution::Progressed { .. }) => {
+            (ExecutionFailure::TerminalConflict, EffectState::Unknown)
+        }
+        Err(AttemptStoreError::IdentityConflict) => {
+            (ExecutionFailure::TerminalConflict, EffectState::NotStarted)
+        }
+        Ok(PreparedCloseResolution::Fenced) => (
+            ExecutionFailure::OwnerFencedBeforeDispatch,
+            unknown_if_running(was_running),
+        ),
+        // A close acknowledgement can be lost after another owner claimed and
+        // dispatched this exact D-7, even when this local mirror remains
+        // prepared.
+        Err(AttemptStoreError::Unavailable) => (
+            ExecutionFailure::DurabilityUnavailable,
+            EffectState::Unknown,
+        ),
+        Err(AttemptStoreError::AttemptLimit) => {
+            (ExecutionFailure::AttemptLimit, EffectState::NotStarted)
+        }
+        Ok(PreparedCloseResolution::Won { .. }) => unreachable!("handled above"),
+    };
+    reconciliation_required_with_effect(code, effect_state)
 }
 
 impl<E, L, C> AttemptCancellationService for ExecutionCoordinator<E, L, C>
@@ -378,46 +486,15 @@ where
         authority: &mut TurnExecutionAuthority,
         attempt: &mut ExecutionAttempt,
     ) -> Result<ToolExecutionOutcome, ExecutionPending> {
-        use super::attempt_store::{AttemptStoreError, PreparedCloseResolution};
-        use super::canonical_dispatch::{
-            reconciliation_required, reconciliation_required_with_effect,
-        };
         let binding = attempt.binding().clone();
         let was_running = attempt.status() == ExecutionStatus::Running;
-        match self.lease.check_current(&binding) {
-            LeaseCheck::Current => {}
-            LeaseCheck::Fenced => {
-                if was_running && authority.reserve_terminal(attempt).is_err() {
-                    return Err(reconciliation_required_with_effect(
-                        ExecutionFailure::TerminalConflict,
-                        EffectState::Unknown,
-                    ));
-                }
-                return Err(reconciliation_required_with_effect(
-                    ExecutionFailure::OwnerFencedBeforeDispatch,
-                    if was_running {
-                        EffectState::Unknown
-                    } else {
-                        EffectState::NotStarted
-                    },
-                ));
-            }
-            LeaseCheck::Unavailable => {
-                if was_running && authority.reserve_terminal(attempt).is_err() {
-                    return Err(reconciliation_required_with_effect(
-                        ExecutionFailure::TerminalConflict,
-                        EffectState::Unknown,
-                    ));
-                }
-                return Err(reconciliation_required_with_effect(
-                    ExecutionFailure::LeaseUnavailable,
-                    if was_running {
-                        EffectState::Unknown
-                    } else {
-                        EffectState::NotStarted
-                    },
-                ));
-            }
+        if let Some(pending) = fenced_lease_failure(
+            authority,
+            attempt,
+            self.lease.check_current(&binding),
+            was_running,
+        ) {
+            return Err(pending);
         }
         if authority.reserve_terminal(attempt).is_err() {
             return Err(reconciliation_required(ExecutionFailure::TerminalConflict));
@@ -439,39 +516,12 @@ where
             // this path only after its process-local claim lost durable
             // authority; retain its reservation so interruption cannot send a
             // cancellation for work this coordinator never dispatched.
-            outcome => {
-                if !was_running {
-                    authority.release_terminal_reservation(attempt);
-                }
-                let (code, effect_state) = match outcome {
-                    Ok(PreparedCloseResolution::Progressed { .. }) => {
-                        (ExecutionFailure::TerminalConflict, EffectState::Unknown)
-                    }
-                    Err(AttemptStoreError::IdentityConflict) => {
-                        (ExecutionFailure::TerminalConflict, EffectState::NotStarted)
-                    }
-                    Ok(PreparedCloseResolution::Fenced) => (
-                        ExecutionFailure::OwnerFencedBeforeDispatch,
-                        if was_running {
-                            EffectState::Unknown
-                        } else {
-                            EffectState::NotStarted
-                        },
-                    ),
-                    // A close acknowledgement can be lost after another
-                    // owner claimed and dispatched this exact D-7, even when
-                    // this local mirror remains prepared.
-                    Err(AttemptStoreError::Unavailable) => (
-                        ExecutionFailure::DurabilityUnavailable,
-                        EffectState::Unknown,
-                    ),
-                    Err(AttemptStoreError::AttemptLimit) => {
-                        (ExecutionFailure::AttemptLimit, EffectState::NotStarted)
-                    }
-                    Ok(PreparedCloseResolution::Won { .. }) => unreachable!("handled above"),
-                };
-                Err(reconciliation_required_with_effect(code, effect_state))
-            }
+            outcome => Err(prepared_close_failure(
+                authority,
+                attempt,
+                outcome,
+                was_running,
+            )),
         }
     }
 

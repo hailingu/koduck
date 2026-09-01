@@ -173,100 +173,104 @@ where
     ) -> Result<ToolExecutionOutcome, ExecutionPending> {
         // The settlement consumes the pending outcome its caller already
         // observed; re-checking the lease here could race a different answer.
+        // The executor already returned, so an external effect may exist.
+        // An executor-confirmed `not_started` effect never started, so a
+        // fenced owner may still close its D-7 as cancelled without
+        // delivering any Tool result (ADR-0003 TC-07).
+        if is_fenced_after_dispatch(pending) && effect_state == EffectState::NotStarted {
+            return self.commit_terminal(
+                authority,
+                attempt,
+                ToolExecutionOutcome::Cancelled {
+                    effect_state: EffectState::NotStarted,
+                },
+                ExecutionStatus::Cancelled,
+                DispatchPhase::AfterDispatch,
+            );
+        }
+        // `started` or `unknown` effects stay held for reconciliation as
+        // failed/owner_fenced_after_dispatch (ADR-0003 TC-07/TC-10).
+        if is_fenced_after_dispatch(pending)
+            && matches!(effect_state, EffectState::Started | EffectState::Unknown)
         {
-            // The executor already returned, so an external effect may exist.
-            // An executor-confirmed `not_started` effect never started, so a
-            // fenced owner may still close its D-7 as cancelled without
-            // delivering any Tool result (ADR-0003 TC-07); `started` or
-            // `unknown` effects stay held for reconciliation as
-            // failed/owner_fenced_after_dispatch. When ownership is merely
-            // undetermined rather than proven fenced, hold the running
-            // attempt's terminal reservation for reconciliation; otherwise a
-            // recovered lease would let the interruption boundary cancel an
-            // already-executed effect (TC-07/TC-10).
-            if matches!(
-                pending,
-                ExecutionPending::ReconciliationRequired {
-                    code: ExecutionFailure::OwnerFencedAfterDispatch,
-                    ..
-                }
-            ) && effect_state == EffectState::NotStarted
-            {
-                return self.commit_terminal(
-                    authority,
-                    attempt,
-                    ToolExecutionOutcome::Cancelled {
-                        effect_state: EffectState::NotStarted,
-                    },
-                    ExecutionStatus::Cancelled,
-                    DispatchPhase::AfterDispatch,
-                );
+            self.persist_fenced_after_dispatch(authority, attempt, binding, effect_state, now);
+            return Err(pending);
+        }
+        // When ownership is merely undetermined rather than proven fenced,
+        // hold the running attempt's terminal reservation for reconciliation;
+        // otherwise a recovered lease would let the interruption boundary
+        // cancel an already-executed effect (TC-07/TC-10).
+        if matches!(
+            pending,
+            ExecutionPending::ReconciliationRequired {
+                code: ExecutionFailure::LeaseUnavailable,
+                ..
             }
-            if matches!(
-                pending,
-                ExecutionPending::ReconciliationRequired {
-                    code: ExecutionFailure::OwnerFencedAfterDispatch,
-                    ..
-                }
-            ) && matches!(effect_state, EffectState::Started | EffectState::Unknown)
-            {
-                // The lease is definitively fenced after an effect may have
-                // started, so the canonical row must carry
-                // failed/owner_fenced_after_dispatch rather than staying
-                // running for the lease-expiry fallback to relabel
-                // timed_out/unknown (ADR-0003 lines 309-314). The dedicated
-                // transition re-proves the fence under the ownership lock; a
-                // lost or conflicted write stays held for reconciliation and
-                // no Tool result reaches the model either way (TC-07).
-                if authority.reserve_terminal(attempt).is_ok() {
-                    let now_ms = (now)();
-                    match self
-                        .committer
-                        .commit_fenced_after_dispatch(binding, effect_state, now_ms)
-                    {
-                        Ok(super::attempt_store::AttemptTerminalResolution::Won { .. }) => {
-                            let _ = authority.mirror_terminal(attempt, ExecutionStatus::Failed);
-                        }
-                        Ok(super::attempt_store::AttemptTerminalResolution::ExistingTerminal(
-                            canonical,
-                        )) => {
-                            if matches!(
-                                canonical.outcome(),
-                                ToolExecutionOutcome::Failed {
-                                    code: ExecutionFailure::OwnerFencedAfterDispatch,
-                                    effect_state: canonical_effect_state,
-                                } if *canonical_effect_state == effect_state
-                            ) {
-                                // A failed COMMIT acknowledgement can hide a
-                                // fenced terminal that is already canonical.
-                                // Mirror only the exact terminal this path
-                                // requested so the caller emits its D-3 view.
-                                let _ = authority.mirror_terminal(attempt, ExecutionStatus::Failed);
-                            } else {
-                                authority.release_terminal_reservation(attempt);
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-                return Err(pending);
+        ) && authority.reserve_terminal(attempt).is_err()
+        {
+            return Err(ExecutionPending::ReconciliationRequired {
+                code: ExecutionFailure::TerminalConflict,
+                effect_state,
+            });
+        }
+        Err(pending)
+    }
+
+    /// Persists the canonical `failed/owner_fenced_after_dispatch` terminal for
+    /// a proven fence after an effect may have started (ADR-0003 lines
+    /// 309-314). The dedicated transition re-proves the fence under the
+    /// ownership lock; a lost or conflicted write stays held for
+    /// reconciliation and no Tool result reaches the model either way (TC-07).
+    fn persist_fenced_after_dispatch(
+        &mut self,
+        authority: &mut TurnExecutionAuthority,
+        attempt: &mut ExecutionAttempt,
+        binding: &ExactActionBinding,
+        effect_state: EffectState,
+        now: &mut dyn FnMut() -> u64,
+    ) {
+        if authority.reserve_terminal(attempt).is_err() {
+            return;
+        }
+        let now_ms = (now)();
+        match self
+            .committer
+            .commit_fenced_after_dispatch(binding, effect_state, now_ms)
+        {
+            Ok(super::attempt_store::AttemptTerminalResolution::Won { .. }) => {
+                let _ = authority.mirror_terminal(attempt, ExecutionStatus::Failed);
             }
-            if matches!(
-                pending,
-                ExecutionPending::ReconciliationRequired {
-                    code: ExecutionFailure::LeaseUnavailable,
-                    ..
+            Ok(super::attempt_store::AttemptTerminalResolution::ExistingTerminal(canonical)) => {
+                if matches!(
+                    canonical.outcome(),
+                    ToolExecutionOutcome::Failed {
+                        code: ExecutionFailure::OwnerFencedAfterDispatch,
+                        effect_state: canonical_effect_state,
+                    } if *canonical_effect_state == effect_state
+                ) {
+                    // A failed COMMIT acknowledgement can hide a fenced
+                    // terminal that is already canonical. Mirror only the
+                    // exact terminal this path requested so the caller emits
+                    // its D-3 view.
+                    let _ = authority.mirror_terminal(attempt, ExecutionStatus::Failed);
+                } else {
+                    authority.release_terminal_reservation(attempt);
                 }
-            ) && authority.reserve_terminal(attempt).is_err()
-            {
-                return Err(ExecutionPending::ReconciliationRequired {
-                    code: ExecutionFailure::TerminalConflict,
-                    effect_state,
-                });
             }
-            Err(pending)
+            _ => {}
         }
     }
+}
+
+/// Whether a pending outcome proves the owner was fenced after dispatch.
+fn is_fenced_after_dispatch(pending: ExecutionPending) -> bool {
+    matches!(
+        pending,
+        ExecutionPending::ReconciliationRequired {
+            code: ExecutionFailure::OwnerFencedAfterDispatch,
+            ..
+        }
+    )
 }
 
 /// Appends the durable D-3 running view before executor dispatch is permitted.

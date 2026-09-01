@@ -109,18 +109,10 @@ impl StreamState {
         let document: Value =
             serde_json::from_str(data).map_err(|_| protocol_error("INVALID_FRAME"))?;
         if self.usage_seen {
-            let code = if document.get("usage").is_some_and(|usage| !usage.is_null()) {
-                "DUPLICATE_USAGE_FRAME"
-            } else if self.finish.is_some() {
-                // Non-usage output after a finish frame is late output even
-                // when a valid usage frame already intervened;
-                // `INVALID_USAGE_FRAME` stays reserved for invalid
-                // post-finish usage (ADR-0004 PSC-5).
-                "INVALID_FINISH_FRAME"
-            } else {
-                "INVALID_USAGE_FRAME"
-            };
-            return Err(protocol_error(code));
+            return Err(protocol_error(post_usage_frame_code(
+                &document,
+                self.finish.is_some(),
+            )));
         }
         if let Some(error) = document.get("error").filter(|error| !error.is_null()) {
             if self.finish.is_some() {
@@ -128,17 +120,13 @@ impl StreamState {
                 // (ADR-0004 PSC-5).
                 return Err(protocol_error("INVALID_FINISH_FRAME"));
             }
-            let code = error
-                .get("code")
-                .and_then(Value::as_str)
-                .ok_or_else(|| protocol_error("INVALID_ERROR_FRAME"))?;
             // The provider error frame is terminal evidence: terminating here
             // keeps the transport's trailing clean end from synthesizing a
             // second failure and a late stop finish from completing the
             // already-failed stream (ADR-0004 PSC-5).
             self.terminated = true;
             return Ok(Some(ProviderEvent::Error {
-                code: code.to_owned(),
+                code: error_frame_code(error)?,
             }));
         }
         if let Some(usage_value) = document.get("usage").filter(|usage| !usage.is_null()) {
@@ -158,18 +146,7 @@ impl StreamState {
         }
         let choice = &choices[0];
         let finish_before_frame = self.finish.is_some();
-        match choice.get("finish_reason") {
-            None | Some(Value::Null) => {}
-            Some(Value::String(reason)) => {
-                if finish_before_frame {
-                    // A repeated or conflicting finish reason is late output
-                    // (ADR-0004 PSC-5).
-                    return Err(protocol_error("INVALID_FINISH_FRAME"));
-                }
-                self.finish = Some(reason.clone());
-            }
-            Some(_) => return Err(protocol_error("INVALID_FRAME")),
-        }
+        self.update_finish_reason(choice, finish_before_frame)?;
         if finish_before_frame {
             // Only an optional valid usage frame may follow a finish frame
             // before `[DONE]` or explicit clean end; later content, Tool
@@ -184,11 +161,7 @@ impl StreamState {
             // validated stop frame (ADR-0004 PSC-3).
             return Err(protocol_error("INVALID_DELTA_FRAME"));
         }
-        let content = match delta.get("content") {
-            Some(Value::String(content)) if !content.is_empty() => Some(content.clone()),
-            None | Some(Value::Null | Value::String(_)) => None,
-            Some(_) => return Err(protocol_error("INVALID_DELTA_FRAME")),
-        };
+        let content = delta_content(delta)?;
         match delta.get("tool_calls") {
             // An absent member falls through to the content path; a present
             // member must be the tool-call fragment array, because silently
@@ -197,24 +170,50 @@ impl StreamState {
             None => {}
             Some(Value::Array(fragments)) => {
                 self.accumulate_tool_call_fragments(fragments)?;
-                if let Some(content) = content {
-                    self.ready.push_back(ProviderEvent::Delta(content));
-                }
-                if finishes_tool_calls {
-                    self.flush_tool_calls()?;
-                }
-                return Ok(None);
+                return self.finish_tool_round(content, finishes_tool_calls);
             }
             Some(_) => return Err(protocol_error("INVALID_TOOL_CALL_FRAME")),
         }
         if finishes_tool_calls {
-            if let Some(content) = content {
-                self.ready.push_back(ProviderEvent::Delta(content));
-            }
-            self.flush_tool_calls()?;
-            return Ok(None);
+            return self.finish_tool_round(content, true);
         }
         Ok(content.map(ProviderEvent::Delta))
+    }
+
+    /// Records one choice's finish reason, rejecting a repeated or conflicting
+    /// finish as late output (ADR-0004 PSC-5).
+    fn update_finish_reason(
+        &mut self,
+        choice: &Value,
+        finish_before_frame: bool,
+    ) -> Result<(), ProviderError> {
+        match choice.get("finish_reason") {
+            None | Some(Value::Null) => {}
+            Some(Value::String(reason)) => {
+                if finish_before_frame {
+                    return Err(protocol_error("INVALID_FINISH_FRAME"));
+                }
+                self.finish = Some(reason.clone());
+            }
+            Some(_) => return Err(protocol_error("INVALID_FRAME")),
+        }
+        Ok(())
+    }
+
+    /// Emits buffered content and flushes the assembled Tool-call round at a
+    /// `tool_calls` finish.
+    fn finish_tool_round(
+        &mut self,
+        content: Option<String>,
+        finishes_tool_calls: bool,
+    ) -> Result<Option<ProviderEvent>, ProviderError> {
+        if let Some(content) = content {
+            self.ready.push_back(ProviderEvent::Delta(content));
+        }
+        if finishes_tool_calls {
+            self.flush_tool_calls()?;
+        }
+        Ok(None)
     }
 
     /// Applies the `[DONE]` sentinel: it is terminal evidence by
@@ -370,5 +369,38 @@ impl StreamState {
 fn protocol_error(code: &str) -> ProviderError {
     ProviderError {
         code: code.to_owned(),
+    }
+}
+
+/// Selects the failure code for output seen after a usage frame: a second
+/// usage frame is duplicated, non-usage output after a finish frame is late
+/// output, and otherwise the post-finish usage frame is invalid (ADR-0004
+/// PSC-5).
+fn post_usage_frame_code(document: &Value, finish_seen: bool) -> &'static str {
+    if document.get("usage").is_some_and(|usage| !usage.is_null()) {
+        "DUPLICATE_USAGE_FRAME"
+    } else if finish_seen {
+        "INVALID_FINISH_FRAME"
+    } else {
+        "INVALID_USAGE_FRAME"
+    }
+}
+
+/// Reads one provider error frame's error code, rejecting a frame without a
+/// string code.
+fn error_frame_code(error: &Value) -> Result<String, ProviderError> {
+    match error.get("code").and_then(Value::as_str) {
+        Some(code) => Ok(code.to_owned()),
+        None => Err(protocol_error("INVALID_ERROR_FRAME")),
+    }
+}
+
+/// Extracts the delta's text content, rejecting malformed envelopes: content
+/// is either a string or absent/null, and an empty string carries no event.
+fn delta_content(delta: &Value) -> Result<Option<String>, ProviderError> {
+    match delta.get("content") {
+        Some(Value::String(content)) if !content.is_empty() => Ok(Some(content.clone())),
+        None | Some(Value::Null | Value::String(_)) => Ok(None),
+        Some(_) => Err(protocol_error("INVALID_DELTA_FRAME")),
     }
 }
