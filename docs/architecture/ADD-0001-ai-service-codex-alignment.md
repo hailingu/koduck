@@ -8,7 +8,7 @@
 - **Architecture Owner**: @linhai
 - **Required Approver**: @linhai
 - **Approver [Conditionally Required — Design Status is or has been `Current`]**: @linhai
-- **Approval Time [Conditionally Required — Design Status is or has been `Current`]**: 2026-09-02T10:41:07+08:00
+- **Approval Time [Conditionally Required — Design Status is or has been `Current`]**: 2026-09-02T11:18:20+08:00
 - **Approval Evidence [Conditionally Required — Design Status is or has been `Current`]**: Approve
 - **Retired By [Conditionally Required — Design Status is `Deprecated` or `Superseded`]**: N/A — Design Status is `Current`; the document has not been retired
 - **Retirement Time [Conditionally Required — Design Status is `Deprecated` or `Superseded`]**: N/A — Design Status is `Current`; the document has not been retired
@@ -285,15 +285,15 @@ flowchart TB
     CF1BuiltFits -->|"Yes"| CF1D9Pending{"Staged D-9 write pending?"}
     CF1Reuse --> CF1Fits{"Existing D-9 plus grown exact recent tail fits budget?"}
     CF1Fits -->|"Yes"| CF1D9Pending
-    CF1Fits -->|"No"| CF1AdvanceSource{"Next bounded contiguous causally closed delta available?"}
+    CF1Fits -->|"No"| CF1AdvancePredecessor["Set rolling predecessor to committed D-9"] --> CF1AdvanceSource{"Next bounded contiguous causally closed delta available?"}
     CF1AdvanceSource -->|"No"| CF1CompactFail
-    CF1AdvanceSource -->|"Yes"| CF1Advance["Request successor from committed predecessor content plus bounded delta through C-3"]
+    CF1AdvanceSource -->|"Yes"| CF1Advance["Request successor from current rolling predecessor content plus bounded delta through C-3"]
     CF1Advance --> CF1AdvanceResult{"Producer succeeds with valid bounded output?"}
     CF1AdvanceResult -->|"No"| CF1CompactFail
     CF1AdvanceResult -->|"Yes"| CF1Advanced["Stage successor with predecessor and absorbed-range provenance"] --> CF1AdvancedFits{"Successor D-9 plus exact recent tail fits budget?"}
     CF1AdvancedFits -->|"No"| CF1AdvancePass{"Bounded successor pass budget remains?"}
     CF1AdvancePass -->|"No"| CF1CompactFail
-    CF1AdvancePass -->|"Yes"| CF1AdvanceSource
+    CF1AdvancePass -->|"Yes"| CF1AdvancePromote["Promote staged successor to rolling predecessor"] --> CF1AdvanceSource
     CF1AdvancedFits -->|"Yes"| CF1D9Pending
     CF1D9Pending -->|"No"| CF1RequestFence{"Request provenance with direct marker or committed D-9 identity/content digest current, Turn nonterminal, lease current, and no interrupt or cancellation?"}
     CF1D9Pending -->|"Yes"| CF1CommitD9{"Conditional D-9 commit under predecessor, absorbed-range, prefix, Turn, and lease fences succeeds or selects winner?"}
@@ -390,22 +390,28 @@ flowchart TB
     CF3BuiltFits -->|"Yes"| CF3CompactContext["Use staged snapshot plus retained recent tail"]
     CF3Reuse --> CF3Fits{"Existing D-9 plus grown exact recent tail fits budget?"}
     CF3Fits -->|"Yes"| CF3CompactContext
-    CF3Fits -->|"No"| CF3AdvanceSource{"Next bounded contiguous causally closed delta available?"}
+    CF3Fits -->|"No"| CF3AdvancePredecessor["Set rolling predecessor to committed D-9"] --> CF3AdvanceSource{"Next bounded contiguous causally closed delta available?"}
     CF3AdvanceSource -->|"No"| CF3Fail
-    CF3AdvanceSource -->|"Yes"| CF3Advance["Request successor from committed predecessor content plus bounded delta through C-3"]
+    CF3AdvanceSource -->|"Yes"| CF3Advance["Request successor from current rolling predecessor content plus bounded delta through C-3"]
     CF3Advance --> CF3AdvanceResult{"Producer succeeds with valid bounded output?"}
     CF3AdvanceResult -->|"No"| CF3Fail
     CF3AdvanceResult -->|"Yes"| CF3Advanced["Stage successor with predecessor and absorbed-range provenance"] --> CF3AdvancedFits{"Successor D-9 plus exact recent tail fits budget?"}
     CF3AdvancedFits -->|"No"| CF3AdvancePass{"Bounded successor pass budget remains?"}
     CF3AdvancePass -->|"No"| CF3Fail
-    CF3AdvancePass -->|"Yes"| CF3AdvanceSource
+    CF3AdvancePass -->|"Yes"| CF3AdvancePromote["Promote staged successor to rolling predecessor"] --> CF3AdvanceSource
     CF3AdvancedFits -->|"Yes"| CF3CompactContext
-    CF3Direct --> CF3Commit{"Commit Resume or Fork target?"}
-    CF3CompactContext --> CF3Commit
-    CF3Commit -->|"Resume"| CF3ResumeCommit{"Atomic predecessor/prefix/request check selects committed D-9 winner and binds new Turn to its identity/content digest?"}
+    CF3Direct --> CF3DirectCommit{"Commit direct-history Resume or Fork against request-wide source and direct marker?"}
+    CF3DirectCommit -->|"Resume"| CF3DirectResumeCommit{"Atomic request check appends new Turn bound to direct-history marker?"}
+    CF3DirectResumeCommit -->|"No"| CF3Fail
+    CF3DirectResumeCommit -->|"Yes"| CF3DirectResume["Expose new Turn with direct history and no D-9"]
+    CF3DirectCommit -->|"Fork"| CF3DirectForkCommit{"Atomic source check commits child, lineage, and first Turn bound to direct-history marker?"}
+    CF3DirectForkCommit -->|"No"| CF3Fail
+    CF3DirectForkCommit -->|"Yes"| CF3DirectFork["Expose child Thread and stable lineage with no D-9"]
+    CF3CompactContext --> CF3CompactCommit{"Commit compacted Resume or Fork target?"}
+    CF3CompactCommit -->|"Resume"| CF3ResumeCommit{"Atomic predecessor/prefix/request check selects committed D-9 winner and binds new Turn to its identity/content digest?"}
     CF3ResumeCommit -->|"No, winner, prefix, or tail changed"| CF3Fail
     CF3ResumeCommit -->|"Yes"| CF3Resume["Expose new Turn bound to committed winner; discard any non-identical staged loser"]
-    CF3Commit -->|"Fork"| CF3ForkCommit{"Atomic source check selects committed child D-9 winner and binds child, lineage, and first Turn?"}
+    CF3CompactCommit -->|"Fork"| CF3ForkCommit{"Atomic source check selects committed child D-9 winner and binds child, lineage, and first Turn?"}
     CF3ForkCommit -->|"No"| CF3Fail
     CF3ForkCommit -->|"Yes"| CF3Fork["Expose child Thread and stable lineage"]
     CF3Fail --> CF3Abort["Discard staged state and fork reservation; no inference or visible child state"]
@@ -869,7 +875,7 @@ deterministic checks.
 - [x] Every `Selected` or `Complete` candidate has an exact reciprocal ADR path; CAND-1 is `Complete` through `docs/adr/ADR-0001-provider-neutral-turn-kernel.md`, CAND-2 is `Complete` through `docs/adr/ADR-0003-default-deny-tool-approval-execution-boundary.md`, and CAND-3 is `Complete` through the `Accepted, Complete` service ADR at `koduck-ai/docs/adr/ADR-0003-correction-item-schema-and-raw-replay.md`; all three ADRs' Architecture Source fields point back to this ADD and the matching candidate ID, and the candidate completed only after its ADR did. With every linked ADR terminal, CAND-11 through CAND-16 remain `Ready` with `ADR path: None` and are eligible for dependency-ordered selection.
 - [x] Every required section is complete; every conditional trigger is assessed and completed or marked `N/A — <reason>`; optional content is complete.
 - [x] `npm run validate --prefix tools/governance-validator` passes, including template-field, status, index, reciprocal-link, Mermaid syntax, and diagram/table ID checks.
-- [x] Repository owner and required approver `@linhai` reviewed the complete bounded recursive snapshot production and committed-winner-bound inference corrections for automatic review `5085002291`, then responded with exact `Approve` in the active task at `2026-09-02T10:41:07+08:00`; active approval metadata is complete and Design Status is `Current`.
+- [x] Repository owner and required approver `@linhai` reviewed the complete staged-successor promotion and direct-history commit-path corrections for automatic review `5085068762`, then responded with exact `Approve` in the active task at `2026-09-02T11:18:20+08:00`; active approval metadata is complete and Design Status is `Current`.
 
 ## Archival [Conditionally Required — Design Status is `Deprecated` or `Superseded`]
 
@@ -952,3 +958,5 @@ This section is inactive because Design Status is `Current`. When triggered:
 | 2026-09-02 | Reapproved automatic-review correction for review `5084952972` after repository owner and required approver `@linhai` reviewed the complete pre-Turn Resume valid-but-insufficient snapshot advancement diff and responded with exact `Approve` in the active task; recorded Approval Time `2026-09-02T10:25:47+08:00` and returned Design Status and the central index row to `Current`. No Approval Context Revision is recorded because the approved content is not yet represented by an immutable commit. CAND-11 through CAND-16 are eligible for dependency-ordered selection. | @linhai |
 | 2026-09-02 | Approval-invalidating automatic-review correction at `2026-09-02T10:32:17+08:00` addressed review `5085002291`: F-2, D-9, C-2/C-3/C-6, CF-1/CF-3, IX-1, RK-12, CAND-15/CAND-16/CAND-14, and delivery evidence now define bounded recursive seed/successor compaction in which each producer call receives either one bounded causally closed seed range or the immediately preceding bounded snapshot content plus one bounded contiguous closed delta, never the complete expanded prefix. D-9 now carries stable identity/content digest and predecessor/range provenance; concurrent non-identical builders converge to one committed winner, losing staged output is discarded, and request-wide provenance plus atomic Resume/Fork state bind the exact committed winner identity/content digest. Preserved prior approval history: Approver `@linhai`, Approval Time `2026-09-02T10:25:47+08:00`, Approval Evidence `Approve`, no Approval Context Revision. Reset Design Status to `Draft`, active approval fields to `Pending — reapproval required`, and the central index row to `Draft`; CAND-11 through CAND-16 remain `Ready` but no candidate may be selected until reapproval. | @codex |
 | 2026-09-02 | Reapproved automatic-review corrections for review `5085002291` after repository owner and required approver `@linhai` reviewed the complete bounded recursive seed/successor production and committed-winner-bound inference diff and responded with exact `Approve` in the active task; recorded Approval Time `2026-09-02T10:41:07+08:00` and returned Design Status and the central index row to `Current`. No Approval Context Revision is recorded because the approved content is not yet represented by an immutable commit. CAND-11 through CAND-16 are eligible for dependency-ordered selection. | @linhai |
+| 2026-09-02 | Approval-invalidating follow-up at `2026-09-02T11:15:46+08:00` addressed the two unresolved P1 findings from merged PR #11 automatic review `5085068762`: the CF-1 and CF-3 rolling-advancement loops now begin with the committed D-9, promote every successfully staged successor to the rolling predecessor, and use that current predecessor for each later bounded delta; CF-3 now keeps direct-history Resume/Fork commits bound to the explicit direct-history marker and routes only compacted context through committed D-9 winner selection. Existing CF-1/CF-3 tables and CAND-14 acceptance context already require those outcomes and are unchanged. Preserved prior approval history: Approver `@linhai`, Approval Time `2026-09-02T10:41:07+08:00`, Approval Evidence `Approve`, no Approval Context Revision. Reset Design Status to `Draft`, active approval fields to `Pending — reapproval required`, and the central index row to `Draft`; CAND-11 through CAND-16 remain `Ready` but no candidate may be selected until reapproval. | @codex |
+| 2026-09-02 | Reapproved the merged-PR follow-up for automatic review `5085068762` after repository owner and required approver `@linhai` reviewed the complete staged-successor promotion and direct-history commit-path diff and responded with exact `Approve` in the active task; recorded Approval Time `2026-09-02T11:18:20+08:00` and returned Design Status and the central index row to `Current`. No Approval Context Revision is recorded because the approved content is not yet represented by an immutable commit. CAND-11 through CAND-16 are eligible for dependency-ordered selection. | @linhai |
