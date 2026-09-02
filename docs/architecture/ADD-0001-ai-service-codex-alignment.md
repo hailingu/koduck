@@ -8,7 +8,7 @@
 - **Architecture Owner**: @linhai
 - **Required Approver**: @linhai
 - **Approver [Conditionally Required — Design Status is or has been `Current`]**: @linhai
-- **Approval Time [Conditionally Required — Design Status is or has been `Current`]**: 2026-09-02T09:29:27+08:00
+- **Approval Time [Conditionally Required — Design Status is or has been `Current`]**: 2026-09-02T09:48:19+08:00
 - **Approval Evidence [Conditionally Required — Design Status is or has been `Current`]**: Approve
 - **Retired By [Conditionally Required — Design Status is `Deprecated` or `Superseded`]**: N/A — Design Status is `Current`; the document has not been retired
 - **Retirement Time [Conditionally Required — Design Status is `Deprecated` or `Superseded`]**: N/A — Design Status is `Current`; the document has not been retired
@@ -407,7 +407,7 @@ flowchart TB
 
 | ID | Actor and entry state | Actions | System feedback and transitions | Exit state | Figma reference |
 | --- | --- | --- | --- | --- | --- |
-| IX-1 | API client with authenticated principal and an existing or new thread | Start, steer, interrupt, resume, fork, or read a thread. | C-1 obtains trust context from C-7. Every lifecycle item is published only after C-6 confirms durability. Resume loads canonical history and creates a new turn on the same thread; the source turn remains terminal. `Interrupted` reports an authenticated client stop; `cancelled` reports a platform, policy, dependency, or reconciled foreground-owner stop. | A durable terminal turn, a new turn created by Resume, or a rejected request with no side effect. Initial durability failure creates no turn; a later outage exposes only the durable prefix plus `durability-unavailable`; an orphan becomes durably `cancelled` after the liveness window. | N/A — service/protocol interaction only; no UI is designed here. |
+| IX-1 | API client with authenticated principal and an existing or new thread | Start, steer, interrupt, resume, fork, or read a thread. | C-1 obtains trust context from C-7. Every lifecycle item is published only after C-6 confirms durability. Resume first loads canonical history and provenance, checks the context budget, and, when over budget, reuses a prefix-valid D-9 or requests bounded compaction before attempting to create a new Turn. Only a complete direct or compacted context whose request-wide provenance still matches may conditionally append the new Turn; the source Turn remains terminal. Compaction producer failure, unavailable or corrupt source, no causally closed boundary that fits, or exhausted drift recovery rejects Resume before Turn creation. `Interrupted` reports an authenticated client stop; `cancelled` reports a platform, policy, dependency, or reconciled foreground-owner stop. | A durable terminal turn, one new Turn created by a successfully validated Resume, or a rejected request with no side effect. Initial durability or pre-Turn Resume compaction failure creates no Turn; a later outage exposes only the durable prefix plus `durability-unavailable`; an orphan becomes durably `cancelled` after the liveness window. | N/A — service/protocol interaction only; no UI is designed here. |
 | IX-2 | Human approver using the authenticated approval protocol exposed by C-1 and validated through C-7 | Inspect the canonical D-6 action, target, parameters, effect, scope, rationale, and risk; accept, decline, or cancel that exact request. | C-5 remains the D-6 authority. C-1 carries the request and decision but does not own approval state; C-2/C-6 append user-visible D-3 status projections referencing D-6. Acceptance binds exactly one D-7 attempt, and the execution result is reported separately. | Declined/cancelled/expired with no execution, or accepted with one linked terminal D-7 attempt. Any retry is a newly evaluated attempt and approval when required. | N/A — approval protocol semantics only; presentation design requires future Figma context. |
 | IX-3 | MCP, tool, model, memory, auth, or multitask system | Initialize or negotiate, exchange versioned requests/events, report capabilities, and return results. | Compatibility, deadline, correlation, retryability, and terminal status are explicit. | Success, compatible degradation, or typed failure without authority escalation. | N/A — external-system interaction. |
 
@@ -448,29 +448,55 @@ sequenceDiagram
       end
     else Active work
       opt Operation is Resume
-        Core->>Store: Append a new turn on the same thread from canonical history
-        Store-->>Core: New turn identity and durable lineage
-        Note over Core,Store: The source terminal turn remains unchanged
+        Core->>Store: Load canonical history, D-9 prefix provenance, and request provenance
+        Store-->>Core: Complete bounded source and matching D-9 metadata or typed failure
+        alt Source is unavailable, corrupt, or incomplete
+          Core-->>C1: Typed source failure and no new Turn
+          C1-->>Client: Resume rejected with no side effect and sequence terminates
+        else Complete bounded source is available
+          Core->>Core: Check soft budget before creating the new Turn
+          alt Context is over budget and no reusable prefix-valid D-9 exists
+            Core->>External: Request bounded compaction through C-3
+            External-->>Core: Compaction output or typed producer failure
+            alt Producer fails or no closed boundary fits
+              Core-->>C1: Typed context-compaction failure and no new Turn
+              C1-->>Client: Resume rejected with no side effect and sequence terminates
+            else Prefix-valid compacted context is complete
+              Core->>Store: Conditionally append new Turn under request-wide provenance
+            end
+          else Direct context or reusable D-9 plus exact tail fits
+            Core->>Store: Conditionally append new Turn under request-wide provenance
+          end
+          Store-->>Core: New Turn identity or typed source-drift failure
+          alt Request source drifted or append failed
+            Core-->>C1: Typed source or durability failure and no new Turn
+            C1-->>Client: Resume rejected with no side effect and sequence terminates
+          else New Turn is durable
+            Note over Core,Store: New Turn may enter active work and source terminal Turn remains unchanged
+          end
+        end
       end
-      Core->>Store: Append next lifecycle item
-      Store-->>Core: Durable item acknowledgement
-      Core-->>C1: Durable progress or approval-status projection
-      C1-->>Client: Ordered replayable feedback
-      alt Authenticated client interrupts
-        Client->>C1: Interrupt exact active turn
-        C1->>Core: Interrupt active work
-        Core->>Store: Persist interrupted terminal state
-        Store-->>Core: Durable terminal acknowledgement
-        C1-->>Client: Explicit interrupted feedback
-      else Platform, policy, dependency, or orphan reconciler cancels
-        Core->>Store: Persist cancelled terminal state
-        Store-->>Core: Durable terminal acknowledgement
-        C1-->>Client: Explicit cancelled feedback
-      else Work reaches normal terminal
-        Core->>Store: Persist completed or failed terminal outcome
-        Store-->>Core: Durable terminal acknowledgement
-        Core-->>C1: Completed or failed terminal event
-        C1-->>Client: Durable terminal feedback
+      opt Operation is not Resume, or Resume context and conditional append succeeded
+        Core->>Store: Append next lifecycle item
+        Store-->>Core: Durable item acknowledgement
+        Core-->>C1: Durable progress or approval-status projection
+        C1-->>Client: Ordered replayable feedback
+        alt Authenticated client interrupts
+          Client->>C1: Interrupt exact active turn
+          C1->>Core: Interrupt active work
+          Core->>Store: Persist interrupted terminal state
+          Store-->>Core: Durable terminal acknowledgement
+          C1-->>Client: Explicit interrupted feedback
+        else Platform, policy, dependency, or orphan reconciler cancels
+          Core->>Store: Persist cancelled terminal state
+          Store-->>Core: Durable terminal acknowledgement
+          C1-->>Client: Explicit cancelled feedback
+        else Work reaches normal terminal
+          Core->>Store: Persist completed or failed terminal outcome
+          Store-->>Core: Durable terminal acknowledgement
+          Core-->>C1: Completed or failed terminal event
+          C1-->>Client: Durable terminal feedback
+        end
       end
     end
   end
@@ -741,7 +767,7 @@ deterministic checks.
 - [x] Every `Selected` or `Complete` candidate has an exact reciprocal ADR path; CAND-1 is `Complete` through `docs/adr/ADR-0001-provider-neutral-turn-kernel.md`, CAND-2 is `Complete` through `docs/adr/ADR-0003-default-deny-tool-approval-execution-boundary.md`, and CAND-3 is `Complete` through the `Accepted, Complete` service ADR at `koduck-ai/docs/adr/ADR-0003-correction-item-schema-and-raw-replay.md`; all three ADRs' Architecture Source fields point back to this ADD and the matching candidate ID, and the candidate completed only after its ADR did. With every linked ADR terminal, CAND-11 through CAND-16 remain `Ready` with `ADR path: None` and are eligible for dependency-ordered selection.
 - [x] Every required section is complete; every conditional trigger is assessed and completed or marked `N/A — <reason>`; optional content is complete.
 - [x] `npm run validate --prefix tools/governance-validator` passes, including template-field, status, index, reciprocal-link, Mermaid syntax, and diagram/table ID checks.
-- [x] Repository owner and required approver `@linhai` reviewed the separate prefix-scoped D-9 provenance and request-wide inference provenance correction for automatic review `5084688037`, then responded with exact `Approve` in the active task at `2026-09-02T09:29:27+08:00`; active approval metadata is complete and Design Status is `Current`.
+- [x] Repository owner and required approver `@linhai` reviewed the IX-1 pre-Turn Resume compaction and zero-side-effect failure correction for automatic review `5084749747`, then responded with exact `Approve` in the active task at `2026-09-02T09:48:19+08:00`; active approval metadata is complete and Design Status is `Current`.
 
 ## Archival [Conditionally Required — Design Status is `Deprecated` or `Superseded`]
 
@@ -816,3 +842,5 @@ This section is inactive because Design Status is `Current`. When triggered:
 | 2026-09-02 | Reapproved automatic-review corrections for review `5081258041` after repository owner and required approver `@linhai` reviewed the complete effective-history source-provenance fence and CAND-15/CAND-16/CAND-14 implementation-boundary split and responded with exact `Approve` in the active task; recorded Approval Time `2026-09-02T09:14:00+08:00` and returned Design Status and the central index row to `Current`. No Approval Context Revision is recorded because the approved content is not yet represented by an immutable commit. CAND-11 through CAND-16 are eligible for dependency-ordered selection. | @linhai |
 | 2026-09-02 | Approval-invalidating automatic-review correction at `2026-09-02T09:23:01+08:00` addressed review `5084688037`: D-9, C-2, C-6, CF-1, CF-3, RK-12, CAND-15, and CAND-14 now distinguish immutable prefix-scoped snapshot provenance from request-wide effective-context provenance. Tail-only appends preserve a matching D-9 and trigger exact-tail reassembly under a new request version; corrections inside the summarized prefix invalidate D-9; prefix or tail drift after assembly rejects inference establishment. Acceptance context now covers each case explicitly. Preserved prior approval history: Approver `@linhai`, Approval Time `2026-09-02T09:14:00+08:00`, Approval Evidence `Approve`, no Approval Context Revision. Reset Design Status to `Draft`, active approval fields to `Pending — reapproval required`, and the central index row to `Draft`; CAND-11 through CAND-16 remain `Ready` but no candidate may be selected until reapproval. | @codex |
 | 2026-09-02 | Reapproved automatic-review corrections for review `5084688037` after repository owner and required approver `@linhai` reviewed the complete separate prefix-scoped snapshot provenance and request-wide inference provenance diff and responded with exact `Approve` in the active task; recorded Approval Time `2026-09-02T09:29:27+08:00` and returned Design Status and the central index row to `Current`. No Approval Context Revision is recorded because the approved content is not yet represented by an immutable commit. CAND-11 through CAND-16 are eligible for dependency-ordered selection. | @linhai |
+| 2026-09-02 | Approval-invalidating automatic-review correction at `2026-09-02T09:36:17+08:00` addressed review `5084749747`: IX-1 now agrees with CF-3 by loading and validating Resume context before creating a new Turn, invoking bounded compaction only when the pre-Turn context exceeds budget without a reusable D-9, and terminating with no new Turn on source failure, producer failure, absence of a causally closed boundary, request-wide drift, or conditional append failure. The structured interaction row and required sequence diagram now show the same pre-creation ordering, feedback, failure, and recovery outcome. Preserved prior approval history: Approver `@linhai`, Approval Time `2026-09-02T09:29:27+08:00`, Approval Evidence `Approve`, no Approval Context Revision. Reset Design Status to `Draft`, active approval fields to `Pending — reapproval required`, and the central index row to `Draft`; CAND-11 through CAND-16 remain `Ready` but no candidate may be selected until reapproval. | @codex |
+| 2026-09-02 | Reapproved automatic-review corrections for review `5084749747` after repository owner and required approver `@linhai` reviewed the complete IX-1 pre-Turn Resume compaction and zero-side-effect failure diff and responded with exact `Approve` in the active task; recorded Approval Time `2026-09-02T09:48:19+08:00` and returned Design Status and the central index row to `Current`. No Approval Context Revision is recorded because the approved content is not yet represented by an immutable commit. CAND-11 through CAND-16 are eligible for dependency-ordered selection. | @linhai |
