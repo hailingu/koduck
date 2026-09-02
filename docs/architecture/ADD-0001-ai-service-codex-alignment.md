@@ -293,12 +293,12 @@ flowchart TB
     CF1Budget -->|"No"| CF1Snapshot{"Valid prefix-provenance- and causal-closure-matching D-9 available?"}
     CF1Snapshot -->|"Yes, prefix provenance and causal closure match"| CF1Reuse["Reuse D-9 with exact tail; keep each Tool round wholly summarized or wholly exact"]
     CF1Snapshot -->|"No, bounded seed range and closed boundary available"| CF1Build["Request seed D-9 from one bounded causally closed range through C-3"]
-    CF1Snapshot -->|"No closed boundary or source unavailable"| CF1CompactFail["Prepare failed terminal; no next Turn-inference request"] --> CF1Persist
-    CF1Build --> CF1BuildResult{"Producer succeeds with valid bounded output?"}
-    CF1BuildResult -->|"No"| CF1CompactFail
+    CF1Snapshot -->|"No, no fitting seed range, closed boundary, or available source"| CF1CompactFail["Prepare failed terminal; no next Turn-inference request"] --> CF1Persist
+    CF1Build --> CF1BuildResult{"Bounded producer outcome?"}
+    CF1BuildResult -->|"Typed producer failure"| CF1CompactFail
     CF1BuildResult -->|"Authenticated interrupt won"| CF1Interrupt
     CF1BuildResult -->|"Platform, policy, dependency, or lease stop"| CF1Cancel
-    CF1BuildResult -->|"Yes"| CF1Built["Derive canonical deterministic member identity and append D-9 to ordered staged chain"] --> CF1BuiltFits{"Current staged-chain tip plus exact recent tail fits budget?"}
+    CF1BuildResult -->|"Valid bounded output"| CF1Built["Derive canonical deterministic member identity and append D-9 to ordered staged chain"] --> CF1BuiltFits{"Current staged-chain tip plus exact recent tail fits budget?"}
     CF1BuiltFits -->|"No"| CF1BuildPass{"Bounded recursive pass budget remains?"}
     CF1BuildPass -->|"No"| CF1CompactFail
     CF1BuildPass -->|"Yes"| CF1BuildRange{"Next bounded contiguous causally closed delta available?"}
@@ -310,11 +310,11 @@ flowchart TB
     CF1Fits -->|"No"| CF1AdvancePredecessor["Set rolling predecessor to committed D-9"] --> CF1AdvanceSource{"Next bounded contiguous causally closed delta available?"}
     CF1AdvanceSource -->|"No"| CF1CompactFail
     CF1AdvanceSource -->|"Yes"| CF1Advance["Request successor from current rolling predecessor content plus bounded delta through C-3"]
-    CF1Advance --> CF1AdvanceResult{"Producer succeeds with valid bounded output?"}
-    CF1AdvanceResult -->|"No"| CF1CompactFail
+    CF1Advance --> CF1AdvanceResult{"Bounded producer outcome?"}
+    CF1AdvanceResult -->|"Typed producer failure"| CF1CompactFail
     CF1AdvanceResult -->|"Authenticated interrupt won"| CF1Interrupt
     CF1AdvanceResult -->|"Platform, policy, dependency, or lease stop"| CF1Cancel
-    CF1AdvanceResult -->|"Yes"| CF1Advanced["Append successor to ordered staged chain with predecessor and absorbed-range provenance"] --> CF1AdvancedFits{"Current staged-chain tip plus exact recent tail fits budget?"}
+    CF1AdvanceResult -->|"Valid bounded output"| CF1Advanced["Append successor to ordered staged chain with predecessor and absorbed-range provenance"] --> CF1AdvancedFits{"Current staged-chain tip plus exact recent tail fits budget?"}
     CF1AdvancedFits -->|"No"| CF1AdvancePass{"Bounded successor pass budget remains?"}
     CF1AdvancePass -->|"No"| CF1CompactFail
     CF1AdvancePass -->|"Yes"| CF1AdvancePromote["Promote staged successor to rolling predecessor"] --> CF1AdvanceSource
@@ -407,11 +407,11 @@ flowchart TB
     CF3Budget -->|"No"| CF3Snapshot{"Valid target-scope and causally closed D-9 available? Never reuse parent D-9 for Fork"}
     CF3Snapshot -->|"Yes, prefix provenance and causal closure match"| CF3Reuse["Reuse target-bound D-9 with exact tail; keep each Tool round wholly summarized or wholly exact"]
     CF3Snapshot -->|"No, bounded seed range and closed boundary available"| CF3Build["Request seed target-bound D-9 from one bounded causally closed range through C-3"]
-    CF3Snapshot -->|"No closed boundary or source unavailable"| CF3Fail
-    CF3Build --> CF3BuildResult{"Producer succeeds with valid bounded output?"}
-    CF3BuildResult -->|"No"| CF3Fail
+    CF3Snapshot -->|"No, no fitting seed range, closed boundary, or available source"| CF3Fail
+    CF3Build --> CF3BuildResult{"Bounded producer outcome?"}
+    CF3BuildResult -->|"Typed producer failure"| CF3Fail
     CF3BuildResult -->|"Cancelled"| CF3Cancelled["Discard staged chain and abort fork reservation; report cancellation with no new Turn and zero visible child state"]
-    CF3BuildResult -->|"Yes"| CF3Built["Derive canonical deterministic member identity and append D-9 to staged child or Resume chain"] --> CF3BuiltFits{"Current staged-chain tip plus exact recent tail fits budget?"}
+    CF3BuildResult -->|"Valid bounded output"| CF3Built["Derive canonical deterministic member identity and append D-9 to staged child or Resume chain"] --> CF3BuiltFits{"Current staged-chain tip plus exact recent tail fits budget?"}
     CF3BuiltFits -->|"No"| CF3BuildPass{"Bounded recursive pass budget remains?"}
     CF3BuildPass -->|"No"| CF3Fail
     CF3BuildPass -->|"Yes"| CF3BuildRange{"Next bounded contiguous causally closed delta available?"}
@@ -423,10 +423,10 @@ flowchart TB
     CF3Fits -->|"No"| CF3AdvancePredecessor["Set rolling predecessor to committed D-9"] --> CF3AdvanceSource{"Next bounded contiguous causally closed delta available?"}
     CF3AdvanceSource -->|"No"| CF3Fail
     CF3AdvanceSource -->|"Yes"| CF3Advance["Request successor from current rolling predecessor content plus bounded delta through C-3"]
-    CF3Advance --> CF3AdvanceResult{"Producer succeeds with valid bounded output?"}
-    CF3AdvanceResult -->|"No"| CF3Fail
+    CF3Advance --> CF3AdvanceResult{"Bounded producer outcome?"}
+    CF3AdvanceResult -->|"Typed producer failure"| CF3Fail
     CF3AdvanceResult -->|"Cancelled"| CF3Cancelled
-    CF3AdvanceResult -->|"Yes"| CF3Advanced["Append successor to ordered staged chain with predecessor and absorbed-range provenance"] --> CF3AdvancedFits{"Current staged-chain tip plus exact recent tail fits budget?"}
+    CF3AdvanceResult -->|"Valid bounded output"| CF3Advanced["Append successor to ordered staged chain with predecessor and absorbed-range provenance"] --> CF3AdvancedFits{"Current staged-chain tip plus exact recent tail fits budget?"}
     CF3AdvancedFits -->|"No"| CF3AdvancePass{"Bounded successor pass budget remains?"}
     CF3AdvancePass -->|"No"| CF3Fail
     CF3AdvancePass -->|"Yes"| CF3AdvancePromote["Promote staged successor to rolling predecessor"] --> CF3AdvanceSource
@@ -1209,7 +1209,7 @@ deterministic checks.
 - [x] Every `Selected` or `Complete` candidate has an exact reciprocal ADR path; CAND-1 is `Complete` through `docs/adr/ADR-0001-provider-neutral-turn-kernel.md`, CAND-2 is `Complete` through `docs/adr/ADR-0003-default-deny-tool-approval-execution-boundary.md`, and CAND-3 is `Complete` through the `Accepted, Complete` service ADR at `koduck-ai/docs/adr/ADR-0003-correction-item-schema-and-raw-replay.md`; all three ADRs' Architecture Source fields point back to this ADD and the matching candidate ID, and the candidate completed only after its ADR did. With every linked ADR terminal, CAND-11 through CAND-16 remain fully specified as `Ready` with `ADR path: None`, but none may be selected while this ADD is `Draft`.
 - [x] Every required section is complete; every conditional trigger is assessed and completed or marked `N/A — <reason>`; optional content is complete.
 - [x] `npm run validate --prefix tools/governance-validator` passes, including template-field, status, index, reciprocal-link, Mermaid syntax, and diagram/table ID checks.
-- [ ] Repository owner and required approver `@linhai` must review the complete producer-failure exit, candidate-selection-gate, drift-reassembly, child-cancellation, retry-drift routing, direct-history drift-result, CF-1 durability-exit, CF-3 drift-recovery, Resume-cancellation, direct-commit drift-retry, over-budget drift-exit, drift winner-reuse, direct-drift cancellation, drift-conflict separation, and producer-cancellation coverage corrections for automatic reviews `5085863664`, `5085923290`, `5086121809`, `5086269808`, `5086388217`, `5086580275`, `5086766960`, `5086850935`, `5087118888`, and `5087270540` and respond with exact `Approve`; active approval metadata remains pending and Design Status is `Draft`.
+- [ ] Repository owner and required approver `@linhai` must review the complete producer-failure exit, candidate-selection-gate, drift-reassembly, child-cancellation, retry-drift routing, direct-history drift-result, CF-1 durability-exit, CF-3 drift-recovery, Resume-cancellation, direct-commit drift-retry, over-budget drift-exit, drift winner-reuse, direct-drift cancellation, drift-conflict separation, producer-cancellation coverage, and producer-outcome exclusivity corrections for automatic reviews `5085863664`, `5085923290`, `5086121809`, `5086269808`, `5086388217`, `5086580275`, `5086766960`, `5086850935`, `5087118888`, `5087270540`, and `5087490898` and respond with exact `Approve`; active approval metadata remains pending and Design Status is `Draft`.
 
 ## Archival [Conditionally Required — Design Status is `Deprecated` or `Superseded`]
 
@@ -1314,3 +1314,5 @@ This section is inactive because Design Status is `Draft`. When triggered:
 | 2026-09-02 | Approval-invalidating automatic-review correction at `2026-09-02T15:38:35+08:00` addressed review `5086850935`: the Resume direct-path drift recovery loop now checks a prefix-valid committed D-9 winner with the refreshed exact tail before rebuilding. A tail-only drift retries the atomic committed-winner and new-Turn transaction with refreshed source provenance and no producer passes, matching the CF-3 rule to retain and retry the same fitting winner; only a winner that no longer fits falls through to bounded compaction. The IX-1 structured row and the CAND-14 delivery acceptance matrix carry the same rule. Preserved prior approval history: Approver `@linhai`, Approval Time `2026-09-02T13:15:25+08:00`, Approval Evidence `Approve`, no Approval Context Revision. Design Status remains `Draft`, active approval fields remain `Pending — reapproval required`, and the central index row remains `Draft`; CAND-11 through CAND-16 remain `Ready` but no candidate may be selected until reapproval. | @codex |
 | 2026-09-02 | Approval-invalidating automatic-review correction at `2026-09-02T16:08:37+08:00` addressed review `5087118888`: the IX-1 direct-path drift recovery loops for Resume and Fork now check cancellation after rereading the source and before any further transaction attempt. A cancelled Resume drift recovery reports Resume cancelled with no D-9 or new Turn, and a cancelled Fork child drift recovery aborts the child reservation and reports Fork cancelled with zero visible child state, matching the cancellation semantics already defined for construction, suffix regeneration, and compacted drift reassembly. Preserved prior approval history: Approver `@linhai`, Approval Time `2026-09-02T13:15:25+08:00`, Approval Evidence `Approve`, no Approval Context Revision. Design Status remains `Draft`, active approval fields remain `Pending — reapproval required`, and the central index row remains `Draft`; CAND-11 through CAND-16 remain `Ready` but no candidate may be selected until reapproval. | @codex |
 | 2026-09-02 | Approval-invalidating automatic-review correction at `2026-09-02T16:35:32+08:00` addressed review `5087270540` plus a systematic async-outcome cross-product audit: drift-recovery retry responses in IX-1 Resume and Fork now separate another request drift from an earliest conflict winner — drift continues the bounded drift iteration while a conflict winner exits drift recovery into the bounded winner-first conflict recovery flow, so an otherwise converging request is neither rejected with remaining conflict budget nor rebuilt wholesale. The audit then closed the remaining outcome-classification gaps in one pass: CF-1 producer decisions now branch an authenticated interrupt to `interrupted` and a platform/policy/dependency/lease stop to `cancelled` during compaction, and CF1Dispatch gained a typed durability failure exit into the compact-failure recovery; CF-3 producer decisions now route cancellation to a CF3Cancelled node that discards the staged chain, aborts the fork reservation, and reports cancellation with no new Turn and zero visible child state, matching the CF-3 table and IX-1. The IX-1 structured row and the CAND-14 delivery acceptance matrix carry the same rules. Preserved prior approval history: Approver `@linhai`, Approval Time `2026-09-02T13:15:25+08:00`, Approval Evidence `Approve`, no Approval Context Revision. Design Status remains `Draft`, active approval fields remain `Pending — reapproval required`, and the central index row remains `Draft`; CAND-11 through CAND-16 remain `Ready` but no candidate may be selected until reapproval. | @codex |
+| 2026-09-02 | Approval-invalidating automatic-review correction at `2026-09-02T16:48:22+08:00` addressed review `5087490898`: the CF-1 and CF-3 producer decisions (`CF1BuildResult`, `CF1AdvanceResult`, `CF3BuildResult`, `CF3AdvanceResult`) are no longer binary "Producer succeeds?" questions whose generic `No` edge overlapped the interrupt and cancellation edges. Each is now an explicit `Bounded producer outcome?` decision with mutually exclusive edges — `Valid bounded output`, `Typed producer failure`, `Authenticated interrupt won` or `Cancelled`, and `Platform, policy, dependency, or lease stop` — so an interrupt or cancellation can only reach its required terminal and the diagram unambiguously agrees with the structured flow semantics. Preserved prior approval history: Approver `@linhai`, Approval Time `2026-09-02T13:15:25+08:00`, Approval Evidence `Approve`, no Approval Context Revision. Design Status remains `Draft`, active approval fields remain `Pending — reapproval required`, and the central index row remains `Draft`; CAND-11 through CAND-16 remain `Ready` but no candidate may be selected until reapproval. | @codex |
+| 2026-09-02 | Approval-invalidating follow-up audit correction at `2026-09-02T16:52:30+08:00`: a second cross-product audit pass over every CF-1 through CF-5 decision node found one remaining same-class gap — the CF1Snapshot and CF3Snapshot availability edges did not partition the `No` outcome exhaustively, leaving "closed boundary and source available but no fitting bounded seed range" without an edge. Both snapshot decisions now use the exclusive labels `Yes, prefix provenance and causal closure match`, `No, bounded seed range and closed boundary available`, and `No, no fitting seed range, closed boundary, or available source`. All other decision nodes and async response points were rechecked for edge exclusivity and outcome-class coverage with no further gaps found. Preserved prior approval history: Approver `@linhai`, Approval Time `2026-09-02T13:15:25+08:00`, Approval Evidence `Approve`, no Approval Context Revision. Design Status remains `Draft`, active approval fields remain `Pending — reapproval required`, and the central index row remains `Draft`; CAND-11 through CAND-16 remain `Ready` but no candidate may be selected until reapproval. | @codex |
