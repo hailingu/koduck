@@ -539,7 +539,9 @@ sequenceDiagram
             alt Typed request-source drift
               loop Bounded direct-path drift recovery until the direct commit succeeds or the drift budget ends
                 Core->>Core: Reread the current canonical source and recheck the soft budget
-                alt Context still fits as direct history
+                alt Cancellation wins during drift recovery
+                  Core->>Core: Mark drift recovery cancelled and exit without another transaction attempt
+                else Context still fits as direct history
                   Core->>Store: Retry the atomic direct-marker and new-Turn transaction
                   Store-->>Core: New Turn committed, another request drift, or typed zero-mutation durability failure
                   alt Retry commits the new Turn
@@ -563,7 +565,10 @@ sequenceDiagram
                   Core->>Core: Exit the direct-path drift loop and continue through the over-budget bounded seed/successor compaction passes and atomic complete-chain commit flow within the same drift budget
                 end
               end
-              alt New Turn did not commit
+              alt Drift recovery was cancelled
+                Core-->>C1: Resume cancelled with no D-9 or new Turn
+                C1-->>Client: Typed cancellation with no side effect and sequence terminates
+              else New Turn did not commit
                 Core-->>C1: Typed drift or durability failure and no new Turn
                 C1-->>Client: Resume rejected with no side effect and sequence terminates
               else New Turn is durable
@@ -854,7 +859,9 @@ sequenceDiagram
             alt Typed request-source drift
               loop Bounded direct-path child drift recovery until the direct child commit succeeds or the drift budget ends
                 Core->>Core: Reread the current authorized parent source and recheck the child soft budget
-                alt Child context still fits as direct history
+                alt Cancellation wins during child drift recovery
+                  Core->>Core: Mark child drift recovery cancelled and exit without another transaction attempt
+                else Child context still fits as direct history
                   Core->>Store: Retry the atomic direct-marker child-state transaction
                   Store-->>Core: Child state committed, another request drift, or typed zero-mutation durability failure
                   alt Retry commits the child state
@@ -868,7 +875,12 @@ sequenceDiagram
                   Core->>Core: Exit the direct-path child drift loop and continue through the over-budget bounded child seed/successor compaction passes and atomic complete-child-chain commit flow within the same drift budget
                 end
               end
-              alt Child state did not commit
+              alt Child drift recovery was cancelled
+                Core->>Store: Abort child reservation
+                Store-->>Core: Zero visible child state acknowledged
+                Core-->>C1: Fork cancelled with no child state
+                C1-->>Client: Typed cancellation and sequence terminates
+              else Child state did not commit
                 Core->>Store: Abort child reservation
                 Store-->>Core: Zero visible child state acknowledged
                 Core-->>C1: Fork failed with no child state
@@ -1186,7 +1198,7 @@ deterministic checks.
 - [x] Every `Selected` or `Complete` candidate has an exact reciprocal ADR path; CAND-1 is `Complete` through `docs/adr/ADR-0001-provider-neutral-turn-kernel.md`, CAND-2 is `Complete` through `docs/adr/ADR-0003-default-deny-tool-approval-execution-boundary.md`, and CAND-3 is `Complete` through the `Accepted, Complete` service ADR at `koduck-ai/docs/adr/ADR-0003-correction-item-schema-and-raw-replay.md`; all three ADRs' Architecture Source fields point back to this ADD and the matching candidate ID, and the candidate completed only after its ADR did. With every linked ADR terminal, CAND-11 through CAND-16 remain fully specified as `Ready` with `ADR path: None`, but none may be selected while this ADD is `Draft`.
 - [x] Every required section is complete; every conditional trigger is assessed and completed or marked `N/A — <reason>`; optional content is complete.
 - [x] `npm run validate --prefix tools/governance-validator` passes, including template-field, status, index, reciprocal-link, Mermaid syntax, and diagram/table ID checks.
-- [ ] Repository owner and required approver `@linhai` must review the complete producer-failure exit, candidate-selection-gate, drift-reassembly, child-cancellation, retry-drift routing, direct-history drift-result, CF-1 durability-exit, CF-3 drift-recovery, Resume-cancellation, direct-commit drift-retry, over-budget drift-exit, and drift winner-reuse corrections for automatic reviews `5085863664`, `5085923290`, `5086121809`, `5086269808`, `5086388217`, `5086580275`, `5086766960`, and `5086850935` and respond with exact `Approve`; active approval metadata remains pending and Design Status is `Draft`.
+- [ ] Repository owner and required approver `@linhai` must review the complete producer-failure exit, candidate-selection-gate, drift-reassembly, child-cancellation, retry-drift routing, direct-history drift-result, CF-1 durability-exit, CF-3 drift-recovery, Resume-cancellation, direct-commit drift-retry, over-budget drift-exit, drift winner-reuse, and direct-drift cancellation corrections for automatic reviews `5085863664`, `5085923290`, `5086121809`, `5086269808`, `5086388217`, `5086580275`, `5086766960`, `5086850935`, and `5087118888` and respond with exact `Approve`; active approval metadata remains pending and Design Status is `Draft`.
 
 ## Archival [Conditionally Required — Design Status is `Deprecated` or `Superseded`]
 
@@ -1289,3 +1301,4 @@ This section is inactive because Design Status is `Draft`. When triggered:
 | 2026-09-02 | Approval-invalidating automatic-review correction at `2026-09-02T15:10:26+08:00` addressed review `5086580275`: direct-history Resume and Fork commits no longer send request-source drift to terminal failure. The CF-3 flowchart routes drift from both direct-history commit edges through CF3Drift into the bounded source-drift retry, separating it from typed durability failure, and IX-1 now retries each direct-history commit inside a bounded drift loop that rereads the current source, rechecks the soft budget, commits again while the context still fits as direct history, or continues through bounded compaction assembly within the same drift budget when the drifted context exceeds it. The IX-1 row and the CAND-14 delivery acceptance matrix carry the same direct-commit drift rule. Preserved prior approval history: Approver `@linhai`, Approval Time `2026-09-02T13:15:25+08:00`, Approval Evidence `Approve`, no Approval Context Revision. Design Status remains `Draft`, active approval fields remain `Pending — reapproval required`, and the central index row remains `Draft`; CAND-11 through CAND-16 remain `Ready` but no candidate may be selected until reapproval. | @codex |
 | 2026-09-02 | Approval-invalidating automatic-review correction at `2026-09-02T15:28:54+08:00` addressed review `5086766960`: when request-source drift pushes a formerly direct Resume or Fork context over the soft budget, IX-1 now exits the direct-path drift loop instead of rereading the source in place until budget exhaustion, and continues through the over-budget bounded seed/successor compaction passes and atomic complete-chain (Resume) or complete-child-chain (Fork) commit flow within the same drift budget, matching the CF-3 diagram's `CF3Drift` to `CF3Budget` recovery. The CAND-14 delivery acceptance matrix records the same over-budget drift exit. Preserved prior approval history: Approver `@linhai`, Approval Time `2026-09-02T13:15:25+08:00`, Approval Evidence `Approve`, no Approval Context Revision. Design Status remains `Draft`, active approval fields remain `Pending — reapproval required`, and the central index row remains `Draft`; CAND-11 through CAND-16 remain `Ready` but no candidate may be selected until reapproval. | @codex |
 | 2026-09-02 | Approval-invalidating automatic-review correction at `2026-09-02T15:38:35+08:00` addressed review `5086850935`: the Resume direct-path drift recovery loop now checks a prefix-valid committed D-9 winner with the refreshed exact tail before rebuilding. A tail-only drift retries the atomic committed-winner and new-Turn transaction with refreshed source provenance and no producer passes, matching the CF-3 rule to retain and retry the same fitting winner; only a winner that no longer fits falls through to bounded compaction. The IX-1 structured row and the CAND-14 delivery acceptance matrix carry the same rule. Preserved prior approval history: Approver `@linhai`, Approval Time `2026-09-02T13:15:25+08:00`, Approval Evidence `Approve`, no Approval Context Revision. Design Status remains `Draft`, active approval fields remain `Pending — reapproval required`, and the central index row remains `Draft`; CAND-11 through CAND-16 remain `Ready` but no candidate may be selected until reapproval. | @codex |
+| 2026-09-02 | Approval-invalidating automatic-review correction at `2026-09-02T16:08:37+08:00` addressed review `5087118888`: the IX-1 direct-path drift recovery loops for Resume and Fork now check cancellation after rereading the source and before any further transaction attempt. A cancelled Resume drift recovery reports Resume cancelled with no D-9 or new Turn, and a cancelled Fork child drift recovery aborts the child reservation and reports Fork cancelled with zero visible child state, matching the cancellation semantics already defined for construction, suffix regeneration, and compacted drift reassembly. Preserved prior approval history: Approver `@linhai`, Approval Time `2026-09-02T13:15:25+08:00`, Approval Evidence `Approve`, no Approval Context Revision. Design Status remains `Draft`, active approval fields remain `Pending — reapproval required`, and the central index row remains `Draft`; CAND-11 through CAND-16 remain `Ready` but no candidate may be selected until reapproval. | @codex |
