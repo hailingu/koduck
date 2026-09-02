@@ -841,12 +841,12 @@ sequenceDiagram
                   end
                 end
                 alt Child conflict recovery was cancelled
-                  Core->>Store: Abort child reservation and complete staged chain
+                  Core->>Store: Abort child reservation and discard staged chain
                   Store-->>Core: Zero visible child state acknowledged
                   Core-->>C1: Fork cancelled with no child state
                   C1-->>Client: Typed cancellation and sequence terminates
                 else Complete child chain and child state did not commit
-                  Core->>Store: Abort child reservation and complete staged chain
+                  Core->>Store: Abort child reservation and discard staged chain
                   Store-->>Core: Zero visible child state acknowledged
                   Core-->>C1: Fork failed with no child state
                   C1-->>Client: Typed failure and sequence terminates
@@ -892,12 +892,12 @@ sequenceDiagram
                   end
                 end
                 alt Child drift recovery was cancelled
-                  Core->>Store: Abort child reservation and complete staged chain
+                  Core->>Store: Abort child reservation and discard staged chain
                   Store-->>Core: Zero visible child state acknowledged
                   Core-->>C1: Fork cancelled with no child state
                   C1-->>Client: Typed cancellation and sequence terminates
                 else Complete child chain and child state did not commit
-                  Core->>Store: Abort child reservation and complete staged chain
+                  Core->>Store: Abort child reservation and discard staged chain
                   Store-->>Core: Zero visible child state acknowledged
                   Core-->>C1: Fork failed with no child state
                   C1-->>Client: Typed failure and sequence terminates
@@ -906,17 +906,17 @@ sequenceDiagram
                   C1-->>Client: Fork succeeded with visible child
                 end
               else Atomic commit failed with typed zero-mutation durability failure
-                Core->>Store: Abort child reservation and complete staged chain
+                Core->>Store: Abort child reservation and discard staged chain
                 Store-->>Core: Zero visible child state acknowledged
                 Core-->>C1: Fork failed with no child state
                 C1-->>Client: Typed failure and sequence terminates
               else Atomic commit rejected with typed validation failure
-                Core->>Store: Abort child reservation and complete staged chain
+                Core->>Store: Abort child reservation and discard staged chain
                 Store-->>Core: Zero visible child state acknowledged
                 Core-->>C1: Fork rejected with no child state
                 C1-->>Client: Typed validation failure with zero visible child state and sequence terminates
               else Transaction cancelled or fenced before commit
-                Core->>Store: Abort child reservation and complete staged chain
+                Core->>Store: Abort child reservation and discard staged chain
                 Store-->>Core: Zero visible child state acknowledged
                 Core-->>C1: Fork cancelled with no child state
                 C1-->>Client: Typed cancellation and sequence terminates
@@ -1277,7 +1277,7 @@ deterministic checks.
 - [x] Every `Selected` or `Complete` candidate has an exact reciprocal ADR path; CAND-1 is `Complete` through `docs/adr/ADR-0001-provider-neutral-turn-kernel.md`, CAND-2 is `Complete` through `docs/adr/ADR-0003-default-deny-tool-approval-execution-boundary.md`, and CAND-3 is `Complete` through the `Accepted, Complete` service ADR at `koduck-ai/docs/adr/ADR-0003-correction-item-schema-and-raw-replay.md`; all three ADRs' Architecture Source fields point back to this ADD and the matching candidate ID, and the candidate completed only after its ADR did. With every linked ADR terminal, CAND-11 through CAND-16 remain fully specified as `Ready` with `ADR path: None`, but none may be selected while this ADD is `Draft`.
 - [x] Every required section is complete; every conditional trigger is assessed and completed or marked `N/A — <reason>`; optional content is complete.
 - [x] `npm run validate --prefix tools/governance-validator` passes, including template-field, status, index, reciprocal-link, Mermaid syntax, and diagram/table ID checks.
-- [ ] Repository owner and required approver `@linhai` must review the complete producer-failure exit, candidate-selection-gate, drift-reassembly, child-cancellation, retry-drift routing, direct-history drift-result, CF-1 durability-exit, CF-3 drift-recovery, Resume-cancellation, direct-commit drift-retry, over-budget drift-exit, drift winner-reuse, direct-drift cancellation, drift-conflict separation, producer-cancellation coverage, producer-outcome exclusivity, commit-time cancellation fencing, chain-validation-failure outcome, and Fork initial-construction cancellation-split corrections for automatic reviews `5085863664`, `5085923290`, `5086121809`, `5086269808`, `5086388217`, `5086580275`, `5086766960`, `5086850935`, `5087118888`, `5087270540`, `5087490898`, `5087639576`, and `5087866479` and respond with exact `Approve`; active approval metadata remains pending and Design Status is `Draft`.
+- [ ] Repository owner and required approver `@linhai` must review the complete producer-failure exit, candidate-selection-gate, drift-reassembly, child-cancellation, retry-drift routing, direct-history drift-result, CF-1 durability-exit, CF-3 drift-recovery, Resume-cancellation, direct-commit drift-retry, over-budget drift-exit, drift winner-reuse, direct-drift cancellation, drift-conflict separation, producer-cancellation coverage, producer-outcome exclusivity, commit-time cancellation fencing, chain-validation-failure outcome, Fork initial-construction cancellation-split, and Fork staged-child-chain discard corrections for automatic reviews `5085863664`, `5085923290`, `5086121809`, `5086269808`, `5086388217`, `5086580275`, `5086766960`, `5086850935`, `5087118888`, `5087270540`, `5087490898`, `5087639576`, `5087866479`, and `5088213427` and respond with exact `Approve`; active approval metadata remains pending and Design Status is `Draft`.
 
 ## Archival [Conditionally Required — Design Status is `Deprecated` or `Superseded`]
 
@@ -1387,3 +1387,4 @@ This section is inactive because Design Status is `Draft`. When triggered:
 | 2026-09-02 | Approval-invalidating automatic-review correction at `2026-09-02T17:12:56+08:00` addressed review `5087639576`: every atomic target transaction in IX-1 — the direct-history Resume commit, the compacted Resume chain commit, both Resume conflict-recovery retries, all three Resume drift-recovery retries, the compacted Fork child-chain commit, both Fork conflict-recovery retries, all three Fork drift-recovery retries, and the direct Fork child-state commit — now includes typed cancellation or fenced stop in its preconditions and result union, routed to the cancellation abort path (Resume cancelled with no D-9 or Turn; Fork cancelled with the child reservation aborted and zero visible child state). The CF-3 flowchart's four commit decisions gained the same `No, cancelled or fenced` edge into CF3Cancelled; CF-1 already covered cancellation and fencing through its terminal-or-fence-won edges. The C-6 contract row now requires every atomic Resume/Fork target-state transaction to revalidate cancellation and lease fencing before any mutation and to return the typed outcome with zero mutation, and the IX-1 row and CAND-14 delivery acceptance matrix carry the same rule. Preserved prior approval history: Approver `@linhai`, Approval Time `2026-09-02T13:15:25+08:00`, Approval Evidence `Approve`, no Approval Context Revision. Design Status remains `Draft`, active approval fields remain `Pending — reapproval required`, and the central index row remains `Draft`; CAND-11 through CAND-16 remain `Ready` but no candidate may be selected until reapproval. | @codex |
 | 2026-09-02 | Approval-invalidating automatic-review correction at `2026-09-02T17:39:49+08:00` addressed review `5087866479`: every IX-1 atomic complete-chain commit response that carries newly defined member identities — the compacted Resume commit, the compacted Fork child-chain commit, and their chain-bearing conflict-recovery and drift-recovery retries — now includes a typed zero-mutation validation-failure outcome for the D-9 canonical identity contract's identity-rule-version, encoding, digest, or predecessor-identity rejection, exiting immediately with no further transaction attempt, rejecting Resume with no D-9 or Turn, and rejecting Fork with zero visible child state, matching RK-13 and RK-14; empty-suffix winner-bound and direct-marker retries define no new identity and keep their existing unions. The CF-1 `CF1CommitD9` and CF-3 `CF3ResumeCommit`/`CF3ForkCommit` decisions gained the same typed validation-failure edges into their compact-failure or fail paths, and the CF-1, CF-3, and IX-1 structured rows record the rejection. The IX-1 Fork initial producer loop no longer merges cancellation with typed failure: cancellation marks child construction cancelled, aborts the child reservation, and reports the typed cancellation outcome with zero visible child state, while typed failure reports the failure outcome, matching IX-1 and RK-15. The CAND-14 delivery acceptance matrix carries both rules. Preserved prior approval history: Approver `@linhai`, Approval Time `2026-09-02T13:15:25+08:00`, Approval Evidence `Approve`, no Approval Context Revision. Design Status remains `Draft`, active approval fields remain `Pending — reapproval required`, and the central index row remains `Draft`; CAND-11 through CAND-16 remain `Ready` but no candidate may be selected until reapproval. | @zcode |
 | 2026-09-02 | Approval-metadata synchronization at `2026-09-02T17:54:33+08:00` addressed review `5088080936`: the pending reapproval checklist now includes the chain-validation-failure outcome and Fork initial-construction cancellation-split corrections and their automatic review `5087866479`, so the stated reapproval scope covers the latest approval-invalidating correction before `Approve` is requested. Approval state is unchanged: Design Status remains `Draft`, active approval fields remain `Pending — reapproval required`, and the central index row remains `Draft`. | @zcode |
+| 2026-09-02 | Approval-invalidating automatic-review correction at `2026-09-02T18:01:35+08:00` addressed review `5088213427`: the seven IX-1 Fork abort actions in conflict-recovery, drift-recovery, and commit-failure paths now read "abort child reservation and discard staged chain" instead of "complete staged chain", so a cancelled or failed recovery can no longer direct C-6 to retain or commit orphaned child D-9 members; every abort path keeps the zero-visible-child-state acknowledgement, matching CF-3's all-or-zero child-state contract and the initial-construction abort phrasing. The pending reapproval checklist now includes this correction and review `5088213427`. Preserved prior approval history: Approver `@linhai`, Approval Time `2026-09-02T13:15:25+08:00`, Approval Evidence `Approve`, no Approval Context Revision. Design Status remains `Draft`, active approval fields remain `Pending — reapproval required`, and the central index row remains `Draft`; CAND-11 through CAND-16 remain `Ready` but no candidate may be selected until reapproval. | @zcode |
