@@ -192,7 +192,7 @@ identity mismatch rejects the complete request chain with no member committed.
 | C-3 | Provider adapters | Translate owned Turn-inference requests, streams, and the owned bounded compaction-producer request for OpenAI-compatible and other configured providers. | Model-neutral messages, Tool schemas, a bounded seed range or immediately preceding bounded snapshot content plus one bounded contiguous causally closed delta, and budgets; model events, bounded compaction output, usage, and normalized errors. | External provider APIs. | Every producer request independently satisfies input, output, time, and retry limits; C-3 does not load the complete expanded prefix, read canonical history or D-9 persistence, select a committed winner, or control the C-2 pass budget. Provider selection is explicit; the initial baseline has no automatic fallback. Compaction input/output is untrusted conversation content and grants no authority. Secrets remain in adapter configuration boundaries. |
 | C-4 | Capability and extension registry | Load repository instructions, agent profiles, skills, plugins, and MCP/tool descriptors with precedence and provenance. | Configured roots and remote catalogs; validated descriptors and diagnostics. | MCP/tool providers, configuration. | Metadata is untrusted; extension declarations never grant execution authority. |
 | C-5 | Policy, approval, and execution boundary | Resolve permission profiles, evaluate effects, own canonical D-6 approval records, bind each accepted approval to one D-7 attempt, validate the current foreground lease generation through C-6, and dispatch through sandboxed or isolated executors. | Proposed action, immutable trust context, and applicable turn lease generation; authenticated approval decision delivered through C-1; policy decision, D-6 status, execution events and result returned through C-2. | C-6, Tool service, MCP providers, platform sandbox or isolated worker. | C-5 exposes owned ports and does not depend on C-1. It rejects dispatch and result commitment from a fenced foreground owner. Default deny, cancellation, timeout, output cap, and audit are mandatory; C-2 never performs direct host execution, and no reusable session/turn approval exists. |
-| C-6 | Thread-store port and AI-owned durable adapter | Persist and retrieve canonical history, metadata, lineage, foreground liveness leases, checkpoints, idempotency state, and reconstructable D-9 compaction snapshots in a shared durable store owned by the AI service boundary. | Versioned Thread/turn/item appends and bounded range queries, target-scoped derived snapshot reads, atomic ordered staged-chain validation/commit/winner selection, committed-winner identity/content reads, generation- and request-wide-source/snapshot-bound inference-establishment checks, atomic Resume staged-chain/final-winner/new-Turn commit, Fork child-identity/lineage reservation and atomic child-chain/final-winner/child-state commit, lease acquire/renew/expire operations; ordered history, prefix-scoped and request-wide effective-history versions/digests, D-9 identity/content/provenance, metadata, and fenced lease generations. | AI-owned PostgreSQL datastore; later semantic Memory and background Multitask adapters consume owned projections or commands. | Lease expiry and orphan terminal transition are conditional and idempotent by turn plus generation. A stale generation or terminal Turn rejects foreground chain commitment and inference establishment. One chain transaction validates its optional selected committed anchor, every staged member's predecessor identity/content digest, contiguous absorbed range, target-prefix key, and current prefix provenance. All request members commit/select atomically or none do. Identical existing content converges idempotently. A non-identical winner at the earliest conflicting member aborts the whole request chain with no member committed and returns that winner descriptor/content. C-6 accepts the next atomic attempt with that selected winner and an empty staged suffix when it already covers the target, or with only bounded descendants for remaining uncovered ranges; C-2 owns that winner-first choice. Any changed request-wide effective-context provenance or final selected winner identity/content digest rejects inference establishment. Tail-only appends do not invalidate a prefix-matching D-9. A failed Resume compaction or final commit exposes no staged-chain member or new Turn; a successful atomic Resume binds the Turn to the final selected chain winner. A cancelled or failed Fork compaction or final commit exposes no child identity, lineage, staged-chain member, or Turn. The AI-owned store is canonical for Thread/Turn/Item; D-9 and process-local state are reconstructable only and never authorize canonical-history mutation. |
+| C-6 | Thread-store port and AI-owned durable adapter | Persist and retrieve canonical history, metadata, lineage, foreground liveness leases, checkpoints, idempotency state, and reconstructable D-9 compaction snapshots in a shared durable store owned by the AI service boundary. | Versioned Thread/turn/item appends and bounded range queries, target-scoped derived snapshot reads, atomic ordered staged-chain validation/commit/winner selection, committed-winner identity/content reads, generation- and request-wide-source/snapshot-bound inference-establishment checks, atomic Resume staged-chain/final-winner/new-Turn commit, Fork child-identity/lineage reservation and atomic child-chain/final-winner/child-state commit, lease acquire/renew/expire operations; ordered history, prefix-scoped and request-wide effective-history versions/digests, D-9 identity/content/provenance, metadata, and fenced lease generations. | AI-owned PostgreSQL datastore; later semantic Memory and background Multitask adapters consume owned projections or commands. | Lease expiry and orphan terminal transition are conditional and idempotent by turn plus generation. A stale generation or terminal Turn rejects foreground chain commitment and inference establishment. One chain transaction validates its optional selected committed anchor, every staged member's predecessor identity/content digest, contiguous absorbed range, target-prefix key, and current prefix provenance. All request members commit/select atomically or none do. Identical existing content converges idempotently. A non-identical winner at the earliest conflicting member aborts the whole request chain with no member committed and returns that winner descriptor/content. C-6 accepts the next atomic attempt with that selected winner and an empty staged suffix when it already covers the target, or with only bounded descendants for remaining uncovered ranges; C-2 owns that winner-first choice. Any changed request-wide effective-context provenance or final selected winner identity/content digest rejects inference establishment. Tail-only appends do not invalidate a prefix-matching D-9. A failed Resume compaction or final commit exposes no staged-chain member or new Turn; a successful atomic Resume binds the Turn to the final selected chain winner. Every atomic Resume or Fork target-state transaction revalidates cancellation and lease fencing before any mutation and returns a typed cancellation or fenced outcome with zero mutation. A cancelled or failed Fork compaction or final commit exposes no child identity, lineage, staged-chain member, or Turn. The AI-owned store is canonical for Thread/Turn/Item; D-9 and process-local state are reconstructable only and never authorize canonical-history mutation. |
 | C-7 | Identity and trust-context adapter | Validate gateway/JWT identity and construct immutable tenant/user/thread trust context. | Credentials and gateway context; validated principal and scopes. | APISIX and Auth/JWKS. | Headers cannot replace missing signed claims; secrets and raw credentials do not enter history or logs. |
 | C-8 | Observability and audit boundary | Emit structured lifecycle, provider, policy, approval, execution, retry, and recovery signals. | Correlated events from C-1 through C-7; redacted logs, metrics, traces, and evidence references. | Logging, metrics, tracing backends. | Content minimized by default; sensitive content requires explicit environment-safe diagnostics and redaction. |
 
@@ -434,21 +434,25 @@ flowchart TB
     CF3Direct --> CF3DirectCommit{"Commit direct-history Resume or Fork against request-wide source and direct marker?"}
     CF3DirectCommit -->|"Resume"| CF3DirectResumeCommit{"Atomic request check appends new Turn bound to direct-history marker?"}
     CF3DirectResumeCommit -->|"No, request-source drift"| CF3Drift
+    CF3DirectResumeCommit -->|"No, cancelled or fenced"| CF3Cancelled
     CF3DirectResumeCommit -->|"No, typed durability failure"| CF3Fail
     CF3DirectResumeCommit -->|"Yes"| CF3DirectResume["Expose new Turn with direct history and no D-9"]
     CF3DirectCommit -->|"Fork"| CF3DirectForkCommit{"Atomic source check commits child, lineage, and first Turn bound to direct-history marker?"}
     CF3DirectForkCommit -->|"No, request-source drift"| CF3Drift
+    CF3DirectForkCommit -->|"No, cancelled or fenced"| CF3Cancelled
     CF3DirectForkCommit -->|"No, typed durability failure"| CF3Fail
     CF3DirectForkCommit -->|"Yes"| CF3DirectFork["Expose child Thread and stable lineage with no D-9"]
     CF3CompactContext --> CF3CompactCommit{"Atomically commit or select complete chain with compacted Resume or Fork target?"}
     CF3CompactCommit -->|"Resume"| CF3ResumeCommit{"Validate anchor, every member/range, prefix, and request; commit/select complete chain plus new Turn or none?"}
     CF3ResumeCommit -->|"No, earliest non-identical member winner"| CF3ChainConflict["No chain member or target state committed; discard conflicting member and descendants; adopt winner and recheck coverage plus exact-tail fit"]
     CF3ResumeCommit -->|"No, request source, final winner, prefix, or tail drifted"| CF3Drift["Discard stale staged chain or direct assembly; reread current source and committed winner; restart bounded assembly"]
+    CF3ResumeCommit -->|"No, cancelled or fenced"| CF3Cancelled
     CF3ResumeCommit -->|"No, typed durability failure"| CF3Fail
     CF3ResumeCommit -->|"Yes"| CF3Resume["Expose new Turn bound to final committed chain winner"]
     CF3CompactCommit -->|"Fork"| CF3ForkCommit{"Validate child anchor, every member/range, and source; commit/select complete child chain plus child state or none?"}
     CF3ForkCommit -->|"No, earliest non-identical member winner"| CF3ChainConflict
     CF3ForkCommit -->|"No, request-source drift"| CF3Drift
+    CF3ForkCommit -->|"No, cancelled or fenced"| CF3Cancelled
     CF3ForkCommit -->|"No, typed durability failure"| CF3Fail
     CF3ForkCommit -->|"Yes"| CF3Fork["Expose child Thread and stable lineage bound to final chain winner"]
     CF3Drift --> CF3DriftBudget{"Bounded source-drift retry remains?"}
@@ -492,7 +496,7 @@ flowchart TB
 
 | ID | Actor and entry state | Actions | System feedback and transitions | Exit state | Figma reference |
 | --- | --- | --- | --- | --- | --- |
-| IX-1 | API client with authenticated principal and an existing or new thread | Start, steer, interrupt, resume, fork, or read a thread. | C-1 obtains trust context from C-7. Every lifecycle item is published only after C-6 confirms durability. Resume first loads canonical history and any committed D-9 winner, checks the context budget, and uses direct history or that winner only when it plus the exact tail fits. Otherwise C-2 runs bounded recursive production into one ordered staged chain: a seed consumes one bounded closed range; each successor consumes the immediately preceding staged snapshot content plus one bounded contiguous closed delta, never the complete expanded prefix. Before creating the new Turn, C-6 atomically validates every chain link/range/prefix, commits/selects all members or none, and binds the Turn to the final committed winner identity/content digest. A non-identical member conflict returns the earliest committed winner with no partial chain commit. C-2 adopts that winner and rechecks target coverage plus exact-tail fit; an already-complete winner retries the target-state transaction with an empty replacement suffix, while an incomplete winner drives one or more bounded C-3 successor passes until the complete remaining suffix tip plus exact tail fits. C-6 is retried only after that suffix is complete. Fork applies the same bounded child-scoped chain after reserving unpublished child identity and immutable lineage, never reusing parent-scoped D-9. Request-source drift after assembly — including drift returned by the direct-history commit or any conflict-recovery retry — discards the stale staged chain or direct assembly and restarts bounded context reassembly within the shared drift budget instead of rejecting; reassembly that still fits below budget commits through the atomic direct-marker transaction, a prefix-valid committed winner with a refreshed exact tail retries the winner-bound transaction without producer passes, an earliest conflict winner returned by a drift-recovery retry exits into winner-first conflict recovery rather than restarting assembly, and only drift- or pass-budget exhaustion or durability failure rejects. Source, producer, closed-range, pass-budget, winner-first conflict retry, committed-winner read, cancellation, or atomic-commit failure rejects Resume with no staged-chain member or Turn and aborts Fork with zero visible child state, and a cancelled Resume — during initial construction, suffix regeneration, or drift reassembly — reports the cancellation outcome with no D-9 or Turn, while a cancelled Fork — including cancellation during child drift reassembly — preserves the cancellation outcome. `Interrupted` reports an authenticated client stop; `cancelled` reports a platform, policy, dependency, or reconciled foreground-owner stop. | A durable terminal Turn, one atomic complete D-9 chain and new Turn bound to its final winner when Resume compaction is needed, one atomic visible child plus complete child chain and first Turn bound to its final winner when Fork compaction is needed, or a rejected/cancelled request with no side effect. Initial durability, recursive producer/pass, chain winner selection/read, or atomic-commit failure creates no staged-chain member or Turn for Resume and exposes no child identity, lineage, staged-chain member, or Turn for Fork; a later outage exposes only the durable prefix plus `durability-unavailable`; an orphan becomes durably `cancelled` after the liveness window. | N/A — service/protocol interaction only; no UI is designed here. |
+| IX-1 | API client with authenticated principal and an existing or new thread | Start, steer, interrupt, resume, fork, or read a thread. | C-1 obtains trust context from C-7. Every lifecycle item is published only after C-6 confirms durability. Resume first loads canonical history and any committed D-9 winner, checks the context budget, and uses direct history or that winner only when it plus the exact tail fits. Otherwise C-2 runs bounded recursive production into one ordered staged chain: a seed consumes one bounded closed range; each successor consumes the immediately preceding staged snapshot content plus one bounded contiguous closed delta, never the complete expanded prefix. Before creating the new Turn, C-6 atomically validates every chain link/range/prefix, commits/selects all members or none, and binds the Turn to the final committed winner identity/content digest. A non-identical member conflict returns the earliest committed winner with no partial chain commit. C-2 adopts that winner and rechecks target coverage plus exact-tail fit; an already-complete winner retries the target-state transaction with an empty replacement suffix, while an incomplete winner drives one or more bounded C-3 successor passes until the complete remaining suffix tip plus exact tail fits. C-6 is retried only after that suffix is complete. Fork applies the same bounded child-scoped chain after reserving unpublished child identity and immutable lineage, never reusing parent-scoped D-9. Request-source drift after assembly — including drift returned by the direct-history commit or any conflict-recovery retry — discards the stale staged chain or direct assembly and restarts bounded context reassembly within the shared drift budget instead of rejecting; reassembly that still fits below budget commits through the atomic direct-marker transaction, a prefix-valid committed winner with a refreshed exact tail retries the winner-bound transaction without producer passes, an earliest conflict winner returned by a drift-recovery retry exits into winner-first conflict recovery rather than restarting assembly, and only drift- or pass-budget exhaustion or durability failure rejects. Source, producer, closed-range, pass-budget, winner-first conflict retry, committed-winner read, cancellation, or atomic-commit failure rejects Resume with no staged-chain member or Turn and aborts Fork with zero visible child state, and a cancelled Resume — at any producer pass or atomic target transaction — reports the cancellation outcome with no D-9 or Turn, while a cancelled Fork preserves the cancellation outcome with zero visible child state. `Interrupted` reports an authenticated client stop; `cancelled` reports a platform, policy, dependency, or reconciled foreground-owner stop. | A durable terminal Turn, one atomic complete D-9 chain and new Turn bound to its final winner when Resume compaction is needed, one atomic visible child plus complete child chain and first Turn bound to its final winner when Fork compaction is needed, or a rejected/cancelled request with no side effect. Initial durability, recursive producer/pass, chain winner selection/read, or atomic-commit failure creates no staged-chain member or Turn for Resume and exposes no child identity, lineage, staged-chain member, or Turn for Fork; a later outage exposes only the durable prefix plus `durability-unavailable`; an orphan becomes durably `cancelled` after the liveness window. | N/A — service/protocol interaction only; no UI is designed here. |
 | IX-2 | Human approver using the authenticated approval protocol exposed by C-1 and validated through C-7 | Inspect the canonical D-6 action, target, parameters, effect, scope, rationale, and risk; accept, decline, or cancel that exact request. | C-5 remains the D-6 authority. C-1 carries the request and decision but does not own approval state; C-2/C-6 append user-visible D-3 status projections referencing D-6. Acceptance binds exactly one D-7 attempt, and the execution result is reported separately. | Declined/cancelled/expired with no execution, or accepted with one linked terminal D-7 attempt. Any retry is a newly evaluated attempt and approval when required. | N/A — approval protocol semantics only; presentation design requires future Figma context. |
 | IX-3 | MCP, tool, model, memory, auth, or multitask system | Initialize or negotiate, exchange versioned requests/events, report capabilities, and return results. | Compatibility, deadline, correlation, retryability, and terminal status are explicit. | Success, compatible degradation, or typed failure without authority escalation. | N/A — external-system interaction. |
 
@@ -542,7 +546,7 @@ sequenceDiagram
           Core->>Core: Check soft budget and whether the committed D-9 winner plus exact tail fits before creating the new Turn
           alt Direct context or reusable D-9 plus exact tail fits
             Core->>Store: Atomically validate direct marker or committed D-9 identity/content plus source provenance and append new Turn
-            Store-->>Core: New Turn identity, typed request-source drift, or typed zero-mutation durability failure
+            Store-->>Core: New Turn identity, typed request-source drift, typed cancellation or fenced stop, or typed zero-mutation durability failure
             alt Typed request-source drift
               loop Bounded direct-path drift recovery until the direct commit succeeds or the drift budget ends
                 Core->>Core: Reread the current canonical source and recheck the soft budget
@@ -550,21 +554,25 @@ sequenceDiagram
                   Core->>Core: Mark drift recovery cancelled and exit without another transaction attempt
                 else Context still fits as direct history
                   Core->>Store: Retry the atomic direct-marker and new-Turn transaction
-                  Store-->>Core: New Turn committed, another request drift, or typed zero-mutation durability failure
+                  Store-->>Core: New Turn committed, another request drift, typed cancellation or fenced stop, or typed zero-mutation durability failure
                   alt Retry commits the new Turn
                     Core->>Core: Mark drift recovery complete and exit the drift loop
                   else Retry returns another request drift
                     Core->>Core: Retain the current source for the next bounded drift iteration
+                  else Retry returns typed cancellation or fenced stop
+                    Core->>Core: Mark drift recovery cancelled and exit without another transaction attempt
                   else Retry returns typed zero-mutation durability failure
                     Core->>Core: Mark drift recovery failed and exit without another transaction attempt
                   end
                 else Prefix-valid committed D-9 winner plus refreshed exact tail fits
                   Core->>Store: Retry the atomic committed-winner and new-Turn transaction with refreshed source provenance
-                  Store-->>Core: New Turn committed bound to the committed winner, another request drift, or typed zero-mutation durability failure
+                  Store-->>Core: New Turn committed bound to the committed winner, another request drift, typed cancellation or fenced stop, or typed zero-mutation durability failure
                   alt Retry commits the winner-bound new Turn
                     Core->>Core: Mark drift recovery complete and exit the drift loop
                   else Retry returns another request drift
                     Core->>Core: Retain the current source and committed winner for the next bounded drift iteration
+                  else Retry returns typed cancellation or fenced stop
+                    Core->>Core: Mark drift recovery cancelled and exit without another transaction attempt
                   else Retry returns typed zero-mutation durability failure
                     Core->>Core: Mark drift recovery failed and exit without another transaction attempt
                   end
@@ -584,6 +592,9 @@ sequenceDiagram
             else Typed durability failure
               Core-->>C1: Typed durability failure and no new Turn
               C1-->>Client: Resume rejected with no side effect and sequence terminates
+            else Typed cancellation or fenced stop
+              Core-->>C1: Resume cancelled with no D-9 or new Turn
+              C1-->>Client: Typed cancellation with no side effect and sequence terminates
             else New Turn is durable
               Note over Core,Store: Resume may enter active work and source terminal Turn remains unchanged
             end
@@ -612,17 +623,19 @@ sequenceDiagram
               C1-->>Client: Resume rejected with no side effect and sequence terminates
             else Ordered staged context chain is complete
               Core->>Store: Atomically validate optional anchor, every member link/range, prefix, and request provenance, then commit/select complete chain and append new Turn bound to final winner
-              Store-->>Core: Final chain winner plus Turn committed, earliest non-identical conflict, typed request-source drift, or typed zero-mutation durability failure
+              Store-->>Core: Final chain winner plus Turn committed, earliest non-identical conflict, typed request-source drift, typed cancellation or fenced stop, or typed zero-mutation durability failure
               alt Earliest non-identical member conflict
                 loop Bounded winner-first conflict recovery until the transaction succeeds or budget ends
                   Core->>Core: Discard conflicting member and descendants, adopt winner, and recheck target coverage plus exact-tail fit
                   alt Winner covers target and fits with exact tail
                     Core->>Store: Retry atomic new-Turn transaction with winner and empty staged suffix
-                    Store-->>Core: Winner plus Turn committed, another conflict, typed request-source drift, or typed zero-mutation durability failure
+                    Store-->>Core: Winner plus Turn committed, another conflict, typed request-source drift, typed cancellation or fenced stop, or typed zero-mutation durability failure
                     alt Retry returns another earliest conflict winner
                       Core->>Core: Retain returned winner for the next bounded conflict iteration
                     else Retry returns typed request-source drift
                       Core->>Core: Exit conflict recovery and route the drift into the bounded request-drift recovery flow
+                    else Retry returns typed cancellation or fenced stop
+                      Core->>Core: Mark recovery cancelled and exit without another transaction attempt
                     else Retry returns typed zero-mutation durability failure
                       Core->>Core: Mark recovery failed and exit without another transaction attempt
                     else Retry commits winner plus new Turn
@@ -646,11 +659,13 @@ sequenceDiagram
                       Core->>Core: Mark conflict recovery failed without retrying the atomic target transaction
                     else Complete remaining suffix fits with exact tail
                       Core->>Store: Retry atomic complete-chain and new-Turn transaction
-                      Store-->>Core: Final chain winner plus Turn, another earliest conflict, typed request-source drift, or typed zero-mutation durability failure
+                      Store-->>Core: Final chain winner plus Turn, another earliest conflict, typed request-source drift, typed cancellation or fenced stop, or typed zero-mutation durability failure
                       alt Retry returns another earliest conflict winner
                         Core->>Core: Retain returned winner for the next bounded conflict iteration
                       else Retry returns typed request-source drift
                         Core->>Core: Exit conflict recovery and route the drift into the bounded request-drift recovery flow
+                      else Retry returns typed cancellation or fenced stop
+                        Core->>Core: Mark recovery cancelled and exit without another transaction attempt
                       else Retry returns typed zero-mutation durability failure
                         Core->>Core: Mark recovery failed and exit without another transaction attempt
                       else Retry commits complete chain plus new Turn
@@ -679,23 +694,27 @@ sequenceDiagram
                     Core->>Core: Mark drift recovery failed without another transaction attempt
                   else Reassembled context fits as direct history below budget
                     Core->>Store: Retry the atomic direct-marker and new-Turn transaction
-                    Store-->>Core: New Turn committed, another request drift, or typed zero-mutation durability failure
+                    Store-->>Core: New Turn committed, another request drift, typed cancellation or fenced stop, or typed zero-mutation durability failure
                     alt Retry commits the direct-marker new Turn
                       Core->>Core: Mark drift recovery complete and exit the drift loop
                     else Retry returns another request drift
                       Core->>Core: Retain the current source for the next bounded drift iteration
+                    else Retry returns typed cancellation or fenced stop
+                      Core->>Core: Mark drift recovery cancelled and exit without another transaction attempt
                     else Retry returns typed zero-mutation durability failure
                       Core->>Core: Mark drift recovery failed and exit without another transaction attempt
                     end
                   else Reassembled chain is complete
                     Core->>Store: Retry the atomic complete-chain and new-Turn transaction
-                    Store-->>Core: Final chain winner plus Turn committed, another request drift, earliest conflict winner, or typed zero-mutation durability failure
+                    Store-->>Core: Final chain winner plus Turn committed, another request drift, earliest conflict winner, typed cancellation or fenced stop, or typed zero-mutation durability failure
                     alt Retry commits the complete chain plus new Turn
                       Core->>Core: Mark drift recovery complete and exit the drift loop
                     else Retry returns another request drift
                       Core->>Core: Retain the current source for the next bounded drift iteration
                     else Retry returns an earliest conflict winner
                       Core->>Core: Exit drift recovery and route the winner into the bounded winner-first conflict recovery flow
+                    else Retry returns typed cancellation or fenced stop
+                      Core->>Core: Mark drift recovery cancelled and exit without another transaction attempt
                     else Retry returns typed zero-mutation durability failure
                       Core->>Core: Mark drift recovery failed and exit without another transaction attempt
                     end
@@ -713,6 +732,9 @@ sequenceDiagram
               else Atomic commit failed with typed zero-mutation durability failure
                 Core-->>C1: Typed durability failure with no D-9 or new Turn
                 C1-->>Client: Resume rejected with no side effect and sequence terminates
+              else Transaction cancelled or fenced before commit
+                Core-->>C1: Resume cancelled with no D-9 or new Turn
+                C1-->>Client: Typed cancellation with no side effect and sequence terminates
               else Complete chain and new Turn are durable
                 Note over Core,Store: Resume may enter active work using the final committed winner while the source terminal Turn remains unchanged
               end
@@ -746,17 +768,19 @@ sequenceDiagram
               C1-->>Client: Typed failure or cancellation and sequence terminates
             else Child-bound staged context chain is complete
               Core->>Store: Atomically validate child anchor, every member link/range, and source, then commit/select complete child chain with child, lineage, and first Turn bound to final winner
-              Store-->>Core: Final child-chain winner and all child state, earliest non-identical conflict, typed request-source drift, or typed zero-mutation durability failure
+              Store-->>Core: Final child-chain winner and all child state, earliest non-identical conflict, typed request-source drift, typed cancellation or fenced stop, or typed zero-mutation durability failure
               alt Earliest non-identical member conflict
                 loop Bounded winner-first child conflict recovery until the transaction succeeds or budget ends
                   Core->>Core: Discard conflicting child member and descendants, adopt winner, and recheck target coverage plus exact-tail fit
                   alt Winner covers child target and fits with exact tail
                     Core->>Store: Retry atomic child-state transaction with winner and empty staged suffix
-                    Store-->>Core: Winner and child state committed, another conflict, typed request-source drift, or typed zero-mutation durability failure
+                    Store-->>Core: Winner and child state committed, another conflict, typed request-source drift, typed cancellation or fenced stop, or typed zero-mutation durability failure
                     alt Retry returns another earliest child conflict winner
                       Core->>Core: Retain returned child winner for the next bounded conflict iteration
                     else Retry returns typed request-source drift
                       Core->>Core: Exit conflict recovery and route the drift into the bounded request-drift child recovery flow
+                    else Retry returns typed cancellation or fenced stop
+                      Core->>Core: Mark child recovery cancelled and exit without another transaction attempt
                     else Retry returns typed zero-mutation durability failure
                       Core->>Core: Mark child recovery failed and exit without another transaction attempt
                     else Retry commits winner plus child state
@@ -780,11 +804,13 @@ sequenceDiagram
                       Core->>Core: Mark child conflict recovery failed without retrying the atomic target transaction
                     else Complete remaining child suffix fits with exact tail
                       Core->>Store: Retry atomic complete-child-chain and child-state transaction
-                      Store-->>Core: Final child-chain winner and child state, another earliest conflict, typed request-source drift, or typed zero-mutation durability failure
+                      Store-->>Core: Final child-chain winner and child state, another earliest conflict, typed request-source drift, typed cancellation or fenced stop, or typed zero-mutation durability failure
                       alt Retry returns another earliest child conflict winner
                         Core->>Core: Retain returned child winner for the next bounded conflict iteration
                       else Retry returns typed request-source drift
                         Core->>Core: Exit conflict recovery and route the drift into the bounded request-drift child recovery flow
+                      else Retry returns typed cancellation or fenced stop
+                        Core->>Core: Mark child recovery cancelled and exit without another transaction attempt
                       else Retry returns typed zero-mutation durability failure
                         Core->>Core: Mark child recovery failed and exit without another transaction attempt
                       else Retry commits complete child chain plus child state
@@ -818,23 +844,27 @@ sequenceDiagram
                     Core->>Core: Mark child drift recovery failed without another transaction attempt
                   else Reassembled child context fits as direct history below budget
                     Core->>Store: Retry the atomic direct-marker child-state transaction
-                    Store-->>Core: Child state committed, another request drift, or typed zero-mutation durability failure
+                    Store-->>Core: Child state committed, another request drift, typed cancellation or fenced stop, or typed zero-mutation durability failure
                     alt Retry commits the direct-marker child state
                       Core->>Core: Mark child drift recovery complete and exit the drift loop
                     else Retry returns another request drift
                       Core->>Core: Retain the current source for the next bounded drift iteration
+                    else Retry returns typed cancellation or fenced stop
+                      Core->>Core: Mark child drift recovery cancelled and exit without another transaction attempt
                     else Retry returns typed zero-mutation durability failure
                       Core->>Core: Mark child drift recovery failed and exit without another transaction attempt
                     end
                   else Reassembled child chain is complete
                     Core->>Store: Retry the atomic complete-child-chain and child-state transaction
-                    Store-->>Core: Final child-chain winner and child state, another request drift, earliest child conflict winner, or typed zero-mutation durability failure
+                    Store-->>Core: Final child-chain winner and child state, another request drift, earliest child conflict winner, typed cancellation or fenced stop, or typed zero-mutation durability failure
                     alt Retry commits the complete child chain plus child state
                       Core->>Core: Mark child drift recovery complete and exit the drift loop
                     else Retry returns another request drift
                       Core->>Core: Retain the current source for the next bounded drift iteration
                     else Retry returns an earliest child conflict winner
                       Core->>Core: Exit drift recovery and route the child winner into the bounded winner-first child conflict recovery flow
+                    else Retry returns typed cancellation or fenced stop
+                      Core->>Core: Mark child drift recovery cancelled and exit without another transaction attempt
                     else Retry returns typed zero-mutation durability failure
                       Core->>Core: Mark child drift recovery failed and exit without another transaction attempt
                     end
@@ -859,6 +889,11 @@ sequenceDiagram
                 Store-->>Core: Zero visible child state acknowledged
                 Core-->>C1: Fork failed with no child state
                 C1-->>Client: Typed failure and sequence terminates
+              else Transaction cancelled or fenced before commit
+                Core->>Store: Abort child reservation and complete staged chain
+                Store-->>Core: Zero visible child state acknowledged
+                Core-->>C1: Fork cancelled with no child state
+                C1-->>Client: Typed cancellation and sequence terminates
               else Child state is durable
                 Core-->>C1: Child identity, immutable lineage, and first Turn bound to final committed winner
                 C1-->>Client: Fork succeeded with visible child
@@ -866,7 +901,7 @@ sequenceDiagram
             end
           else Direct child context fits
             Core->>Store: Atomically commit child, lineage, and first Turn without D-9
-            Store-->>Core: All child state committed, typed request-source drift, or typed zero-mutation durability failure
+            Store-->>Core: All child state committed, typed request-source drift, typed cancellation or fenced stop, or typed zero-mutation durability failure
             alt Typed request-source drift
               loop Bounded direct-path child drift recovery until the direct child commit succeeds or the drift budget ends
                 Core->>Core: Reread the current authorized parent source and recheck the child soft budget
@@ -874,11 +909,13 @@ sequenceDiagram
                   Core->>Core: Mark child drift recovery cancelled and exit without another transaction attempt
                 else Child context still fits as direct history
                   Core->>Store: Retry the atomic direct-marker child-state transaction
-                  Store-->>Core: Child state committed, another request drift, or typed zero-mutation durability failure
+                  Store-->>Core: Child state committed, another request drift, typed cancellation or fenced stop, or typed zero-mutation durability failure
                   alt Retry commits the child state
                     Core->>Core: Mark child drift recovery complete and exit the drift loop
                   else Retry returns another request drift
                     Core->>Core: Retain the current source for the next bounded drift iteration
+                  else Retry returns typed cancellation or fenced stop
+                    Core->>Core: Mark child drift recovery cancelled and exit without another transaction attempt
                   else Retry returns typed zero-mutation durability failure
                     Core->>Core: Mark child drift recovery failed and exit without another transaction attempt
                   end
@@ -905,6 +942,11 @@ sequenceDiagram
               Store-->>Core: Zero visible child state acknowledged
               Core-->>C1: Fork failed with no child state
               C1-->>Client: Typed failure and sequence terminates
+            else Typed cancellation or fenced stop
+              Core->>Store: Abort child reservation
+              Store-->>Core: Zero visible child state acknowledged
+              Core-->>C1: Fork cancelled with no child state
+              C1-->>Client: Typed cancellation and sequence terminates
             else Child state is durable
               Core-->>C1: Child identity, immutable lineage, and first Turn
               C1-->>Client: Fork succeeded with visible child
@@ -1187,7 +1229,7 @@ deterministic checks.
 | 7 / CAND-7 | An authenticated fork crosses the minimal C-1/C-2 operation and creates a child Thread/new Turn with immutable lineage at one exact fork point in C-6. | End-to-end fork, parent/fork-point validity, tenant and subject isolation, idempotency, cycle rejection, deterministic lineage reads, and unchanged parent replay have exact outcomes. | Stop new forks and retain existing lineage as canonical metadata; do not copy or rewrite parent history during recovery. |
 | 8 / CAND-15 | C-6 provides bounded source/delta reads, versioned deterministic canonical D-9 member identities, atomic identity/anchor/member/range/prefix-fenced chain storage, deterministic final-winner selection and reads, final-winner-bound inference establishment, atomic Resume chain/winner/new-Turn state, and atomic Fork child-chain/winner/child state without owning compaction policy. | Empty/single/multi-member chains, selected anchors, same-tuple/content identity equality at seed/middle/final positions, exact staged-descendant predecessor references after identical convergence, changed-input separation, invalid identity version/encoding/digest rejection, every member link/range/key, first/middle/final non-identical conflicts with no partial request-chain commit and earliest-winner return, zero/one/multi-member replacement-suffix retries, request-wide provenance, tail/correction races, rejection of losing/stale-winner inference, terminal/lease fencing, isolation, reconstructable deletion, and all-or-zero final-winner-bound Resume/Fork state have exact transactional outcomes. | Disable D-9 writes and final-winner-bound inference establishment while retaining canonical history; remove or rebuild only reconstructable snapshots. |
 | 9 / CAND-16 | The configured C-3 adapter provides one bounded seed/successor compaction-producer operation without reading or committing D-9 or canonical history. | Seed-range and predecessor-snapshot-plus-contiguous-delta translation, combined input/output boundaries, proof no expanded prefix enters one call, producer identity, time/cancellation/retry exhaustion, malformed output, normalized failures, redaction, and zero persistence access have exact outcomes. | Disable the producer operation; retain the existing Turn-inference adapter and issue no compaction-dependent inference. |
-| 10 / CAND-14 | C-2 checks every inference budget and orchestrates direct history or one final committed D-9 chain winner plus exact tail through bounded seed/successor CAND-16 steps and CAND-15 atomic chain/winner/fence operations; staged, partially committed, losing, or late output cannot cross winner, prefix, request-wide, terminal, or lease fences. | Multi-pass initial/rebuild/active-Turn/Resume/Fork cases whose complete prefix exceeds one producer call; per-step/winner-first conflict/zero-one-multi-member suffix/pass boundaries; predecessor-plus-delta causality; tail reuse; prefix rebuild; earliest-conflict adoption and target/fit recheck; final-member winner completion without another producer call; first/middle conflict regeneration of the complete remaining suffix before C-6 retry; every Resume/Fork initial/suffix producer response proving success alone derives identity and appends while failure/cancellation creates no member and issues no later producer request; request-source drift after Resume/Fork assembly — including drift returned by direct-history commits — discarding the stale staged chain or direct assembly and restarting bounded reassembly within the shared drift budget, with rejection only on drift- or pass-budget exhaustion or typed durability failure; Fork child suffix-regeneration cancellation stopping immediately with the cancellation outcome preserved and zero visible child state; empty- and non-empty-suffix transaction retry matrices proving only another conflict winner continues, success exits complete, retry-time request-source drift routes into bounded reassembly instead of terminal rejection, drift-recovery retries distinguish another drift from an earliest conflict winner and route the winner into winner-first conflict recovery, and every typed non-conflict durability zero-mutation failure exits with no further transaction attempt; drift reassembly yielding below-budget direct history commits through the atomic direct-marker transaction, a tail-only drift retaining a prefix-valid committed winner retries the winner-bound new-Turn transaction without producer passes, while drift pushing a formerly direct context over budget exits the direct-path loop and continues through the bounded seed/successor compaction passes and atomic complete-chain commit within the same drift budget; cancellation during Resume construction, suffix regeneration, or drift reassembly preserves the cancellation outcome with no D-9 or Turn, and cancellation during child drift reassembly preserves the cancellation outcome with zero visible child state; no partial request-chain commit; final-winner-bound request provenance; atomic chain/final-winner-bound Resume/Fork state; drift/race/failure/isolation/bounded-memory/canonical-replay/unable-to-fit outcomes are exact. | Disable C-2 snapshot creation and consumption; retain complete canonical history and only derived D-9 state. If direct effective history cannot fit, fail visibly rather than truncate, partially commit a request chain, use a losing snapshot, or emit an orphan Tool result. |
+| 10 / CAND-14 | C-2 checks every inference budget and orchestrates direct history or one final committed D-9 chain winner plus exact tail through bounded seed/successor CAND-16 steps and CAND-15 atomic chain/winner/fence operations; staged, partially committed, losing, or late output cannot cross winner, prefix, request-wide, terminal, or lease fences. | Multi-pass initial/rebuild/active-Turn/Resume/Fork cases whose complete prefix exceeds one producer call; per-step/winner-first conflict/zero-one-multi-member suffix/pass boundaries; predecessor-plus-delta causality; tail reuse; prefix rebuild; earliest-conflict adoption and target/fit recheck; final-member winner completion without another producer call; first/middle conflict regeneration of the complete remaining suffix before C-6 retry; every Resume/Fork initial/suffix producer response proving success alone derives identity and appends while failure/cancellation creates no member and issues no later producer request; request-source drift after Resume/Fork assembly — including drift returned by direct-history commits — discarding the stale staged chain or direct assembly and restarting bounded reassembly within the shared drift budget, with rejection only on drift- or pass-budget exhaustion or typed durability failure; Fork child suffix-regeneration cancellation stopping immediately with the cancellation outcome preserved and zero visible child state; empty- and non-empty-suffix transaction retry matrices proving only another conflict winner continues, success exits complete, retry-time request-source drift routes into bounded reassembly instead of terminal rejection, drift-recovery retries distinguish another drift from an earliest conflict winner and route the winner into winner-first conflict recovery, and every typed non-conflict durability zero-mutation failure exits with no further transaction attempt; drift reassembly yielding below-budget direct history commits through the atomic direct-marker transaction, a tail-only drift retaining a prefix-valid committed winner retries the winner-bound new-Turn transaction without producer passes, while drift pushing a formerly direct context over budget exits the direct-path loop and continues through the bounded seed/successor compaction passes and atomic complete-chain commit within the same drift budget; cancellation during Resume construction, suffix regeneration, or drift reassembly preserves the cancellation outcome with no D-9 or Turn, cancellation during child drift reassembly preserves the cancellation outcome with zero visible child state, and cancellation or fencing returned by any atomic target transaction exits to the same cancellation path with zero mutation; no partial request-chain commit; final-winner-bound request provenance; atomic chain/final-winner-bound Resume/Fork state; drift/race/failure/isolation/bounded-memory/canonical-replay/unable-to-fit outcomes are exact. | Disable C-2 snapshot creation and consumption; retain complete canonical history and only derived D-9 state. If direct effective history cannot fit, fail visibly rather than truncate, partially commit a request chain, use a losing snapshot, or emit an orphan Tool result. |
 | 11 / CAND-8 | The AI-owned store gains durable checkpoint, idempotency, and fenced background-resume state without an external job transport or any dependency on fork lineage or context compaction. | Monotonic checkpoints, duplicate-key convergence, owner-loss resume, stale-owner rejection, single-winner recovery, terminal idempotency, and ambiguous-effect handling have exact outcomes. | Stop resume admission when ownership is ambiguous, preserve canonical state, and use only a verified new schema/artifact pair; no external fallback owns recovery. |
 | 12 / CAND-4 | Instructions, profiles, skills, plugins, and MCP use one coherent C-4-owned extension snapshot and cannot widen permissions. | Precedence, provenance, invalid entry, source loss, stale snapshot, cross-tenant isolation, atomic publish, optional durable reconstruction, and permission non-escalation are deterministic. | Disable the registry and restore the static known-safe inventory; keep historical provenance evidence. |
 | 13 / CAND-9 | An authenticated background submission crosses the minimal C-1/C-2 handoff and one versioned Multitask adapter that consumes the AI-owned checkpoint/idempotency boundary. | End-to-end submission/status, contract versioning, duplicate submission, lease loss, checkpoint handoff, cancellation, retry safety, terminal convergence, tenant isolation, and dependency loss have exact outcomes. | Disable the Multitask adapter and stop new background submissions; retain AI-owned canonical state for later recovery without route-back to predecessor behavior. |
@@ -1209,7 +1251,7 @@ deterministic checks.
 - [x] Every `Selected` or `Complete` candidate has an exact reciprocal ADR path; CAND-1 is `Complete` through `docs/adr/ADR-0001-provider-neutral-turn-kernel.md`, CAND-2 is `Complete` through `docs/adr/ADR-0003-default-deny-tool-approval-execution-boundary.md`, and CAND-3 is `Complete` through the `Accepted, Complete` service ADR at `koduck-ai/docs/adr/ADR-0003-correction-item-schema-and-raw-replay.md`; all three ADRs' Architecture Source fields point back to this ADD and the matching candidate ID, and the candidate completed only after its ADR did. With every linked ADR terminal, CAND-11 through CAND-16 remain fully specified as `Ready` with `ADR path: None`, but none may be selected while this ADD is `Draft`.
 - [x] Every required section is complete; every conditional trigger is assessed and completed or marked `N/A — <reason>`; optional content is complete.
 - [x] `npm run validate --prefix tools/governance-validator` passes, including template-field, status, index, reciprocal-link, Mermaid syntax, and diagram/table ID checks.
-- [ ] Repository owner and required approver `@linhai` must review the complete producer-failure exit, candidate-selection-gate, drift-reassembly, child-cancellation, retry-drift routing, direct-history drift-result, CF-1 durability-exit, CF-3 drift-recovery, Resume-cancellation, direct-commit drift-retry, over-budget drift-exit, drift winner-reuse, direct-drift cancellation, drift-conflict separation, producer-cancellation coverage, and producer-outcome exclusivity corrections for automatic reviews `5085863664`, `5085923290`, `5086121809`, `5086269808`, `5086388217`, `5086580275`, `5086766960`, `5086850935`, `5087118888`, `5087270540`, and `5087490898` and respond with exact `Approve`; active approval metadata remains pending and Design Status is `Draft`.
+- [ ] Repository owner and required approver `@linhai` must review the complete producer-failure exit, candidate-selection-gate, drift-reassembly, child-cancellation, retry-drift routing, direct-history drift-result, CF-1 durability-exit, CF-3 drift-recovery, Resume-cancellation, direct-commit drift-retry, over-budget drift-exit, drift winner-reuse, direct-drift cancellation, drift-conflict separation, producer-cancellation coverage, producer-outcome exclusivity, and commit-time cancellation fencing corrections for automatic reviews `5085863664`, `5085923290`, `5086121809`, `5086269808`, `5086388217`, `5086580275`, `5086766960`, `5086850935`, `5087118888`, `5087270540`, `5087490898`, and `5087639576` and respond with exact `Approve`; active approval metadata remains pending and Design Status is `Draft`.
 
 ## Archival [Conditionally Required — Design Status is `Deprecated` or `Superseded`]
 
@@ -1316,3 +1358,4 @@ This section is inactive because Design Status is `Draft`. When triggered:
 | 2026-09-02 | Approval-invalidating automatic-review correction at `2026-09-02T16:35:32+08:00` addressed review `5087270540` plus a systematic async-outcome cross-product audit: drift-recovery retry responses in IX-1 Resume and Fork now separate another request drift from an earliest conflict winner — drift continues the bounded drift iteration while a conflict winner exits drift recovery into the bounded winner-first conflict recovery flow, so an otherwise converging request is neither rejected with remaining conflict budget nor rebuilt wholesale. The audit then closed the remaining outcome-classification gaps in one pass: CF-1 producer decisions now branch an authenticated interrupt to `interrupted` and a platform/policy/dependency/lease stop to `cancelled` during compaction, and CF1Dispatch gained a typed durability failure exit into the compact-failure recovery; CF-3 producer decisions now route cancellation to a CF3Cancelled node that discards the staged chain, aborts the fork reservation, and reports cancellation with no new Turn and zero visible child state, matching the CF-3 table and IX-1. The IX-1 structured row and the CAND-14 delivery acceptance matrix carry the same rules. Preserved prior approval history: Approver `@linhai`, Approval Time `2026-09-02T13:15:25+08:00`, Approval Evidence `Approve`, no Approval Context Revision. Design Status remains `Draft`, active approval fields remain `Pending — reapproval required`, and the central index row remains `Draft`; CAND-11 through CAND-16 remain `Ready` but no candidate may be selected until reapproval. | @codex |
 | 2026-09-02 | Approval-invalidating automatic-review correction at `2026-09-02T16:48:22+08:00` addressed review `5087490898`: the CF-1 and CF-3 producer decisions (`CF1BuildResult`, `CF1AdvanceResult`, `CF3BuildResult`, `CF3AdvanceResult`) are no longer binary "Producer succeeds?" questions whose generic `No` edge overlapped the interrupt and cancellation edges. Each is now an explicit `Bounded producer outcome?` decision with mutually exclusive edges — `Valid bounded output`, `Typed producer failure`, `Authenticated interrupt won` or `Cancelled`, and `Platform, policy, dependency, or lease stop` — so an interrupt or cancellation can only reach its required terminal and the diagram unambiguously agrees with the structured flow semantics. Preserved prior approval history: Approver `@linhai`, Approval Time `2026-09-02T13:15:25+08:00`, Approval Evidence `Approve`, no Approval Context Revision. Design Status remains `Draft`, active approval fields remain `Pending — reapproval required`, and the central index row remains `Draft`; CAND-11 through CAND-16 remain `Ready` but no candidate may be selected until reapproval. | @codex |
 | 2026-09-02 | Approval-invalidating follow-up audit correction at `2026-09-02T16:52:30+08:00`: a second cross-product audit pass over every CF-1 through CF-5 decision node found one remaining same-class gap — the CF1Snapshot and CF3Snapshot availability edges did not partition the `No` outcome exhaustively, leaving "closed boundary and source available but no fitting bounded seed range" without an edge. Both snapshot decisions now use the exclusive labels `Yes, prefix provenance and causal closure match`, `No, bounded seed range and closed boundary available`, and `No, no fitting seed range, closed boundary, or available source`. All other decision nodes and async response points were rechecked for edge exclusivity and outcome-class coverage with no further gaps found. Preserved prior approval history: Approver `@linhai`, Approval Time `2026-09-02T13:15:25+08:00`, Approval Evidence `Approve`, no Approval Context Revision. Design Status remains `Draft`, active approval fields remain `Pending — reapproval required`, and the central index row remains `Draft`; CAND-11 through CAND-16 remain `Ready` but no candidate may be selected until reapproval. | @codex |
+| 2026-09-02 | Approval-invalidating automatic-review correction at `2026-09-02T17:12:56+08:00` addressed review `5087639576`: every atomic target transaction in IX-1 — the direct-history Resume commit, the compacted Resume chain commit, both Resume conflict-recovery retries, all three Resume drift-recovery retries, the compacted Fork child-chain commit, both Fork conflict-recovery retries, all three Fork drift-recovery retries, and the direct Fork child-state commit — now includes typed cancellation or fenced stop in its preconditions and result union, routed to the cancellation abort path (Resume cancelled with no D-9 or Turn; Fork cancelled with the child reservation aborted and zero visible child state). The CF-3 flowchart's four commit decisions gained the same `No, cancelled or fenced` edge into CF3Cancelled; CF-1 already covered cancellation and fencing through its terminal-or-fence-won edges. The C-6 contract row now requires every atomic Resume/Fork target-state transaction to revalidate cancellation and lease fencing before any mutation and to return the typed outcome with zero mutation, and the IX-1 row and CAND-14 delivery acceptance matrix carry the same rule. Preserved prior approval history: Approver `@linhai`, Approval Time `2026-09-02T13:15:25+08:00`, Approval Evidence `Approve`, no Approval Context Revision. Design Status remains `Draft`, active approval fields remain `Pending — reapproval required`, and the central index row remains `Draft`; CAND-11 through CAND-16 remain `Ready` but no candidate may be selected until reapproval. | @codex |
