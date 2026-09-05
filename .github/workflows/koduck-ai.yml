@@ -43,7 +43,10 @@ jobs:
         env:
           SONAR_REVISION: ${{ github.event.pull_request.head.sha }}
           SONAR_BASE: ${{ github.event.pull_request.base.sha }}
-        run: python3 tools/sonarqube/gate.py check --revision "$SONAR_REVISION" --base "$SONAR_BASE"
+        # The sudoers rule admits only this root-owned wrapper, which runs
+        # the image-baked gate tooling as the gate user; the analysis token
+        # is never present in any PR-controlled step or subprocess.
+        run: sudo /usr/local/bin/koduck-gate check --revision "$SONAR_REVISION" --base "$SONAR_BASE"
 
   format:
     name: koduck-ai-format

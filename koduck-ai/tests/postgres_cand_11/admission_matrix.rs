@@ -476,62 +476,68 @@ fn forward_linked_ancestry_fails_closed(harness: &Harness, pool: &sqlx::PgPool) 
 /// Below-cap malformed ancestor payloads fail closed (CA-03), both as the
 /// direct predecessor and deeper in the chain beneath a valid predecessor.
 fn malformed_ancestor_payloads_fail_closed(harness: &Harness, pool: &sqlx::PgPool) {
-    // A malformed payload deeper in the chain, beneath a valid direct
-    // predecessor, must also fail closed (CA-03): the production schema
-    // does not constrain payload JSON, so this case is seeded directly.
-    {
-        let fixture = fresh_fixture("ac2-malformed-deep");
-        harness
-            .runtime
-            .block_on(seed_turn(pool, &fixture, "completed", 4, false));
-        let root = Uuid::new_v4();
-        harness.runtime.block_on(seed_item(
-            pool,
-            &fixture,
-            1,
-            root,
-            "user_message",
-            "{\"content\":\"root\"}",
-            false,
-            None,
-        ));
-        let older = Uuid::new_v4();
-        harness.runtime.block_on(seed_item(
-            pool,
-            &fixture,
-            2,
-            older,
-            "correction",
-            "not json at all",
-            false,
-            Some(root),
-        ));
-        let tip = Uuid::new_v4();
-        harness.runtime.block_on(seed_item(
-            pool,
-            &fixture,
-            3,
-            tip,
-            "correction",
-            "{\"content\":\"valid predecessor\"}",
-            false,
-            Some(older),
-        ));
-        let before = harness.runtime.block_on(snapshot(pool, &fixture));
-        assert_eq!(
-            harness.correct(command(
-                &fixture,
-                ItemId::new(),
-                ItemId::from_uuid(tip),
-                "corrected",
-            )),
-            Err(CorrectionError::CorruptHistory),
-            "a malformed payload anywhere in the ancestry must fail closed"
-        );
-        let after = harness.runtime.block_on(snapshot(pool, &fixture));
-        assert_unchanged(&before, &after);
-    }
+    deep_malformed_ancestor_fails_closed(harness, pool);
+    direct_malformed_ancestor_fails_closed(harness, pool);
+}
 
+/// A malformed payload deeper in the chain, beneath a valid direct
+/// predecessor, must also fail closed (CA-03): the production schema
+/// does not constrain payload JSON, so this case is seeded directly.
+fn deep_malformed_ancestor_fails_closed(harness: &Harness, pool: &sqlx::PgPool) {
+    let fixture = fresh_fixture("ac2-malformed-deep");
+    harness
+        .runtime
+        .block_on(seed_turn(pool, &fixture, "completed", 4, false));
+    let root = Uuid::new_v4();
+    harness.runtime.block_on(seed_item(
+        pool,
+        &fixture,
+        1,
+        root,
+        "user_message",
+        "{\"content\":\"root\"}",
+        false,
+        None,
+    ));
+    let older = Uuid::new_v4();
+    harness.runtime.block_on(seed_item(
+        pool,
+        &fixture,
+        2,
+        older,
+        "correction",
+        "not json at all",
+        false,
+        Some(root),
+    ));
+    let tip = Uuid::new_v4();
+    harness.runtime.block_on(seed_item(
+        pool,
+        &fixture,
+        3,
+        tip,
+        "correction",
+        "{\"content\":\"valid predecessor\"}",
+        false,
+        Some(older),
+    ));
+    let before = harness.runtime.block_on(snapshot(pool, &fixture));
+    assert_eq!(
+        harness.correct(command(
+            &fixture,
+            ItemId::new(),
+            ItemId::from_uuid(tip),
+            "corrected",
+        )),
+        Err(CorrectionError::CorruptHistory),
+        "a malformed payload anywhere in the ancestry must fail closed"
+    );
+    let after = harness.runtime.block_on(snapshot(pool, &fixture));
+    assert_unchanged(&before, &after);
+}
+
+/// The malformed direct-predecessor cases over a valid root.
+fn direct_malformed_ancestor_fails_closed(harness: &Harness, pool: &sqlx::PgPool) {
     for payload in ["not json at all", "{\"text\":\"no content member\"}"] {
         let fixture = fresh_fixture("ac2-malformed-ancestor");
         harness
@@ -571,6 +577,7 @@ fn malformed_ancestor_payloads_fail_closed(harness: &Harness, pool: &sqlx::PgPoo
         );
     }
 }
+
 /// Broken ancestor links and interior branches are prevented by the
 /// production constraints; the isolated fixture schema without those
 /// constraints proves the admission walk rejects both, and the
@@ -634,46 +641,43 @@ fn broken_ancestor_link_fails_closed(harness: &Harness, pool: &sqlx::PgPool) {
 /// constraint-free fixture schema; both fail closed as corrupt durable
 /// state (CA-03).
 fn interior_branch_fails_closed(harness: &Harness, pool: &sqlx::PgPool) {
+    tip_branch_fails_closed(harness, pool);
+    mid_chain_branch_fails_closed(harness, pool);
+}
+
+/// A branched tip (two direct successors on the root) is corrupt durable
+/// state, not a stale tip.
+fn tip_branch_fails_closed(harness: &Harness, pool: &sqlx::PgPool) {
     let corrupt = harness::CorruptFixture::create(harness);
-    let seed = |fixture: &Fixture,
-                sequence: i64,
-                item_id: Uuid,
-                item_type: &str,
-                payload: &str,
-                corrects| {
-        harness
-            .runtime
-            .block_on(corrupt.seed_item(fixture, sequence, item_id, item_type, payload, corrects));
-    };
     let branched_fixture = fresh_fixture("ac2-branch");
     harness
         .runtime
         .block_on(seed_turn(pool, &branched_fixture, "completed", 4, false));
     let root = Uuid::new_v4();
-    seed(
+    harness.runtime.block_on(corrupt.seed_item(
         &branched_fixture,
         1,
         root,
         "user_message",
         "{\"content\":\"r\"}",
         None,
-    );
-    seed(
+    ));
+    harness.runtime.block_on(corrupt.seed_item(
         &branched_fixture,
         2,
         Uuid::new_v4(),
         "correction",
         "{\"content\":\"a\"}",
         Some(root),
-    );
-    seed(
+    ));
+    harness.runtime.block_on(corrupt.seed_item(
         &branched_fixture,
         3,
         Uuid::new_v4(),
         "correction",
         "{\"content\":\"b\"}",
         Some(root),
-    );
+    ));
     assert_eq!(
         harness.correct_on(
             &corrupt.pool,
@@ -687,31 +691,67 @@ fn interior_branch_fails_closed(harness: &Harness, pool: &sqlx::PgPool) {
         Err(CorrectionError::CorruptHistory),
         "a branched predecessor is corrupt durable state, not a stale tip"
     );
-    let mid = Uuid::new_v4();
-    seed(
+    corrupt.teardown();
+}
+
+/// A branch on a mid-chain node (two successors of one interior ancestor)
+/// must fail closed as well.
+fn mid_chain_branch_fails_closed(harness: &Harness, pool: &sqlx::PgPool) {
+    let corrupt = harness::CorruptFixture::create(harness);
+    let branched_fixture = fresh_fixture("ac2-branch-mid");
+    harness
+        .runtime
+        .block_on(seed_turn(pool, &branched_fixture, "completed", 7, false));
+    let root = Uuid::new_v4();
+    harness.runtime.block_on(corrupt.seed_item(
         &branched_fixture,
-        4,
+        1,
+        root,
+        "user_message",
+        "{\"content\":\"r\"}",
+        None,
+    ));
+    harness.runtime.block_on(corrupt.seed_item(
+        &branched_fixture,
+        2,
+        Uuid::new_v4(),
+        "correction",
+        "{\"content\":\"a\"}",
+        Some(root),
+    ));
+    let mid = Uuid::new_v4();
+    harness.runtime.block_on(corrupt.seed_item(
+        &branched_fixture,
+        3,
         mid,
         "correction",
         "{\"content\":\"m\"}",
         Some(root),
-    );
-    seed(
+    ));
+    harness.runtime.block_on(corrupt.seed_item(
         &branched_fixture,
-        5,
+        4,
         Uuid::new_v4(),
         "correction",
         "{\"content\":\"n\"}",
         Some(mid),
-    );
-    seed(
+    ));
+    harness.runtime.block_on(corrupt.seed_item(
         &branched_fixture,
-        6,
+        5,
         Uuid::new_v4(),
         "correction",
         "{\"content\":\"o\"}",
         Some(mid),
-    );
+    ));
+    harness.runtime.block_on(corrupt.seed_item(
+        &branched_fixture,
+        6,
+        Uuid::new_v4(),
+        "correction",
+        "{\"content\":\"p\"}",
+        Some(root),
+    ));
     assert_eq!(
         harness.correct_on(
             &corrupt.pool,

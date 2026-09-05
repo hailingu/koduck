@@ -137,16 +137,19 @@ repository code; it holds a project-scoped analysis token. CI never exposes it
 to fork pull requests.
 
 The analysis token reaches the worker over stdin and is stored by the
-entrypoint in a mode-0600 file under the runner home; it is never exported
-into the job environment, so no workflow step or subprocess inherits it.
-`gate.py` loads the file only in the ephemeral CI worker (hooks keep using
-the shell export). Residual boundary: the one-job container runs its steps
-as a single user, so PR-controlled step code in the same container could
-still read the token file while the job runs — the durable mitigation is
-that only same-repository, CI-verified code is allowed on this runner, the
-token is project-scoped with read-only analysis permissions, and the worker
-is destroyed with the job. Per-job token minting requires Sonar
-user-administration rights this workflow deliberately does not hold.
+root entrypoint in a mode-0600 file owned by the dedicated `gate` user; it
+is never exported into any job step's environment. The workflow's sonar
+step invokes exactly one root-owned sudoers-whitelisted wrapper that
+executes the gate tooling BAKED into the image (never the checked-out
+copy, which a pull request could rewrite) as the `gate` user — the only
+identity able to read the token. Instrumented build and test commands
+(cargo, npm, the Python suite) drop to a separate token-less `builder`
+uid, so repository build code such as Rust build scripts can execute
+without access to the credential or the gate process environment; the
+scanner subprocess alone keeps the gate identity. Hooks on the developer
+machine keep using the shell export. The runner container is destroyed
+with its job. Per-job token minting requires Sonar user-administration
+rights this workflow deliberately does not hold.
 
 Until a runner is started and `KODUCK_SONAR_RUNNER_ENABLED=true`, readiness fails
 explicitly. A previously started ephemeral runner does not imply a currently

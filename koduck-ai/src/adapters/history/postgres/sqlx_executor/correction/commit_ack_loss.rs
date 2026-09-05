@@ -30,6 +30,40 @@ impl Drop for AckLossGuard {
 
 #[test]
 fn commit_ack_loss_is_reconciled_to_the_committed_exact_match() {
+    let (runtime, pool) = connected_pool();
+    let _permit = runtime.block_on(crate::test_migrations::reserve_database());
+
+    let tenant = TenantId::new(format!("cand11-ack-loss-{}", Uuid::new_v4())).expect("tenant");
+    let thread = ThreadId::new();
+    let turn = TurnId::new();
+    runtime.block_on(seed_completed_turn(&pool, &tenant, &thread, &turn));
+    let input_id = runtime.block_on(seeded_input_id(&pool, &tenant, &thread, &turn));
+    let identity = ItemId::new();
+    let command = correction_command(&tenant, thread, turn, identity, input_id);
+
+    DROP_COMMIT_ACK.store(true, Ordering::Release);
+    let guard = AckLossGuard;
+    let item = correct(&runtime, &pool, command);
+    std::mem::drop(guard);
+
+    // The reconciler waits behind the still-committing writer's identity
+    // lock and then observes the committed exact match.
+    assert_eq!(item.item_id, identity);
+    assert_eq!(item.sequence, 2);
+    assert_durable_state(&runtime, &pool, &tenant, thread, turn, 2, 3);
+
+    // The later exact retry deduplicates without any new write.
+    let retried = correct(
+        &runtime,
+        &pool,
+        correction_command(&tenant, thread, turn, identity, input_id),
+    );
+    assert_eq!(retried, item);
+    assert_durable_state(&runtime, &pool, &tenant, thread, turn, 2, 3);
+    runtime.block_on(pool.close());
+}
+
+fn connected_pool() -> (tokio::runtime::Runtime, PgPool) {
     let Ok(database_url) = std::env::var("KODUCK_AI_TEST_DATABASE_URL") else {
         panic!(
             "KODUCK_AI_TEST_DATABASE_URL must point at the isolated migrated \
@@ -52,16 +86,17 @@ fn commit_ack_loss_is_reconciled_to_the_committed_exact_match() {
         crate::test_migrations::ensure(&pool).await;
         pool
     });
-    let _permit = runtime.block_on(crate::test_migrations::reserve_database());
+    (runtime, pool)
+}
 
-    let tenant = TenantId::new(format!("cand11-ack-loss-{}", Uuid::new_v4())).expect("tenant");
-    let thread = ThreadId::new();
-    let turn = TurnId::new();
-    runtime.block_on(seed_completed_turn(&pool, &tenant, &thread, &turn));
-    let input_id = runtime.block_on(seeded_input_id(&pool, &tenant, &thread, &turn));
-
-    let identity = ItemId::new();
-    let command = CorrectionCommand::new(
+fn correction_command(
+    tenant: &TenantId,
+    thread: ThreadId,
+    turn: TurnId,
+    identity: ItemId,
+    input_id: ItemId,
+) -> CorrectionCommand {
+    CorrectionCommand::new(
         TrustContext::new(tenant.clone(), "subject-a").expect("trust"),
         thread,
         turn,
@@ -69,21 +104,31 @@ fn commit_ack_loss_is_reconciled_to_the_committed_exact_match() {
         input_id,
         "committed before the acknowledgement vanished",
     )
-    .expect("valid command");
+    .expect("valid command")
+}
 
-    DROP_COMMIT_ACK.store(true, Ordering::Release);
-    let guard = AckLossGuard;
-    let executor = SqlxPostgresExecutor::new(pool.clone(), runtime.handle().clone());
-    let outcome = CorrectionStore::correct(&executor, command);
-    std::mem::drop(guard);
+fn correct(
+    runtime: &tokio::runtime::Runtime,
+    pool: &PgPool,
+    command: CorrectionCommand,
+) -> crate::domain::Item {
+    CorrectionStore::correct(
+        &SqlxPostgresExecutor::new(pool.clone(), runtime.handle().clone()),
+        command,
+    )
+    .expect("the reconciliation resolves the committed exact match")
+}
 
-    // The reconciler waits behind the still-committing writer's identity
-    // lock and then observes the committed exact match.
-    let item = outcome.expect("the reconciliation resolves the committed exact match");
-    assert_eq!(item.item_id, identity);
-    assert_eq!(item.sequence, 2);
-
-    let (rows, next_sequence): (i64, i64) = runtime.block_on(async {
+fn assert_durable_state(
+    runtime: &tokio::runtime::Runtime,
+    pool: &PgPool,
+    tenant: &TenantId,
+    thread: ThreadId,
+    turn: TurnId,
+    rows: i64,
+    next_sequence: i64,
+) {
+    let (stored_rows, counter): (i64, i64) = runtime.block_on(async {
         sqlx::query_as(
             "SELECT \
          (SELECT count(*) FROM turn_items WHERE tenant_id = $1 \
@@ -94,42 +139,12 @@ fn commit_ack_loss_is_reconciled_to_the_committed_exact_match() {
         .bind(tenant.as_str())
         .bind(thread.as_uuid())
         .bind(turn.as_uuid())
-        .fetch_one(&pool)
+        .fetch_one(pool)
         .await
         .expect("read the durable state")
     });
-    assert_eq!(rows, 2, "exactly one correction row may exist");
-    assert_eq!(next_sequence, 3, "the counter advanced exactly once");
-
-    // The later exact retry deduplicates without any new write.
-    let retried = CorrectionStore::correct(
-        &SqlxPostgresExecutor::new(pool.clone(), runtime.handle().clone()),
-        CorrectionCommand::new(
-            TrustContext::new(tenant.clone(), "subject-a").expect("trust"),
-            thread,
-            turn,
-            identity,
-            input_id,
-            "committed before the acknowledgement vanished",
-        )
-        .expect("valid retry command"),
-    )
-    .expect("the exact retry resolves");
-    assert_eq!(retried, item);
-    let (rows_after,): (i64,) = runtime.block_on(async {
-        sqlx::query_as(
-            "SELECT count(*) FROM turn_items WHERE tenant_id = $1 \
-         AND thread_id = $2 AND turn_id = $3",
-        )
-        .bind(tenant.as_str())
-        .bind(thread.as_uuid())
-        .bind(turn.as_uuid())
-        .fetch_one(&pool)
-        .await
-        .expect("read the durable state after the retry")
-    });
-    assert_eq!(rows_after, 2, "the retry must not duplicate");
-    runtime.block_on(pool.close());
+    assert_eq!(stored_rows, rows, "exactly one correction row may exist");
+    assert_eq!(counter, next_sequence, "the counter advanced exactly once");
 }
 
 async fn seed_completed_turn(pool: &PgPool, tenant: &TenantId, thread: &ThreadId, turn: &TurnId) {

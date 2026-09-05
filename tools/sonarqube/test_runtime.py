@@ -40,6 +40,47 @@ class RuntimeTests(unittest.TestCase):
                 module.run(["python3", "-c", code], Path(directory), seconds=5)
             self.assertEqual(output.read_text(), "False")
 
+    def test_instrumented_commands_drop_to_the_builder_identity(self):
+        module = implementation("scan_runtime")
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "result"
+            code = (
+                "import os,pathlib; pathlib.Path('result').write_text(str(os.getuid()))"
+            )
+            uid = str(os.getuid())
+            gid = str(os.getgid())
+            with patch.dict(
+                os.environ,
+                {
+                    "KODUCK_SONAR_BUILDER_UID": uid,
+                    "KODUCK_SONAR_BUILDER_GID": gid,
+                },
+            ):
+                module.run(["python3", "-c", code], Path(directory), seconds=5)
+            self.assertEqual(output.read_text(), uid)
+
+    def test_scanner_commands_keep_the_gate_identity(self):
+        module = implementation("scan_runtime")
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "result"
+            code = (
+                "import os,pathlib; pathlib.Path('result').write_text(str(os.getuid()))"
+            )
+            with patch.dict(
+                os.environ,
+                {
+                    "KODUCK_SONAR_BUILDER_UID": "424242",
+                    "KODUCK_SONAR_BUILDER_GID": "424242",
+                },
+            ):
+                module.run(
+                    ["python3", "-c", code],
+                    Path(directory),
+                    seconds=5,
+                    extra={"SONAR_TOKEN": "fixture"},
+                )
+            self.assertEqual(output.read_text(), str(os.getuid()))
+
     def test_report_requires_correct_project_and_task(self):
         module = implementation("scan_runtime")
         with tempfile.TemporaryDirectory() as directory:

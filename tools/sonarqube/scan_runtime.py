@@ -13,6 +13,21 @@ from git_snapshot import git, is_production_source
 VALIDATOR = "tools/governance-validator"
 
 
+def _builder_credentials() -> tuple[int, int] | None:
+    """Return the untrusted build uid/gid inside the ephemeral CI worker.
+
+    The wrapper exports them only in the gate process, so instrumented
+    commands execute PR-controlled build code as a uid that can neither read
+    the gate-only analysis token nor the gate process environment. Local
+    hooks and tests run without them and keep the invoking identity.
+    """
+    uid = os.environ.get("KODUCK_SONAR_BUILDER_UID")
+    gid = os.environ.get("KODUCK_SONAR_BUILDER_GID")
+    if uid and gid:
+        return int(uid), int(gid)
+    return None
+
+
 def run(
     command: list[str], cwd: Path, seconds: int = 1800, extra: dict | None = None
 ) -> str:
@@ -24,6 +39,17 @@ def run(
     }
     env.update(extra or {})
     env["PYTHONDONTWRITEBYTECODE"] = "1"
+    # Instrumented commands execute repository build code, so inside the
+    # ephemeral worker they drop to the token-less builder uid; only the
+    # scanner subprocess, which alone receives the analysis token, keeps the
+    # gate identity.
+    credentials = None if "SONAR_TOKEN" in env else _builder_credentials()
+
+    def _drop() -> None:
+        uid, gid = credentials
+        os.setgid(gid)
+        os.setuid(uid)
+
     label = Path(command[0]).name
     if label == "cargo" and len(command) > 1:
         label += " " + command[1]
@@ -36,6 +62,7 @@ def run(
             stdout=output,
             stderr=subprocess.STDOUT,
             start_new_session=True,
+            preexec_fn=_drop if credentials else None,
         )
         try:
             result = process.wait(timeout=seconds)
@@ -198,6 +225,9 @@ def python_coverage(snapshot: Path, tools: Path, output: Path, timeout: int) -> 
 def coverage(snapshot: Path, tools: Path, output: Path, config: dict) -> dict:
     """Run each supported language boundary and import one same-source report."""
     output.mkdir()
+    # The instrumented commands run as the token-less builder uid inside the
+    # ephemeral worker, so their report directory must accept their writes.
+    os.chmod(output, 0o777)
     timeout = config["test_timeout"]
     result = rust_coverage(snapshot, output, timeout)
     result.update(javascript_coverage(snapshot, tools, output, timeout))

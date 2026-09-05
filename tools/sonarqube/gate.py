@@ -28,6 +28,12 @@ from postgres_fixture import database_fixture
 from sonar_api import Sonar, incremental_issues, require_pass
 
 TOOLS = Path(__file__).resolve().parent
+# Inside the ephemeral CI worker the executed gate tooling is the baked,
+# image-pinned copy while the per-job runtime dependencies (coverage venvs)
+# live in the checked-out tree prepared by the untrusted install step.
+RUNTIME_TOOLS = Path(
+    os.environ.get("KODUCK_SONAR_RUNTIME_TOOLS") or Path(__file__).resolve().parent
+)
 RUNNER_FILE_DIR = Path.home() / ".koduck"
 
 
@@ -118,11 +124,12 @@ def project_lock():
 def analyze(root: Path, snapshot, base: str, config: dict, sonar: Sonar) -> dict:
     """Compare base and candidate using the same analyzer, then bind all evidence."""
     policy = policy_id()
-    preflight(config, TOOLS)
+    preflight(config, RUNTIME_TOOLS)
     with tempfile.TemporaryDirectory(prefix="koduck-sonar-results-") as temporary:
         output = Path(temporary)
         # Test before submitting either scan: verification failure retains the prior dashboard.
-        hits = coverage(snapshot.path, TOOLS, output / "coverage", config)
+        coverage_output = output / "coverage"
+        hits = coverage(snapshot.path, RUNTIME_TOOLS, coverage_output, config)
         changed = changed_lines(snapshot.path, base, snapshot.revision)
         with revision_snapshot(root, base) as baseline:
             task, base_analysis = scan(baseline, config, sonar, output / "baseline")

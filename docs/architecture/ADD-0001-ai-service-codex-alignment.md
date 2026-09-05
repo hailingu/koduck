@@ -1380,7 +1380,7 @@ sequencing; CAND-4 owns its registry
 snapshots and is independent of CAND-8; CAND-9 requires CAND-8; and CAND-10
 requires CAND-7 and CAND-12 but neither CAND-8 nor CAND-13 through CAND-16.
 Repository-wide ADR serialization still permits only one unfinished ADR at a
-time. CAND-11 is `Selected` through `koduck-ai/docs/adr/ADR-0004-authenticated-correction-admission.md`. CAND-12 through CAND-16 remain `Ready` with no ADR and are eligible for dependency-ordered selection only while this ADD is `Current`; no candidate may be selected while the ADD is `Draft`. No slice assumes a predecessor deployment, legacy route,
+time. CAND-11 is `Complete` through the Accepted, Verified `koduck-ai/docs/adr/ADR-0004-authenticated-correction-admission.md`. CAND-12 through CAND-16 remain `Ready` with no ADR and are eligible for dependency-ordered selection only while this ADD is `Current`; no candidate may be selected while the ADD is `Draft`. No slice assumes a predecessor deployment, legacy route,
 shared-history subset, or fallback. Each selected candidate requires one
 reciprocal Full ADR with no more than three implementation subtasks and
 deterministic checks.
