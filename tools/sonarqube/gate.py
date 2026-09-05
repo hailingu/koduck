@@ -18,6 +18,7 @@ from git_snapshot import (
     feature_base,
     git,
     index_snapshot,
+    is_shell_source,
     push_revisions,
     require_index,
     revision_snapshot,
@@ -27,6 +28,23 @@ from postgres_fixture import database_fixture
 from sonar_api import Sonar, incremental_issues, require_pass
 
 TOOLS = Path(__file__).resolve().parent
+TOKEN_FILE = Path.home() / ".koduck" / "sonar-token"
+
+
+def sonar_token() -> str:
+    """Read the analysis token from the environment or the runner token file.
+
+    Hooks receive the token through the invoking shell; the ephemeral CI
+    worker stores it in a mode-0600 file written by the runner entrypoint so
+    no job step inherits the credential through its environment.
+    """
+    env_token = os.environ.get("KODUCK_SONAR_TOKEN")
+    if env_token:
+        return env_token
+    try:
+        return TOKEN_FILE.read_text().strip()
+    except OSError:
+        return ""
 
 
 def policy_id() -> str:
@@ -111,7 +129,13 @@ def analyze(root: Path, snapshot, base: str, config: dict, sonar: Sonar) -> dict
             if name.endswith(".rs")
             and rust_declarations_only((snapshot.path / name).read_text())
         }
-        nonexecutable = declarations | sonar.nonexecutable_files(missing - declarations)
+        # Sonar does not analyze shell scripts, so they never join the
+        # file-metric classification; changed shell lines stay uncovered in
+        # the denominator (see changed_coverage).
+        shell = {name for name in missing if is_shell_source(name)}
+        nonexecutable = declarations | sonar.nonexecutable_files(
+            missing - declarations - shell
+        )
         covered, coverable = changed_coverage(changed, hits, nonexecutable)
         if policy_id() != policy:
             raise RuntimeError("SONAR_POLICY_CHANGED: rescan with the final policy")
@@ -173,9 +197,7 @@ def main() -> int:
         / "sonarqube"
     )
     config = json.loads((TOOLS / "config.json").read_text())
-    sonar = Sonar(
-        config["host"], config["project"], os.environ.get("KODUCK_SONAR_TOKEN", "")
-    )
+    sonar = Sonar(config["host"], config["project"], sonar_token())
     with project_lock(), database_fixture():
         if args.mode == "pre-commit":
             with index_snapshot(root) as snapshot:

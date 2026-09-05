@@ -121,9 +121,16 @@ def changed_lines(root: Path, base: str, revision: str) -> dict[str, set[int]]:
     return changes
 
 
+def is_shell_source(name: str) -> bool:
+    """Recognize executable shell paths the coverage tooling cannot instrument."""
+    return name.endswith(".sh") or name.startswith(".githooks/")
+
+
 def is_production_source(name: str) -> bool:
     """Select supported executable sources, excluding dedicated test fixtures."""
     path = Path(name)
+    if is_shell_source(name):
+        return not {"test", "tests", "fixtures"}.intersection(path.parts)
     return (
         path.suffix in {".rs", ".py", ".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx"}
         and not {"test", "tests", "fixtures"}.intersection(path.parts)

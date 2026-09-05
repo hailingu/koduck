@@ -121,7 +121,7 @@ fn committed_exact_match_succeeds_during_a_stall(harness: &Harness, pool: &sqlx:
     let fixture = fresh_fixture("ac4-committed-stall");
     let input = harness
         .runtime
-        .block_on(seed_turn(pool, &fixture, "completed", 2, true));
+        .block_on(seed_turn(pool, &fixture, "completed", 3, true));
     let input = ItemId::from_uuid(input.expect("seeded input item"));
     let identity = ItemId::new();
     harness.runtime.block_on(seed_item(

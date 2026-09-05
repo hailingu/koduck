@@ -57,10 +57,6 @@ def container_command(name: str, network: str) -> list[str]:
         network,
         "--add-host",
         "host.docker.internal:host-gateway",
-        "--env",
-        "KODUCK_SONAR_TOKEN",
-        "--env",
-        "KODUCK_AI_TEST_DATABASE_URL",
         IMAGE,
     ]
 
@@ -136,14 +132,18 @@ def launch(name: str, token: str) -> None:
             ]
         )
         print("Ephemeral runner registered: " + name, flush=True)
+        # The analysis token reaches the worker over stdin, never as a
+        # container environment variable, so no job step inherits it; the
+        # entrypoint stores it in a mode-0600 file for the gate step alone.
         command(
             container_command(name, network),
-            response["encoded_jit_config"] + "\n",
+            response["encoded_jit_config"]
+            + "\n"
+            + token
+            + "\n"
+            + f"postgresql://koduck:{password}@{database}:5432/koduck_test"
+            + "\n",
             timeout=7200,
-            extra={
-                "KODUCK_SONAR_TOKEN": token,
-                "KODUCK_AI_TEST_DATABASE_URL": f"postgresql://koduck:{password}@{database}:5432/koduck_test",
-            },
         )
     finally:
         failures = []

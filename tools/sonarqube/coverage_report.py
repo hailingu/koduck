@@ -4,6 +4,8 @@ import re
 from pathlib import Path
 import xml.etree.ElementTree as ET
 
+from git_snapshot import is_shell_source
+
 
 def relative_source(filename: str, root: Path) -> str:
     """Normalize report source paths, rejecting files outside the analyzed checkout."""
@@ -63,6 +65,13 @@ def changed_coverage(
     for name, lines in changed.items():
         if name not in coverage:
             if name in (nonexecutable or set()):
+                continue
+            if is_shell_source(name):
+                # Shell scripts are executable production lines the pinned
+                # coverage tooling cannot instrument, so every changed line
+                # counts as uncovered in the denominator instead of being
+                # silently dropped or guessed as covered.
+                total += len(lines)
                 continue
             raise RuntimeError("SONAR_COVERAGE_MISSING: " + name)
         for number in lines.intersection(coverage[name]):

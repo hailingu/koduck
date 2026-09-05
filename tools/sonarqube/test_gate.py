@@ -134,6 +134,38 @@ class AdmissionTests(unittest.TestCase):
             module.changed_coverage(changed, {})
         self.assertEqual(module.changed_coverage(changed, {}, {"src/lib.rs"}), (0, 0))
 
+    def test_changed_shell_lines_stay_in_the_denominator_as_uncovered(self):
+        module = implementation("coverage_report")
+        changed = {".githooks/pre-push": {5, 6, 7}}
+        self.assertEqual(
+            module.changed_coverage(changed, {}),
+            (0, 3),
+            "a script-only change must produce coverable lines, never zero",
+        )
+        mixed = {**changed, "src/lib.rs": {2}}
+        self.assertEqual(
+            module.changed_coverage(mixed, {"src/lib.rs": {2: True}}), (1, 4)
+        )
+        snapshot = implementation("git_snapshot")
+        self.assertTrue(snapshot.is_production_source("scripts/sonar-quality-gate.sh"))
+        self.assertTrue(snapshot.is_production_source("tools/sonarqube/install.sh"))
+        self.assertFalse(snapshot.is_production_source("README.md"))
+
+    def test_script_only_changes_cannot_satisfy_the_coverage_gate(self):
+        module = implementation("sonar_api")
+        record = {
+            "tree": "t",
+            "base": "b",
+            "policy": "p",
+            "analysis": "a",
+            "quality_gate": "OK",
+            "new_issues": 0,
+            "covered": 0,
+            "coverable": 6,
+        }
+        with self.assertRaisesRegex(RuntimeError, "COVERAGE_BELOW_80"):
+            module.require_pass(record, "t", "b", "p")
+
     def test_python_report_resolves_its_source_root(self):
         module = implementation("coverage_report")
         with tempfile.TemporaryDirectory() as directory:

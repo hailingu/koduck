@@ -88,5 +88,7 @@ class RunnerLifecycleTests(unittest.TestCase):
             worker = next(
                 call for call in calls if call[0][:3] == ["docker", "run", "--rm"]
             )
-            self.assertEqual(worker[1], "fixture-jit\n")
-            self.assertEqual(worker[2]["KODUCK_SONAR_TOKEN"], "fixture-token")
+            self.assertIn("fixture-jit", worker[1])
+            self.assertIn("fixture-token", worker[1])
+            self.assertNotIn("KODUCK_SONAR_TOKEN", str(worker[2]))
+            self.assertNotIn("fixture-token", str(worker[2]))

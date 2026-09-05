@@ -136,6 +136,18 @@ Run one launcher per queued job. The runner must execute only reviewed/trusted
 repository code; it holds a project-scoped analysis token. CI never exposes it
 to fork pull requests.
 
+The analysis token reaches the worker over stdin and is stored by the
+entrypoint in a mode-0600 file under the runner home; it is never exported
+into the job environment, so no workflow step or subprocess inherits it.
+`gate.py` loads the file only in the ephemeral CI worker (hooks keep using
+the shell export). Residual boundary: the one-job container runs its steps
+as a single user, so PR-controlled step code in the same container could
+still read the token file while the job runs — the durable mitigation is
+that only same-repository, CI-verified code is allowed on this runner, the
+token is project-scoped with read-only analysis permissions, and the worker
+is destroyed with the job. Per-job token minting requires Sonar
+user-administration rights this workflow deliberately does not hold.
+
 Until a runner is started and `KODUCK_SONAR_RUNNER_ENABLED=true`, readiness fails
 explicitly. A previously started ephemeral runner does not imply a currently
 available runner. This local gate cannot make Git hooks impossible to bypass;

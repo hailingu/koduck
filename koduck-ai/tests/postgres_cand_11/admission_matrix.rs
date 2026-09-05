@@ -843,9 +843,11 @@ fn stored_identities(harness: &Harness, pool: &sqlx::PgPool) {
 /// after a later successor exists.
 fn exact_retry_returns_original(harness: &Harness, pool: &sqlx::PgPool) {
     let fixture = fresh_fixture("ac2-retry");
+    // The fixture mirrors the lawful post-admission state: the correction at
+    // sequence 2 exists, so next_sequence has advanced to 3 (later to 4).
     let input = harness
         .runtime
-        .block_on(seed_turn(pool, &fixture, "completed", 2, true));
+        .block_on(seed_turn(pool, &fixture, "completed", 4, true));
     let input = ItemId::from_uuid(input.expect("seeded input item"));
     let identity = ItemId::new();
     harness.runtime.block_on(seed_item(
@@ -976,6 +978,38 @@ fn nonterminal_and_malformed_stored_identities(harness: &Harness, pool: &sqlx::P
         harness.correct(command(&nonterminal, identity, input, "drift")),
         Err(CorrectionError::IdentityConflict)
     );
+
+    // A stored exact match whose sequence reached the Turn counter is
+    // corrupt durable state, not a resolvable retry (CA-03/CA-05).
+    let stale_fixture = fresh_fixture("ac2-retry-stale-sequence");
+    let input = harness
+        .runtime
+        .block_on(seed_turn(pool, &stale_fixture, "completed", 2, true));
+    let input = ItemId::from_uuid(input.expect("seeded input item"));
+    let identity = ItemId::new();
+    harness.runtime.block_on(seed_item(
+        pool,
+        &stale_fixture,
+        5,
+        identity.as_uuid(),
+        "correction",
+        "{\"content\":\"beyond the counter\"}",
+        false,
+        Some(input.as_uuid()),
+    ));
+    let before = harness.runtime.block_on(snapshot(pool, &stale_fixture));
+    assert_eq!(
+        harness.correct(command(
+            &stale_fixture,
+            identity,
+            input,
+            "beyond the counter",
+        )),
+        Err(CorrectionError::CorruptHistory),
+        "a retry at or above next_sequence must fail closed"
+    );
+    let after = harness.runtime.block_on(snapshot(pool, &stale_fixture));
+    assert_unchanged(&before, &after);
 
     // Malformed below-cap stored retry payloads fail closed before content
     // equality can be evaluated.

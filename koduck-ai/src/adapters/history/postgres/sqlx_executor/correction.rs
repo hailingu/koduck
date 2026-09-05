@@ -253,6 +253,22 @@ async fn stored_retry(
     }
     let item_id: Uuid = row.try_get("item_id").map_err(classify_write_error)?;
     let sequence: i64 = row.try_get("sequence").map_err(classify_write_error)?;
+    // A stored sequence at or above the Turn's counter is invalid sequence
+    // state — corrupt durable state rather than a resolvable retry — even
+    // though the identity and content match exactly (CA-03/CA-05).
+    let next_sequence: i64 = sqlx::query_scalar(
+        "SELECT next_sequence FROM turns \
+         WHERE tenant_id = $1 AND thread_id = $2 AND turn_id = $3",
+    )
+    .bind(command.trust().tenant_id.as_str())
+    .bind(command.thread_id().as_uuid())
+    .bind(command.turn_id().as_uuid())
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(classify_write_error)?;
+    if sequence <= 0 || sequence >= next_sequence {
+        return Err(resolved(CorrectionError::CorruptHistory));
+    }
     Ok(Some(Item {
         item_id: ItemId::from_uuid(item_id),
         sequence: u64::try_from(sequence).map_err(|_| resolved(CorrectionError::CorruptHistory))?,

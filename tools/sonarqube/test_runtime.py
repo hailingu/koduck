@@ -72,12 +72,13 @@ class EvidenceTests(unittest.TestCase):
 class RunnerTests(unittest.TestCase):
     """Catch leaking bootstrap credentials into runner CLI arguments."""
 
-    def test_container_command_passes_variable_names_not_secret_values(self):
+    def test_container_command_passes_no_secret_names_or_values(self):
         module = implementation("runner")
         with patch.dict(os.environ, {"KODUCK_SONAR_TOKEN": "fixture-private-token"}):
             command = module.container_command("fixture", "fixture-network")
         self.assertNotIn("fixture-private-token", " ".join(command))
-        self.assertIn("KODUCK_SONAR_TOKEN", command)
+        self.assertNotIn("KODUCK_SONAR_TOKEN", command)
+        self.assertNotIn("KODUCK_AI_TEST_DATABASE_URL", command)
         self.assertNotIn("/var/run/docker.sock", " ".join(command))
 
     def test_runner_name_never_accepts_shell_metacharacters(self):
