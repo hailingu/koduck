@@ -34,7 +34,8 @@ RUN curl --proto '=https' --tlsv1.2 --fail --silent --show-error https://sh.rust
 # sources, so a pull request can never execute its own copy of gate.py with
 # the analysis token; the checkout copy is only data (runtime venvs) to the
 # baked boundary.
-COPY --chown=root:root tools/sonarqube /opt/koduck-sonarqube
+COPY --chown=root:root gate.py sonar_api.py scan_runtime.py coverage_report.py \
+     git_snapshot.py postgres_fixture.py config.json /opt/koduck-sonarqube/
 COPY --chown=root:root --chmod=0555 runner-entrypoint.sh /usr/local/bin/koduck-runner
 COPY --chown=root:root --chmod=0555 runner-gate-wrapper.sh /usr/local/bin/koduck-gate
 COPY --chown=root:root --chmod=0555 runner-gate-inner.sh /usr/local/bin/koduck-gate-inner
