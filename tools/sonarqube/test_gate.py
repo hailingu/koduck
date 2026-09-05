@@ -1,10 +1,12 @@
 """Behavioral regression checks for immutable Git and Sonar push admission."""
 
 import importlib
+import os
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 def implementation(name):
@@ -150,6 +152,22 @@ class AdmissionTests(unittest.TestCase):
         self.assertTrue(snapshot.is_production_source("scripts/sonar-quality-gate.sh"))
         self.assertTrue(snapshot.is_production_source("tools/sonarqube/install.sh"))
         self.assertFalse(snapshot.is_production_source("README.md"))
+
+    def test_runner_files_restore_credentials_without_job_environment(self):
+        module = implementation("gate")
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            (home / ".koduck").mkdir()
+            (home / ".koduck" / "database-url").write_text("fixture-url\n")
+            (home / ".koduck" / "sonar-token").write_text("fixture-token\n")
+            with patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("KODUCK_AI_TEST_DATABASE_URL", None)
+                with patch.object(module, "RUNNER_FILE_DIR", home / ".koduck"):
+                    self.assertEqual(module.sonar_token(), "fixture-token")
+                    module.restore_runner_database_url()
+                    self.assertEqual(
+                        os.environ["KODUCK_AI_TEST_DATABASE_URL"], "fixture-url"
+                    )
 
     def test_script_only_changes_cannot_satisfy_the_coverage_gate(self):
         module = implementation("sonar_api")

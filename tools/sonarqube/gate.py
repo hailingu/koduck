@@ -28,23 +28,37 @@ from postgres_fixture import database_fixture
 from sonar_api import Sonar, incremental_issues, require_pass
 
 TOOLS = Path(__file__).resolve().parent
-TOKEN_FILE = Path.home() / ".koduck" / "sonar-token"
+RUNNER_FILE_DIR = Path.home() / ".koduck"
+
+
+def runner_file(name: str) -> str:
+    """Read a secret delivered to the ephemeral worker over stdin.
+
+    Hooks receive their credentials through the invoking shell; the
+    ephemeral CI worker stores them in mode-0600 files written by the runner
+    entrypoint so no job step inherits them through its environment.
+    """
+    try:
+        return (RUNNER_FILE_DIR / name).read_text().strip()
+    except OSError:
+        return ""
 
 
 def sonar_token() -> str:
-    """Read the analysis token from the environment or the runner token file.
+    """Load the analysis token from the environment or the runner token file."""
+    return os.environ.get("KODUCK_SONAR_TOKEN") or runner_file("sonar-token")
 
-    Hooks receive the token through the invoking shell; the ephemeral CI
-    worker stores it in a mode-0600 file written by the runner entrypoint so
-    no job step inherits the credential through its environment.
+
+def restore_runner_database_url() -> None:
+    """Restore the runner's fixture database URL when the environment omits it.
+
+    The disposable worker receives the URL only through its mode-0600 file;
+    the coverage fixture reads it from the environment of its own processes.
     """
-    env_token = os.environ.get("KODUCK_SONAR_TOKEN")
-    if env_token:
-        return env_token
-    try:
-        return TOKEN_FILE.read_text().strip()
-    except OSError:
-        return ""
+    if not os.environ.get("KODUCK_AI_TEST_DATABASE_URL"):
+        url = runner_file("database-url")
+        if url:
+            os.environ["KODUCK_AI_TEST_DATABASE_URL"] = url
 
 
 def policy_id() -> str:
@@ -191,6 +205,7 @@ def main() -> int:
     parser.add_argument("--revision", default="HEAD")
     parser.add_argument("--base")
     args = parser.parse_args()
+    restore_runner_database_url()
     root = Path(git(Path.cwd(), "rev-parse", "--show-toplevel"))
     folder = (
         Path(git(root, "rev-parse", "--path-format=absolute", "--git-common-dir"))
