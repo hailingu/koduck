@@ -185,6 +185,57 @@ without copying sensitive content. Once an applicable workflow policy is
 `Accepted`, use it instead of this bootstrap clause unless the repository owner
 explicitly directs a different in-scope action.
 
+#### Review Rounds And Convergence
+
+These rules bound agent-driven review and remediation, not human review or
+the required revision-bound gates above. They do not weaken CI, acceptance
+checks, risk coverage, SonarQube, or document approval requirements.
+
+- For one task or pull request, agents MUST run at most two review rounds
+  without further repository-owner authorization: the initial review and one
+  follow-up. A round is one review pass over an identified revision, including
+  the results from its configured reviewers. Fixing, pushing, or resuming the
+  same work MUST NOT reset the count. Record the round number, reviewed
+  revision (the commit SHA for pushed work), and result alongside the
+  revision-bound review evidence above.
+- If further review or iterative remediation is needed after two rounds,
+  pause the automatic review/fix loop and ask the repository owner for an
+  explicit, bounded extension or another in-scope disposition. Summarize the
+  remaining findings, evidence, risks, and proposed next steps. Budget
+  exhaustion MUST NOT itself close a finding, waive a required check, or
+  establish completion or review-ready status. Where automatic review is
+  configured, any fix pushed after the final round still requires review of
+  that exact revision; until authorized review supplies it, the revision
+  remains without review coverage. The existing no-automatic-review `N/A`
+  rule remains unchanged. Required checks may still run, and newly arriving
+  findings MUST be reported rather than discarded because the budget is
+  exhausted.
+- Deduplicate findings by the underlying defect and violated contract, not
+  merely by code location. A repeated finding with no new evidence SHOULD
+  reference its existing disposition. An additional finding MUST identify
+  a distinct trigger, violated contract, new evidence, or a regression
+  introduced by the fix before it justifies reopening settled work. A genuine
+  new P0/P1/P2 finding remains actionable even at the same location or after
+  the round budget is exhausted.
+- For bulk findings, first classify and summarize confirmed defects,
+  pre-existing issues, out-of-scope improvements, duplicates, and disputed
+  findings. Continue necessary fixes within already-authorized scope; ask the
+  repository owner before expanding scope, accepting risk, or changing a
+  contract. Do not automatically implement every suggestion or require a new
+  human choice for every already-authorized fix. Calling an issue pre-existing
+  or out of scope does not by itself waive a blocking finding.
+- Record each decision not to change code with its location or stable symbol,
+  reviewed revision, reason, and supporting evidence in the pull request or
+  linked tracking item. Every actionable or disputed inline thread still
+  requires its own reply under the original-thread rule above; a summary or
+  tracking entry alone does not permit resolution. An actual engineering
+  exception or approval-invalidating change must use its governing approval
+  process, not merely an owner comment accepting the review response.
+- Do not add suppression comments or exemption markers to code solely to
+  dismiss review findings. Existing required governed-file markers remain
+  mandatory. Traceable dispositions belong in review evidence and, when
+  required, the governing decision record.
+
 ### Change Classification
 
 Classify requested work before editing:
@@ -201,7 +252,13 @@ Classify requested work before editing:
 | Verification Execution | Disposable Verification Execution as defined above |
 | Operational | A Governed Build or a reversible release/deploy/rollback/runbook action against a running, shared, external, or artifact-producing system |
 
-Read-only work needs no decision record. A direct, source-only remediation of a
+Read-only work needs no decision record. Routine SonarQube hook installation,
+disposable verification databases,
+and analysis through `tools/sonarqube/gate.py` require no ADR, OCR or repeated
+`Approve`, under the owner authorization recorded in
+`tools/sonarqube/README.md`. This is a specific operational exception, not a
+reclassification of all external writes as Disposable Verification Execution.
+A direct, source-only remediation of a
 SonarQube-reported code issue — including its focused regression test — needs
 no ADR, OCR, or `Approve`; it may be implemented immediately. This exception
 applies to issues in every SonarQube software-quality category, but does not
@@ -443,7 +500,7 @@ precedence and stop at the first matching row:
 | Full ADR | Architecture, governance, cross-service behavior, public API/schema/protocol, security, data, dependency, or build/release/deployment strategy, pipeline, configuration, service-boundary, or irreversible decisions | Accepted before implementation |
 | Lightweight ADR | A localized, reversible source behavior change whose checklist proves no Full ADR concern applies | Accepted before implementation |
 | Operational Change Record (OCR) | A Governed Build, release, deployment, rollback, or existing runbook operation within an accepted architecture, pipeline, artifact contract, and security/data boundary | Accepted before the operation |
-| No record | Read-only work, Disposable Verification Execution, non-normative editorial documentation, routine coordination metadata under an Accepted policy, a direct source-only SonarQube code remediation with its focused regression test, or a provably semantics-neutral formatting/comment-only edit | No decision-record gate; direct SonarQube remediation requires neither ADR/OCR nor `Approve`; normal verification still applies |
+| No record | Read-only work, Disposable Verification Execution, non-normative editorial documentation, routine coordination metadata under an Accepted policy, the owner-authorized SonarQube hook workflow, a direct source-only SonarQube code remediation with its focused regression test, or a provably semantics-neutral formatting/comment-only edit | No decision-record gate; direct SonarQube remediation requires neither ADR/OCR nor `Approve`; normal verification still applies |
 
 Direct source-only remediation of a SonarQube-reported code issue requires no
 ADR, OCR, or `Approve`, including issues categorized as Security, Reliability,
@@ -893,13 +950,12 @@ implementation or operation continues.
 9. Apply the automatic-review rule in Work Coordination after each push and
    before merge or operational use.
 10. Run the narrowest relevant non-interactive checks, then the broader checks
-    required by the affected routing rows. For a source-code feature whose
-    path's Scope Routing row records the Local SonarQube scanner workflow,
-    also satisfy the Local SonarQube Feature Completion Gate for the exact
-    feature revision. No separate approval or OCR is required when checks satisfy
-    Disposable Verification Execution; clean their disposable output and
-    report the result. A SonarQube submission remains subject to its applicable
-    operational authorization because it mutates a running analysis system.
+    required by the affected routing rows. The installed SonarQube pre-commit
+    hook scans the exact index; pre-push requires zero incremental issues, a passing analysis-bound Quality Gate, and at least
+    80% coverage of changed executable lines. Routine scans, installation and
+    disposable test databases through the canonical workflow require no ADR,
+    OCR or repeated approval. Other external operations keep their normal gates.
+    Clean disposable output and retain only safe verification evidence.
 11. For a governed build, release, Git tag, or local Kubernetes action, read
     its applicable delivery or platform standards, create and accept an OCR
     before execution, then bind its actual source, artifact or tag, target,
@@ -925,9 +981,10 @@ operations applies the independently matched row for each one.
 | `AGENTS.md`, `AGENTS.template.md`, `CLAUDE.md` | This guide's Non-Negotiable Gates, Execution Workflow, and Version-Control Safety sections | repository root | `npm test --prefix tools/governance-validator`; `npm run validate --prefix tools/governance-validator` | Run deterministic governance validation and perform a structured review of the affected instruction contracts. Documentation-only changes do not require Red-Green-Refactor. |
 | `docs/architecture/**` or `<service-or-package>/docs/architecture/**` | `docs/README.md` and this guide's Document Requirement Levels and Architecture Design Documents sections | repository root | `npm test --prefix tools/governance-validator`; `npm run validate --prefix tools/governance-validator` | Validate requirement levels, template fields, status, index and reciprocal links, and Mermaid syntax/ID coverage; also review Trello baseline capture, Figma references, solution completeness, task-detail boundary, and traceability. |
 | `docs/**` | `docs/README.md` and this guide's Document Requirement Levels, Architecture Design Documents, and Decision Records sections | repository root | `npm test --prefix tools/governance-validator`; `npm run validate --prefix tools/governance-validator` | Validate requirement levels, template fields, lifecycle status, index rows, paths, and cross-references, then perform the applicable structured review. Documentation-only changes do not require Red-Green-Refactor. |
-| `tools/governance-validator/**` | `docs/README.md`, `docs/development/software-engineering-standard.md`, and this guide's Document Requirement Levels and Decision Records sections | `tools/governance-validator` | `npm test`; `npm run validate` | This validator and its tests are source work: develop behavior test-first and keep dependencies exactly locked. |
+| `.githooks/**`, `scripts/sonar-quality-gate.sh`, `tools/sonarqube/**` | `docs/README.md`, common engineering and Python standards, `tools/sonarqube/README.md` | repository root | `python3 -m unittest discover -s tools/sonarqube -p 'test_*.py'`; `ruff check tools/sonarqube`; `ruff format --check tools/sonarqube`; `python3 tools/sonarqube/gate.py check --revision HEAD` | Canonical automatic commit/push gate; owner-authorized routine operation without ADR/OCR. CI runs the same gate against the proposed revision and PR base. |
+| `tools/governance-validator/**` | `docs/README.md`, `docs/development/software-engineering-standard.md`, and this guide's Document Requirement Levels and Decision Records sections | `tools/governance-validator` | `npm test`; `npm run validate`; from repository root `python3 tools/sonarqube/gate.py check --revision HEAD` | This validator and its tests are source work: develop behavior test-first and keep dependencies exactly locked. |
 | `.github/workflows/koduck-ai.yml` | `docs/README.md`, `docs/development/software-engineering-standard.md`, `docs/adr/ADR-0002-required-ai-ci-postgres-verification.md`, and this guide's Work Coordination and Decision Records sections | repository root | `npm test --prefix tools/governance-validator`; `npm run validate --prefix tools/governance-validator` | Keep every routed governance command inside an existing required `dev` check and preserve the exact three required check contexts. Configuration changes use governance validation plus a structured review of the routed commands and required check contexts. |
-| `koduck-ai/**`, root `Cargo.toml`, or root `Cargo.lock` | `docs/README.md`, `docs/development/software-engineering-standard.md`, and `docs/development/rust-standard.md` | repository root | `cargo fmt --all --check`; `cargo clippy -p koduck-ai --all-targets --all-features -- -D warnings`; `cargo test -p koduck-ai --all-targets --all-features` | Use non-interactive commands. These commands need no OCR when they satisfy Disposable Verification Execution; a retained, published, promoted, loaded, deployed, or later-consumed artifact is a Governed Build and requires an Accepted OCR. |
+| `koduck-ai/**`, root `Cargo.toml`, or root `Cargo.lock` | `docs/README.md`, `docs/development/software-engineering-standard.md`, and `docs/development/rust-standard.md` | repository root | `cargo fmt --all --check`; `cargo clippy -p koduck-ai --all-targets --all-features -- -D warnings`; `cargo test -p koduck-ai --all-targets --all-features`; `python3 tools/sonarqube/gate.py check --revision HEAD` | Use non-interactive commands. The canonical SonarQube workflow needs no ADR/OCR. These commands need no OCR when they satisfy Disposable Verification Execution; a retained, published, promoted, loaded, deployed, or later-consumed artifact is a Governed Build and requires an Accepted OCR. |
 | Release or Git tag operation | `docs/delivery/releases.md`, `docs/delivery/git-tags.md`, and the governing Accepted OCR | repository root | Commands approved by the OCR | Treat tag creation or mutation, release publication, and artifact publication as external operational writes. |
 
 Verification commands in a source or configuration routing row need no OCR
@@ -1037,17 +1094,13 @@ multi-environment promotion is needed. Release and Git tag operations follow
   anchors and MAY include a short decisive code excerpt when the symbol alone
   is insufficient. It MUST NOT require current source to preserve an exact
   physical line count, function arrangement, or ordinary wording.
-- Completion requires the requested behavior, required documentation, required
-  checks, and required evidence — not merely an implementation attempt. A
-  source-code feature on a path whose Scope Routing row records the Local
-  SonarQube scanner workflow additionally requires a successful analysis of
-  its exact revision through that workflow with a `Passed` Quality Gate, and
-  once the recorded workflow also imports coverage either reported New Code
-  Coverage of at least `80%` or, when the feature diff introduces no
-  coverable new lines, an absent measure with that `Passed` Quality Gate —
-  until then a missing or zero coverage value is supporting evidence, not a
-  completion blocker, and paths without a recorded workflow rely on their
-  routed checks.
+- Completion requires the requested behavior, documentation, required checks,
+  and stable evidence. For the SonarQube workflow, the exact source tree and
+  baseline must have zero incremental unresolved issues,
+  a passing analysis-bound Quality Gate, and at least 80% coverage of changed
+  executable lines. A proven zero executable-line diff is permitted; missing
+  coverage is a failure. The hook workflow defines the Git-based increment and
+  same-source coverage proof in `tools/sonarqube/README.md`.
 - ADR verification MUST be reproducible from each declared acceptance check's
   preconditions, method, and expected result. Evidence without a predetermined,
   binary acceptance point does not prove completion.
@@ -1064,52 +1117,50 @@ multi-environment promotion is needed. Release and Git tag operations follow
 
 ### Local SonarQube Feature Completion Gate
 
-Authorized by `docs/adr/ADR-0015-local-sonarqube-feature-completion-gate.md`;
-this section routes that decision and carries no independent authority.
+The repository owner's direct instruction on 2026-09-05, recorded in
+`tools/sonarqube/README.md`, enables the canonical workflow without a new ADR.
+For this workflow it overrides ADR-0015's conditional routing activation and
+per-operation approval requirements. Historical accepted records remain
+historical evidence, not approval of this later instruction.
 
-- This gate applies to a source-code feature only when the affected path's
-  Scope Routing row records a canonical, non-interactive scanner workflow for
-  the local SonarQube project `koduck` at
-  `http://localhost:9000/dashboard?id=koduck` — the exact scanner command,
-  its source and exclusion inputs, its terminal-state wait behavior, the New
-  Code baseline definition that matches each analyzed feature diff, and an
-  immutable source guarantee that scans from a clean detached worktree at the
-  exact feature revision or verifies the uploaded content against that
-  revision equivalently, and that binds coverage generation and report
-  import to the same immutable feature revision as the scan when the
-  workflow imports coverage, following the clean-checkout practice of
-  `docs/adr/ocr/archive/OCR-0011-local-sonarqube-validator-structural-parsing-reliability-verification.md`
-  — established through an accepted decision record. Until a path records
-  that workflow, this gate is advisory guidance for that path rather than a
-  completion requirement, and completion relies on the path's routed checks.
-- Where the gate applies, an analysis of the exact feature revision is
-  submitted only through the recorded workflow, never through improvised
-  scanner parameters; improvised source, exclusion, or wait inputs produce
-  incomparable analyses and invalid evidence. This gate supplements every
-  focused, routed, acceptance, and CI check; it does not replace any of them
-  or waive any authorization required for the analysis operation.
-- Where the gate applies, a source-code feature MUST NOT be reported as
-  complete unless the analysis succeeds, the Quality Gate status is `Passed`,
-  and — only after the recorded workflow also generates and imports coverage —
-  SonarQube reports New Code Coverage (`new_coverage`) greater than or equal
-  to `80%` for the new lines that diff introduces. The recorded workflow and
-  the reported evidence MUST identify the base revision, or an equivalent
-  explicit New Code definition, that matches the analyzed feature diff, so
-  the metric isolates that feature's new code rather than an unrelated
-  rolling project period. When the pinned feature diff introduces no
-  coverable new lines, SonarQube reports no `new_coverage` measure; that
-  absent value with a `Passed` Quality Gate satisfies the coverage clause
-  instead of the numeric threshold. Until coverage import is part of the
-  recorded workflow, a missing or zero `new_coverage` value is reported as
-  supporting evidence and MUST NOT by itself block completion.
-- Use `KODUCK_SONAR_TOKEN` from the process environment initialized by
-  `~/.zshrc` when authentication is required. Never print the token, place it
-  in command arguments or repository files, include it in captured output, or
-  persist it outside the existing shell configuration.
-- Report non-secret evidence for the exact analyzed revision where the gate
-  applies: the compute-task or analysis identifier, terminal processing
-  result, Quality Gate result, the actual `new_coverage` value when the
-  workflow provides one, and the project dashboard URL.
+- Install with `sh tools/sonarqube/install.sh`. Every commit scans the effective
+  index through `.githooks/pre-commit`; every push checks its actual proposed
+  ref targets through `.githooks/pre-push`. Routine installation, disposable
+  test databases and analysis require no ADR, OCR or repeated `Approve`.
+- The only scanner entry point is `python3 tools/sonarqube/gate.py` with
+  `pre-commit`, `pre-push`, or `check --revision <commit>`; configuration,
+  timeouts, stable scope and coverage tools are pinned under `tools/sonarqube/`.
+  Do not improvise scanner parameters, weaken a finding, or claim a scan from
+  an unrelated revision as passing evidence.
+- A completed analysis may be committed locally with findings for repair.
+  Push, feature completion and review-ready status require zero incremental
+  unresolved issues, Quality Gate `OK` for the exact
+  analysis, and at least 80% coverage of the feature's changed executable lines.
+  Analysis failures block commits; missing/stale evidence blocks pushes.
+- Pre-commit scans a disposable Git snapshot of the effective index and records
+  its tree identity; pre-push matches the proposed commit's tree. Unstaged work
+  is excluded. Coverage is generated/imported from that same snapshot. The
+  index is rechecked after scanning. Source, baseline or policy changes
+  invalidate evidence.
+- The baseline is local `dev`'s merge base with the target; CI pins the exact PR
+  base. Identically scoped base and target analyses establish incremental
+  finding counts. Imported coverage intersected with the Git diff establishes
+  changed-line coverage. The server's rolling New Code period is not presented
+  as an exact feature diff. Missing report data cannot pass as zero new lines.
+- Host-local scans are serialized. The existing token uses project-level issue
+  and file-metric reads, as explicitly selected by the owner; these cannot prove
+  isolation from concurrent scans on another host. Every push scans afresh.
+  Hotspot review is not independently checked with this token. Failed
+  candidate analyses remain visible; never rescan old code to hide a failure.
+- Use `KODUCK_SONAR_TOKEN` only from the existing shell or ephemeral runner
+  environment. Never print it or place it in arguments, repository files,
+  logs or evidence. Only the scanner and API client receive the analysis token;
+  test subprocesses do not inherit it. Do not change project permissions,
+  profiles, gates, finding state or credentials as a routine scan.
+- Record tree/revision, base, policy hash, compute task and analysis IDs,
+  incremental issue counts, Quality Gate and coverage numerator and
+  denominator under the Git common directory. Generate fresh evidence before push.
+  CI uses the same entry point and remains a required merge-time backstop.
 
 ## Sources Of Truth
 

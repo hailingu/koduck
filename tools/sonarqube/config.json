@@ -1,0 +1,10 @@
+{
+  "host": "http://localhost:9000",
+  "project": "koduck",
+  "scanner_version": "7.3.0.5189",
+  "llvm_cov_version": "0.9.0",
+  "compute_timeout": 300,
+  "test_timeout": 1800,
+  "exclusions": "**/node_modules/**,**/target/**,**/.venv/**,**/.git/**,**/__pycache__/**,**/coverage/**,**/.scannerwork/**",
+  "tests": "**/tests/**,**/test/**,**/fixtures/**,**/test_*.py,**/*.test.*"
+}

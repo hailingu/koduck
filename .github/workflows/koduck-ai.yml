@@ -13,6 +13,38 @@ permissions:
   contents: read
 
 jobs:
+  sonar-readiness:
+    name: koduck-sonar-readiness
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require a trusted ephemeral local runner
+        env:
+          RUNNER_ENABLED: ${{ vars.KODUCK_SONAR_RUNNER_ENABLED }}
+          SAME_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+        run: |
+          test "$SAME_REPOSITORY" = true || { echo "Local scanner cannot execute fork code"; exit 1; }
+          test "$RUNNER_ENABLED" = true || { echo "Start tools/sonarqube/runner.py before rerunning CI"; exit 1; }
+
+  sonar:
+    name: koduck-sonar
+    needs: sonar-readiness
+    runs-on: [self-hosted, koduck-sonarqube]
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install pinned coverage tools
+        run: sh tools/sonarqube/install.sh
+      - name: Scan the exact proposed revision and feature baseline
+        env:
+          SONAR_REVISION: ${{ github.event.pull_request.head.sha }}
+          SONAR_BASE: ${{ github.event.pull_request.base.sha }}
+        run: python3 tools/sonarqube/gate.py check --revision "$SONAR_REVISION" --base "$SONAR_BASE"
+
   format:
     name: koduck-ai-format
     runs-on: ubuntu-latest
@@ -27,6 +59,10 @@ jobs:
       - run: npm ci --prefix tools/governance-validator
       - run: npm test --prefix tools/governance-validator
       - run: npm run validate --prefix tools/governance-validator
+      - run: python3 -m pip install ruff==0.15.4
+      - run: ruff check tools/sonarqube
+      - run: ruff format --check tools/sonarqube
+      - run: python3 -m unittest discover -s tools/sonarqube -p 'test_*.py'
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: "1.95"
@@ -47,6 +83,8 @@ jobs:
 
   test-postgres:
     name: koduck-ai-test-postgres
+    needs: sonar
+    if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 20
     services:
@@ -66,6 +104,10 @@ jobs:
     env:
       KODUCK_AI_TEST_DATABASE_URL: postgresql://koduck:koduck-test-only@localhost:5432/koduck_test
     steps:
+      - name: Require the Sonar gate behind this existing required check
+        env:
+          SONAR_RESULT: ${{ needs.sonar.result }}
+        run: test "$SONAR_RESULT" = success
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
