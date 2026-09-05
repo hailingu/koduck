@@ -473,8 +473,65 @@ fn forward_linked_ancestry_fails_closed(harness: &Harness, pool: &sqlx::PgPool) 
         "a forward-linked ancestor must fail closed"
     );
 }
-/// Below-cap malformed ancestor payloads fail closed (CA-03).
+/// Below-cap malformed ancestor payloads fail closed (CA-03), both as the
+/// direct predecessor and deeper in the chain beneath a valid predecessor.
 fn malformed_ancestor_payloads_fail_closed(harness: &Harness, pool: &sqlx::PgPool) {
+    // A malformed payload deeper in the chain, beneath a valid direct
+    // predecessor, must also fail closed (CA-03): the production schema
+    // does not constrain payload JSON, so this case is seeded directly.
+    {
+        let fixture = fresh_fixture("ac2-malformed-deep");
+        harness
+            .runtime
+            .block_on(seed_turn(pool, &fixture, "completed", 4, false));
+        let root = Uuid::new_v4();
+        harness.runtime.block_on(seed_item(
+            pool,
+            &fixture,
+            1,
+            root,
+            "user_message",
+            "{\"content\":\"root\"}",
+            false,
+            None,
+        ));
+        let older = Uuid::new_v4();
+        harness.runtime.block_on(seed_item(
+            pool,
+            &fixture,
+            2,
+            older,
+            "correction",
+            "not json at all",
+            false,
+            Some(root),
+        ));
+        let tip = Uuid::new_v4();
+        harness.runtime.block_on(seed_item(
+            pool,
+            &fixture,
+            3,
+            tip,
+            "correction",
+            "{\"content\":\"valid predecessor\"}",
+            false,
+            Some(older),
+        ));
+        let before = harness.runtime.block_on(snapshot(pool, &fixture));
+        assert_eq!(
+            harness.correct(command(
+                &fixture,
+                ItemId::new(),
+                ItemId::from_uuid(tip),
+                "corrected",
+            )),
+            Err(CorrectionError::CorruptHistory),
+            "a malformed payload anywhere in the ancestry must fail closed"
+        );
+        let after = harness.runtime.block_on(snapshot(pool, &fixture));
+        assert_unchanged(&before, &after);
+    }
+
     for payload in ["not json at all", "{\"text\":\"no content member\"}"] {
         let fixture = fresh_fixture("ac2-malformed-ancestor");
         harness

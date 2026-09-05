@@ -5,8 +5,11 @@
 //! retries, bounded ancestor validation, one atomic append, and a truthful
 //! two-budget settlement (ADR-0004 CA-02 through CA-09).
 
+use std::collections::HashSet;
 use std::future::Future;
 use std::time::Duration;
+
+use tokio_stream::StreamExt;
 
 use sqlx::PgPool;
 use sqlx::Row;
@@ -21,7 +24,14 @@ use super::SqlxPostgresExecutor;
 use super::is_terminal_status;
 
 #[cfg(test)]
+mod commit_ack_loss;
+#[cfg(test)]
 mod correction_settlement_budget;
+
+/// Test-only commit-ack-loss switch for the AC-4 deterministic
+/// commit-arm test; never read in production builds.
+#[cfg(test)]
+static DROP_COMMIT_ACK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// The exact write and reconciliation budget of each attempt (CA-07).
 const ATTEMPT_BUDGET: Duration = Duration::from_secs(2);
@@ -166,6 +176,18 @@ async fn correct_async(pool: &PgPool, command: CorrectionCommand) -> Result<Item
     if updated.rows_affected() != 1 {
         return Err(resolved(CorrectionError::CorruptHistory));
     }
+    #[cfg(test)]
+    if DROP_COMMIT_ACK.load(std::sync::atomic::Ordering::Acquire) {
+        // Test-only commit-ack loss (AC-4): the spawned commit future holds
+        // the operation-identity lock until it lands server-side, exactly
+        // like a lost acknowledgement, so the bounded reconciliation
+        // observes the committed row or a proven absence — never a partial
+        // state. Production always takes the real commit below.
+        tokio::spawn(async move {
+            let _ = transaction.commit().await;
+        });
+        return Err(WriteFailure::Ambiguous);
+    }
     transaction.commit().await.map_err(classify_write_error)?;
     Ok(item)
 }
@@ -305,6 +327,31 @@ const SUMMARY_SQL: &str = "WITH RECURSIVE chain AS ( \
         ON s.tenant_id = $1 AND s.corrects_item_id = c.item_id \
       GROUP BY c.item_id) bc)";
 
+/// The streamed bounded walk: the same depth-capped ancestry, one row per
+/// ancestor in walk order, carrying the payload body for strict decoding
+/// (ADR-0004 CA-03 and CA-06).
+const STREAMED_ANCESTRY_SQL: &str = "WITH RECURSIVE chain AS ( \
+   SELECT i.item_id, i.corrects_item_id, i.item_type, i.payload, \
+          octet_length(i.payload)::BIGINT AS payload_bytes, 1 AS depth \
+   FROM turn_items i \
+   WHERE i.tenant_id = $1 AND i.thread_id = $2 AND i.turn_id = $3 \
+     AND i.item_id = $4 \
+   UNION ALL \
+   SELECT n.item_id, n.corrects_item_id, n.item_type, n.payload, \
+          n.payload_bytes, c.depth + 1 \
+   FROM chain c CROSS JOIN LATERAL ( \
+     SELECT n2.item_id, n2.corrects_item_id, n2.item_type, n2.payload, \
+            octet_length(n2.payload)::BIGINT AS payload_bytes \
+     FROM turn_items n2 \
+     WHERE n2.tenant_id = $1 AND n2.thread_id = $2 AND n2.turn_id = $3 \
+       AND n2.item_id = c.corrects_item_id \
+     LIMIT 1 \
+   ) n \
+   WHERE c.depth < 4097 \
+ ) \
+ SELECT item_id, corrects_item_id, item_type, payload FROM chain \
+ ORDER BY depth";
+
 /// Validates the bounded predecessor ancestry: cycle-free, strictly
 /// earlier, terminating at a supported message root, branch-free, and
 /// within the node and stored-payload caps (CA-03 and CA-06).
@@ -402,29 +449,44 @@ async fn reject_invalid_summary(
     if branched == Some(true) {
         return Err(resolved(CorrectionError::CorruptHistory));
     }
-    reject_malformed_predecessor(transaction, command).await
+    reject_malformed_ancestors(transaction, command).await
 }
 
-/// Decodes exactly one ancestor payload — the direct predecessor's — so
-/// admission never retains full-history content (CA-06); a malformed one is
-/// corrupt durable state (CA-03). The payload validity of deeper ancestors
-/// is owned by the CAND-3 raw-replay boundary, which fails closed on every
-/// replayed row (CR-05).
-async fn reject_malformed_predecessor(
+/// Streams the bounded ancestry and strictly decodes every ancestor
+/// payload, one row at a time, so a malformed durable payload anywhere in
+/// the chain fails closed as corrupt durable state (CA-03) while admission
+/// never retains more than one decoded payload plus bounded identity and
+/// sequence metadata (CA-06). The summary has already rejected oversized
+/// stored payloads before any body is fetched, so every streamed row here
+/// is within the per-row read cap.
+async fn reject_malformed_ancestors(
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     command: &CorrectionCommand,
 ) -> Result<(), WriteFailure> {
-    let stored = sqlx::query_as::<_, (String, String, Option<Uuid>)>(
-        "SELECT item_type, payload, corrects_item_id FROM turn_items \
-         WHERE tenant_id = $1 AND item_id = $2",
-    )
-    .bind(command.trust().tenant_id.as_str())
-    .bind(command.predecessor_item_id().as_uuid())
-    .fetch_one(&mut **transaction)
-    .await
-    .map_err(classify_write_error)?;
-    if DurableItemCodec::decode(&stored.0, &stored.1, stored.2).is_err() {
-        return Err(resolved(CorrectionError::CorruptHistory));
+    // The streamed walk must also plan per execution with the bound scope
+    // values; see the summary's cached-generic-plan note.
+    let rows = sqlx::query_as::<_, (Uuid, Option<Uuid>, String, String)>(STREAMED_ANCESTRY_SQL)
+        .bind(command.trust().tenant_id.as_str())
+        .bind(command.thread_id().as_uuid())
+        .bind(command.turn_id().as_uuid())
+        .bind(command.predecessor_item_id().as_uuid())
+        .persistent(false)
+        .fetch(&mut **transaction);
+    tokio::pin!(rows);
+    let mut identities = HashSet::new();
+    while let Some(row) = rows.next().await {
+        let (item_id, corrects, item_type, payload) = row.map_err(classify_write_error)?;
+        // A repeated identity inside the bounded walk can only be a cycle
+        // (CA-03); the summary's order check also rejects cycles, so this
+        // duplicate-identity check is belt-and-braces corruption defense.
+        if !identities.insert(item_id) {
+            return Err(resolved(CorrectionError::CorruptHistory));
+        }
+        // Exactly one decoded payload is retained at a time: the decoded
+        // value drops before the next row is fetched (CA-06).
+        if DurableItemCodec::decode(&item_type, &payload, corrects).is_err() {
+            return Err(resolved(CorrectionError::CorruptHistory));
+        }
     }
     Ok(())
 }
