@@ -981,7 +981,7 @@ operations applies the independently matched row for each one.
 | `AGENTS.md`, `AGENTS.template.md`, `CLAUDE.md` | This guide's Non-Negotiable Gates, Execution Workflow, and Version-Control Safety sections | repository root | `npm test --prefix tools/governance-validator`; `npm run validate --prefix tools/governance-validator` | Run deterministic governance validation and perform a structured review of the affected instruction contracts. Documentation-only changes do not require Red-Green-Refactor. |
 | `docs/architecture/**` or `<service-or-package>/docs/architecture/**` | `docs/README.md` and this guide's Document Requirement Levels and Architecture Design Documents sections | repository root | `npm test --prefix tools/governance-validator`; `npm run validate --prefix tools/governance-validator` | Validate requirement levels, template fields, status, index and reciprocal links, and Mermaid syntax/ID coverage; also review Trello baseline capture, Figma references, solution completeness, task-detail boundary, and traceability. |
 | `docs/**` | `docs/README.md` and this guide's Document Requirement Levels, Architecture Design Documents, and Decision Records sections | repository root | `npm test --prefix tools/governance-validator`; `npm run validate --prefix tools/governance-validator` | Validate requirement levels, template fields, lifecycle status, index rows, paths, and cross-references, then perform the applicable structured review. Documentation-only changes do not require Red-Green-Refactor. |
-| `.githooks/**`, `scripts/sonar-quality-gate.sh`, `tools/sonarqube/**` | `docs/README.md`, common engineering and Python standards, `tools/sonarqube/README.md` | repository root | `python3 -m unittest discover -s tools/sonarqube -p 'test_*.py'`; `ruff check tools/sonarqube`; `ruff format --check tools/sonarqube`; `python3 tools/sonarqube/gate.py check --revision HEAD` | Canonical automatic commit/push gate; owner-authorized routine operation without ADR/OCR. CI runs the same gate against the proposed revision and PR base. |
+| `.githooks/**`, `scripts/sonar-quality-gate.sh`, `tools/sonarqube/**` | `docs/README.md`, common engineering and Python standards, `tools/sonarqube/README.md` | repository root | `python3 -m unittest discover -s tools/sonarqube -p 'test_*.py'`; `ruff check tools/sonarqube`; `ruff format --check tools/sonarqube`; `python3 tools/sonarqube/gate.py check --revision HEAD` | Canonical automatic commit/push gate; owner-authorized routine operation without ADR/OCR. Sonar scans run locally; CI retains hook regression and ordinary project checks. |
 | `tools/governance-validator/**` | `docs/README.md`, `docs/development/software-engineering-standard.md`, and this guide's Document Requirement Levels and Decision Records sections | `tools/governance-validator` | `npm test`; `npm run validate`; from repository root `python3 tools/sonarqube/gate.py check --revision HEAD` | This validator and its tests are source work: develop behavior test-first and keep dependencies exactly locked. |
 | `.github/workflows/koduck-ai.yml` | `docs/README.md`, `docs/development/software-engineering-standard.md`, `docs/adr/ADR-0002-required-ai-ci-postgres-verification.md`, and this guide's Work Coordination and Decision Records sections | repository root | `npm test --prefix tools/governance-validator`; `npm run validate --prefix tools/governance-validator` | Keep every routed governance command inside an existing required `dev` check and preserve the exact three required check contexts. Configuration changes use governance validation plus a structured review of the routed commands and required check contexts. |
 | `koduck-ai/**`, root `Cargo.toml`, or root `Cargo.lock` | `docs/README.md`, `docs/development/software-engineering-standard.md`, and `docs/development/rust-standard.md` | repository root | `cargo fmt --all --check`; `cargo clippy -p koduck-ai --all-targets --all-features -- -D warnings`; `cargo test -p koduck-ai --all-targets --all-features`; `python3 tools/sonarqube/gate.py check --revision HEAD` | Use non-interactive commands. The canonical SonarQube workflow needs no ADR/OCR. These commands need no OCR when they satisfy Disposable Verification Execution; a retained, published, promoted, loaded, deployed, or later-consumed artifact is a Governed Build and requires an Accepted OCR. |
@@ -1142,8 +1142,9 @@ historical evidence, not approval of this later instruction.
   is excluded. Coverage is generated/imported from that same snapshot. The
   index is rechecked after scanning. Source, baseline or policy changes
   invalidate evidence.
-- The baseline is local `dev`'s merge base with the target; CI pins the exact PR
-  base. Identically scoped base and target analyses establish incremental
+- The baseline is local `dev`'s merge base with the target; manual checks may
+  specify an ancestor with `--base`. Identically scoped base and target analyses
+  establish incremental
   finding counts. Imported coverage intersected with the Git diff establishes
   changed-line coverage. The server's rolling New Code period is not presented
   as an exact feature diff. Missing report data cannot pass as zero new lines.
@@ -1152,15 +1153,17 @@ historical evidence, not approval of this later instruction.
   isolation from concurrent scans on another host. Every push scans afresh.
   Hotspot review is not independently checked with this token. Failed
   candidate analyses remain visible; never rescan old code to hide a failure.
-- Use `KODUCK_SONAR_TOKEN` only from the existing shell or ephemeral runner
-  environment. Never print it or place it in arguments, repository files,
+- Use `KODUCK_SONAR_TOKEN` only from the existing shell environment. Never
+  print it or place it in arguments, repository files,
   logs or evidence. Only the scanner and API client receive the analysis token;
   test subprocesses do not inherit it. Do not change project permissions,
   profiles, gates, finding state or credentials as a routine scan.
 - Record tree/revision, base, policy hash, compute task and analysis IDs,
   incremental issue counts, Quality Gate and coverage numerator and
   denominator under the Git common directory. Generate fresh evidence before push.
-  CI uses the same entry point and remains a required merge-time backstop.
+  Per the owner’s 2026-09-06 instruction, CI does not run Sonar or build a
+  runner image. Local hooks enforce Sonar admission; CI does not prove Sonar
+  compliance when hooks are bypassed.
 
 ## Sources Of Truth
 

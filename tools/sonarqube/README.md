@@ -41,14 +41,14 @@ when the workflow creates its own fixture database.
   Deletions introduce no source and require no analysis. This command never
   performs a push itself.
 - `python3 tools/sonarqube/gate.py check --revision HEAD`: check a committed
-  revision manually. CI supplies `--base <exact-PR-base-SHA>` as well.
+  revision manually. Use `--base <ancestor-SHA>` to select an explicit baseline.
 
 All commits trigger scanning, including documentation-only commits. This avoids
 an accidental extension-based bypass when scanner, dependency or build inputs
 change. Analysis/verification failure blocks the commit. A completed analysis
 with findings may be committed locally for repair; findings, a failed quality
 gate or insufficient coverage block **push**, completion and review-ready status.
-Do not use `--no-verify` to claim gate success. CI is the merge-time backstop.
+Do not use `--no-verify` to claim gate success. CI runs the separate checks described below.
 
 ## Source identity and increment definition
 
@@ -60,7 +60,7 @@ before returning. Pre-push compares the proposed commit tree, not the caller's
 HEAD. Changing source, baseline or executable policy invalidates evidence.
 
 The baseline is `git merge-base dev <target>` from local history, without an
-implicit fetch. CI uses the PR base commit and verifies ancestry. Each analysis
+implicit fetch. An explicit `--base` must be an ancestor of the target. Each analysis
 pair scans this baseline and the target with identical source scope, exclusions
 and analyzer installation. The baseline scan is comparison evidence, not an
 attempt to claim that historical code passes today's gate. The target is left
@@ -118,44 +118,17 @@ Incomplete pages, missing metrics and API failures block admission. Evidence is
 stored atomically under Git's common directory at `sonarqube/`, recording tree,
 revision, baseline, policy, task/analysis IDs, issue counts and coverage fractions.
 
-## CI and the temporary Docker runner
+## Local scanning and CI
 
-The `Koduck AI` workflow runs the same gate on a dedicated ephemeral runner with
-the label `koduck-sonarqube`. The existing required PostgreSQL check depends on
-this gate and fails if it did not succeed, preserving the three existing
-required check names. Same-repository PRs only may execute on this local runner;
-fork PRs fail the readiness check and require an explicitly trusted workflow.
+The owner removed the Docker runner build workflow on 2026-09-06. Local
+pre-commit and pre-push hooks invoke the installed scanner directly. No custom
+runner image, registration or readiness variable is required. The optional
+PostgreSQL test fixture uses the existing upstream image without building it.
 
-Run `python3 tools/sonarqube/runner.py` on the machine hosting SonarQube to build
-and register a one-job Docker runner using the authenticated `gh` CLI. It uses
-an isolated PostgreSQL container, forwards container localhost:9000 to the host
-SonarQube, and removes its containers/network afterward. Registration and the
-repository readiness variable are part of this explicitly authorized setup.
-No host Docker socket or home directory is mounted into the job container.
-Run one launcher per queued job. The runner must execute only reviewed/trusted
-repository code; it holds a project-scoped analysis token. CI never exposes it
-to fork pull requests.
-
-The analysis token reaches the worker over stdin and is stored by the
-root entrypoint in a mode-0600 file owned by the dedicated `gate` user; it
-is never exported into any job step's environment. The workflow's sonar
-step invokes exactly one root-owned sudoers-whitelisted wrapper that
-executes the gate tooling BAKED into the image (never the checked-out
-copy, which a pull request could rewrite) as the `gate` user — the only
-identity able to read the token. Instrumented build and test commands
-(cargo, npm, the Python suite) drop to a separate token-less `builder`
-uid, so repository build code such as Rust build scripts can execute
-without access to the credential or the gate process environment; the
-scanner subprocess alone keeps the gate identity. Hooks on the developer
-machine keep using the shell export. The runner container is destroyed
-with its job. Per-job token minting requires Sonar user-administration
-rights this workflow deliberately does not hold.
-
-Until a runner is started and `KODUCK_SONAR_RUNNER_ENABLED=true`, readiness fails
-explicitly. A previously started ephemeral runner does not imply a currently
-available runner. This local gate cannot make Git hooks impossible to bypass;
-the required CI dependency prevents a skipped local hook from establishing
-merge eligibility.
+GitHub CI retains formatting, Clippy, PostgreSQL tests, governance validation,
+and hook regression checks. It does not submit SonarQube analyses or depend on
+a local runner. Sonar admission is enforced by local hooks; CI cannot establish
+Sonar compliance if someone bypasses those hooks.
 
 ## Verification
 

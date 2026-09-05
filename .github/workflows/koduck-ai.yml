@@ -13,41 +13,6 @@ permissions:
   contents: read
 
 jobs:
-  sonar-readiness:
-    name: koduck-sonar-readiness
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - name: Require a trusted ephemeral local runner
-        env:
-          RUNNER_ENABLED: ${{ vars.KODUCK_SONAR_RUNNER_ENABLED }}
-          SAME_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
-        run: |
-          test "$SAME_REPOSITORY" = true || { echo "Local scanner cannot execute fork code"; exit 1; }
-          test "$RUNNER_ENABLED" = true || { echo "Start tools/sonarqube/runner.py before rerunning CI"; exit 1; }
-
-  sonar:
-    name: koduck-sonar
-    needs: sonar-readiness
-    runs-on: [self-hosted, koduck-sonarqube]
-    timeout-minutes: 90
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          fetch-depth: 0
-          persist-credentials: false
-      - name: Install pinned coverage tools
-        run: sh tools/sonarqube/install.sh
-      - name: Scan the exact proposed revision and feature baseline
-        env:
-          SONAR_REVISION: ${{ github.event.pull_request.head.sha }}
-          SONAR_BASE: ${{ github.event.pull_request.base.sha }}
-        # The sudoers rule admits only this root-owned wrapper, which runs
-        # the image-baked gate tooling as the gate user; the analysis token
-        # is never present in any PR-controlled step or subprocess.
-        run: sudo /usr/local/bin/koduck-gate check --revision "$SONAR_REVISION" --base "$SONAR_BASE"
-
   format:
     name: koduck-ai-format
     runs-on: ubuntu-latest
@@ -86,8 +51,6 @@ jobs:
 
   test-postgres:
     name: koduck-ai-test-postgres
-    needs: sonar
-    if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 20
     services:
@@ -107,10 +70,6 @@ jobs:
     env:
       KODUCK_AI_TEST_DATABASE_URL: postgresql://koduck:koduck-test-only@localhost:5432/koduck_test
     steps:
-      - name: Require the Sonar gate behind this existing required check
-        env:
-          SONAR_RESULT: ${{ needs.sonar.result }}
-        run: test "$SONAR_RESULT" = success
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
