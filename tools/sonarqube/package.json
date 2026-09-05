@@ -1,0 +1,6 @@
+{
+  "name": "@koduck/sonarqube-tools",
+  "private": true,
+  "description": "Pinned local coverage instrumentation for SonarQube hooks",
+  "devDependencies": { "c8": "10.1.3" }
+}

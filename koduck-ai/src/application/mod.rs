@@ -1,6 +1,7 @@
 // ADR: docs/adr/ADR-0001-provider-neutral-turn-kernel.md
 // ADR: docs/adr/ADR-0003-default-deny-tool-approval-execution-boundary.md
 // ADR: docs/adr/ADR-0005-provider-delta-coalescing-and-512-item-turn-budget.md
+// ADR: koduck-ai/docs/adr/ADR-0004-authenticated-correction-admission.md
 
 //! Provider-neutral application orchestration and consumer-owned ports.
 
@@ -10,6 +11,7 @@ pub(crate) mod attempt_store;
 mod audit;
 mod cancellation;
 mod canonical_dispatch;
+mod correction_store;
 mod deadline;
 mod delta_coalescer;
 mod durability;
@@ -48,6 +50,9 @@ pub(crate) use cancellation::InterruptionOutcome;
 pub(crate) use cancellation::{AttemptCancellationService, ExecutionInterrupter};
 pub use cancellation::{CancelAcknowledgement, CancelPermit, CancelledEffectState};
 pub(crate) use cancellation::{PendingApprovalCancellation, PendingApprovalCanceller};
+pub use correction_store::{
+    CorrectionCommand, CorrectionError, CorrectionStore, MAX_CORRECTION_CONTENT_BYTES,
+};
 pub use deadline::ActionDeadline;
 pub(crate) use deadline::MAX_ACTION_DURATION_MILLIS;
 pub use delta_coalescer::{DELTA_FLUSH_LATENCY, DeltaCoalescer, MAX_BUFFERED_DELTA_BYTES};

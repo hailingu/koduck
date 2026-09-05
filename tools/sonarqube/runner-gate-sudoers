@@ -1,0 +1,4 @@
+# The workflow's sonar step may invoke exactly one root-owned wrapper that
+# re-executes the baked gate tooling as the gate user; no other privilege
+# is granted to the untrusted job user.
+runner ALL=(root) NOPASSWD: /usr/local/bin/koduck-gate
