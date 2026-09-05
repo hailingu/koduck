@@ -39,5 +39,7 @@ COPY --chown=root:root --chmod=0555 runner-entrypoint.sh /usr/local/bin/koduck-r
 COPY --chown=root:root --chmod=0555 runner-gate-wrapper.sh /usr/local/bin/koduck-gate
 COPY --chown=root:root --chmod=0555 runner-gate-inner.sh /usr/local/bin/koduck-gate-inner
 COPY --chown=root:root --chmod=0440 runner-gate-sudoers /etc/sudoers.d/koduck-gate
-USER root
+# The image default user stays the untrusted runner; the launcher overrides
+# the container user to root so the entrypoint can prepare the gate-only
+# credential files before dropping to the runner for the job itself.
 ENTRYPOINT ["sh", "/usr/local/bin/koduck-runner"]

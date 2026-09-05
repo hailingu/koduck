@@ -226,8 +226,12 @@ def coverage(snapshot: Path, tools: Path, output: Path, config: dict) -> dict:
     """Run each supported language boundary and import one same-source report."""
     output.mkdir()
     # The instrumented commands run as the token-less builder uid inside the
-    # ephemeral worker, so their report directory must accept their writes.
-    os.chmod(output, 0o777)
+    # ephemeral worker, so their report directory is transferred to that
+    # identity instead of being widened to other users.
+    uid = os.environ.get("KODUCK_SONAR_BUILDER_UID")
+    gid = os.environ.get("KODUCK_SONAR_BUILDER_GID")
+    if uid and gid:
+        os.chown(output, int(uid), int(gid))
     timeout = config["test_timeout"]
     result = rust_coverage(snapshot, output, timeout)
     result.update(javascript_coverage(snapshot, tools, output, timeout))

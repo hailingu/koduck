@@ -51,6 +51,8 @@ def container_command(name: str, network: str) -> list[str]:
         "run",
         "--rm",
         "-i",
+        "--user",
+        "root",
         "--name",
         name,
         "--network",
