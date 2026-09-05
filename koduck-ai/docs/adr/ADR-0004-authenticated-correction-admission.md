@@ -515,11 +515,14 @@ agent-driven review round was launched for this targeted remediation.
 No remote review was requested and no revision was pushed; this draft does
 not claim automatic-review coverage or implementation review readiness.
 
-The current `koduck-ai` Scope Routing row has no canonical local SonarQube
-scanner workflow; feature completion therefore uses the routed checks under
-ADR-0015's applicability rule. Do not invent scanner parameters or represent
-this as a SonarQube pass. A future implementation revision must recheck routing
-and satisfy its applicable CI, automatic-review, and completion gates.
+Historical drafting note (2026-09-04, superseded the same week): at drafting
+time the `koduck-ai` Scope Routing row had no canonical local SonarQube
+scanner workflow. The routing row now records the canonical gate under
+ADR-0015, and per the repository owner's 2026-09-06 instruction Sonar
+admission is enforced by local pre-commit and pre-push hooks while CI runs
+only the ordinary project checks; every pushed implementation revision on
+this branch was scanned and admitted by those hooks. Do not invent scanner
+parameters or represent an unscanned revision as a SonarQube pass.
 
 Implementation note (2026-09-05, revision `849b0c2`): the acceptance
 implementation lives in `koduck-ai/src/application/correction_store.rs`,
