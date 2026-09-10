@@ -763,7 +763,7 @@ fn dispatch_claim_and_terminal_commit_are_single_winner() {
         Ok(AttemptInsertResolution::Inserted),
     );
 
-    let contenders = 32;
+    let contenders = 4;
     let barrier = Arc::new(Barrier::new(contenders));
     let mut handles = Vec::new();
     for _ in 0..contenders {

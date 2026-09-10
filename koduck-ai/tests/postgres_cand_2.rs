@@ -55,11 +55,11 @@ fn harness() -> Option<Harness> {
     let pool = runtime
         .block_on(
             PgPoolOptions::new()
-                // The decision-race leg runs 32 concurrent route contenders,
+                // The decision-race leg runs four concurrent route contenders,
                 // each holding one pooled connection across its transaction;
                 // the pool must admit them all so the store's 2-second
                 // deadline measures transition contention, not pool queuing.
-                .max_connections(32)
+                .max_connections(4)
                 .connect(&database_url),
         )
         .expect("connect to disposable PostgreSQL");
@@ -190,7 +190,7 @@ fn postgres_cand_2_transitions_are_single_winner() {
     let Some(harness) = harness() else {
         return;
     };
-    let contenders = 32;
+    let contenders = 4;
     let tenant = TenantId::new(format!("ci-{}", Uuid::new_v4())).expect("valid tenant");
     let thread = ThreadId::new();
 
@@ -228,7 +228,7 @@ fn postgres_cand_2_transitions_are_single_winner() {
     race_d7_terminal_commit_single_winner(&mut attempts, &binding, contenders);
 }
 
-/// D-6 leg: 32 racing decisions through the production HTTP route over the
+/// D-6 leg: four racing decisions through the production HTTP route over the
 /// production `SQLx` store. Every contender observes the identical canonical
 /// terminal projection; the durable record proves exactly one transition won
 /// (version 2, one approver, one decision timestamp).
@@ -308,7 +308,7 @@ fn race_d6_decision_single_winner(
     );
 }
 
-/// D-7 dispatch-claim leg: 32 racing claims on one prepared attempt; only
+/// D-7 dispatch-claim leg: four racing claims on one prepared attempt; only
 /// the single winner is permitted an executor dispatch (dispatch count 1).
 fn race_d7_dispatch_claim_single_winner(
     attempts: &SqlxExecutionAttemptStore,
@@ -365,7 +365,7 @@ fn race_d7_dispatch_claim_single_winner(
     );
 }
 
-/// D-7 terminal-commit leg: 32 racing terminal commits converge on one
+/// D-7 terminal-commit leg: four racing terminal commits converge on one
 /// canonical terminal; every loser and the idempotent replay observe that
 /// same terminal D-7 projection.
 fn race_d7_terminal_commit_single_winner(

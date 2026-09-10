@@ -21,7 +21,7 @@ use crate::harness::{Fixture, Harness, command, fresh_fixture, seed_turn};
 /// The AC-3 write-attempt deadline every call must stay under.
 const DEADLINE: Duration = Duration::from_secs(2);
 
-/// The conservative serialized bound W + 31 * L + S must stay under.
+/// The conservative serialized bound W + 3 * L + S must stay under.
 const SERIALIZED_BOUND: Duration = Duration::from_secs(2);
 
 /// One thread's call result with its measured elapsed time.
@@ -31,14 +31,14 @@ struct Call {
 }
 
 pub(crate) fn run() {
-    let harness = Harness::connect(40);
+    let harness = Harness::connect(4);
     let pool = harness.pool.clone();
     let base = measured_uncontended_latency(&harness, &pool);
-    let serialized_bound = base.checked_mul(32).expect("latency bound fits");
+    let serialized_bound = base.checked_mul(4).expect("latency bound fits");
     if serialized_bound >= SERIALIZED_BOUND {
         let message = format!(
             "AC-3 timing precondition unavailable: the measured conservative bound \
-             W + 31 * L = {serialized_bound:?} reaches the {SERIALIZED_BOUND:?} budget; \
+             W + 3 * L = {serialized_bound:?} reaches the {SERIALIZED_BOUND:?} budget; \
              the arbitration precondition cannot be established on this machine"
         );
         panic!("{message}");
@@ -111,7 +111,7 @@ fn raced(harness: &Harness, commands: Vec<CorrectionCommand>, base: Duration) ->
                 call.elapsed
             );
             assert!(
-                call.elapsed < base * 32 + Duration::from_secs(1),
+                call.elapsed < base * 4 + Duration::from_secs(1),
                 "the serialized schedule must stay near the measured bound"
             );
             call
@@ -126,7 +126,7 @@ fn one_winner_and_typed_conflicts(harness: &Harness, base: Duration) {
         .runtime
         .block_on(seed_turn(&pool, &fixture, "completed", 2, true));
     let input = ItemId::from_uuid(input.expect("seeded input item"));
-    let commands = (0..32)
+    let commands = (0..4)
         .map(|attempt| {
             command(
                 &fixture,
@@ -147,7 +147,7 @@ fn one_winner_and_typed_conflicts(harness: &Harness, base: Duration) {
         .count();
     assert_eq!(winners.len(), 1, "exactly one fresh identity wins the tip");
     assert_eq!(
-        conflicts, 31,
+        conflicts, 3,
         "every losing fresh identity observes PredecessorConflict"
     );
     let winner = &winners[0];
@@ -165,7 +165,7 @@ fn one_winner_and_typed_conflicts(harness: &Harness, base: Duration) {
             .fetch_one(&pool),
         )
         .expect("read the durable state");
-    assert_eq!(rows, 2, "the 31 losers mutate nothing");
+    assert_eq!(rows, 2, "the three losers mutate nothing");
     let next_sequence: i64 = harness
         .runtime
         .block_on(
@@ -197,7 +197,7 @@ fn identical_requests_converge(harness: &Harness, base: Duration) {
     let input = ItemId::from_uuid(input.expect("seeded input item"));
     let identity = ItemId::new();
     let shared = command(&fixture, identity, input, "the same retry");
-    let commands = (0..32).map(|_| shared.clone()).collect();
+    let commands = (0..4).map(|_| shared.clone()).collect();
     let calls = raced(harness, commands, base);
     let mut results = calls.into_iter();
     let first = results

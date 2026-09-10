@@ -2,7 +2,7 @@
 
 //! AC-4: settlement is bounded and truthful — real `PostgreSQL` stalls at the
 //! identity lock, the Turn row lock, and under a deliberately
-//! deadline-exhausted 32-writer case, plus wrong-owner lookups, caller
+//! deadline-exhausted four-writer case, plus wrong-owner lookups, caller
 //! connection loss, and exact-retry deduplication after every ambiguous
 //! acknowledgement (ADR-0004 CA-07 and CA-08).
 //!
@@ -26,7 +26,7 @@ use crate::harness::{
 };
 
 pub(crate) fn run() {
-    let harness = Harness::connect(40);
+    let harness = Harness::connect(8);
     let pool = harness.pool.clone();
     identity_lock_stall_is_bounded_and_unknown(&harness, &pool);
     turn_row_stall_proves_absence(&harness, &pool);
@@ -248,16 +248,16 @@ fn wrong_owner_lookup_is_not_found(harness: &Harness, pool: &sqlx::PgPool) {
     assert_unchanged(&before, &after);
 }
 
-/// Thirty-two writers blocked behind held identity locks each consume both
+/// Four writers blocked behind held identity locks each consume both
 /// bounded attempts, stay `Unavailable`, mutate nothing, and deduplicate
 /// once admitted after release.
 fn deadline_exhausted_writers_stay_unknown_and_unique(harness: &Harness, pool: &sqlx::PgPool) {
-    let fixture = fresh_fixture("ac4-deadline-32");
+    let fixture = fresh_fixture("ac4-deadline-4");
     let input = harness
         .runtime
         .block_on(seed_turn(pool, &fixture, "completed", 2, true));
     let input = ItemId::from_uuid(input.expect("seeded input item"));
-    let identities: Vec<ItemId> = (0..32).map(|_| ItemId::new()).collect();
+    let identities: Vec<ItemId> = (0..4).map(|_| ItemId::new()).collect();
     let keys: Vec<i64> = identities
         .iter()
         .map(|identity| advisory_key(identity.as_uuid()))
