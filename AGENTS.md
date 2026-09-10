@@ -135,7 +135,11 @@ following are true for its latest pushed commit:
 
 - every Scope Routing verification command for the affected paths has a
   corresponding required CI check, and every such check is green; absence of
-  required CI is a blocker, not `N/A`;
+  required CI is a blocker, not `N/A`. This CI-correspondence requirement
+  exempts only the Local SonarQube Feature Completion Gate below: wherever a
+  routing row lists `python3 tools/sonarqube/gate.py`, the command is a local
+  admission check enforced by the Git hooks at commit and push time, which the
+  recorded owner instruction deliberately keeps out of CI;
 - every applicable contract clause is mapped to a passing acceptance check or
   deterministic test through the governing ADR's contract traceability;
 - every applicable row in the governing ADR's Risk Coverage Matrix is `Pass`,
