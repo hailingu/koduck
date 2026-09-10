@@ -304,6 +304,52 @@ created solely to exercise a parser or validator MAY contain the exact text
 needed to represent its grammar, but its assertions SHOULD target semantic
 outcomes or stable diagnostic codes instead of ordinary wording.
 
+### Key State And Invariant Matrix
+
+Before changing production code for a feature or reproducible defect fix,
+agents MUST record a concise, risk-based matrix of the affected behavior in the
+task plan, an existing relevant implementation-design or test document, or the
+pull-request description. Reuse and update an existing matrix when available;
+a new standalone document is not required. Pure documentation changes do not
+require this matrix.
+
+- Each row MUST identify the precondition/state, action or transition
+  (including relevant event ordering), expected observable outcome, invariant
+  that must remain true, and corresponding test or explicit verification gap.
+  An invariant is a property that must hold across the relevant transitions,
+  not merely an expected result for one example.
+- Select dimensions relevant to the change: lifecycle transitions, success
+  and failure states, input and contract boundaries, retries and recovery,
+  concurrent or out-of-order completion, and consistency across components or
+  persistence boundaries. Record why a material dimension is not applicable or
+  an identified case remains unverified. Prioritize by user impact and
+  realistic triggers within applicable security and contract constraints;
+  exhaustive Cartesian-product coverage is not required.
+- Cover both the normal path and applicable failure or recovery transitions.
+  Identify the owner of each invariant and the entry points that can affect
+  it, so a guard or assertion on one path does not leave another path unchecked.
+- Use the matrix to select the smallest failing behavior or regression test
+  before implementation, then extend tests for the other selected cases as
+  needed. Assert observable behavior and contract semantics at the layer that
+  owns the invariant; a mocked call assertion alone does not establish an
+  outcome across component or storage boundaries.
+- When a fix adds or changes a state, retry, guard, or recovery path, agents
+  MUST update the matrix and assess adjacent transitions and alternative entry
+  points governed by the same invariant. Add regression coverage for newly
+  affected behavior within the authorized scope, rather than testing only the
+  reported example.
+- Before declaring completion, map the selected cases to verification results
+  and disclose remaining gaps and their rationale. Test counts, line coverage,
+  and a passing static-analysis gate do not substitute for this evidence.
+- For ADR-governed work, reuse or cross-reference the governing ADR's
+  Contract-To-Check Traceability, Risk Coverage Matrix, and acceptance checks.
+  The required five baseline risk dimensions and their passing-evidence gates
+  remain mandatory; this matrix supplements them without requiring duplicate
+  evidence. Recording a gap does not waive a required check. This matrix also
+  applies to qualifying source fixes exempt from a decision record, but does
+  not itself require a record, expand task authorization, or override approval
+  and review-convergence policies.
+
 ### Document Requirement Levels
 
 Every ADD, ADR, and OCR template and instantiated document MUST distinguish
@@ -946,7 +992,9 @@ implementation or operation continues.
    authorization in this guide authorizes that external change.
 7. Search for existing internal capabilities and choose the smallest coherent
    change that meets the request.
-8. Implement only the approved scope and preserve unrelated worktree changes.
+8. For source-code features and reproducible defect fixes, record the Key State
+   And Invariant Matrix before production-code changes. Implement only the
+   approved scope and preserve unrelated worktree changes.
 9. Apply the automatic-review rule in Work Coordination after each push and
    before merge or operational use.
 10. Run the narrowest relevant non-interactive checks, then the broader checks
@@ -1085,6 +1133,9 @@ multi-environment promotion is needed. Release and Git tag operations follow
   existing governance validator and structured review instead.
 - Run focused checks first and broader checks when shared behavior is
   affected.
+- For changes requiring a Key State And Invariant Matrix, include its location,
+  verification results, and remaining gaps with their rationale in completion
+  evidence.
 - Use the exact commands and working directories from Scope Routing.
 - Report skipped, blocked, or failing checks with their full reason.
 - Prefer stable evidence such as commit identifiers, immutable links, symbols,
