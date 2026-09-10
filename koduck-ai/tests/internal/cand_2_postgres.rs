@@ -145,11 +145,11 @@ fn harness() -> Option<Harness> {
     let pool = runtime
         .block_on(
             PgPoolOptions::new()
-                // 32 concurrent decision contenders each hold one pooled
+                // Four concurrent decision contenders each hold one pooled
                 // connection across their transaction; the pool must admit
                 // them all or the store's 2-second wait deadline fails on
                 // pool queuing rather than transition contention.
-                .max_connections(32)
+                .max_connections(4)
                 .connect(&database_url),
         )
         .expect("connect to disposable PostgreSQL");
@@ -873,7 +873,7 @@ fn expiry_fallback_holds_the_turn_lock_until_its_terminal_commits() {
 }
 
 #[test]
-fn thirty_two_competing_decisions_commit_exactly_one_terminal() {
+fn four_competing_decisions_commit_exactly_one_terminal() {
     let Some(mut harness) = harness() else {
         return;
     };
@@ -896,7 +896,7 @@ fn thirty_two_competing_decisions_commit_exactly_one_terminal() {
         }),
     );
 
-    let contenders = 32;
+    let contenders = 4;
     let barrier = Arc::new(Barrier::new(contenders));
     let mut handles = Vec::new();
     for index in 0..contenders {

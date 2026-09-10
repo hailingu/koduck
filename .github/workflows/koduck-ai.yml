@@ -27,6 +27,10 @@ jobs:
       - run: npm ci --prefix tools/governance-validator
       - run: npm test --prefix tools/governance-validator
       - run: npm run validate --prefix tools/governance-validator
+      - run: python3 -m pip install ruff==0.15.4
+      - run: ruff check tools/sonarqube
+      - run: ruff format --check tools/sonarqube
+      - run: python3 -m unittest discover -s tools/sonarqube -p 'test_*.py'
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: "1.95"

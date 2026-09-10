@@ -1,0 +1,2 @@
+# Owner-authorized recurring SonarQube workflow; see README.md.
+coverage==7.10.6

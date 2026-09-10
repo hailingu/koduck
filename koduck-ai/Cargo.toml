@@ -1,5 +1,6 @@
 # ADR: docs/adr/ADR-0001-provider-neutral-turn-kernel.md
 # ADR: docs/adr/ADR-0003-default-deny-tool-approval-execution-boundary.md
+# ADR: koduck-ai/docs/adr/ADR-0004-authenticated-correction-admission.md
 [package]
 name = "koduck-ai"
 version = "0.1.0"
@@ -39,6 +40,10 @@ uuid = { version = "1.18", features = ["v4"] }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
+# Dev-only fake-time support for the AC-4 deterministic settlement-budget
+# tests (ADR-0004): a feature of the existing locked tokio dependency, not
+# a new dependency and not a version change.
+tokio = { version = "1.53", features = ["test-util"] }
 
 [lints]
 workspace = true

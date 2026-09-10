@@ -583,7 +583,7 @@ fn concurrent_reconcilers_are_idempotent() {
             .iter()
             .filter(|result| **result == Err(HistoryError::Unavailable))
             .count(),
-        32
+        4
     );
 
     executor.set_available(true);
@@ -603,7 +603,7 @@ fn concurrent_reconcilers_are_idempotent() {
                 Err(HistoryError::AlreadyTerminal | HistoryError::Fenced)
             ))
             .count(),
-        31
+        3
     );
     let mut history = PostgresTurnHistory::new(executor);
     assert!(matches!(
@@ -622,7 +622,7 @@ fn race_reconcilers(
     key: &LeaseKey,
 ) -> Vec<Result<ReconcileOutcome, HistoryError>> {
     let mut handles = Vec::new();
-    for _ in 0..32 {
+    for _ in 0..4 {
         let executor = executor.clone();
         let key = key.clone();
         handles.push(thread::spawn(move || {

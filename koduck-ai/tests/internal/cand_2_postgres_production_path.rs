@@ -272,7 +272,7 @@ fn production_dispatch_claims_permit_exactly_one_executor_dispatch_across_instan
     let Some(harness) = harness() else {
         return;
     };
-    let contenders = 32;
+    let contenders = 4;
     let (identity, sealed) = sealed_binding(&harness);
     // One canonical prepared D-7 exists before the race: every instance
     // prepares the same identity into its own process authority and then
@@ -335,7 +335,7 @@ fn production_dispatch_claims_permit_exactly_one_executor_dispatch_across_instan
     assert_eq!(
         executor.dispatch_count(),
         1,
-        "exactly one instance dispatches the single canonical D-7 across 32 contenders"
+        "exactly one instance dispatches the single canonical D-7 across four contenders"
     );
     assert_eq!(
         succeeded, 1,

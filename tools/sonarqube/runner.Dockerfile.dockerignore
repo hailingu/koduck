@@ -1,0 +1,15 @@
+*
+!runner.Dockerfile
+!runner-entrypoint.sh
+!runner-gate-wrapper.sh
+!runner-gate-inner.sh
+!runner-gate-sudoers
+!gate.py
+!sonar_api.py
+!scan_runtime.py
+!coverage_report.py
+!git_snapshot.py
+!postgres_fixture.py
+!config.json
+!requirements.txt
+!install.sh
