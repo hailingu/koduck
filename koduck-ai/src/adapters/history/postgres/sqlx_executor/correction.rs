@@ -253,9 +253,25 @@ async fn stored_retry(
     }
     let item_id: Uuid = row.try_get("item_id").map_err(classify_write_error)?;
     let sequence: i64 = row.try_get("sequence").map_err(classify_write_error)?;
-    // A stored sequence at or above the Turn's counter is invalid sequence
-    // state — corrupt durable state rather than a resolvable retry — even
-    // though the identity and content match exactly (CA-03/CA-05).
+    let sequence = stored_retry_sequence(&mut *transaction, command, sequence).await?;
+    Ok(Some(Item {
+        item_id: ItemId::from_uuid(item_id),
+        sequence,
+        payload: ItemPayload::Correction(correction),
+    }))
+}
+
+/// Validates the stored retry's sequence state before its durable Item is
+/// returned (CA-03/CA-04): positive, strictly below the Turn's counter, and
+/// strictly after its own predecessor's stored sequence. The schema imposes
+/// no ordering constraint, so an inverted exact match — like a missing
+/// predecessor row — is corrupt durable state rather than a resolvable
+/// retry, even though the identity and content match exactly.
+async fn stored_retry_sequence(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    command: &CorrectionCommand,
+    sequence: i64,
+) -> Result<u64, WriteFailure> {
     let next_sequence: i64 = sqlx::query_scalar(
         "SELECT next_sequence FROM turns \
          WHERE tenant_id = $1 AND thread_id = $2 AND turn_id = $3",
@@ -269,11 +285,23 @@ async fn stored_retry(
     if sequence <= 0 || sequence >= next_sequence {
         return Err(resolved(CorrectionError::CorruptHistory));
     }
-    Ok(Some(Item {
-        item_id: ItemId::from_uuid(item_id),
-        sequence: u64::try_from(sequence).map_err(|_| resolved(CorrectionError::CorruptHistory))?,
-        payload: ItemPayload::Correction(correction),
-    }))
+    let predecessor_sequence: Option<i64> = sqlx::query_scalar(
+        "SELECT sequence FROM turn_items \
+         WHERE tenant_id = $1 AND item_id = $2",
+    )
+    .bind(command.trust().tenant_id.as_str())
+    .bind(command.predecessor_item_id().as_uuid())
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(classify_write_error)?;
+    // A missing predecessor row is a broken ancestor link; an exact match at
+    // or before it violates the strictly-earlier ancestry (CA-03).
+    match predecessor_sequence {
+        Some(predecessor_sequence) if sequence > predecessor_sequence => {
+            u64::try_from(sequence).map_err(|_| resolved(CorrectionError::CorruptHistory))
+        }
+        _ => Err(resolved(CorrectionError::CorruptHistory)),
+    }
 }
 
 /// Validates the Turn counter: positive, greater than every existing Turn

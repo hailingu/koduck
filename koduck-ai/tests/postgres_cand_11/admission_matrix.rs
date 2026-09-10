@@ -871,12 +871,13 @@ fn nonpositive_counter_schema_proof(harness: &Harness, pool: &sqlx::PgPool) {
 
 /// Stored caller-stable identities resolve exactly: exact retries return the
 /// original durable Item with zero writes, every drift is an
-/// `IdentityConflict`, and malformed or oversized stored payloads fail
-/// closed or bounded before content equality is evaluated.
+/// `IdentityConflict`, and malformed, oversized, or sequence-misordered
+/// stored rows fail closed or bounded before content equality is evaluated.
 fn stored_identities(harness: &Harness, pool: &sqlx::PgPool) {
     exact_retry_returns_original(harness, pool);
     identity_drift_conflicts(harness, pool);
     nonterminal_and_malformed_stored_identities(harness, pool);
+    misordered_stored_retry_fails_closed(harness, pool);
 }
 
 /// An exact retry returns the original durable Item with zero writes, even
@@ -1081,6 +1082,50 @@ fn nonterminal_and_malformed_stored_identities(harness: &Harness, pool: &sqlx::P
             "a malformed stored retry payload must fail closed"
         );
     }
+}
+
+/// A stored exact match ordered at or before its own predecessor violates
+/// CA-03's strictly-earlier ancestry: the schema imposes no ordering
+/// constraint, so the retry must fail closed as corrupt durable state
+/// instead of admitting the malformed history.
+fn misordered_stored_retry_fails_closed(harness: &Harness, pool: &sqlx::PgPool) {
+    // The predecessor sits at sequence 5 while the exact-match correction is
+    // stored at 4, both below the Turn counter of 6: positive and
+    // counter-bounded, but inverted relative to its own target.
+    let fixture = fresh_fixture("ac2-retry-misordered");
+    harness
+        .runtime
+        .block_on(seed_turn(pool, &fixture, "completed", 6, false));
+    let input = ItemId::new();
+    harness.runtime.block_on(seed_item(
+        pool,
+        &fixture,
+        5,
+        input.as_uuid(),
+        "user_message",
+        r#"{"content":"original"}"#,
+        false,
+        None,
+    ));
+    let identity = ItemId::new();
+    harness.runtime.block_on(seed_item(
+        pool,
+        &fixture,
+        4,
+        identity.as_uuid(),
+        "correction",
+        "{\"content\":\"committed\"}",
+        false,
+        Some(input.as_uuid()),
+    ));
+    let before = harness.runtime.block_on(snapshot(pool, &fixture));
+    assert_eq!(
+        harness.correct(command(&fixture, identity, input, "committed")),
+        Err(CorrectionError::CorruptHistory),
+        "a retry stored at or before its predecessor must fail closed"
+    );
+    let after = harness.runtime.block_on(snapshot(pool, &fixture));
+    assert_unchanged(&before, &after);
 }
 
 /// The CA-09 boundary: ordinary foreground append keeps rejecting the
