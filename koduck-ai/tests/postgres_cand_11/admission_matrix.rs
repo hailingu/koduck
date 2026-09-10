@@ -19,6 +19,9 @@ const APPROVAL_PAYLOAD: &str = "{\"approval_id\":\"00000000-0000-0000-0000-00000
    \"attempt_id\":\"00000000-0000-0000-0000-000000000002\",\"status\":\"requested\",\
    \"decision\":null,\"version\":1}";
 
+/// A stored payload one byte over the CA-06 1-MiB read cap.
+const OVERSIZED_PAYLOAD_BYTES: usize = 1_048_577;
+
 pub(crate) fn run() {
     let harness = Harness::connect(6);
     let pool = harness.pool.clone();
@@ -873,11 +876,15 @@ fn nonpositive_counter_schema_proof(harness: &Harness, pool: &sqlx::PgPool) {
 /// original durable Item with zero writes, every drift is an
 /// `IdentityConflict`, and malformed, oversized, or sequence-misordered
 /// stored rows fail closed or bounded before content equality is evaluated.
+/// Drift classifies before the CA-06 read cap, and the retry's predecessor
+/// lookup stays scoped to the owned Turn (CA-03/CA-04).
 fn stored_identities(harness: &Harness, pool: &sqlx::PgPool) {
     exact_retry_returns_original(harness, pool);
     identity_drift_conflicts(harness, pool);
     nonterminal_and_malformed_stored_identities(harness, pool);
     misordered_stored_retry_fails_closed(harness, pool);
+    oversized_identity_drift_conflicts_before_cap(harness, pool);
+    foreign_scope_predecessor_fails_closed(harness, pool);
 }
 
 /// An exact retry returns the original durable Item with zero writes, even
@@ -1126,6 +1133,158 @@ fn misordered_stored_retry_fails_closed(harness: &Harness, pool: &sqlx::PgPool) 
     );
     let after = harness.runtime.block_on(snapshot(pool, &fixture));
     assert_unchanged(&before, &after);
+}
+
+/// A drifted stored identity is classified from row metadata before the
+/// CA-06 read cap is consulted: the conflicting row's Thread, Turn, kind, or
+/// predecessor mismatch must surface as `IdentityConflict` even when its
+/// payload is oversized, so none of the foreign row's properties leak
+/// through a resource-bound diagnostic (CA-04).
+fn oversized_identity_drift_conflicts_before_cap(harness: &Harness, pool: &sqlx::PgPool) {
+    let fixture = fresh_fixture("ac2-drift-cap");
+    let input = harness
+        .runtime
+        .block_on(seed_turn(pool, &fixture, "completed", 2, true));
+    let input = ItemId::from_uuid(input.expect("seeded input item"));
+    let identity = ItemId::new();
+    // The same tenant and item identity, but stored in another Turn of the
+    // same Thread as a user_message with an oversized body: identity drift
+    // plus a payload the read cap would reject were the row the caller's own.
+    let other_turn = Fixture {
+        tenant: fixture.tenant.clone(),
+        subject: fixture.subject,
+        thread: fixture.thread,
+        turn: koduck_ai::domain::TurnId::new(),
+    };
+    harness
+        .runtime
+        .block_on(seed_turn(pool, &other_turn, "completed", 2, false));
+    harness.runtime.block_on(seed_item(
+        pool,
+        &other_turn,
+        1,
+        identity.as_uuid(),
+        "user_message",
+        &format!(
+            "{{\"content\":\"{}\"}}",
+            "a".repeat(OVERSIZED_PAYLOAD_BYTES)
+        ),
+        false,
+        None,
+    ));
+    let before = harness.runtime.block_on(snapshot(pool, &fixture));
+    assert_eq!(
+        harness.correct(command(&fixture, identity, input, "committed")),
+        Err(CorrectionError::IdentityConflict),
+        "identity drift must classify before the stored-payload read cap"
+    );
+    let after = harness.runtime.block_on(snapshot(pool, &fixture));
+    assert_unchanged(&before, &after);
+}
+
+/// A stored exact-match retry whose predecessor row exists only in another
+/// Thread of the tenant is a broken ancestor link, not a resolvable retry:
+/// the predecessor lookup stays scoped to the owned Turn and fails closed
+/// (CA-03 in-scope ancestry). The production composite foreign key prevents
+/// the shape; the constraint-free fixture proves the retry path rejects it.
+fn foreign_scope_predecessor_fails_closed(harness: &Harness, pool: &sqlx::PgPool) {
+    let corrupt = harness::CorruptFixture::create(harness);
+    let fixture = fresh_fixture("ac2-retry-foreign-predecessor");
+    harness
+        .runtime
+        .block_on(seed_turn(pool, &fixture, "completed", 4, false));
+    let foreign_thread = koduck_ai::domain::ThreadId::new();
+    let foreign_turn = koduck_ai::domain::TurnId::new();
+    let predecessor = Uuid::new_v4();
+    // The predecessor sits in another Thread/Turn of the same tenant at an
+    // earlier sequence, so only the owned-scope binding can reject it.
+    harness
+        .runtime
+        .block_on(
+            sqlx::query(
+                "INSERT INTO turn_items (tenant_id, thread_id, turn_id, sequence, item_id, \
+         item_type, payload, is_terminal, corrects_item_id) \
+         VALUES ($1, $2, $3, 1, $4, 'user_message', '{\"content\":\"foreign\"}', FALSE, NULL)",
+            )
+            .bind(fixture.tenant.as_str())
+            .bind(foreign_thread.as_uuid())
+            .bind(foreign_turn.as_uuid())
+            .bind(predecessor)
+            .execute(&corrupt.pool),
+        )
+        .expect("seed the foreign-scope predecessor");
+    let identity = ItemId::new();
+    harness.runtime.block_on(corrupt.seed_item(
+        &fixture,
+        2,
+        identity.as_uuid(),
+        "correction",
+        "{\"content\":\"committed\"}",
+        Some(predecessor),
+    ));
+    assert_eq!(
+        harness.correct_on(
+            &corrupt.pool,
+            command(
+                &fixture,
+                identity,
+                ItemId::from_uuid(predecessor),
+                "committed"
+            )
+        ),
+        Err(CorrectionError::CorruptHistory),
+        "a predecessor outside the owned Turn scope must fail closed"
+    );
+    corrupt.teardown();
+    cross_scope_link_is_schema_rejected(harness, pool);
+}
+
+/// The unmodified production composite foreign key rejects the same
+/// cross-scope correction link: the predecessor exists in the tenant, but
+/// under another Thread/Turn than the correcting row.
+fn cross_scope_link_is_schema_rejected(harness: &Harness, pool: &sqlx::PgPool) {
+    let fixture = fresh_fixture("ac2-foreign-predecessor-schema");
+    harness
+        .runtime
+        .block_on(seed_turn(pool, &fixture, "completed", 2, false));
+    let other_scope = Fixture {
+        tenant: fixture.tenant.clone(),
+        subject: fixture.subject,
+        thread: koduck_ai::domain::ThreadId::new(),
+        turn: koduck_ai::domain::TurnId::new(),
+    };
+    harness
+        .runtime
+        .block_on(seed_turn(pool, &other_scope, "completed", 2, false));
+    let predecessor = Uuid::new_v4();
+    harness.runtime.block_on(seed_item(
+        pool,
+        &other_scope,
+        1,
+        predecessor,
+        "user_message",
+        "{\"content\":\"foreign\"}",
+        false,
+        None,
+    ));
+    harness.runtime.block_on(async {
+        let result = sqlx::query(
+            "INSERT INTO turn_items (tenant_id, thread_id, turn_id, sequence, item_id, \
+             item_type, payload, is_terminal, corrects_item_id) \
+             VALUES ($1, $2, $3, 99, $4, 'correction', '{\"content\":\"c\"}', FALSE, $5)",
+        )
+        .bind(fixture.tenant.as_str())
+        .bind(fixture.thread.as_uuid())
+        .bind(fixture.turn.as_uuid())
+        .bind(Uuid::new_v4())
+        .bind(predecessor)
+        .execute(pool)
+        .await;
+        assert!(
+            result.is_err(),
+            "the production foreign key must reject a cross-scope correction link"
+        );
+    });
 }
 
 /// The CA-09 boundary: ordinary foreground append keeps rejecting the

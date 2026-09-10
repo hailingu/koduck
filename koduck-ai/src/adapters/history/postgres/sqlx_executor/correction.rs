@@ -193,8 +193,10 @@ async fn correct_async(pool: &PgPool, command: CorrectionCommand) -> Result<Item
 }
 
 /// Resolves the durable Item of an exact stored identity, or every identity
-/// drift (CA-04). Stored payload bodies stay under the CA-06 read cap and
-/// are decoded strictly before any content comparison.
+/// drift (CA-04). Drift is classified from row metadata before the CA-06
+/// read cap is consulted, so a conflicting row's properties never surface as
+/// a resource bound; the cap still precedes any payload fetch, and stored
+/// bodies are decoded strictly before content comparison.
 async fn stored_retry(
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     command: &CorrectionCommand,
@@ -213,10 +215,6 @@ async fn stored_retry(
     let Some(row) = row else {
         return Ok(None);
     };
-    let payload_bytes: i64 = row.try_get("payload_bytes").map_err(classify_write_error)?;
-    if payload_bytes > MAX_STORED_PAYLOAD_BYTES {
-        return Err(resolved(CorrectionError::ResourceLimit));
-    }
     let stored_thread: Uuid = row.try_get("thread_id").map_err(classify_write_error)?;
     let stored_turn: Uuid = row.try_get("turn_id").map_err(classify_write_error)?;
     let item_type: String = row.try_get("item_type").map_err(classify_write_error)?;
@@ -229,6 +227,13 @@ async fn stored_retry(
         || corrects != Some(command.predecessor_item_id().as_uuid())
     {
         return Err(resolved(CorrectionError::IdentityConflict));
+    }
+    // The cap is consulted only after the row is confirmed to be the
+    // caller's own identity, and still before its payload body is fetched
+    // (CA-06).
+    let payload_bytes: i64 = row.try_get("payload_bytes").map_err(classify_write_error)?;
+    if payload_bytes > MAX_STORED_PAYLOAD_BYTES {
+        return Err(resolved(CorrectionError::ResourceLimit));
     }
     let payload_text: String =
         sqlx::query_scalar("SELECT payload FROM turn_items WHERE tenant_id = $1 AND item_id = $2")
@@ -263,10 +268,12 @@ async fn stored_retry(
 
 /// Validates the stored retry's sequence state before its durable Item is
 /// returned (CA-03/CA-04): positive, strictly below the Turn's counter, and
-/// strictly after its own predecessor's stored sequence. The schema imposes
-/// no ordering constraint, so an inverted exact match — like a missing
-/// predecessor row — is corrupt durable state rather than a resolvable
-/// retry, even though the identity and content match exactly.
+/// strictly after its own predecessor's stored sequence, with the
+/// predecessor lookup scoped to the owned Thread and Turn so a same-identity
+/// row in another scope resolves as a broken link. The schema imposes
+/// no ordering constraint, so an inverted exact match — like a predecessor
+/// missing from the owned scope — is corrupt durable state rather than a
+/// resolvable retry, even though the identity and content match exactly.
 async fn stored_retry_sequence(
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     command: &CorrectionCommand,
@@ -287,15 +294,18 @@ async fn stored_retry_sequence(
     }
     let predecessor_sequence: Option<i64> = sqlx::query_scalar(
         "SELECT sequence FROM turn_items \
-         WHERE tenant_id = $1 AND item_id = $2",
+         WHERE tenant_id = $1 AND thread_id = $2 AND turn_id = $3 AND item_id = $4",
     )
     .bind(command.trust().tenant_id.as_str())
+    .bind(command.thread_id().as_uuid())
+    .bind(command.turn_id().as_uuid())
     .bind(command.predecessor_item_id().as_uuid())
     .fetch_optional(&mut **transaction)
     .await
     .map_err(classify_write_error)?;
-    // A missing predecessor row is a broken ancestor link; an exact match at
-    // or before it violates the strictly-earlier ancestry (CA-03).
+    // A predecessor missing from the owned scope — absent entirely or stored
+    // under another Thread/Turn — is a broken ancestor link; an exact match
+    // at or before it violates the strictly-earlier ancestry (CA-03).
     match predecessor_sequence {
         Some(predecessor_sequence) if sequence > predecessor_sequence => {
             u64::try_from(sequence).map_err(|_| resolved(CorrectionError::CorruptHistory))
