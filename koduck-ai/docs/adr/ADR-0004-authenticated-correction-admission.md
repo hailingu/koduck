@@ -491,6 +491,52 @@ implementation exists and the declared production-boundary checks run.
 
 ## Supporting Notes [Optional]
 
+### Exact-retry terminal flag remediation — 2026-09-22
+
+The owner requested PR 15 review `5280413571`, against `c67fd35`, be addressed
+in task `01a0c834-b8cb-7082-9103-5cd0e65eb3de`. An otherwise exact stored
+Correction with `is_terminal = true` must be classified as malformed durable
+state under CA-04/CA-05. The shared `stored_retry` check owns the invariant for
+both correction admission and read-only reconciliation.
+
+| State / precondition | Action / transition | Observable result and invariant | Owner / verification |
+| --- | --- | --- | --- |
+| A normally admitted Correction is nonterminal | Exact retry or reconciliation | Original Item, no append or counter advance | `stored_retry`; `exact_retry_rejects_a_terminal_correction` |
+| A constraint-free copy has the exact Correction marked terminal | Exact retry or reconciliation | `CorruptHistory`; a successful retry cannot return a terminal Correction; no row, flag, or counter mutation | Both entry points; the same regression |
+| The terminal Correction also conflicts in content or predecessor | Retry or reconciliation | `IdentityConflict` remains prior to terminal-flag validation | `stored_retry`; the same regression |
+| The fixture flag is repaired to false | Retry and reconcile the original identity | Original Item again, with no duplicate append or counter advance | Both entry points; the same recovery checks |
+| Normal production constraints remain present | Try to mark an admitted Correction terminal | Shape constraint rejects the fixture update; the production row stays nonterminal | Production migrated table; the same regression |
+
+The regression uses one small isolated fixture and serial reads, sharing the
+existing migrated setup and scoped-reader helper. A private table copy models
+restored or constraint-free corruption without weakening the production
+constraints. The new guard follows identity-content comparison; ownership,
+payload cap, malformed payload, nonterminal Turn, sequence, and ancestry checks
+retain their existing controls and regression coverage. No new concurrent
+transition, lock order, budget, allocation rule, or public contract is added.
+
+Verification: the focused regression first failed because the terminal
+Correction incorrectly returned success, then passed after the guard (0.22
+seconds). All five matrix rows pass for both entry points where applicable.
+The complete Rust/PostgreSQL suite passed 490 tests across 25 binaries;
+`cargo fmt --all --check`, all-target/all-feature Clippy with warnings denied,
+184 governance tests, and governance validation also passed. Local runs used
+three build jobs and serial tests. The system-selected Xcode failed its license
+check before the initial compile; process-local
+`DEVELOPER_DIR=/Library/Developer/CommandLineTools` used the independently
+installed working toolchain without changing system selection or repository
+configuration. The PR records revision-bound commit/push gates, CI, and review
+disposition; a prior revision's review is not coverage for this fix.
+
+Decomposition review: `correction.rs` is 666 physical lines and remains the
+cohesive admission/reconciliation owner; no 800-line exception is needed.
+`stored_retry` is 66 lines, below the 80-line limit; retaining this guard beside
+identity and durable-state validation preserves their required precedence.
+The new regression module is 173 lines; its longest function is 50 lines.
+These are point-in-time measurements, not layout assertions in tests. No
+cyclomatic-complexity tool is configured (N/A); manual nesting review found the
+guard remains an early return with no additional nesting or state transition.
+
 ### Exact-retry Turn counter remediation — 2026-09-22
 
 The owner requested PR 15 review `5279880211`, against `e048304`, be addressed

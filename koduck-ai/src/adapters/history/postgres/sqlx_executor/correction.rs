@@ -31,6 +31,8 @@ mod correction_settlement_budget;
 mod payload_read_race;
 #[cfg(test)]
 mod retry_counter;
+#[cfg(test)]
+mod retry_terminal;
 
 /// Test-only commit-ack-loss switch for the AC-4 deterministic
 /// commit-arm test; never read in production builds.
@@ -214,7 +216,7 @@ async fn stored_retry(
     turn_status: &str,
 ) -> Result<Option<Item>, WriteFailure> {
     let row = sqlx::query(
-        "SELECT item_id, sequence, thread_id, turn_id, item_type, corrects_item_id, \
+        "SELECT item_id, sequence, thread_id, turn_id, item_type, corrects_item_id, is_terminal, \
          octet_length(payload)::BIGINT AS payload_bytes FROM turn_items \
          WHERE tenant_id = $1 AND item_id = $2",
     )
@@ -255,10 +257,11 @@ async fn stored_retry(
     if correction.content().as_bytes() != command.content().as_bytes() {
         return Err(resolved(CorrectionError::IdentityConflict));
     }
-    if !is_terminal_status(turn_status) {
-        // Lawful admission only writes corrections after termination, so an
-        // exact match beneath a live Turn is inconsistent durable state
-        // rather than a new-write rejection (CA-04).
+    let is_terminal: bool = row.try_get("is_terminal").map_err(classify_write_error)?;
+    if is_terminal || !is_terminal_status(turn_status) {
+        // A Correction is nonterminal and is only created after the Turn
+        // terminates. Either violation is malformed matching data, after
+        // identity-content conflicts have taken precedence (CA-04/CA-05).
         return Err(resolved(CorrectionError::CorruptHistory));
     }
     let item_id: Uuid = row.try_get("item_id").map_err(classify_write_error)?;
