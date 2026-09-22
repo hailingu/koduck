@@ -29,6 +29,8 @@ mod commit_ack_loss;
 mod correction_settlement_budget;
 #[cfg(test)]
 mod payload_read_race;
+#[cfg(test)]
+mod retry_counter;
 
 /// Test-only commit-ack-loss switch for the AC-4 deterministic
 /// commit-arm test; never read in production builds.
@@ -301,9 +303,14 @@ async fn stored_retry_sequence(
     command: &CorrectionCommand,
     sequence: i64,
 ) -> Result<u64, WriteFailure> {
-    let next_sequence: i64 = sqlx::query_scalar(
-        "SELECT next_sequence FROM turns \
-         WHERE tenant_id = $1 AND thread_id = $2 AND turn_id = $3",
+    // Reconciliation does not lock the Turn. Read the counter and maximum
+    // in one snapshot so a concurrent lawful append cannot look corrupt.
+    let (next_sequence, highest): (i64, i64) = sqlx::query_as(
+        "SELECT t.next_sequence, \
+         (SELECT COALESCE(MAX(i.sequence), 0) FROM turn_items i \
+          WHERE i.tenant_id = t.tenant_id AND i.thread_id = t.thread_id \
+            AND i.turn_id = t.turn_id) \
+         FROM turns t WHERE t.tenant_id = $1 AND t.thread_id = $2 AND t.turn_id = $3",
     )
     .bind(command.trust().tenant_id.as_str())
     .bind(command.thread_id().as_uuid())
@@ -311,7 +318,10 @@ async fn stored_retry_sequence(
     .fetch_one(&mut **transaction)
     .await
     .map_err(classify_write_error)?;
-    if sequence <= 0 || sequence >= next_sequence {
+    // CA-04/CA-05: unrelated chains must also remain below the counter.
+    // A retry allocates nothing, so the fresh-write incrementability check
+    // does not apply when the otherwise valid counter is at BIGINT's limit.
+    if sequence <= 0 || sequence >= next_sequence || next_sequence <= highest {
         return Err(resolved(CorrectionError::CorruptHistory));
     }
     let predecessor_sequence: Option<i64> = sqlx::query_scalar(

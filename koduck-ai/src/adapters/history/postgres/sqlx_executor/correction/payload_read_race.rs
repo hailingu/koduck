@@ -161,6 +161,11 @@ async fn create_projection(pool: &PgPool, schema: &str, target: Uuid, key: i64) 
     .execute(pool)
     .await
     .expect("create a fixture-only read barrier");
+    connect_scoped_reader(schema).await
+}
+
+/// Connects one reader to a fixture-only view without changing the writer's schema.
+pub(super) async fn connect_scoped_reader(schema: &str) -> PgPool {
     let url = std::env::var("KODUCK_AI_TEST_DATABASE_URL").expect("disposable database");
     let options = PgConnectOptions::from_str(&url)
         .expect("database options")
@@ -290,7 +295,7 @@ async fn assert_bounded_projection(writer: &mut sqlx::PgConnection, fixture: &Fi
 }
 
 /// Observes the actual `PostgreSQL` wait state, never a guessed scheduling sleep.
-async fn wait_for_barrier(writer: &mut sqlx::PgConnection, reader_pid: i32) {
+pub(super) async fn wait_for_barrier(writer: &mut sqlx::PgConnection, reader_pid: i32) {
     tokio::time::timeout(Duration::from_secs(2), async {
         loop {
             let waiting: bool = sqlx::query_scalar(
@@ -308,5 +313,5 @@ async fn wait_for_barrier(writer: &mut sqlx::PgConnection, reader_pid: i32) {
         }
     })
     .await
-    .expect("reader reached the size-check snapshot");
+    .expect("reader reached the guarded-read snapshot");
 }

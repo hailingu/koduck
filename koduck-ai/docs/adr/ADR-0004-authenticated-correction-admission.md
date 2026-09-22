@@ -491,6 +491,64 @@ implementation exists and the declared production-boundary checks run.
 
 ## Supporting Notes [Optional]
 
+### Exact-retry Turn counter remediation — 2026-09-22
+
+The owner requested PR 15 review `5279880211`, against `e048304`, be addressed
+in task `01a0c834-b8cb-7082-9103-5cd0e65eb3de`. The defect is distinct from an
+invalid sequence on the matching correction: another Item can reach or exceed
+the Turn counter while the matching correction remains below it. The shared
+retry sequence validation owns this CA-04/CA-05 corruption check for both the
+write entry point and read-only reconciliation.
+
+| State / precondition | Action / ordering | Observable result and invariant | Owner / verification |
+| --- | --- | --- | --- |
+| Exact correction is below the counter, but an unrelated Item in the same Turn is at or above it | Retry or reconcile after the inconsistent state is stored | `CorruptHistory`; a returned exact match must not conceal a counter that fails to exceed all Turn sequences; no new rows or counter write | `stored_retry_sequence`; `exact_retry_validates_the_turn_wide_counter` |
+| The same corrupt Turn receives an identity-content mismatch | Retry or reconcile | `IdentityConflict` retains precedence over counter corruption | `stored_retry`; the same regression |
+| Counter is restored above the Turn-wide maximum | Retry and reconcile the original identity | Return the original Item without a duplicate append or counter advance | Both entry points; the same regression recovery checks |
+| Counter is valid at `BIGINT` maximum | Retry or reconcile without allocating | Return the original Item; the fresh-write incrementability guard must not reject a read-only exact match | `stored_retry_sequence`; the same regression |
+| A different Turn has higher sequences | Retry or reconcile the valid owned Turn | Return the original Item; the maximum lookup remains tenant/Thread/Turn scoped | `stored_retry_sequence`; the same regression |
+| Reconciliation reads a valid counter while another operation commits a lawful correction | Pause the counter projection, commit the independent writer, then finish reconciliation | Return the original Item; counter and maximum must use one statement snapshot so an ordinary append cannot create false corruption | `stored_retry_sequence`; `reconciliation_counter_snapshot_survives_a_concurrent_append` |
+
+The fixture reuses the migrated database setup and a normally admitted
+correction, then changes only its own test rows. Static cases run serially;
+one fixture-only view barrier coordinates a reader, a production writer, and
+a lock controller with at most three active connections. Existing ownership,
+stale matching-sequence,
+ancestry, fresh-write counter, cancellation, and settlement-budget tests remain
+the adjacent controls. No lock order, isolation level, retry budget, public
+contract, or allocation behavior changes. The counter and scoped maximum are
+read in one statement snapshot, avoiding false corruption when a lawful
+independent append completes during read-only reconciliation. The fresh-write
+incrementability guard remains separate because an exact retry allocates
+nothing, including when the counter is at the `BIGINT` ceiling.
+
+Verification on 2026-09-22 first reproduced the reported defect: a correction
+at sequence 2 returned success while an unrelated Item equaled the stale
+counter of 3. The concurrent-append test also reproduced false `CorruptHistory`
+when counter and maximum were checked with separate statement snapshots during
+development. Both regression tests pass with the single-statement check
+(0.33 seconds together), including typed rejection, content-mismatch precedence,
+scoped maximum, restored-counter recovery, valid ceiling, and normal concurrent
+append. The view barrier selects the runtime counter read using the CA-05
+`next_sequence` schema token so an unused projection during ownership lookup
+does not satisfy the intended interleaving.
+
+With three compilation jobs and serial execution, the full `cargo test -p
+koduck-ai --all-targets --all-features` suite passed 489 tests across 25 binaries
+against disposable PostgreSQL. `cargo fmt --all --check`, strict all-target and
+all-feature Clippy, all 184 governance tests, and governance validation passed.
+The existing five baseline risk controls remain applicable; all selected
+matrix cases have passing evidence. Exact commit/push SonarQube admission and
+revision-bound CI/review evidence are recorded in PR 15.
+
+Decomposition review retained the 663-line correction module as one
+transaction/validation boundary. The changed `stored_retry_sequence` is 47
+lines, all new test units are at most 46 lines, and affected nesting remains
+below the review threshold. The counter regressions have a dedicated 279-line
+test module and reuse the existing database setup and view-reader/barrier
+helpers. Cyclomatic complexity: `N/A — no configured complexity tool`; unit
+span and nesting were reviewed instead. No engineering exception applies.
+
 ### Payload read/check race remediation — 2026-09-22
 
 The owner requested PR 15 review `5277829934`, against `c7bb18a`, be addressed
