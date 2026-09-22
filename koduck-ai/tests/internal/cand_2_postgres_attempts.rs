@@ -540,7 +540,9 @@ fn concurrently_racing_claims_of_one_turn_never_report_unavailable() {
     // single running slot: the loser must observe the typed Concurrent
     // rejection — never an Unavailability masquerading as a store outage
     // (ADR-0003 TC-09/TC-12).
-    for round in 0..50 {
+    // Twelve samples retain repeated scheduling coverage without fifty
+    // copies of the same database setup and assertion (owner test-cost audit).
+    for round in 0..12 {
         let (first, second) = sibling_bindings(&action);
         let mut seeder = attempt_store(harness.pool.clone(), &harness.runtime);
         assert_eq!(
@@ -706,48 +708,6 @@ fn prepared_insert_requires_a_current_lease() {
     assert_eq!(
         store.insert_prepared(&binding, 1_000),
         Err(AttemptStoreError::Unavailable),
-    );
-}
-
-#[test]
-fn prepared_insert_rejects_the_seventeenth_attempt_for_one_turn() {
-    let Some(harness) = harness() else {
-        return;
-    };
-    let mut store = attempt_store(harness.pool.clone(), &harness.runtime);
-    let first = prepared_binding(Effect::ExternalWrite);
-    seed_current_lease(&harness, &first);
-
-    for _ in 0..16 {
-        let binding = ExactActionBinding::new(
-            first.tenant_id().clone(),
-            first.thread_id(),
-            first.turn_id(),
-            first.lease_generation(),
-            (first.profile_id(), first.profile_version()),
-            AttemptId::new(),
-            first.action().clone(),
-        )
-        .expect("valid sibling D-7 binding");
-        assert_eq!(
-            store.insert_prepared(&binding, 1_000),
-            Ok(AttemptInsertResolution::Inserted),
-        );
-    }
-
-    let seventeenth = ExactActionBinding::new(
-        first.tenant_id().clone(),
-        first.thread_id(),
-        first.turn_id(),
-        first.lease_generation(),
-        (first.profile_id(), first.profile_version()),
-        AttemptId::new(),
-        first.action().clone(),
-    )
-    .expect("valid seventeenth D-7 binding");
-    assert_eq!(
-        store.insert_prepared(&seventeenth, 1_000),
-        Err(AttemptStoreError::AttemptLimit),
     );
 }
 

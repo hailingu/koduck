@@ -13,7 +13,7 @@ use sqlx::postgres::{PgPool, PgPoolOptions};
 use uuid::Uuid;
 
 use crate::adapters::history::postgres::SqlxPostgresExecutor;
-use crate::application::{CorrectionCommand, CorrectionStore};
+use crate::application::{CorrectionCommand, CorrectionError, CorrectionStore};
 use crate::domain::{ItemId, TenantId, ThreadId, TrustContext, TurnId};
 
 use super::DROP_COMMIT_ACK;
@@ -59,6 +59,26 @@ fn commit_ack_loss_is_reconciled_to_the_committed_exact_match() {
         correction_command(&tenant, thread, turn, identity, input_id),
     );
     assert_eq!(retried, item);
+    assert_durable_state(&runtime, &pool, &tenant, thread, turn, 2, 3);
+
+    // Reuse the committed fixture to cover the read-only entry point: a
+    // matching identity must not hide corruption discovered after commit.
+    runtime.block_on(async {
+        sqlx::query("UPDATE turn_items SET payload = '{}' WHERE tenant_id = $1 AND item_id = $2")
+            .bind(tenant.as_str())
+            .bind(input_id.as_uuid())
+            .execute(&pool)
+            .await
+            .expect("malform the durable ancestor payload");
+    });
+    assert_eq!(
+        runtime.block_on(super::reconcile_async(
+            &pool,
+            correction_command(&tenant, thread, turn, identity, input_id),
+        )),
+        Err(CorrectionError::CorruptHistory),
+        "reconciliation must validate the stored correction's complete ancestry"
+    );
     assert_durable_state(&runtime, &pool, &tenant, thread, turn, 2, 3);
     runtime.block_on(pool.close());
 }

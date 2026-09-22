@@ -259,6 +259,9 @@ async fn stored_retry(
     let item_id: Uuid = row.try_get("item_id").map_err(classify_write_error)?;
     let sequence: i64 = row.try_get("sequence").map_err(classify_write_error)?;
     let sequence = stored_retry_sequence(&mut *transaction, command, sequence).await?;
+    // CA-03/CA-04 apply to retries and reconciliation as well as new writes.
+    // A valid stored successor is allowed; its ancestry must still be sound.
+    validate_ancestry(transaction, command).await?;
     Ok(Some(Item {
         item_id: ItemId::from_uuid(item_id),
         sequence,

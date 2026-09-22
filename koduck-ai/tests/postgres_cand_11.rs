@@ -23,12 +23,21 @@ mod settlement_and_cancellation;
 #[path = "postgres_cand_11/bounds_and_atomicity.rs"]
 mod bounds_and_atomicity;
 
+#[path = "postgres_cand_11/retry_ancestry.rs"]
+mod retry_ancestry;
+
 /// AC-2: CA-02/CA-03 admission and CA-05/CA-09 preservation hold for every
 /// Turn state, ownership dimension, Item kind, corrupt ancestor shape, and
 /// stored-identity case.
 #[test]
 fn admission_matrix() {
     admission_matrix::run();
+}
+
+/// CA-03/CA-04: a matching durable identity cannot bypass ancestry validation.
+#[test]
+fn exact_retry_validates_ancestry() {
+    retry_ancestry::run();
 }
 
 /// AC-3: CA-04/CA-05 concurrency and retry converge under the measured

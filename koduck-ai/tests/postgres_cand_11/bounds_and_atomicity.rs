@@ -6,12 +6,12 @@
 //! statement fault and pre-commit cancellation preserves all preexisting
 //! rows and the counter (ADR-0004 CA-05, CA-06, and CA-08).
 
-use koduck_ai::application::CorrectionError;
+use koduck_ai::application::{CorrectionCommand, CorrectionError};
 use koduck_ai::domain::{Item, ItemId};
 
 use crate::harness::{
-    Harness, assert_unchanged, command, fresh_fixture, install_statement_fault, seed_chain,
-    seed_item, seed_turn, snapshot,
+    Fixture, Harness, assert_unchanged, command, fresh_fixture, install_statement_fault,
+    seed_chain, seed_item, seed_turn, snapshot,
 };
 
 /// The CA-06 stored-payload read cap under test.
@@ -52,9 +52,11 @@ fn chain_length_bounds(harness: &Harness, pool: &sqlx::PgPool) {
             .block_on(seed_chain(pool, &fixture, count, None));
         let tip = ItemId::from_uuid(chain[chain.len() - 1]);
         let before = harness.runtime.block_on(snapshot(pool, &fixture));
-        let outcome = harness.correct(command(&fixture, ItemId::new(), tip, "corrected"));
+        let correction = command(&fixture, ItemId::new(), tip, "corrected");
+        let outcome = harness.correct(correction.clone());
         if admits {
             let admitted: Item = outcome
+                .clone()
                 .unwrap_or_else(|error| panic!("a {count}-node chain must admit: {error:?}"));
             assert_eq!(admitted.sequence, count as u64 + 1);
             let after = harness.runtime.block_on(snapshot(pool, &fixture));
@@ -69,6 +71,14 @@ fn chain_length_bounds(harness: &Harness, pool: &sqlx::PgPool) {
             let after = harness.runtime.block_on(snapshot(pool, &fixture));
             assert_unchanged(&before, &after);
         }
+        assert_retry_bound(
+            harness,
+            pool,
+            &fixture,
+            correction,
+            before.next_sequence,
+            &outcome,
+        );
     }
 }
 
@@ -89,9 +99,10 @@ fn stored_payload_bounds(harness: &Harness, pool: &sqlx::PgPool) {
             .block_on(seed_chain(pool, &fixture, 2, Some(payload_bytes)));
         let tip = ItemId::from_uuid(chain[chain.len() - 1]);
         let before = harness.runtime.block_on(snapshot(pool, &fixture));
-        let outcome = harness.correct(command(&fixture, ItemId::new(), tip, "corrected"));
+        let correction = command(&fixture, ItemId::new(), tip, "corrected");
+        let outcome = harness.correct(correction.clone());
         if admits {
-            outcome.expect("the within-cap chain admits");
+            outcome.clone().expect("the within-cap chain admits");
             let after = harness.runtime.block_on(snapshot(pool, &fixture));
             assert_eq!(after.item_rows, before.item_rows + 1);
         } else {
@@ -103,7 +114,60 @@ fn stored_payload_bounds(harness: &Harness, pool: &sqlx::PgPool) {
             let after = harness.runtime.block_on(snapshot(pool, &fixture));
             assert_unchanged(&before, &after);
         }
+        assert_retry_bound(
+            harness,
+            pool,
+            &fixture,
+            correction,
+            before.next_sequence,
+            &outcome,
+        );
     }
+}
+
+/// Reuses the boundary fixture for an exact retry, seeding an otherwise
+/// matching stored correction when the fresh request was over the cap.
+fn assert_retry_bound(
+    harness: &Harness,
+    pool: &sqlx::PgPool,
+    fixture: &Fixture,
+    correction: CorrectionCommand,
+    sequence: i64,
+    expected: &Result<Item, CorrectionError>,
+) {
+    if expected.is_err() {
+        harness.runtime.block_on(async {
+            seed_item(
+                pool,
+                fixture,
+                sequence,
+                correction.item_id().as_uuid(),
+                "correction",
+                r#"{"content":"corrected"}"#,
+                false,
+                Some(correction.predecessor_item_id().as_uuid()),
+            )
+            .await;
+            sqlx::query(
+                "UPDATE turns SET next_sequence = $4 \
+                 WHERE tenant_id = $1 AND thread_id = $2 AND turn_id = $3",
+            )
+            .bind(fixture.tenant.as_str())
+            .bind(fixture.thread.as_uuid())
+            .bind(fixture.turn.as_uuid())
+            .bind(sequence + 1)
+            .execute(pool)
+            .await
+            .expect("seed the post-commit counter for the exact retry");
+        });
+    }
+    let before = harness.runtime.block_on(snapshot(pool, fixture));
+    assert_eq!(
+        &harness.correct(correction),
+        expected,
+        "CA-06 also bounds exact retries"
+    );
+    assert_unchanged(&before, &harness.runtime.block_on(snapshot(pool, fixture)));
 }
 
 /// The retry-read cap applies to stored correction payloads before any

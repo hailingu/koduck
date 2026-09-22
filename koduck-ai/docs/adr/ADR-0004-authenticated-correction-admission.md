@@ -491,6 +491,56 @@ implementation exists and the declared production-boundary checks run.
 
 ## Supporting Notes [Optional]
 
+### Exact-retry ancestry remediation and test-cost audit — 2026-09-22
+
+The owner requested remediation of PR 15 review `5163383239` and a test-cost
+audit in task `01a0c834-b8cb-7082-9103-5cd0e65eb3de`, including reducing race
+scenarios above four contenders to three and removing obsolete or duplicate
+checks. Inspection at `f927872` found no race above four contenders. Database
+pool capacity is not a contender count: the settlement pool reserves additional
+connections for fault injection and reconciliation. Existing four-way races
+and production resource limits remain unchanged.
+
+The exact-retry defect is within CA-03/CA-04: `stored_retry` must validate the
+complete predecessor chain before returning a matching durable Item. Both
+`correct_async` and `reconcile_async` enter this shared check. The following
+matrix records the remediation scope before the production change:
+
+| State / precondition | Action / ordering | Observable result and invariant | Owner / verification |
+| --- | --- | --- | --- |
+| Matching correction over unsupported or malformed direct/deep ancestry | Retry through `CorrectionStore::correct` after ownership and identity checks | Typed invalid-predecessor or corrupt-history result; no Item, counter, lease, or terminal mutation | `stored_retry`; `exact_retry_validates_ancestry` |
+| Matching correction over broken links, cycles, or branches | Retry against the isolated corruption schema | Corrupt history; no durable mutation | `stored_retry`; `exact_retry_validates_ancestry` |
+| Valid exact match, including a later successor | Retry the original identity | Return the original Item and sequence without another append | `stored_retry`; existing `admission_matrix` and `concurrency_and_retry` |
+| Ancestors at or above the node/payload caps | Retry after the stored correction exists | Inclusive CA-06 limits; over-limit retries fail closed | `validate_ancestry`; extended `bounds_and_atomicity` using its existing fixtures |
+| Ambiguous write followed by read-only reconciliation | Reconcile a durable match with invalid ancestry | Same ancestry validation and typed error; never infer success from identity alone | `reconcile_async`; extended `commit_ack_loss_is_reconciled_to_the_committed_exact_match` |
+| Stored identity or content differs | Resolve identity before walking ancestry | Preserve `IdentityConflict` precedence | `stored_retry`; existing `admission_matrix` |
+
+Concurrency ordering remains covered by the existing four-way races; the
+defect adds no scheduler or retry state. Transport timing remains covered by
+the existing settlement budget and cancellation checks. Test-cost changes
+reduce repeated sampling of the same two-claim race from 50 to 12 rounds and
+remove the duplicate `prepared_insert_rejects_the_seventeenth_attempt_for_one_turn`
+case: `durable_sixteenth_attempt_is_followed_by_the_exact_attempt_limit_rejection`
+retains the same durable insert and typed overflow boundary, with distinct
+concurrent last-slot coverage retained. No production behavior or acceptance
+criterion is relaxed. Verification results are recorded with this revision's
+PR evidence; historical Pass rows are not a claim about this new revision.
+
+Verification on 2026-09-22: the focused regression first returned an incorrect
+`Ok(Item)` over a `usage` predecessor, then passed after the shared ancestry
+check was added. All six matrix rows pass: the full Rust suite has 486 passing
+tests across 25 binaries against disposable PostgreSQL 18, including the
+read-only reconciliation regression. `cargo fmt --all --check`, strict
+all-target/all-feature Clippy, 184 governance tests, repository governance
+validation, and `git diff --check` pass. Compilation was limited to three jobs
+and test execution serialized for this verification. The 50-to-12 reduction
+applies to repeated race sampling, not a measured claim of one-quarter CPU or
+memory for the entire suite. The retry cases reuse existing resource-boundary
+fixtures instead of generating additional large chains. No remaining gap was
+identified in the selected matrix; higher-load sampling is intentionally
+reduced. Commit/push SonarQube results and exact-revision review coverage are
+recorded separately in PR 15.
+
 ### Owner-authorized concurrency verification amendment — 2026-09-10
 
 The repository owner's direct instruction in task
