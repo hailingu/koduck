@@ -491,6 +491,55 @@ implementation exists and the declared production-boundary checks run.
 
 ## Supporting Notes [Optional]
 
+### Payload read/check race remediation — 2026-09-22
+
+The owner requested PR 15 review `5277829934`, against `c7bb18a`, be addressed
+in task `01a0c834-b8cb-7082-9103-5cd0e65eb3de`. This implements the existing
+CA-06 read cap without changing the accepted limits, error precedence,
+transaction isolation, or settlement budgets. PostgreSQL READ COMMITTED gives
+successive statements separate snapshots, so a size-only precheck cannot
+authorize a later unguarded payload fetch.
+
+| State / precondition | Action / ordering | Observable result and invariant | Owner / verification |
+| --- | --- | --- | --- |
+| Matching retry payload initially fits the cap | A second connection enlarges it after the precheck snapshot, before the body query | `ResourceLimit`; the fetching statement returns no oversized body; no correction or counter write | `stored_retry`; `payload_growth_between_statements_is_bounded` and SQL result assertions |
+| An otherwise valid ancestor initially fits the cap | A second connection enlarges a deep ancestor between summary and stream | `ResourceLimit`; recursive working rows retain metadata, and the body projection enforces the same-snapshot cap | `reject_malformed_ancestors`; the same regression with a fresh correction and an exact retry |
+| Read-only settlement observes a matching stored correction | Repeat both interleavings through `reconcile_async` | Same typed bound and no mutation as the write entry point | Shared retry/ancestry checks; the same regression |
+| Payload is within the inclusive cap, or restored after the race | Retry or read the bounded projection | Original successful result/bytes; no duplicate append | Existing exact-limit AC-5 fixtures and regression recovery checks |
+| Oversized payload is already visible to the precheck, or stored identity differs | Normal admission lookup | Existing cap and identity-conflict precedence preserved | Existing `bounds_and_atomicity` and `admission_matrix` |
+
+The race fixture uses a PostgreSQL advisory barrier in a fixture-only view,
+with two active connections and no repeated load sampling. The production SQL
+and transaction entry points execute unchanged by the fixture; no production
+pause hook or stronger isolation level is introduced. Existing budget,
+cancellation, and ownership checks remain the relevant controls. This change
+does not claim a consistent multi-statement snapshot for arbitrary changes to
+all history metadata; the selected invariant is the existing payload read cap
+at every body-fetching statement.
+
+Verification on 2026-09-22 first reproduced the defect: the deterministic race
+returned `CorruptHistory` instead of `ResourceLimit` because the old fetch
+transferred and decoded the enlarged body. After the fix, all five race cases
+passed, including direct assertions that the production SQL returns NULL for
+oversized bodies, unchanged durable state on rejection, and successful recovery
+after restoration. The focused test took 0.47 seconds. With three compilation
+jobs and serial test execution, the full `cargo test -p koduck-ai --all-targets
+--all-features` run passed 487 tests across 25 binaries against a disposable
+PostgreSQL database, including exact-limit, identity, ancestry, cancellation,
+and settlement-budget fixtures. `cargo fmt --all --check`, `cargo clippy -p
+koduck-ai --all-targets --all-features -- -D warnings`, all 184 governance tests,
+and governance validation passed. Exact commit/push SonarQube admission and
+revision-bound CI/review evidence are recorded in PR 15.
+
+Decomposition review of this remediation retained the 653-line correction
+module as one transaction/validation boundary: bounded retry fetching has its
+own helper, and the race fixture lives in a separate 312-line test module.
+Every affected executable unit is within 80 lines; the 65-line `stored_retry`
+retains one ordered identity-resolution flow. The longest new test helper is
+57 lines, and affected nesting remains below the review threshold. Cyclomatic
+complexity: `N/A — no configured complexity tool`; unit span and nesting were
+reviewed instead. No engineering exception or accepted-contract change applies.
+
 ### Exact-retry ancestry remediation and test-cost audit — 2026-09-22
 
 The owner requested remediation of PR 15 review `5163383239` and a test-cost

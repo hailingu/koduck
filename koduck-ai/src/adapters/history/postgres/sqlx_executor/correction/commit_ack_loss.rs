@@ -83,7 +83,8 @@ fn commit_ack_loss_is_reconciled_to_the_committed_exact_match() {
     runtime.block_on(pool.close());
 }
 
-fn connected_pool() -> (tokio::runtime::Runtime, PgPool) {
+/// Shares the migrated disposable database setup with correction read-race tests.
+pub(super) fn connected_pool() -> (tokio::runtime::Runtime, PgPool) {
     let Ok(database_url) = std::env::var("KODUCK_AI_TEST_DATABASE_URL") else {
         panic!(
             "KODUCK_AI_TEST_DATABASE_URL must point at the isolated migrated \
@@ -109,7 +110,8 @@ fn connected_pool() -> (tokio::runtime::Runtime, PgPool) {
     (runtime, pool)
 }
 
-fn correction_command(
+/// Builds the same lawful correction for the settlement and read-race fixtures.
+pub(super) fn correction_command(
     tenant: &TenantId,
     thread: ThreadId,
     turn: TurnId,
@@ -139,7 +141,8 @@ fn correct(
     .expect("the reconciliation resolves the committed exact match")
 }
 
-fn assert_durable_state(
+/// Verifies the fixture's durable row count and allocation counter together.
+pub(super) fn assert_durable_state(
     runtime: &tokio::runtime::Runtime,
     pool: &PgPool,
     tenant: &TenantId,
@@ -167,7 +170,13 @@ fn assert_durable_state(
     assert_eq!(counter, next_sequence, "the counter advanced exactly once");
 }
 
-async fn seed_completed_turn(pool: &PgPool, tenant: &TenantId, thread: &ThreadId, turn: &TurnId) {
+/// Seeds a completed owned Turn and one valid root for `PostgreSQL` regressions.
+pub(super) async fn seed_completed_turn(
+    pool: &PgPool,
+    tenant: &TenantId,
+    thread: &ThreadId,
+    turn: &TurnId,
+) {
     sqlx::query("INSERT INTO threads (tenant_id, subject_id, thread_id) VALUES ($1, $2, $3)")
         .bind(tenant.as_str())
         .bind("subject-a")
@@ -211,7 +220,8 @@ async fn seed_completed_turn(pool: &PgPool, tenant: &TenantId, thread: &ThreadId
     .expect("seed input item");
 }
 
-async fn seeded_input_id(
+/// Resolves the seeded root through the fixture's complete ownership scope.
+pub(super) async fn seeded_input_id(
     pool: &PgPool,
     tenant: &TenantId,
     thread: &ThreadId,

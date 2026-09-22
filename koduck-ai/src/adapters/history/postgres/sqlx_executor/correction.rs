@@ -27,6 +27,8 @@ use super::is_terminal_status;
 mod commit_ack_loss;
 #[cfg(test)]
 mod correction_settlement_budget;
+#[cfg(test)]
+mod payload_read_race;
 
 /// Test-only commit-ack-loss switch for the AC-4 deterministic
 /// commit-arm test; never read in production builds.
@@ -42,6 +44,13 @@ const MAX_ANCESTOR_NODES: usize = 4_096;
 
 /// The inclusive per-row stored-payload read cap (CA-06).
 const MAX_STORED_PAYLOAD_BYTES: i64 = 1_048_576;
+
+/// The size predicate and returned body share one statement snapshot (CA-06).
+/// An oversized row remains distinguishable from an absent row without sending
+/// its payload to the client.
+const STORED_PAYLOAD_SQL: &str = "SELECT \
+    CASE WHEN octet_length(payload)::BIGINT <= $3 THEN payload END \
+    FROM turn_items WHERE tenant_id = $1 AND item_id = $2";
 
 impl CorrectionStore for SqlxPostgresExecutor {
     fn correct(&self, command: CorrectionCommand) -> Result<Item, CorrectionError> {
@@ -235,13 +244,7 @@ async fn stored_retry(
     if payload_bytes > MAX_STORED_PAYLOAD_BYTES {
         return Err(resolved(CorrectionError::ResourceLimit));
     }
-    let payload_text: String =
-        sqlx::query_scalar("SELECT payload FROM turn_items WHERE tenant_id = $1 AND item_id = $2")
-            .bind(command.trust().tenant_id.as_str())
-            .bind(command.item_id().as_uuid())
-            .fetch_one(&mut **transaction)
-            .await
-            .map_err(classify_write_error)?;
+    let payload_text = bounded_retry_payload(transaction, command).await?;
     let payload = DurableItemCodec::decode(&item_type, &payload_text, corrects)
         .map_err(|_| resolved(CorrectionError::CorruptHistory))?;
     let ItemPayload::Correction(correction) = payload else {
@@ -267,6 +270,22 @@ async fn stored_retry(
         sequence,
         payload: ItemPayload::Correction(correction),
     }))
+}
+
+/// Enforces the cap again in the body-fetching statement, because READ COMMITTED
+/// permits the stored payload to grow after the metadata-only precheck (CA-06).
+async fn bounded_retry_payload(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    command: &CorrectionCommand,
+) -> Result<String, WriteFailure> {
+    sqlx::query_scalar::<_, Option<String>>(STORED_PAYLOAD_SQL)
+        .bind(command.trust().tenant_id.as_str())
+        .bind(command.item_id().as_uuid())
+        .bind(MAX_STORED_PAYLOAD_BYTES)
+        .fetch_one(&mut **transaction)
+        .await
+        .map_err(classify_write_error)?
+        .ok_or(resolved(CorrectionError::ResourceLimit))
 }
 
 /// Validates the stored retry's sequence state before its durable Item is
@@ -385,20 +404,17 @@ const SUMMARY_SQL: &str = "WITH RECURSIVE chain AS ( \
       GROUP BY c.item_id) bc)";
 
 /// The streamed bounded walk: the same depth-capped ancestry, one row per
-/// ancestor in walk order, carrying the payload body for strict decoding
-/// (ADR-0004 CA-03 and CA-06).
+/// ancestor in walk order. Recursion retains metadata; the final same-snapshot
+/// projection yields a bounded body or NULL for an oversized row (CA-03/CA-06).
 const STREAMED_ANCESTRY_SQL: &str = "WITH RECURSIVE chain AS ( \
-   SELECT i.item_id, i.corrects_item_id, i.item_type, i.payload, \
-          octet_length(i.payload)::BIGINT AS payload_bytes, 1 AS depth \
+   SELECT i.item_id, i.corrects_item_id, i.item_type, 1 AS depth \
    FROM turn_items i \
    WHERE i.tenant_id = $1 AND i.thread_id = $2 AND i.turn_id = $3 \
      AND i.item_id = $4 \
    UNION ALL \
-   SELECT n.item_id, n.corrects_item_id, n.item_type, n.payload, \
-          n.payload_bytes, c.depth + 1 \
+   SELECT n.item_id, n.corrects_item_id, n.item_type, c.depth + 1 \
    FROM chain c CROSS JOIN LATERAL ( \
-     SELECT n2.item_id, n2.corrects_item_id, n2.item_type, n2.payload, \
-            octet_length(n2.payload)::BIGINT AS payload_bytes \
+     SELECT n2.item_id, n2.corrects_item_id, n2.item_type \
      FROM turn_items n2 \
      WHERE n2.tenant_id = $1 AND n2.thread_id = $2 AND n2.turn_id = $3 \
        AND n2.item_id = c.corrects_item_id \
@@ -406,8 +422,11 @@ const STREAMED_ANCESTRY_SQL: &str = "WITH RECURSIVE chain AS ( \
    ) n \
    WHERE c.depth < 4097 \
  ) \
- SELECT item_id, corrects_item_id, item_type, payload FROM chain \
- ORDER BY depth";
+ SELECT c.item_id, c.corrects_item_id, c.item_type, \
+        CASE WHEN octet_length(i.payload)::BIGINT <= $5 THEN i.payload END \
+ FROM chain c JOIN turn_items i \
+   ON i.tenant_id = $1 AND i.thread_id = $2 AND i.turn_id = $3 \
+  AND i.item_id = c.item_id ORDER BY c.depth";
 
 /// Validates the bounded predecessor ancestry: cycle-free, strictly
 /// earlier, terminating at a supported message root, branch-free, and
@@ -513,26 +532,28 @@ async fn reject_invalid_summary(
 /// payload, one row at a time, so a malformed durable payload anywhere in
 /// the chain fails closed as corrupt durable state (CA-03) while admission
 /// never retains more than one decoded payload plus bounded identity and
-/// sequence metadata (CA-06). The summary has already rejected oversized
-/// stored payloads before any body is fetched, so every streamed row here
-/// is within the per-row read cap.
+/// sequence metadata (CA-06). The fetching statement independently enforces
+/// the read cap, including payload growth after the summary's snapshot.
 async fn reject_malformed_ancestors(
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     command: &CorrectionCommand,
 ) -> Result<(), WriteFailure> {
     // The streamed walk must also plan per execution with the bound scope
     // values; see the summary's cached-generic-plan note.
-    let rows = sqlx::query_as::<_, (Uuid, Option<Uuid>, String, String)>(STREAMED_ANCESTRY_SQL)
-        .bind(command.trust().tenant_id.as_str())
-        .bind(command.thread_id().as_uuid())
-        .bind(command.turn_id().as_uuid())
-        .bind(command.predecessor_item_id().as_uuid())
-        .persistent(false)
-        .fetch(&mut **transaction);
+    let rows =
+        sqlx::query_as::<_, (Uuid, Option<Uuid>, String, Option<String>)>(STREAMED_ANCESTRY_SQL)
+            .bind(command.trust().tenant_id.as_str())
+            .bind(command.thread_id().as_uuid())
+            .bind(command.turn_id().as_uuid())
+            .bind(command.predecessor_item_id().as_uuid())
+            .bind(MAX_STORED_PAYLOAD_BYTES)
+            .persistent(false)
+            .fetch(&mut **transaction);
     tokio::pin!(rows);
     let mut identities = HashSet::new();
     while let Some(row) = rows.next().await {
         let (item_id, corrects, item_type, payload) = row.map_err(classify_write_error)?;
+        let payload = payload.ok_or(resolved(CorrectionError::ResourceLimit))?;
         // A repeated identity inside the bounded walk can only be a cycle
         // (CA-03); the summary's order check also rejects cycles, so this
         // duplicate-identity check is belt-and-braces corruption defense.
