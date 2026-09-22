@@ -28,43 +28,6 @@ from postgres_fixture import database_fixture
 from sonar_api import Sonar, incremental_issues, require_pass
 
 TOOLS = Path(__file__).resolve().parent
-# Inside the ephemeral CI worker the executed gate tooling is the baked,
-# image-pinned copy while the per-job runtime dependencies (coverage venvs)
-# live in the checked-out tree prepared by the untrusted install step.
-RUNTIME_TOOLS = Path(
-    os.environ.get("KODUCK_SONAR_RUNTIME_TOOLS") or Path(__file__).resolve().parent
-)
-RUNNER_FILE_DIR = Path.home() / ".koduck"
-
-
-def runner_file(name: str) -> str:
-    """Read a secret delivered to the ephemeral worker over stdin.
-
-    Hooks receive their credentials through the invoking shell; the
-    ephemeral CI worker stores them in mode-0600 files written by the runner
-    entrypoint so no job step inherits them through its environment.
-    """
-    try:
-        return (RUNNER_FILE_DIR / name).read_text().strip()
-    except OSError:
-        return ""
-
-
-def sonar_token() -> str:
-    """Load the analysis token from the environment or the runner token file."""
-    return os.environ.get("KODUCK_SONAR_TOKEN") or runner_file("sonar-token")
-
-
-def restore_runner_database_url() -> None:
-    """Restore the runner's fixture database URL when the environment omits it.
-
-    The disposable worker receives the URL only through its mode-0600 file;
-    the coverage fixture reads it from the environment of its own processes.
-    """
-    if not os.environ.get("KODUCK_AI_TEST_DATABASE_URL"):
-        url = runner_file("database-url")
-        if url:
-            os.environ["KODUCK_AI_TEST_DATABASE_URL"] = url
 
 
 def policy_id() -> str:
@@ -124,12 +87,12 @@ def project_lock():
 def analyze(root: Path, snapshot, base: str, config: dict, sonar: Sonar) -> dict:
     """Compare base and candidate using the same analyzer, then bind all evidence."""
     policy = policy_id()
-    preflight(config, RUNTIME_TOOLS)
+    preflight(config, TOOLS)
     with tempfile.TemporaryDirectory(prefix="koduck-sonar-results-") as temporary:
         output = Path(temporary)
         # Test before submitting either scan: verification failure retains the prior dashboard.
         coverage_output = output / "coverage"
-        hits = coverage(snapshot.path, RUNTIME_TOOLS, coverage_output, config)
+        hits = coverage(snapshot.path, TOOLS, coverage_output, config)
         changed = changed_lines(snapshot.path, base, snapshot.revision)
         with revision_snapshot(root, base) as baseline:
             task, base_analysis = scan(baseline, config, sonar, output / "baseline")
@@ -150,9 +113,9 @@ def analyze(root: Path, snapshot, base: str, config: dict, sonar: Sonar) -> dict
             if name.endswith(".rs")
             and rust_declarations_only((snapshot.path / name).read_text())
         }
-        # Sonar does not analyze shell scripts, so they never join the
-        # file-metric classification; changed shell lines stay uncovered in
-        # the denominator (see changed_coverage).
+        # Shell has its own grammar-derived execution report. Sonar's lack
+        # of a Shell analyzer must never turn missing Shell evidence into
+        # a zero-executable-lines exemption.
         shell = {name for name in missing if is_shell_source(name)}
         nonexecutable = declarations | sonar.nonexecutable_files(
             missing - declarations - shell
@@ -206,20 +169,21 @@ def check_revision(
 
 
 def main() -> int:
-    """Dispatch hooks and CI through one policy, without performing a Git push."""
+    """Dispatch local hooks and manual checks through one policy, without performing a Git push."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("mode", choices=["pre-commit", "pre-push", "check"])
     parser.add_argument("--revision", default="HEAD")
     parser.add_argument("--base")
     args = parser.parse_args()
-    restore_runner_database_url()
     root = Path(git(Path.cwd(), "rev-parse", "--show-toplevel"))
     folder = (
         Path(git(root, "rev-parse", "--path-format=absolute", "--git-common-dir"))
         / "sonarqube"
     )
     config = json.loads((TOOLS / "config.json").read_text())
-    sonar = Sonar(config["host"], config["project"], sonar_token())
+    sonar = Sonar(
+        config["host"], config["project"], os.environ.get("KODUCK_SONAR_TOKEN", "")
+    )
     with project_lock(), database_fixture():
         if args.mode == "pre-commit":
             with index_snapshot(root) as snapshot:

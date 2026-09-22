@@ -122,7 +122,7 @@ def changed_lines(root: Path, base: str, revision: str) -> dict[str, set[int]]:
 
 
 def is_shell_source(name: str) -> bool:
-    """Recognize executable shell paths the coverage tooling cannot instrument."""
+    """Recognize maintained Shell paths, including extensionless Git hooks."""
     return name.endswith(".sh") or name.startswith(".githooks/")
 
 

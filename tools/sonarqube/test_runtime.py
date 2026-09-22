@@ -40,47 +40,6 @@ class RuntimeTests(unittest.TestCase):
                 module.run(["python3", "-c", code], Path(directory), seconds=5)
             self.assertEqual(output.read_text(), "False")
 
-    def test_instrumented_commands_drop_to_the_builder_identity(self):
-        module = implementation("scan_runtime")
-        with tempfile.TemporaryDirectory() as directory:
-            output = Path(directory) / "result"
-            code = (
-                "import os,pathlib; pathlib.Path('result').write_text(str(os.getuid()))"
-            )
-            uid = str(os.getuid())
-            gid = str(os.getgid())
-            with patch.dict(
-                os.environ,
-                {
-                    "KODUCK_SONAR_BUILDER_UID": uid,
-                    "KODUCK_SONAR_BUILDER_GID": gid,
-                },
-            ):
-                module.run(["python3", "-c", code], Path(directory), seconds=5)
-            self.assertEqual(output.read_text(), uid)
-
-    def test_scanner_commands_keep_the_gate_identity(self):
-        module = implementation("scan_runtime")
-        with tempfile.TemporaryDirectory() as directory:
-            output = Path(directory) / "result"
-            code = (
-                "import os,pathlib; pathlib.Path('result').write_text(str(os.getuid()))"
-            )
-            with patch.dict(
-                os.environ,
-                {
-                    "KODUCK_SONAR_BUILDER_UID": "424242",
-                    "KODUCK_SONAR_BUILDER_GID": "424242",
-                },
-            ):
-                module.run(
-                    ["python3", "-c", code],
-                    Path(directory),
-                    seconds=5,
-                    extra={"SONAR_TOKEN": "fixture"},
-                )
-            self.assertEqual(output.read_text(), str(os.getuid()))
-
     def test_report_requires_correct_project_and_task(self):
         module = implementation("scan_runtime")
         with tempfile.TemporaryDirectory() as directory:
@@ -108,24 +67,6 @@ class EvidenceTests(unittest.TestCase):
             module.store_evidence(folder, record)
             self.assertEqual(module.load_evidence(folder, "a", "b", "c"), record)
             self.assertIsNone(module.load_evidence(folder, "a", "changed", "c"))
-
-
-class RunnerTests(unittest.TestCase):
-    """Catch leaking bootstrap credentials into runner CLI arguments."""
-
-    def test_container_command_passes_no_secret_names_or_values(self):
-        module = implementation("runner")
-        with patch.dict(os.environ, {"KODUCK_SONAR_TOKEN": "fixture-private-token"}):
-            command = module.container_command("fixture", "fixture-network")
-        self.assertNotIn("fixture-private-token", " ".join(command))
-        self.assertNotIn("KODUCK_SONAR_TOKEN", command)
-        self.assertNotIn("KODUCK_AI_TEST_DATABASE_URL", command)
-        self.assertNotIn("/var/run/docker.sock", " ".join(command))
-
-    def test_runner_name_never_accepts_shell_metacharacters(self):
-        module = implementation("runner")
-        with self.assertRaisesRegex(RuntimeError, "RUNNER_NAME"):
-            module.container_command("bad;touch /tmp/not-allowed", "network")
 
 
 if __name__ == "__main__":

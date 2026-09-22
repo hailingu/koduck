@@ -1,12 +1,10 @@
 """Behavioral regression checks for immutable Git and Sonar push admission."""
 
 import importlib
-import os
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
 
 
 def implementation(name):
@@ -136,40 +134,25 @@ class AdmissionTests(unittest.TestCase):
             module.changed_coverage(changed, {})
         self.assertEqual(module.changed_coverage(changed, {}, {"src/lib.rs"}), (0, 0))
 
-    def test_changed_shell_lines_stay_in_the_denominator_as_uncovered(self):
+    def test_missing_shell_report_is_not_a_zero_hit_report(self):
         module = implementation("coverage_report")
         changed = {".githooks/pre-push": {5, 6, 7}}
-        self.assertEqual(
-            module.changed_coverage(changed, {}),
-            (0, 3),
-            "a script-only change must produce coverable lines, never zero",
-        )
+        with self.assertRaisesRegex(RuntimeError, "COVERAGE_MISSING"):
+            module.changed_coverage(changed, {})
         mixed = {**changed, "src/lib.rs": {2}}
         self.assertEqual(
-            module.changed_coverage(mixed, {"src/lib.rs": {2: True}}), (1, 4)
+            module.changed_coverage(
+                mixed,
+                {"src/lib.rs": {2: True}, ".githooks/pre-push": {5: True, 7: False}},
+            ),
+            (2, 3),
         )
         snapshot = implementation("git_snapshot")
         self.assertTrue(snapshot.is_production_source("scripts/sonar-quality-gate.sh"))
         self.assertTrue(snapshot.is_production_source("tools/sonarqube/install.sh"))
         self.assertFalse(snapshot.is_production_source("README.md"))
 
-    def test_runner_files_restore_credentials_without_job_environment(self):
-        module = implementation("gate")
-        with tempfile.TemporaryDirectory() as directory:
-            home = Path(directory)
-            (home / ".koduck").mkdir()
-            (home / ".koduck" / "database-url").write_text("fixture-url\n")
-            (home / ".koduck" / "sonar-token").write_text("fixture-token\n")
-            with patch.dict(os.environ, {}, clear=False):
-                os.environ.pop("KODUCK_AI_TEST_DATABASE_URL", None)
-                with patch.object(module, "RUNNER_FILE_DIR", home / ".koduck"):
-                    self.assertEqual(module.sonar_token(), "fixture-token")
-                    module.restore_runner_database_url()
-                    self.assertEqual(
-                        os.environ["KODUCK_AI_TEST_DATABASE_URL"], "fixture-url"
-                    )
-
-    def test_script_only_changes_cannot_satisfy_the_coverage_gate(self):
+    def test_uncovered_executable_shell_lines_still_block_the_gate(self):
         module = implementation("sonar_api")
         record = {
             "tree": "t",

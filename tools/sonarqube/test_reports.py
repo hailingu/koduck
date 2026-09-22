@@ -53,6 +53,10 @@ class ReportTests(unittest.TestCase):
                     report.write_text(
                         '<coverage><packages><package><classes><class filename="tools/sonarqube/gate.py"><lines><line number="1" hits="1"/></lines></class></classes></package></packages></coverage>'
                     )
+                if args[-1].endswith("shell.lcov"):
+                    Path(args[-1]).write_text(
+                        "SF:.githooks/pre-push\nDA:2,1\nend_of_record\n"
+                    )
                 return ""
 
             with patch.object(scan_runtime, "run", process):
@@ -65,12 +69,13 @@ class ReportTests(unittest.TestCase):
                     "src/lib.rs",
                     "tools/governance-validator/validate.mjs",
                     "tools/sonarqube/gate.py",
+                    ".githooks/pre-push",
                 },
             )
             document = ET.parse(root / "reports/coverage.xml")
             self.assertEqual(document.getroot().attrib, {"version": "1"})
             self.assertEqual(
-                len(document.findall(".//lineToCover[@covered='true']")), 3
+                len(document.findall(".//lineToCover[@covered='true']")), 4
             )
 
 

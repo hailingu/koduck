@@ -28,6 +28,7 @@ jobs:
       - run: npm test --prefix tools/governance-validator
       - run: npm run validate --prefix tools/governance-validator
       - run: python3 -m pip install ruff==0.15.4
+      - run: python3 -m pip install -r tools/sonarqube/requirements.txt
       - run: ruff check tools/sonarqube
       - run: ruff format --check tools/sonarqube
       - run: python3 -m unittest discover -s tools/sonarqube -p 'test_*.py'

@@ -7,6 +7,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from shell_coverage import run_shell
+
 
 class HookTests(unittest.TestCase):
     """Catch hook bypasses, dropped ref stdin and wrong-project token selection."""
@@ -15,15 +17,16 @@ class HookTests(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
-        original = Path(__file__).resolve().parents[2]
+        self.original = Path(__file__).resolve().parents[2]
         for name in [
             ".githooks/pre-commit",
             ".githooks/pre-push",
             "scripts/sonar-quality-gate.sh",
+            "tools/sonarqube/install.sh",
         ]:
             target = self.root / name
             target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(original / name, target)
+            shutil.copyfile(self.original / name, target)
         subprocess.run(["git", "init", "-q", str(self.root)], check=True)
         (self.root / "bin").mkdir()
         python = self.root / "bin/python3"
@@ -42,13 +45,13 @@ class HookTests(unittest.TestCase):
 
     def test_both_hooks_propagate_gate_failure_and_push_stdin(self):
         for hook in ["pre-commit", "pre-push"]:
-            result = subprocess.run(
-                ["sh", ".githooks/" + hook],
-                cwd=self.root,
-                env=self.env,
+            result = run_shell(
+                self.root / ".githooks" / hook,
+                [],
+                self.root,
+                self.env,
+                source_root=self.original,
                 input="ref-update\n",
-                text=True,
-                capture_output=True,
             )
             self.assertEqual(result.returncode, 23)
             self.assertEqual((self.root / "args").read_text().splitlines()[-1], hook)
@@ -59,19 +62,71 @@ class HookTests(unittest.TestCase):
     def test_missing_export_loads_koduck_token_from_zshrc(self):
         self.env.pop("KODUCK_SONAR_TOKEN")
         (self.root / ".zshrc").write_text("export KODUCK_SONAR_TOKEN=fixture-koduck\n")
-        result = subprocess.run(
-            ["sh", "scripts/sonar-quality-gate.sh", "check", "--revision", "HEAD"],
-            cwd=self.root,
-            env=self.env,
-            input="",
-            text=True,
-            capture_output=True,
+        result = run_shell(
+            self.root / "scripts/sonar-quality-gate.sh",
+            ["check", "--revision", "HEAD"],
+            self.root,
+            self.env,
+            source_root=self.original,
         )
         self.assertEqual(result.returncode, 23, result.stderr)
         self.assertEqual(
             (self.root / "args").read_text().splitlines()[-3:],
             ["check", "--revision", "HEAD"],
         )
+
+    def test_entry_point_defaults_to_manual_check(self):
+        result = run_shell(
+            self.root / "scripts/sonar-quality-gate.sh",
+            [],
+            self.root,
+            self.env,
+            source_root=self.original,
+        )
+        self.assertEqual(result.returncode, 23)
+        self.assertEqual((self.root / "args").read_text().splitlines()[-1], "check")
+
+    def test_installation_activates_hooks_and_preserves_conflicting_hooks(self):
+        # Dependency commands are fixture processes; Git configuration and the
+        # versioned installer execute for real, with no host installation.
+        python = self.root / "bin/python3"
+        python.write_text(
+            '#!/bin/sh\nmkdir -p "$3/bin"\n'
+            'printf "#!/bin/sh\\nexit 0\\n" > "$3/bin/python"\n'
+            'chmod +x "$3/bin/python"\n'
+        )
+        npm = self.root / "bin/npm"
+        npm.write_text("#!/bin/sh\nexit 0\n")
+        npm.chmod(0o755)
+        script = self.root / "tools/sonarqube/install.sh"
+        result = run_shell(script, [], self.root, self.env, source_root=self.original)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        configured = subprocess.check_output(
+            ["git", "config", "--local", "core.hooksPath"],
+            cwd=self.root,
+            text=True,
+        ).strip()
+        self.assertEqual(configured, ".githooks")
+        self.assertTrue(os.access(self.root / ".githooks/pre-push", os.X_OK))
+        result = run_shell(script, [], self.root, self.env, source_root=self.original)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        subprocess.run(
+            ["git", "config", "--local", "core.hooksPath", "existing-hooks"],
+            cwd=self.root,
+            check=True,
+        )
+        result = run_shell(script, [], self.root, self.env, source_root=self.original)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("SONAR_EXISTING_HOOKS", result.stderr)
+        subprocess.run(
+            ["git", "config", "--local", "--unset", "core.hooksPath"],
+            cwd=self.root,
+            check=True,
+        )
+        (self.root / ".git/hooks/pre-commit").write_text("# existing hook\n")
+        result = run_shell(script, [], self.root, self.env, source_root=self.original)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("SONAR_EXISTING_HOOKS", result.stderr)
 
 
 if __name__ == "__main__":

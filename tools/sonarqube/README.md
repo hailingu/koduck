@@ -17,10 +17,13 @@ coverage.py tooling and sets the repository-local `core.hooksPath=.githooks`.
 It refuses to overwrite another hook setup. Existing worktrees share Git config;
 each worktree must contain this versioned hook directory and the installed tools.
 
-Prerequisites are Python 3.10+, Node 22, Rust 1.95 with `llvm-tools-preview`,
+Prerequisites are Python 3.10+, Bash 5+ on `PATH`, Node 22, Rust 1.95 with `llvm-tools-preview`,
 `cargo-llvm-cov 0.9.0`, SonarScanner CLI `7.3.0.5189`, and a reachable local
 SonarQube supporting Rust, JavaScript and Python (verified on Community Build
 `26.8.0.126808`, Rust analyzer `1.8.0.3284`).
+On macOS, `brew install bash` supplies Bash 5+ without changing the login shell.
+The installer pins `tree-sitter 0.25.2` and `tree-sitter-bash 0.25.1` in the
+verification virtual environment; CI installs the same requirements.
 
 The shared entry point `scripts/sonar-quality-gate.sh` follows the existing
 PlotWeave gate structure. It uses `KODUCK_SONAR_TOKEN` from the calling shell,
@@ -101,6 +104,19 @@ tests with coverage.py. Coverage is converted to Sonar generic XML and imported
 through `sonar.coverageReportPaths`. Compilation, dependencies, test state and
 reports live in disposable checkouts and are removed after evidence is captured.
 
+Shell tests use `shell_coverage.run_shell`: native `sh` for normal regression
+runs, and Bash DEBUG probes when `KODUCK_SHELL_COVERAGE` names the current
+run's report directory. The pinned Bash grammar identifies command locations
+in every tracked `.sh` file and `.githooks/` script, including unexecuted files.
+Comments, delimiters, and argument/heredoc data are not executable commands.
+Fixture copies must match the scanned source bytes before and after execution;
+their reports carry source hashes checked again during import. Probes persist
+only locations and syntax-token hashes, never command text or arguments. This
+also distinguishes multiline substitutions whose commands Bash reports at one
+closing line. Ambiguous or unmatched commands remain uncovered. Missing reports,
+invalid source syntax, and stale source hashes fail closed. The resulting Shell
+LCOV joins the same Git-diff coverage calculation; the 80% threshold is unchanged.
+
 Each command has a timeout; scanner submission is bounded to 600 seconds and
 compute settlement to 300 seconds. Cancelled subprocess groups are killed and
 reaped. Private test/scanner output is not echoed. Failure prints an owned
@@ -132,7 +148,34 @@ Sonar compliance if someone bypasses those hooks.
 
 ## Verification
 
+### Shell coverage remediation — 2026-09-22
+
+The owner requested PR 15 review `5276305522` be fixed and the existing
+uncommitted runner cleanup be included, in task
+`01a0c834-b8cb-7082-9103-5cd0e65eb3de`. The cleanup completes the recorded
+local-only workflow; local subprocess token scrubbing remains active.
+
+| State / precondition | Action / entry point | Observable outcome and invariant | Verification |
+| --- | --- | --- | --- |
+| A maintained script with two branches | Execute one, then both, through the Shell test runner | Only executed commands receive hits; under-80% coverage rejects and sufficient coverage can pass | `test_tested_shell_only_change_can_pass_and_unexecuted_branch_cannot` |
+| Untested executable script or comment-only script | Collect all tracked Shell sources | Untested commands remain uncovered; comments and blank lines contribute no executable lines | `test_unexecuted_and_comment_only_scripts_have_distinct_reports` |
+| Source changes after tracing | Import the saved trace | Reject source-hash mismatch; never credit stale source | `test_changed_source_invalidates_recorded_hits` |
+| Shell report absent | Compute changed coverage | Reject missing evidence rather than invent zero hits or exempt the file | `test_missing_shell_report_is_not_a_zero_hit_report` |
+| Nested hooks, fallback and failure | Execute versioned entry points with fixture subprocesses | Preserve exit status, arguments and stdin; trace only locations, never command text or tokens | Hook process tests and Shell trace regressions |
+
+The shared owners are Shell trace collection, `python_coverage`, and
+`changed_coverage`; commit and push consume the same source-bound report.
+Tests remain serial. No production concurrency state changes, and no additional
+large-data or load-test dimension applies to this bounded parser/tracer change.
+
+Verification on 2026-09-22 passed all 40 Python tests in both native and
+instrumented runs, all 184 governance tests, governance validation, Ruff checks,
+and the whitespace check. The instrumented hook and installer fixtures covered
+all 28 executable lines across the four maintained Shell entry points. Exact
+commit/push admission and revision-bound CI/review results are recorded in PR 15.
+
 ```sh
+export PATH="$PWD/tools/sonarqube/.venv/bin:$PATH"
 python3 -m unittest discover -s tools/sonarqube -p 'test_*.py'
 ruff check tools/sonarqube
 ruff format --check tools/sonarqube

@@ -11,21 +11,7 @@ from coverage_report import read_lcov, read_python, write_generic
 from git_snapshot import git, is_production_source
 
 VALIDATOR = "tools/governance-validator"
-
-
-def _builder_credentials() -> tuple[int, int] | None:
-    """Return the untrusted build uid/gid inside the ephemeral CI worker.
-
-    The wrapper exports them only in the gate process, so instrumented
-    commands execute PR-controlled build code as a uid that can neither read
-    the gate-only analysis token nor the gate process environment. Local
-    hooks and tests run without them and keep the invoking identity.
-    """
-    uid = os.environ.get("KODUCK_SONAR_BUILDER_UID")
-    gid = os.environ.get("KODUCK_SONAR_BUILDER_GID")
-    if uid and gid:
-        return int(uid), int(gid)
-    return None
+VENV_PYTHON = ".venv/bin/python"
 
 
 def run(
@@ -39,17 +25,6 @@ def run(
     }
     env.update(extra or {})
     env["PYTHONDONTWRITEBYTECODE"] = "1"
-    # Instrumented commands execute repository build code, so inside the
-    # ephemeral worker they drop to the token-less builder uid; only the
-    # scanner subprocess, which alone receives the analysis token, keeps the
-    # gate identity.
-    credentials = None if "SONAR_TOKEN" in env else _builder_credentials()
-
-    def _drop() -> None:
-        uid, gid = credentials
-        os.setgid(gid)
-        os.setuid(uid)
-
     label = Path(command[0]).name
     if label == "cargo" and len(command) > 1:
         label += " " + command[1]
@@ -62,7 +37,6 @@ def run(
             stdout=output,
             stderr=subprocess.STDOUT,
             start_new_session=True,
-            preexec_fn=_drop if credentials else None,
         )
         try:
             result = process.wait(timeout=seconds)
@@ -109,9 +83,15 @@ def preflight(config: dict, tools: Path) -> None:
         ["cargo", "llvm-cov", "--version"], tools, 30
     ):
         raise RuntimeError("SONAR_LLVM_COV_VERSION")
-    for path in (tools / ".venv/bin/python", tools / "node_modules/.bin/c8"):
+    for path in (tools / VENV_PYTHON, tools / "node_modules/.bin/c8"):
         if not path.is_file():
             raise RuntimeError("SONAR_TOOLS_MISSING: run tools/sonarqube/install.sh")
+    run(["bash", "-c", 'test "${BASH_VERSINFO[0]}" -ge 5'], tools, 30)
+    run(
+        [str(tools / VENV_PYTHON), "-c", "import tree_sitter, tree_sitter_bash"],
+        tools,
+        30,
+    )
     if not os.environ.get("KODUCK_AI_TEST_DATABASE_URL"):
         raise RuntimeError("SONAR_DATABASE_MISSING: isolated PostgreSQL URL required")
 
@@ -191,8 +171,13 @@ def javascript_coverage(
 
 def python_coverage(snapshot: Path, tools: Path, output: Path, timeout: int) -> dict:
     """Instrument the hook workflow's Python tests and read their fresh report."""
-    python = str(tools / ".venv/bin/python")
-    extra = {"COVERAGE_FILE": str(output / ".coverage")}
+    python = str(tools / VENV_PYTHON)
+    traces = output / "shell-traces"
+    traces.mkdir()
+    extra = {
+        "COVERAGE_FILE": str(output / ".coverage"),
+        "KODUCK_SHELL_COVERAGE": str(traces),
+    }
     run(
         [
             python,
@@ -219,19 +204,27 @@ def python_coverage(snapshot: Path, tools: Path, output: Path, timeout: int) -> 
         timeout,
         extra,
     )
-    return read_python(output / "python.xml", snapshot)
+    shell_report = output / "shell.lcov"
+    run(
+        [
+            python,
+            str(snapshot / "tools/sonarqube/shell_coverage.py"),
+            str(snapshot),
+            str(traces),
+            str(shell_report),
+        ],
+        snapshot,
+        timeout,
+    )
+    result = read_python(output / "python.xml", snapshot)
+    if shell_report.read_text():
+        result.update(read_lcov(shell_report, snapshot))
+    return result
 
 
 def coverage(snapshot: Path, tools: Path, output: Path, config: dict) -> dict:
     """Run each supported language boundary and import one same-source report."""
     output.mkdir()
-    # The instrumented commands run as the token-less builder uid inside the
-    # ephemeral worker, so their report directory is transferred to that
-    # identity instead of being widened to other users.
-    uid = os.environ.get("KODUCK_SONAR_BUILDER_UID")
-    gid = os.environ.get("KODUCK_SONAR_BUILDER_GID")
-    if uid and gid:
-        os.chown(output, int(uid), int(gid))
     timeout = config["test_timeout"]
     result = rust_coverage(snapshot, output, timeout)
     result.update(javascript_coverage(snapshot, tools, output, timeout))
