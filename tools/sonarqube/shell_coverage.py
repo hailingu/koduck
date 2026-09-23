@@ -13,6 +13,9 @@ from pathlib import Path
 
 from git_snapshot import git, is_production_source, is_shell_source
 
+_GATE_ENTRYPOINT = "scripts/sonar-quality-gate.sh"
+_HOOKS_CONFIG_KEY = "core.hooksPath"
+
 
 def sources(root: Path) -> dict[str, bytes]:
     """Inventory maintained Shell files, including scripts no test executes."""
@@ -120,7 +123,9 @@ def record_probe() -> None:
         )
 
 
-def trace_environment(directory: Path, environment: dict) -> dict:
+def trace_environment(
+    directory: Path, environment: dict, probe_python: Path | None = None
+) -> dict:
     """Trace locations and signatures without logging commands or passing them in argv."""
     bash = shutil.which("bash")
     if not bash:
@@ -151,7 +156,7 @@ def trace_environment(directory: Path, environment: dict) -> dict:
         "PATH": str(binaries) + os.pathsep + environment.get("PATH", os.defpath),
         "BASH_ENV": str(helper),
         "KODUCK_SHELL_TRACE": str(directory / "trace"),
-        "KODUCK_TRACE_PYTHON": sys.executable,
+        "KODUCK_TRACE_PYTHON": str(probe_python or sys.executable),
         "KODUCK_TRACE_HELPER": str(Path(__file__).resolve()),
     }
 
@@ -192,6 +197,7 @@ def run_shell(
     *,
     source_root: Path,
     report_directory: Path | None = None,
+    probe_python: Path | None = None,
     input: str = "",
 ) -> subprocess.CompletedProcess:
     """Run a native Shell test normally, or trace its exact fixture copies for coverage."""
@@ -220,7 +226,7 @@ def run_shell(
         result = subprocess.run(
             command,
             cwd=cwd,
-            env=trace_environment(directory, environment),
+            env=trace_environment(directory, environment, probe_python),
             input=input,
             text=True,
             capture_output=True,
@@ -229,6 +235,140 @@ def run_shell(
         )
         save_trace(directory, Path(location), cwd, bindings)
     return result
+
+
+def _verify_hook_entrypoints(execute, fixture: Path) -> None:
+    """Check failure propagation, ref stdin, and token isolation for both hooks."""
+    for hook in ("pre-commit", "pre-push"):
+        result = execute(".githooks/" + hook, [], "ref-update\n")
+        if (
+            result.returncode != 23
+            or (fixture / "args").read_text().splitlines()[-1:] != [hook]
+            or (fixture / "stdin").read_text() != "ref-update\n"
+            or "fixture-koduck" in result.stdout + result.stderr
+        ):
+            raise RuntimeError("SONAR_SHELL_VERIFICATION_FAILED: hook")
+
+
+def _verify_gate_entrypoint(execute, fixture: Path, environment: dict) -> None:
+    """Check the manual default and missing-export fallback without a real scan."""
+    result = execute(_GATE_ENTRYPOINT, [])
+    if result.returncode != 23 or (fixture / "args").read_text().splitlines()[-1:] != [
+        "check"
+    ]:
+        raise RuntimeError("SONAR_SHELL_VERIFICATION_FAILED: entrypoint")
+    if shutil.which("zsh"):
+        environment.pop("KODUCK_SONAR_TOKEN")
+        (fixture / ".zshrc").write_text("export KODUCK_SONAR_TOKEN=fixture-koduck\n")
+        result = execute(_GATE_ENTRYPOINT, ["check", "--revision", "HEAD"])
+        if result.returncode != 23 or (fixture / "args").read_text().splitlines()[
+            -3:
+        ] != ["check", "--revision", "HEAD"]:
+            raise RuntimeError("SONAR_SHELL_VERIFICATION_FAILED: fallback")
+        environment["KODUCK_SONAR_TOKEN"] = "fixture-koduck"
+
+
+def _verify_installation(execute, fixture: Path, binaries: Path) -> None:
+    """Check idempotent local hook setup and refusal to replace another hook."""
+    python = binaries / "python3"
+    python.write_text(
+        '#!/bin/sh\nmkdir -p "$3/bin"\n'
+        'printf "#!/bin/sh\\nexit 0\\n" > "$3/bin/python"\n'
+        'chmod +x "$3/bin/python"\n'
+    )
+    npm = binaries / "npm"
+    npm.write_text("#!/bin/sh\nexit 0\n")
+    npm.chmod(0o755)
+    installer = "tools/sonarqube/install.sh"
+    for _ in range(2):
+        result = execute(installer, [])
+        configured = subprocess.run(
+            ["git", "config", "--local", "--get", _HOOKS_CONFIG_KEY],
+            cwd=fixture,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if result.returncode or configured.stdout.strip() != ".githooks":
+            raise RuntimeError("SONAR_SHELL_VERIFICATION_FAILED: install")
+    subprocess.run(
+        ["git", "config", "--local", _HOOKS_CONFIG_KEY, "existing-hooks"],
+        cwd=fixture,
+        check=True,
+    )
+    result = execute(installer, [])
+    if result.returncode != 1 or "SONAR_EXISTING_HOOKS" not in result.stderr:
+        raise RuntimeError("SONAR_SHELL_VERIFICATION_FAILED: conflict")
+    subprocess.run(
+        ["git", "config", "--local", "--unset", _HOOKS_CONFIG_KEY],
+        cwd=fixture,
+        check=True,
+    )
+    (fixture / ".git/hooks/pre-commit").write_text("# existing hook\n")
+    result = execute(installer, [])
+    if result.returncode != 1 or "SONAR_EXISTING_HOOKS" not in result.stderr:
+        raise RuntimeError("SONAR_SHELL_VERIFICATION_FAILED: existing hook")
+
+
+def verify_shell_entrypoints(root: Path, reports: Path, probe_python: Path) -> None:
+    """Produce gate traces from scanner-owned fixtures after candidate tests exit."""
+    names = (
+        ".githooks/pre-commit",
+        ".githooks/pre-push",
+        _GATE_ENTRYPOINT,
+        "tools/sonarqube/install.sh",
+    )
+    inventory = sources(root)
+    if any(name not in inventory for name in names):
+        raise RuntimeError("SONAR_SHELL_ENTRYPOINT_MISSING")
+    with tempfile.TemporaryDirectory(prefix="koduck-shell-verification-") as temporary:
+        fixture = Path(temporary)
+        for name in names:
+            target = fixture / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(inventory[name])
+        subprocess.run(["git", "init", "-q", str(fixture)], check=True)
+        binaries = fixture / "bin"
+        binaries.mkdir()
+        python = binaries / "python3"
+        python.write_text(
+            '#!/bin/sh\nprintf "%s\\n" "$@" > "$FIXTURE_ROOT/args"\n'
+            'cat > "$FIXTURE_ROOT/stdin"\n'
+            '[ "$KODUCK_SONAR_TOKEN" = fixture-koduck ] || exit 24\nexit 23\n'
+        )
+        python.chmod(0o755)
+        environment = {
+            **{
+                key: os.environ[key]
+                for key in ("TMPDIR", "DEVELOPER_DIR")
+                if key in os.environ
+            },
+            "PATH": str(binaries) + os.pathsep + os.environ.get("PATH", os.defpath),
+            "HOME": str(fixture),
+            "ZDOTDIR": str(fixture),
+            "FIXTURE_ROOT": str(fixture),
+            "KODUCK_SONAR_TOKEN": "fixture-koduck",
+            "SONAR_TOKEN": "fixture-other-project",
+        }
+
+        def execute(
+            name: str, arguments: list[str], input: str = ""
+        ) -> subprocess.CompletedProcess:
+            """Trace one exact fixture copy and keep its output private."""
+            return run_shell(
+                fixture / name,
+                arguments,
+                fixture,
+                environment,
+                source_root=root,
+                report_directory=reports,
+                probe_python=probe_python,
+                input=input,
+            )
+
+        _verify_hook_entrypoints(execute, fixture)
+        _verify_gate_entrypoint(execute, fixture, environment)
+        _verify_installation(execute, fixture, binaries)
 
 
 def matching_lines(

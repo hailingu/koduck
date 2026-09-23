@@ -9,6 +9,7 @@ from pathlib import Path
 
 from coverage_report import read_lcov, read_python, write_generic
 from git_snapshot import git, is_production_source
+from shell_coverage import verify_shell_entrypoints
 
 VALIDATOR = "tools/governance-validator"
 VENV_PYTHON = ".venv/bin/python"
@@ -21,7 +22,8 @@ def run(
     env = {
         k: v
         for k, v in os.environ.items()
-        if not k.startswith("GIT_") and k not in {"SONAR_TOKEN", "KODUCK_SONAR_TOKEN"}
+        if not k.startswith("GIT_")
+        and k not in {"SONAR_TOKEN", "KODUCK_SONAR_TOKEN", "KODUCK_SHELL_COVERAGE"}
     }
     env.update(extra or {})
     env["PYTHONDONTWRITEBYTECODE"] = "1"
@@ -172,12 +174,7 @@ def javascript_coverage(
 def python_coverage(snapshot: Path, tools: Path, output: Path, timeout: int) -> dict:
     """Instrument the hook workflow's Python tests and read their fresh report."""
     python = str(tools / VENV_PYTHON)
-    traces = output / "shell-traces"
-    traces.mkdir()
-    extra = {
-        "COVERAGE_FILE": str(output / ".coverage"),
-        "KODUCK_SHELL_COVERAGE": str(traces),
-    }
+    extra = {"COVERAGE_FILE": str(output / ".coverage")}
     run(
         [
             python,
@@ -205,17 +202,20 @@ def python_coverage(snapshot: Path, tools: Path, output: Path, timeout: int) -> 
         extra,
     )
     shell_report = output / "shell.lcov"
-    run(
-        [
-            python,
-            str(snapshot / "tools/sonarqube/shell_coverage.py"),
-            str(snapshot),
-            str(traces),
-            str(shell_report),
-        ],
-        snapshot,
-        timeout,
-    )
+    with tempfile.TemporaryDirectory(prefix="koduck-shell-evidence-") as temporary:
+        traces = Path(temporary)
+        verify_shell_entrypoints(snapshot, traces, Path(python))
+        run(
+            [
+                python,
+                str(snapshot / "tools/sonarqube/shell_coverage.py"),
+                str(snapshot),
+                str(traces),
+                str(shell_report),
+            ],
+            snapshot,
+            timeout,
+        )
     result = read_python(output / "python.xml", snapshot)
     if shell_report.read_text():
         result.update(read_lcov(shell_report, snapshot))
