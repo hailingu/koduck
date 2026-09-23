@@ -7,7 +7,19 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from shell_coverage import run_shell
+
+def run_shell(script, arguments, cwd, environment, *, input=""):
+    """Execute a copied hook fixture without invoking the live Sonar gate."""
+    return subprocess.run(
+        ["sh", str(script), *arguments],
+        cwd=cwd,
+        env=environment,
+        input=input,
+        text=True,
+        capture_output=True,
+        timeout=15,
+        check=False,
+    )
 
 
 class HookTests(unittest.TestCase):
@@ -50,7 +62,6 @@ class HookTests(unittest.TestCase):
                 [],
                 self.root,
                 self.env,
-                source_root=self.original,
                 input="ref-update\n",
             )
             self.assertEqual(result.returncode, 23)
@@ -67,7 +78,6 @@ class HookTests(unittest.TestCase):
             ["check", "--revision", "HEAD"],
             self.root,
             self.env,
-            source_root=self.original,
         )
         self.assertEqual(result.returncode, 23, result.stderr)
         self.assertEqual(
@@ -81,25 +91,14 @@ class HookTests(unittest.TestCase):
             [],
             self.root,
             self.env,
-            source_root=self.original,
         )
         self.assertEqual(result.returncode, 23)
         self.assertEqual((self.root / "args").read_text().splitlines()[-1], "check")
 
     def test_installation_activates_hooks_and_preserves_conflicting_hooks(self):
-        # Dependency commands are fixture processes; Git configuration and the
-        # versioned installer execute for real, with no host installation.
-        python = self.root / "bin/python3"
-        python.write_text(
-            '#!/bin/sh\nmkdir -p "$3/bin"\n'
-            'printf "#!/bin/sh\\nexit 0\\n" > "$3/bin/python"\n'
-            'chmod +x "$3/bin/python"\n'
-        )
-        npm = self.root / "bin/npm"
-        npm.write_text("#!/bin/sh\nexit 0\n")
-        npm.chmod(0o755)
+        # Git configuration and the versioned installer execute in a fixture.
         script = self.root / "tools/sonarqube/install.sh"
-        result = run_shell(script, [], self.root, self.env, source_root=self.original)
+        result = run_shell(script, [], self.root, self.env)
         self.assertEqual(result.returncode, 0, result.stderr)
         configured = subprocess.check_output(
             ["git", "config", "--local", "core.hooksPath"],
@@ -108,14 +107,14 @@ class HookTests(unittest.TestCase):
         ).strip()
         self.assertEqual(configured, ".githooks")
         self.assertTrue(os.access(self.root / ".githooks/pre-push", os.X_OK))
-        result = run_shell(script, [], self.root, self.env, source_root=self.original)
+        result = run_shell(script, [], self.root, self.env)
         self.assertEqual(result.returncode, 0, result.stderr)
         subprocess.run(
             ["git", "config", "--local", "core.hooksPath", "existing-hooks"],
             cwd=self.root,
             check=True,
         )
-        result = run_shell(script, [], self.root, self.env, source_root=self.original)
+        result = run_shell(script, [], self.root, self.env)
         self.assertEqual(result.returncode, 1)
         self.assertIn("SONAR_EXISTING_HOOKS", result.stderr)
         subprocess.run(
@@ -124,7 +123,7 @@ class HookTests(unittest.TestCase):
             check=True,
         )
         (self.root / ".git/hooks/pre-commit").write_text("# existing hook\n")
-        result = run_shell(script, [], self.root, self.env, source_root=self.original)
+        result = run_shell(script, [], self.root, self.env)
         self.assertEqual(result.returncode, 1)
         self.assertIn("SONAR_EXISTING_HOOKS", result.stderr)
 

@@ -8,12 +8,8 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from coverage_report import read_lcov, read_python, write_generic
+from coverage_report import read_lcov, write_generic
 from git_snapshot import RustSourceScope, compiled_rust_scope, git, is_production_source
-from shell_coverage import verify_shell_entrypoints
-
-VALIDATOR = "tools/governance-validator"
-VENV_PYTHON = ".venv/bin/python"
 
 
 @dataclass(frozen=True)
@@ -94,15 +90,6 @@ def preflight(config: dict, tools: Path) -> None:
         ["cargo", "llvm-cov", "--version"], tools, 30
     ):
         raise RuntimeError("SONAR_LLVM_COV_VERSION")
-    for path in (tools / VENV_PYTHON, tools / "node_modules/.bin/c8"):
-        if not path.is_file():
-            raise RuntimeError("SONAR_TOOLS_MISSING: run tools/sonarqube/install.sh")
-    run(["bash", "-c", 'test "${BASH_VERSINFO[0]}" -ge 5'], tools, 30)
-    run(
-        [str(tools / VENV_PYTHON), "-c", "import tree_sitter, tree_sitter_bash"],
-        tools,
-        30,
-    )
     if not os.environ.get("KODUCK_AI_TEST_DATABASE_URL"):
         raise RuntimeError("SONAR_DATABASE_MISSING: isolated PostgreSQL URL required")
 
@@ -131,118 +118,18 @@ def rust_coverage(
     rust_scope = compiled_rust_scope(snapshot, clippy_output)
     rust = output / "rust.lcov"
     run(
-        [
-            "cargo",
-            "llvm-cov",
-            "--locked",
-            "-p",
-            "koduck-ai",
-            "--all-targets",
-            "--all-features",
-            "--lcov",
-            "--output-path",
-            str(rust),
-            "--",
-            "--test-threads=1",
-        ],
+        ["sh", str(snapshot / "tools/sonarqube/rust-coverage.sh"), str(rust)],
         snapshot,
         timeout,
     )
     return read_lcov(rust, snapshot), rust_scope
 
 
-def javascript_coverage(
-    snapshot: Path, tools: Path, output: Path, timeout: int
-) -> dict:
-    """Instrument validator subprocesses and preserve repository validation."""
-    run(["npm", "ci", "--prefix", VALIDATOR], snapshot, timeout)
-    js = output / "js"
-    run(
-        [
-            str(tools / "node_modules/.bin/c8"),
-            "--all",
-            "--include",
-            "tools/governance-validator/**/*.mjs",
-            "--exclude",
-            "**/test/**",
-            "--reporter=lcov",
-            "--reports-dir",
-            str(js),
-            "npm",
-            "test",
-            "--prefix",
-            VALIDATOR,
-        ],
-        snapshot,
-        timeout,
-    )
-    run(
-        ["npm", "run", "validate", "--prefix", VALIDATOR],
-        snapshot,
-        timeout,
-    )
-    return read_lcov(js / "lcov.info", snapshot)
-
-
-def python_coverage(snapshot: Path, tools: Path, output: Path, timeout: int) -> dict:
-    """Instrument the hook workflow's Python tests and read their fresh report."""
-    python = str(tools / VENV_PYTHON)
-    extra = {"COVERAGE_FILE": str(output / ".coverage")}
-    run(
-        [
-            python,
-            "-m",
-            "coverage",
-            "run",
-            "--source=tools/sonarqube",
-            "--omit=*/test_*.py",
-            "-m",
-            "unittest",
-            "discover",
-            "-s",
-            "tools/sonarqube",
-            "-p",
-            "test_*.py",
-        ],
-        snapshot,
-        timeout,
-        extra,
-    )
-    run(
-        [python, "-m", "coverage", "xml", "-o", str(output / "python.xml")],
-        snapshot,
-        timeout,
-        extra,
-    )
-    shell_report = output / "shell.lcov"
-    with tempfile.TemporaryDirectory(prefix="koduck-shell-evidence-") as temporary:
-        traces = Path(temporary)
-        verify_shell_entrypoints(snapshot, traces, Path(python))
-        run(
-            [
-                python,
-                str(snapshot / "tools/sonarqube/shell_coverage.py"),
-                str(snapshot),
-                str(traces),
-                str(shell_report),
-            ],
-            snapshot,
-            timeout,
-        )
-    result = read_python(output / "python.xml", snapshot)
-    if shell_report.read_text():
-        result.update(read_lcov(shell_report, snapshot))
-    return result
-
-
-def coverage(snapshot: Path, tools: Path, output: Path, config: dict) -> CoverageResult:
-    """Run each supported language boundary and import one same-source report."""
+def coverage(snapshot: Path, output: Path, config: dict) -> CoverageResult:
+    """Import product Rust coverage from one same-source integration run."""
     output.mkdir()
     timeout = config["test_timeout"]
     result, rust_scope = rust_coverage(snapshot, output, timeout)
-    result.update(javascript_coverage(snapshot, tools, output, timeout))
-    if (snapshot / "tools/sonarqube/test_gate.py").exists():
-        result.update(python_coverage(snapshot, tools, output, timeout))
     result = {
         path: hits
         for path, hits in result.items()
@@ -268,6 +155,7 @@ def scan(
         "sonar.sources": ".",
         "sonar.tests": ".",
         "sonar.exclusions": config["exclusions"] + "," + config["tests"],
+        "sonar.coverage.exclusions": "tools/**,scripts/**,.githooks/**",
         "sonar.test.inclusions": config["tests"],
         "sonar.test.exclusions": config["exclusions"],
         "sonar.projectVersion": snapshot.tree,

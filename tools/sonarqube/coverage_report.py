@@ -17,7 +17,7 @@ def relative_source(filename: str, root: Path) -> str:
 
 
 def read_lcov(path: Path, root: Path) -> dict[str, dict[int, bool]]:
-    """Read line hit counts from cargo-llvm-cov or c8 LCOV output."""
+    """Read line hit counts from the Rust integration-target LCOV output."""
     coverage, current = {}, None
     for line in path.read_text().splitlines():
         if line.startswith("SF:"):
@@ -27,29 +27,6 @@ def read_lcov(path: Path, root: Path) -> dict[str, dict[int, bool]]:
             number, hits, *_ = line[3:].split(",")
             previous = coverage[current].get(int(number), False)
             coverage[current][int(number)] = previous or int(hits) > 0
-    if not coverage:
-        raise RuntimeError("SONAR_COVERAGE_EMPTY")
-    return coverage
-
-
-def read_python(path: Path, root: Path) -> dict[str, dict[int, bool]]:
-    """Read coverage.py's Cobertura line data for the scanned checkout."""
-    coverage = {}
-    document = ET.parse(path)
-    sources = [
-        Path(node.text) for node in document.findall("./sources/source") if node.text
-    ]
-    for node in document.findall(".//class"):
-        filename = node.attrib["filename"]
-        matches = [
-            source / filename for source in sources if (source / filename).is_file()
-        ]
-        candidate = str(matches[0]) if len(matches) == 1 else filename
-        name = relative_source(candidate, root)
-        coverage[name] = {
-            int(line.attrib["number"]): int(line.attrib["hits"]) > 0
-            for line in node.findall("./lines/line")
-        }
     if not coverage:
         raise RuntimeError("SONAR_COVERAGE_EMPTY")
     return coverage

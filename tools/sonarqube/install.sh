@@ -16,9 +16,6 @@ if [ -z "$previous" ]; then
     fi
   done
 fi
-python3 -m venv "$root/tools/sonarqube/.venv"
-"$root/tools/sonarqube/.venv/bin/python" -m pip install --disable-pip-version-check -r "$root/tools/sonarqube/requirements.txt"
-npm ci --prefix "$root/tools/sonarqube"
 chmod +x "$root/.githooks/pre-commit" "$root/.githooks/pre-push"
 git config --local core.hooksPath .githooks
 echo "SonarQube pre-commit and pre-push hooks enabled."

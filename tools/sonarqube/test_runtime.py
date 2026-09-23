@@ -50,6 +50,44 @@ class RuntimeTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 module.task_id(report, "koduck")
 
+    def test_rust_coverage_runs_the_integration_report_script(self):
+        """The gate must import the report created by its Shell Rust boundary."""
+        module = implementation("scan_runtime")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output = root / "output"
+            output.mkdir()
+            commands = []
+
+            def process(command, _cwd, _seconds):
+                commands.append(command)
+                if command[0] == "sh":
+                    Path(command[-1]).write_text(
+                        "SF:src/lib.rs\nDA:1,1\nend_of_record\n"
+                    )
+                return ""
+
+            scope = module.RustSourceScope(frozenset({"src/lib.rs"}), frozenset())
+            with (
+                patch.object(module, "run", process),
+                patch.object(module, "compiled_rust_scope", return_value=scope),
+            ):
+                hits, actual_scope = module.rust_coverage(root, output, 2)
+            self.assertEqual(hits, {"src/lib.rs": {1: True}})
+            self.assertEqual(actual_scope, scope)
+            self.assertEqual(commands[-1][0], "sh")
+
+    def test_preflight_needs_no_tooling_coverage_installation(self):
+        """A Rust-only gate should run without the former c8/parser environment."""
+        module = implementation("scan_runtime")
+        config = {"scanner_version": "7.3", "llvm_cov_version": "0.9"}
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch.dict(os.environ, {"KODUCK_AI_TEST_DATABASE_URL": "fixture"}),
+            patch.object(module, "run", side_effect=["7.3", "0.9"]),
+        ):
+            module.preflight(config, Path(directory))
+
     def test_token_rejects_header_injection_before_network_access(self):
         module = implementation("sonar_api")
         with self.assertRaisesRegex(RuntimeError, "TOKEN_INVALID"):

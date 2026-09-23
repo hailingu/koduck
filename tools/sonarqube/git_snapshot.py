@@ -217,8 +217,10 @@ def is_shell_source(name: str) -> bool:
 def is_production_source(
     name: str, rust_test_only: frozenset[str] = frozenset()
 ) -> bool:
-    """Select supported executable sources, excluding dedicated test fixtures."""
+    """Select product sources, excluding repository tooling and test fixtures."""
     path = Path(name)
+    if path.parts and path.parts[0] in {"tools", "scripts", ".githooks"}:
+        return False
     if is_shell_source(name):
         return not {"test", "tests", "fixtures"}.intersection(path.parts)
     if path.suffix == ".rs":

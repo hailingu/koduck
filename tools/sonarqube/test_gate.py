@@ -116,11 +116,8 @@ class SnapshotTests(unittest.TestCase):
                     scope,
                 ),
             ),
-            patch.object(runtime, "javascript_coverage", return_value={}),
         ):
-            imported = runtime.coverage(
-                self.root, self.root, output, {"test_timeout": 1}
-            )
+            imported = runtime.coverage(self.root, output, {"test_timeout": 1})
         self.assertEqual(imported.hits, {"src/feature.rs": {5: False}})
 
     def test_comment_cannot_exempt_compiled_rust_module_from_coverage(self):
@@ -147,10 +144,9 @@ class SnapshotTests(unittest.TestCase):
                 "rust_coverage",
                 return_value=({"src/feature/foo.rs": {1: False}}, scope),
             ),
-            patch.object(runtime, "javascript_coverage", return_value={}),
         ):
             imported = runtime.coverage(
-                self.root, self.root, self.root / "coverage", {"test_timeout": 1}
+                self.root, self.root / "coverage", {"test_timeout": 1}
             )
         self.assertEqual(imported.hits, {"src/feature/foo.rs": {1: False}})
 
@@ -182,10 +178,9 @@ class SnapshotTests(unittest.TestCase):
                 "rust_coverage",
                 return_value=({"src/feature/tests/engine.rs": {1: False}}, scope),
             ),
-            patch.object(runtime, "javascript_coverage", return_value={}),
         ):
             imported = runtime.coverage(
-                self.root, self.root, self.root / "coverage", {"test_timeout": 1}
+                self.root, self.root / "coverage", {"test_timeout": 1}
             )
         self.assertEqual(imported.hits, {"src/feature/tests/engine.rs": {1: False}})
 
@@ -282,53 +277,14 @@ class AdmissionTests(unittest.TestCase):
             module.changed_coverage(changed, {})
         self.assertEqual(module.changed_coverage(changed, {}, {"src/lib.rs"}), (0, 0))
 
-    def test_missing_shell_report_is_not_a_zero_hit_report(self):
-        module = implementation("coverage_report")
-        changed = {".githooks/pre-push": {5, 6, 7}}
-        with self.assertRaisesRegex(RuntimeError, "COVERAGE_MISSING"):
-            module.changed_coverage(changed, {})
-        mixed = {**changed, "src/lib.rs": {2}}
-        self.assertEqual(
-            module.changed_coverage(
-                mixed,
-                {"src/lib.rs": {2: True}, ".githooks/pre-push": {5: True, 7: False}},
-            ),
-            (2, 3),
-        )
+    def test_repository_tooling_is_excluded_from_product_scope(self):
+        """Root maintenance code cannot change product coverage fractions."""
         snapshot = implementation("git_snapshot")
-        self.assertTrue(snapshot.is_production_source("scripts/sonar-quality-gate.sh"))
-        self.assertTrue(snapshot.is_production_source("tools/sonarqube/install.sh"))
+        self.assertFalse(snapshot.is_production_source("scripts/sonar-quality-gate.sh"))
+        self.assertFalse(snapshot.is_production_source("tools/sonarqube/install.sh"))
+        self.assertFalse(snapshot.is_production_source(".githooks/pre-push"))
+        self.assertTrue(snapshot.is_production_source("koduck-ai/src/lib.rs"))
         self.assertFalse(snapshot.is_production_source("README.md"))
-
-    def test_uncovered_executable_shell_lines_still_block_the_gate(self):
-        module = implementation("sonar_api")
-        record = {
-            "tree": "t",
-            "base": "b",
-            "policy": "p",
-            "analysis": "a",
-            "quality_gate": "OK",
-            "new_issues": 0,
-            "covered": 0,
-            "coverable": 6,
-        }
-        with self.assertRaisesRegex(RuntimeError, "COVERAGE_BELOW_80"):
-            module.require_pass(record, "t", "b", "p")
-
-    def test_python_report_resolves_its_source_root(self):
-        module = implementation("coverage_report")
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            source = root / "tools/sonarqube"
-            source.mkdir(parents=True)
-            (source / "gate.py").write_text("pass\n")
-            report = root / "python.xml"
-            report.write_text(
-                f'<coverage><sources><source>{source}</source></sources><packages><package><classes><class filename="gate.py"><lines><line number="1" hits="1"/></lines></class></classes></package></packages></coverage>'
-            )
-            self.assertEqual(
-                module.read_python(report, root), {"tools/sonarqube/gate.py": {1: True}}
-            )
 
 
 if __name__ == "__main__":

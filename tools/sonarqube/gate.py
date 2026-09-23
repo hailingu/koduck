@@ -19,7 +19,6 @@ from git_snapshot import (
     feature_base,
     git,
     index_snapshot,
-    is_shell_source,
     push_revisions,
     require_index,
     revision_snapshot,
@@ -93,7 +92,7 @@ def analyze(root: Path, snapshot, base: str, config: dict, sonar: Sonar) -> dict
         output = Path(temporary)
         # Test before submitting either scan: verification failure retains the prior dashboard.
         coverage_output = output / "coverage"
-        report = coverage(snapshot.path, TOOLS, coverage_output, config)
+        report = coverage(snapshot.path, coverage_output, config)
         hits = report.hits
         changed = changed_lines(
             snapshot.path, base, snapshot.revision, report.rust_scope.test_only
@@ -123,13 +122,7 @@ def analyze(root: Path, snapshot, base: str, config: dict, sonar: Sonar) -> dict
             if name.endswith(".rs")
             and rust_declarations_only((snapshot.path / name).read_text())
         }
-        # Shell has its own grammar-derived execution report. Sonar's lack
-        # of a Shell analyzer must never turn missing Shell evidence into
-        # a zero-executable-lines exemption.
-        shell = {name for name in missing if is_shell_source(name)}
-        nonexecutable = declarations | sonar.nonexecutable_files(
-            missing - declarations - shell
-        )
+        nonexecutable = declarations | sonar.nonexecutable_files(missing - declarations)
         covered, coverable = changed_coverage(changed, hits, nonexecutable)
         if policy_id() != policy:
             raise RuntimeError("SONAR_POLICY_CHANGED: rescan with the final policy")
