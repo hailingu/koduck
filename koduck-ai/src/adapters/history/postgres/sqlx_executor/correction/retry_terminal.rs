@@ -1,7 +1,7 @@
 // ADR: koduck-ai/docs/adr/ADR-0004-authenticated-correction-admission.md
 
-//! CA-04/CA-05: exact retry and reconciliation reject a terminal Correction
-//! even when restored history lacks the production shape constraint.
+//! CA-03/CA-04/CA-05: admission, retry, and reconciliation reject a terminal
+//! Correction even when restored history lacks the production shape constraint.
 
 use sqlx::PgPool;
 use tokio::runtime::Runtime;
@@ -70,6 +70,91 @@ fn exact_retry_rejects_a_terminal_correction() {
     runtime.block_on(pool.close());
 }
 
+/// A malformed Correction deeper in the chain blocks new admission and both
+/// exact-match paths; repair restores the chain without mutating failed work.
+#[test]
+fn terminal_correction_ancestor_is_rejected() {
+    let (runtime, pool) = connected_pool();
+    let _permit = runtime.block_on(crate::test_migrations::reserve_database());
+    let tenant = TenantId::new(format!("cand11-terminal-ancestor-{}", Uuid::new_v4()))
+        .expect("fixture tenant");
+    let thread = ThreadId::new();
+    let turn = TurnId::new();
+    runtime.block_on(seed_completed_turn(&pool, &tenant, &thread, &turn));
+    let root = runtime.block_on(seeded_input_id(&pool, &tenant, &thread, &turn));
+    let first = correction_command(&tenant, thread, turn, ItemId::new(), root);
+    let public_executor = SqlxPostgresExecutor::new(pool.clone(), runtime.handle().clone());
+    public_executor
+        .correct(first.clone())
+        .expect("first correction");
+    let second = correction_command(&tenant, thread, turn, ItemId::new(), first.item_id());
+    let stored_second = public_executor
+        .correct(second.clone())
+        .expect("second correction");
+    let third = correction_command(&tenant, thread, turn, ItemId::new(), second.item_id());
+    let schema = format!("cand11_ancestor_copy_{}", Uuid::new_v4().simple());
+    let copied = runtime.block_on(copy_items(&pool, &schema, &second));
+    let copied_executor = SqlxPostgresExecutor::new(copied.clone(), runtime.handle().clone());
+    assert_existing_result(&runtime, &copied, &second, &Ok(stored_second.clone()));
+
+    runtime.block_on(set_terminal_flag(&copied, &first, true));
+    assert_eq!(
+        copied_executor.correct(third.clone()),
+        Err(CorrectionError::CorruptHistory),
+        "fresh correction rejects the terminal ancestor"
+    );
+    assert_existing_result(
+        &runtime,
+        &copied,
+        &second,
+        &Err(CorrectionError::CorruptHistory),
+    );
+    let content_drift = CorrectionCommand::new(
+        second.trust().clone(),
+        thread,
+        turn,
+        second.item_id(),
+        first.item_id(),
+        "different replacement",
+    )
+    .expect("valid content mismatch");
+    assert_eq!(
+        copied_executor.correct(content_drift),
+        Err(CorrectionError::IdentityConflict)
+    );
+    assert_durable_state(&runtime, &copied, &tenant, thread, turn, 3, 4);
+    assert!(runtime.block_on(terminal_flag(&copied, &first)));
+
+    runtime.block_on(set_terminal_flag(&copied, &first, false));
+    assert_existing_result(&runtime, &copied, &second, &Ok(stored_second));
+    copied_executor
+        .correct(third.clone())
+        .expect("repaired chain admits one item");
+    assert_durable_state(&runtime, &copied, &tenant, thread, turn, 4, 5);
+    assert!(!runtime.block_on(terminal_flag(&copied, &first)));
+    assert!(!runtime.block_on(terminal_flag(&copied, &third)));
+    runtime.block_on(remove_copy(&pool, &copied, &schema));
+    runtime.block_on(pool.close());
+}
+
+/// Checks the write and read-only exact-match owners against the same result.
+fn assert_existing_result(
+    runtime: &Runtime,
+    pool: &PgPool,
+    command: &CorrectionCommand,
+    expected: &Result<Item, CorrectionError>,
+) {
+    let executor = SqlxPostgresExecutor::new(pool.clone(), runtime.handle().clone());
+    assert_eq!(&executor.correct(command.clone()), expected, "exact retry");
+    assert_eq!(
+        &runtime
+            .block_on(super::reconcile_async(pool, command.clone()))
+            .map(|item| item.expect("the fixture correction exists")),
+        expected,
+        "read-only reconciliation"
+    );
+}
+
 /// Uses the existing corrupt-schema strategy with a private table copy; LIKE
 /// retains column types/defaults but does not copy the correction CHECK rule.
 async fn copy_items(pool: &PgPool, schema: &str, command: &CorrectionCommand) -> PgPool {
@@ -90,7 +175,7 @@ async fn copy_items(pool: &PgPool, schema: &str, command: &CorrectionCommand) ->
     .bind(command.turn_id().as_uuid())
     .execute(&reader)
     .await
-    .expect("copy only this fixture's two rows");
+    .expect("copy only this fixture's Item rows");
     reader
 }
 

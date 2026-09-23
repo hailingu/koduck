@@ -491,6 +491,55 @@ implementation exists and the declared production-boundary checks run.
 
 ## Supporting Notes [Optional]
 
+### Terminal Correction ancestor remediation — 2026-09-23
+
+The owner linked PR 15 review `5280828942` of `bd1ec932` in task
+`01a0c834-b8cb-7082-9103-5cd0e65eb3de`, authorizing this bounded round 9
+remediation. CA-03 requires a sound chain and CA-05 makes every Correction
+nonterminal. The PostgreSQL ancestry validator owns this invariant for fresh
+admission, exact retry, and read-only reconciliation.
+
+| State / precondition | Action / transition | Observable result and invariant | Owner / verification |
+| --- | --- | --- | --- |
+| A completed Turn has a root and two lawful nonterminal Corrections | Retry or reconcile the second Correction | Return the original Item without changing rows or counter | `reject_malformed_ancestors`; `terminal_correction_ancestor_is_rejected` |
+| A constraint-free copy marks the first Correction terminal while the second remains nonterminal | Admit a third Correction, retry the second, or reconcile the second | `CorruptHistory` in all three paths; no successful operation may traverse a terminal Correction ancestor, and no row, flag, or counter changes | The same regression and migrated PostgreSQL fixture |
+| The ancestor is terminal and the second Correction's content conflicts with its stable identity | Retry the second Correction | `IdentityConflict` takes precedence over ancestry corruption | `stored_retry`; the same regression |
+| The ancestor's flag is repaired to false | Retry and reconcile the second Correction, then admit a third | Original second Item is returned and exactly one new Item/counter step is admitted | Both production entry points; the same recovery checks |
+
+The fixture copies only this Turn's three rows to a private table without the
+production shape constraint. Its existing setup and scoped reader are reused.
+The streamed ancestry projection supplies the persisted flag in the same SQL
+statement as the bounded payload; the guard applies only to Correction rows.
+The summary's ordering, node and byte caps, root and branch checks, retry
+identity precedence, production constraint, and transaction boundaries remain
+unchanged. A lawful writer cannot change an admitted Correction's flag, so no
+new permitted concurrent transition or retry timing needs coverage. This
+serial corrupt-history fixture adds no load sampling.
+
+Verification: the focused regression first failed because fresh admission
+returned an Item through the terminal Correction ancestor (0.19 seconds),
+then passed after the fix (0.23 seconds). All four matrix rows passed. The
+first complete suite run exposed one existing test that decoded the shared
+ancestry SQL as four columns; it was updated to consume the added flag column
+without changing its bounded-payload assertions. The final complete
+Rust/PostgreSQL suite passed 491 tests across 25 binaries. `cargo fmt --all
+--check`, all-target/all-feature Clippy with warnings denied, 184 governance
+tests, and governance validation passed. Local runs used three build jobs and
+serial tests with process-local
+`DEVELOPER_DIR=/Library/Developer/CommandLineTools`. The PR records the
+commit/push gates, exact-revision CI, and review disposition.
+
+Decomposition review: `correction.rs` is 673 physical lines and remains the
+cohesive admission/reconciliation owner; the change adds one field to the
+existing bounded projection and one validation branch, with no 800-line
+exception. `reject_malformed_ancestors` is 41 lines. The colocated test module
+is 258 lines; its 63-line regression stays one ordered state transition, and
+extracting its setup and assertions further would obscure the before/after
+durability checks. It remains below the 80-line hard limit. These are
+point-in-time measurements, not test assertions about layout. Cyclomatic
+complexity is `N/A — no configured complexity tool`; manual nesting review
+found no new nested control flow.
+
 ### Exact-retry terminal flag remediation — 2026-09-22
 
 The owner requested PR 15 review `5280413571`, against `c67fd35`, be addressed

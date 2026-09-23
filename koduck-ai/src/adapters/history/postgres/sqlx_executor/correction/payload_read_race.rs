@@ -271,17 +271,18 @@ async fn assert_bounded_projection(writer: &mut sqlx::PgConnection, fixture: &Fi
         payload.is_none(),
         "the oversized body must not reach the driver"
     );
-    let rows =
-        sqlx::query_as::<_, (Uuid, Option<Uuid>, String, Option<String>)>(STREAMED_ANCESTRY_SQL)
-            .bind(fixture.tenant.as_str())
-            .bind(fixture.thread.as_uuid())
-            .bind(fixture.turn.as_uuid())
-            .bind(fixture.command.predecessor_item_id().as_uuid())
-            .bind(MAX_STORED_PAYLOAD_BYTES)
-            .fetch_all(&mut *writer)
-            .await
-            .expect("bounded ancestor projection for the one/two-node fixture");
-    for (identity, _, _, payload) in rows {
+    let rows = sqlx::query_as::<_, (Uuid, Option<Uuid>, String, bool, Option<String>)>(
+        STREAMED_ANCESTRY_SQL,
+    )
+    .bind(fixture.tenant.as_str())
+    .bind(fixture.thread.as_uuid())
+    .bind(fixture.turn.as_uuid())
+    .bind(fixture.command.predecessor_item_id().as_uuid())
+    .bind(MAX_STORED_PAYLOAD_BYTES)
+    .fetch_all(&mut *writer)
+    .await
+    .expect("bounded ancestor projection for the one/two-node fixture");
+    for (identity, _, _, _, payload) in rows {
         if identity == fixture.target {
             assert!(
                 payload.is_none(),

@@ -435,7 +435,7 @@ const STREAMED_ANCESTRY_SQL: &str = "WITH RECURSIVE chain AS ( \
    ) n \
    WHERE c.depth < 4097 \
  ) \
- SELECT c.item_id, c.corrects_item_id, c.item_type, \
+ SELECT c.item_id, c.corrects_item_id, c.item_type, i.is_terminal, \
         CASE WHEN octet_length(i.payload)::BIGINT <= $5 THEN i.payload END \
  FROM chain c JOIN turn_items i \
    ON i.tenant_id = $1 AND i.thread_id = $2 AND i.turn_id = $3 \
@@ -553,24 +553,31 @@ async fn reject_malformed_ancestors(
 ) -> Result<(), WriteFailure> {
     // The streamed walk must also plan per execution with the bound scope
     // values; see the summary's cached-generic-plan note.
-    let rows =
-        sqlx::query_as::<_, (Uuid, Option<Uuid>, String, Option<String>)>(STREAMED_ANCESTRY_SQL)
-            .bind(command.trust().tenant_id.as_str())
-            .bind(command.thread_id().as_uuid())
-            .bind(command.turn_id().as_uuid())
-            .bind(command.predecessor_item_id().as_uuid())
-            .bind(MAX_STORED_PAYLOAD_BYTES)
-            .persistent(false)
-            .fetch(&mut **transaction);
+    let rows = sqlx::query_as::<_, (Uuid, Option<Uuid>, String, bool, Option<String>)>(
+        STREAMED_ANCESTRY_SQL,
+    )
+    .bind(command.trust().tenant_id.as_str())
+    .bind(command.thread_id().as_uuid())
+    .bind(command.turn_id().as_uuid())
+    .bind(command.predecessor_item_id().as_uuid())
+    .bind(MAX_STORED_PAYLOAD_BYTES)
+    .persistent(false)
+    .fetch(&mut **transaction);
     tokio::pin!(rows);
     let mut identities = HashSet::new();
     while let Some(row) = rows.next().await {
-        let (item_id, corrects, item_type, payload) = row.map_err(classify_write_error)?;
+        let (item_id, corrects, item_type, is_terminal, payload) =
+            row.map_err(classify_write_error)?;
         let payload = payload.ok_or(resolved(CorrectionError::ResourceLimit))?;
         // A repeated identity inside the bounded walk can only be a cycle
         // (CA-03); the summary's order check also rejects cycles, so this
         // duplicate-identity check is belt-and-braces corruption defense.
         if !identities.insert(item_id) {
+            return Err(resolved(CorrectionError::CorruptHistory));
+        }
+        // CA-05: even a correctly encoded Correction deeper in the chain
+        // cannot be a terminal Item in durable history.
+        if item_type == "correction" && is_terminal {
             return Err(resolved(CorrectionError::CorruptHistory));
         }
         // Exactly one decoded payload is retained at a time: the decoded
