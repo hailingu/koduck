@@ -61,7 +61,10 @@
 - Rejecting a Proposed record requires the exact response `Reject` from the
   Decision Owner or an actor authorized by Required Approver. Record the
   rejection fields and set Decision Status to `Rejected` and Implementation
-  Status to `Not Applicable` in the same change.
+  Status to `Not Applicable` in the same change. `Rejection Reason` must be a
+  concrete explanation of why the proposal was rejected, including the deciding
+  constraint or evidence when applicable; outside `Rejected`, retain a reasoned
+  `N/A — <reason>` value.
 - Retirement requires the exact response `Deprecate` or `Supersede` from the
   Decision Owner or an actor authorized by Required Approver. Record every
   retirement field and a truthful final Implementation Status in the same
@@ -205,6 +208,7 @@ Variable Dictionary
 - **Rejector [Conditionally Required — Decision Status is `Rejected`]**: Pending — replace with the concrete `@<actor-id>`
 - **Rejection Time [Conditionally Required — Decision Status is `Rejected`]**: Pending — replace with an ISO 8601 date-time containing `Z` or an explicit `±HH:MM` offset
 - **Rejection Evidence [Conditionally Required — Decision Status is `Rejected`]**: Pending — replace with exactly `Reject`
+- **Rejection Reason [Conditionally Required — Decision Status is `Rejected`]**: Pending — replace with a concrete explanation of why the proposal was rejected, including the deciding constraint or evidence when applicable; outside `Rejected`, retain a reasoned `N/A — <reason>` value
 - **Retired By [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: Pending — replace with the concrete `@<actor-id>`
 - **Retirement Time [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: Pending — replace with an ISO 8601 date-time containing `Z` or an explicit `±HH:MM` offset
 - **Retirement Evidence [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: Pending — replace with exactly `Deprecate` or `Supersede`

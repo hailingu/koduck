@@ -3,7 +3,7 @@
 ## Metadata [Required]
 
 - **Decision Status**: Accepted
-- **Implementation Status**: Not Started
+- **Implementation Status**: In Progress
 - **Date**: 2026-09-22
 - **Author**: @codex
 - **Decision Owner**: @linhai
@@ -211,7 +211,7 @@ or `N/A — <specific reason>`.
 
 | ID | Objective or deliverable | Included scope | Status | Actual implementation evidence |
 | --- | --- | --- | --- | --- |
-| T-1 | Enforce and document RR-1 through RR-4 with focused regressions and routed verification | The affected paths below, delivered as one implementation slice | Not Started | Pending — implementation requires acceptance |
+| T-1 | Enforce and document RR-1 through RR-4 with focused regressions and routed verification | The affected paths below, delivered as one implementation slice | In Progress | Red observed 2026-09-23: `node --test test/rejection-reason.test.mjs` in `tools/governance-validator` failed 1/1 — the missing-reason Rejected-ADR fixture exited 0 instead of 1; gate, tests, templates, and policy edits then implemented on this task branch |
 
 **Affected paths**: `AGENTS.md`; `AGENTS.template.md`; `docs/README.md`;
 `docs/adr/template/0000-template.md`;
@@ -386,3 +386,4 @@ or code marker cites the old path. Retain Superseded By: None without a replacem
 | 2026-09-23 | Reset to Proposed at 2026-09-23T14:29:48Z for corrections to RR-1, RR-2, Risk Coverage Matrix, and AC-1/AC-5 after round-3 findings; prior Approver: @linhai; Approval Time: 2026-09-23T14:22:55Z; Approval Evidence: Approve; no Approval Context Revision was recorded; Implementation Status remains Not Started | @codex |
 | 2026-09-23 | Corrected the round-3 staged-review chronology and recorded @linhai's bounded round-4 evidence review; decision, checks, and Proposed / Not Started statuses are unchanged | @codex |
 | 2026-09-23 | Accepted after @linhai approved the revised ADR-0016 in the current task; implementation remains Not Started | @linhai |
+| 2026-09-23 | Implementation started after user instruction: validator gate, focused CLI regressions, both ADR templates, AGENTS.md/AGENTS.template.md policy, and docs/README.md summary delivered as one slice; T-1 moved to In Progress | @zcode |

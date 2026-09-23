@@ -866,7 +866,11 @@ named as its Decision Owner; the self-approval prohibition does not prevent
 rejection because rejection authorizes no implementation or operation. In the
 same change, record `Rejector: @<actor-id>`, `Rejection Time`, and `Rejection
 Evidence: Reject`, set Decision Status to `Rejected`, and set Implementation
-Status to `Not Applicable`. No other actor or evidence may cause a rejection.
+Status to `Not Applicable`. A Rejected ADR MUST additionally record `Rejection
+Reason` with a concrete explanation of why the proposal was rejected,
+including the deciding constraint or evidence when applicable; OCRs require no
+reason, and outside `Rejected` new ADR instances retain a reasoned
+`N/A — <reason>` value. No other actor or evidence may cause a rejection.
 
 An ADD, ADR, or OCR retires only when its named Architecture/Decision Owner or
 an actor authorized by its Required Approver field responds with the exact,

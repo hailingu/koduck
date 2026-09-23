@@ -66,7 +66,9 @@ Approval Context Revision is removed until a later approval records a new one.
 A Proposed ADR or OCR is rejected only when its Decision Owner or an actor
 authorized by its Required Approver responds with exactly `Reject`; the record
 then captures the rejector and time and atomically becomes `Rejected` / `Not
-Applicable`. The canonical authority and identity rules are in `AGENTS.md`.
+Applicable`. A Rejected ADR additionally records a concrete `Rejection Reason`
+explaining why the proposal was rejected; OCRs require none. The canonical
+authority and identity rules are in `AGENTS.md`.
 
 Deprecation or supersession requires exactly `Deprecate` or `Supersede` from
 the document owner or an actor authorized by Required Approver, plus retirement
