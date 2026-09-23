@@ -153,22 +153,22 @@ Sonar compliance if someone bypasses those hooks.
 
 ### Rust test-module coverage boundary — 2026-09-23
 
-PR 15 review `5286757657` identified that files reached only through a Rust
-`#[cfg(test)] mod` declaration under `src/` could be counted as production
-lines by the path-only feature-diff gate. The Git snapshot classifier owns the
-file boundary for both changed lines and imported coverage.
+PR 15 reviews `5286757657` and `5287659484` identified that test-only Rust
+modules under `src/` could enter production coverage and that scanning raw
+source for `#[cfg(test)]` could exempt a compiled module when the apparent
+declaration was only a comment. Dedicated `tests/` paths now define the
+test-only boundary for both changed lines and imported coverage.
 
 | State / precondition | Action / entry point | Observable outcome and invariant | Verification |
 | --- | --- | --- | --- |
-| A changed Rust file is declared only as a `#[cfg(test)]` module under `src/` | Classify the Git diff and imported coverage | Its lines never increase production covered or coverable counts | `test_cfg_test_rust_modules_do_not_count_as_changed_production` |
+| A changed Rust module exists under a dedicated `tests/` path | Classify the Git diff and imported coverage | Its lines never increase production covered or coverable counts | `test_rust_test_modules_do_not_count_as_changed_production` |
 | A changed Rust production sibling and a test-only module coexist | Classify the same revision | Production changes remain counted; test-only changes cannot mask an under-80% production diff | The same focused Git fixture and the normal feature gate |
-| A module's test-only declaration is absent or unclear | Classify its source file | Fail conservatively into production coverage rather than silently exempting it | The production sibling in the focused fixture |
+| A comment contains a fake `#[cfg(test)] mod foo;` but the real `mod foo;` is active | Classify the Git diff and imported coverage | The compiled `foo.rs` remains production in both paths | `test_comment_cannot_exempt_compiled_rust_module_from_coverage` |
 
 This serial, local classification has no retry or concurrent transition. A
-new source revision is classified from its own snapshot. The source parser's
-scope is the ordinary Rust module declaration syntax used by the affected
-files; unfamiliar attributes remain production rather than gaining an
-unverified exemption.
+new source revision is classified from its own snapshot. Rust test-only modules
+must live under a dedicated `tests/` path to receive this exemption; other
+modules remain production regardless of comments or attributes.
 
 ### Correction retry and ancestry snapshot — 2026-09-23
 
@@ -182,6 +182,7 @@ invariants at direct admission and reconciliation entry points.
 | Writer retargets the matching row after a metadata precheck | Reject `IdentityConflict` | A body from a different identity never authenticates the old metadata | New two-connection race test |
 | Writer retargets an ancestor after summary and before streamed read | Reject unsupported root or corruption | The streamed ancestry independently satisfies CA-03 | New two-connection race test |
 | Writer grows a payload between statements | Reject `ResourceLimit` before transferring the body | Every body projection enforces the cap in its own snapshot | Existing payload-read race tests |
+| A streamed chain has multiple invalid properties | Validate its summary after the final row | The existing CA-03/CA-06 error precedence remains stable after splitting the validator | Existing ancestor corruption, limit, and race tests |
 
 The identity and ancestry race fixtures failed against the prior implementation
 with an incorrectly successful `Item`, then passed after the second-snapshot

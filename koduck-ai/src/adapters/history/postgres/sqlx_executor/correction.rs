@@ -24,14 +24,19 @@ use super::SqlxPostgresExecutor;
 use super::is_terminal_status;
 
 #[cfg(test)]
+#[path = "correction/tests/commit_ack_loss.rs"]
 mod commit_ack_loss;
 #[cfg(test)]
+#[path = "correction/tests/correction_settlement_budget.rs"]
 mod correction_settlement_budget;
 #[cfg(test)]
+#[path = "correction/tests/payload_read_race.rs"]
 mod payload_read_race;
 #[cfg(test)]
+#[path = "correction/tests/retry_counter.rs"]
 mod retry_counter;
 #[cfg(test)]
+#[path = "correction/tests/retry_terminal.rs"]
 mod retry_terminal;
 
 /// Test-only commit-ack-loss switch for the AC-4 deterministic
@@ -651,25 +656,36 @@ async fn reject_malformed_ancestors(
         previous_target = corrects;
         last_type = Some(item_type);
     }
-    if identities.is_empty() {
-        return Err(resolved(CorrectionError::InvalidPredecessor));
-    }
-    if invalid_structure {
-        return Err(resolved(CorrectionError::CorruptHistory));
-    }
-    if identities.len() > MAX_ANCESTOR_NODES {
-        return Err(resolved(CorrectionError::ResourceLimit));
-    }
-    match last_type.as_deref() {
-        Some("user_message" | "agent_message_delta") => {}
-        Some("correction") => return Err(resolved(CorrectionError::CorruptHistory)),
-        _ => return Err(resolved(CorrectionError::InvalidPredecessor)),
-    }
+    check_ancestry_structure(identities.len(), last_type.as_deref(), invalid_structure)?;
     if oversized {
         return Err(resolved(CorrectionError::ResourceLimit));
     }
     if branched || malformed {
         return Err(resolved(CorrectionError::CorruptHistory));
+    }
+    Ok(())
+}
+
+/// Checks streamed chain shape and root before payload and branch faults,
+/// preserving CA-03/CA-06 error precedence.
+fn check_ancestry_structure(
+    count: usize,
+    last_type: Option<&str>,
+    invalid_structure: bool,
+) -> Result<(), WriteFailure> {
+    if count == 0 {
+        return Err(resolved(CorrectionError::InvalidPredecessor));
+    }
+    if invalid_structure {
+        return Err(resolved(CorrectionError::CorruptHistory));
+    }
+    if count > MAX_ANCESTOR_NODES {
+        return Err(resolved(CorrectionError::ResourceLimit));
+    }
+    match last_type {
+        Some("user_message" | "agent_message_delta") => {}
+        Some("correction") => return Err(resolved(CorrectionError::CorruptHistory)),
+        _ => return Err(resolved(CorrectionError::InvalidPredecessor)),
     }
     Ok(())
 }

@@ -76,22 +76,25 @@ class SnapshotTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "PUSH_INPUT"):
             module.push_revisions(self.root, "malformed\n")
 
-    def test_cfg_test_rust_modules_do_not_count_as_changed_production(self):
-        """Count a production sibling but exclude a Rust cfg(test) module."""
+    def test_rust_test_modules_do_not_count_as_changed_production(self):
+        """Count a production sibling but exclude a dedicated Rust test path."""
         module = implementation("git_snapshot")
         base = git(self.root, "rev-parse", "HEAD")
         owner = self.root / "src/feature.rs"
         owner.parent.mkdir()
-        owner.write_text("#[cfg(test)]\nmod case;\n\npub fn live() -> u64 { 1 }\n")
-        test_module = self.root / "src/feature/case.rs"
-        test_module.parent.mkdir()
+        owner.write_text(
+            '#[cfg(test)]\n#[path = "feature/tests/case.rs"]\n'
+            "mod case;\n\npub fn live() -> u64 { 1 }\n"
+        )
+        test_module = self.root / "src/feature/tests/case.rs"
+        test_module.parent.mkdir(parents=True)
         test_module.write_text("#[test]\nfn fixture() { assert_eq!(2, 2); }\n")
         git(self.root, "add", ".")
         git(self.root, "commit", "-m", "add Rust module")
         changed = module.changed_lines(self.root, base, "HEAD")
         self.assertIn("src/feature.rs", changed)
-        self.assertNotIn("src/feature/case.rs", changed)
-        self.assertFalse(module.is_production_source("src/feature/case.rs", self.root))
+        self.assertNotIn("src/feature/tests/case.rs", changed)
+        self.assertFalse(module.is_production_source("src/feature/tests/case.rs"))
         runtime = implementation("scan_runtime")
         output = self.root / "coverage"
         with (
@@ -99,8 +102,8 @@ class SnapshotTests(unittest.TestCase):
                 runtime,
                 "rust_coverage",
                 return_value={
-                    "src/feature.rs": {4: False},
-                    "src/feature/case.rs": {2: True},
+                    "src/feature.rs": {5: False},
+                    "src/feature/tests/case.rs": {2: True},
                 },
             ),
             patch.object(runtime, "javascript_coverage", return_value={}),
@@ -108,7 +111,35 @@ class SnapshotTests(unittest.TestCase):
             imported = runtime.coverage(
                 self.root, self.root, output, {"test_timeout": 1}
             )
-        self.assertEqual(imported, {"src/feature.rs": {4: False}})
+        self.assertEqual(imported, {"src/feature.rs": {5: False}})
+
+    def test_comment_cannot_exempt_compiled_rust_module_from_coverage(self):
+        """A commented test attribute cannot hide a compiled production module."""
+        module = implementation("git_snapshot")
+        base = git(self.root, "rev-parse", "HEAD")
+        owner = self.root / "src/feature.rs"
+        owner.parent.mkdir()
+        owner.write_text("/*\n#[cfg(test)]\nmod foo;\n*/\nmod foo;\n")
+        production_module = self.root / "src/feature/foo.rs"
+        production_module.parent.mkdir()
+        production_module.write_text("pub fn live() -> u64 { 1 }\n")
+        git(self.root, "add", ".")
+        git(self.root, "commit", "-m", "add compiled Rust module")
+        changed = module.changed_lines(self.root, base, "HEAD")
+        self.assertIn("src/feature/foo.rs", changed)
+        runtime = implementation("scan_runtime")
+        with (
+            patch.object(
+                runtime,
+                "rust_coverage",
+                return_value={"src/feature/foo.rs": {1: False}},
+            ),
+            patch.object(runtime, "javascript_coverage", return_value={}),
+        ):
+            imported = runtime.coverage(
+                self.root, self.root, self.root / "coverage", {"test_timeout": 1}
+            )
+        self.assertEqual(imported, {"src/feature/foo.rs": {1: False}})
 
 
 class AdmissionTests(unittest.TestCase):

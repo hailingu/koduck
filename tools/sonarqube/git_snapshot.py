@@ -100,7 +100,7 @@ def changed_lines(root: Path, base: str, revision: str) -> dict[str, set[int]]:
     names = git(root, "diff", "--name-only", "--no-renames", "-z", base, revision)
     changes = {}
     for name in filter(None, names.split("\0")):
-        if not is_production_source(name, root):
+        if not is_production_source(name):
             continue
         diff = git(
             root,
@@ -126,20 +126,7 @@ def is_shell_source(name: str) -> bool:
     return name.endswith(".sh") or name.startswith(".githooks/")
 
 
-def rust_test_module(path: Path) -> bool:
-    """Recognize a file declared by a sibling cfg(test) module."""
-    owner = path.parent.with_suffix(".rs")
-    if not owner.is_file():
-        owner = path.parent / "mod.rs"
-    if not owner.is_file():
-        return False
-    declaration = re.compile(
-        rf"(?m)^\s*#\[cfg\(test\)\]\s*mod\s+{re.escape(path.stem)}\s*;"
-    )
-    return bool(declaration.search(owner.read_text()))
-
-
-def is_production_source(name: str, root: Path | None = None) -> bool:
+def is_production_source(name: str) -> bool:
     """Select supported executable sources, excluding dedicated test fixtures."""
     path = Path(name)
     if is_shell_source(name):
@@ -150,6 +137,4 @@ def is_production_source(name: str, root: Path | None = None) -> bool:
         and not path.name.startswith("test_")
         and ".test." not in path.name
     )
-    return selected and not (
-        root is not None and path.suffix == ".rs" and rust_test_module(root / path)
-    )
+    return selected
