@@ -3,7 +3,7 @@
 **Applies to**: all maintained production and test source code in this
 repository. Read this file together with every matching language standard.
 
-**Last reviewed**: 2026-08-10
+**Last reviewed**: 2026-09-03
 
 ## Purpose And Precedence
 
@@ -22,21 +22,30 @@ rule over another.
 Size is a review signal, not a substitute for judging cohesion. Crossing a
 review threshold requires an explicit decomposition review. Crossing an
 exception limit requires a documented engineering exception before the change
-is accepted.
+is accepted. Executable units instead have the non-waivable hard limit stated
+below.
 
 | Unit | Decomposition-review threshold | Engineering-exception limit |
 | --- | --- | --- |
-| Maintained production source file | More than 400 physical lines | More than 800 physical lines |
-| Maintained test source file | More than 600 physical lines | More than 1,800 physical lines |
-| Function, method, closure, or equivalent executable unit | More than 60 physical lines | More than 120 physical lines |
+| Maintained production source file | More than 600 physical lines | More than 800 physical lines |
+| Maintained test source file | More than 1,000 physical lines | More than 1,800 physical lines |
+| Function, method, closure, or equivalent executable unit | More than 60 physical lines | N/A — hard limit is 80 physical lines |
 | Cyclomatic complexity, when measured by configured tooling | More than 10 | More than 20 |
 | Executable nesting depth | More than 4 levels | More than 6 levels |
 
+Every function, method, closure, or equivalent executable unit MUST be no more
+than 80 physical source lines, counted inclusively from its declaration or
+signature through the end of its implementation body. Preceding annotations,
+attributes, and documentation comments are outside this limit. An engineering
+exception MUST NOT waive this hard limit.
+
 Apply the guardrails as follows:
 
-- Count the physical span, including comments and documentation, because that
-  is the amount a reviewer must navigate. Use configured tool output for
-  complexity when available; do not add a dependency solely to obtain a metric.
+- Count a file's complete physical span, including comments and documentation,
+  because that is the amount a reviewer must navigate. Count an executable
+  unit's span as defined by the 80-line hard limit above. Use configured tool
+  output for complexity when available; do not add a dependency solely to
+  obtain a metric.
 - Treat every measurement as point-in-time evidence for the inspected source
   revision. A decision record may cite that revision and the measured result,
   but no test may require the record to mirror later physical line counts,

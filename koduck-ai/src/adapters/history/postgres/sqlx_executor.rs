@@ -1,5 +1,6 @@
 // ADR: docs/adr/ADR-0001-provider-neutral-turn-kernel.md
 // ADR: koduck-ai/docs/adr/ADR-0003-correction-item-schema-and-raw-replay.md
+// ADR: koduck-ai/docs/adr/ADR-0004-authenticated-correction-admission.md
 
 //! `SQLx`-backed implementation of the canonical `PostgreSQL` transaction boundary.
 
@@ -20,6 +21,7 @@ use super::payload_codec::{encode_payload, row_to_item};
 use super::settle_commit_attempt;
 use super::{LeaseKey, LeaseTiming, PostgresExecutor, ReconcileOutcome, RecoveryOutcome};
 
+mod correction;
 mod failure_recovery;
 mod interruption_approval;
 mod interruption_commit;

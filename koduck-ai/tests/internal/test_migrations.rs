@@ -24,7 +24,7 @@ static DATABASE_TEST_ACCESS: LazyLock<Arc<Semaphore>> =
 
 /// Reserves the disposable `PostgreSQL` instance for one integration fixture.
 ///
-/// The race fixtures deliberately use up to 32 connections, so parallel
+/// The race fixtures deliberately use four competing connections, so parallel
 /// fixtures sharing the single CI database can otherwise exhaust its
 /// connection budget and turn a durable conflict into a spurious
 /// `Unavailable` result. Holding the returned permit for the fixture lifetime

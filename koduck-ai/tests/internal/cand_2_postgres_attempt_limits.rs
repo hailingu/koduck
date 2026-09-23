@@ -66,13 +66,13 @@ fn concurrent_distinct_inserts_never_exceed_the_sixteen_attempt_budget() {
     // READ COMMITTED takes each statement's snapshot at statement start, so a
     // contender that counted the Turn's attempts before waiting on the Turn
     // lock cannot see rows committed while it waited: the budget check must
-    // count on a fresh statement after acquiring the lock, or 32 racing
-    // distinct identities can each insert and break the 16-attempt cap
+    // count on a fresh statement after acquiring the lock, or four racing
+    // distinct identities can each consume the last slot and break the cap
     // (ADR-0003 TC-09, AC-12).
     let Some(harness) = harness() else {
         return;
     };
-    let contenders = 32;
+    let contenders = 4;
     let first = prepared_binding(Effect::ReadData);
     seed_owner_rows(
         &harness,
@@ -81,15 +81,15 @@ fn concurrent_distinct_inserts_never_exceed_the_sixteen_attempt_budget() {
         first.turn_id(),
         first.lease_generation(),
     );
-    let bindings: Vec<ExactActionBinding> = (0..contenders)
-        .map(|index| {
-            if index == 0 {
-                first.clone()
-            } else {
-                sibling(&first)
-            }
-        })
-        .collect();
+    let mut seeder = attempt_store(harness.pool.clone(), &harness.runtime);
+    for slot in 1..=15 {
+        assert_eq!(
+            seeder.insert_prepared(&sibling(&first), slot),
+            Ok(AttemptInsertResolution::Inserted),
+            "preload all but the last durable attempt slot"
+        );
+    }
+    let bindings: Vec<ExactActionBinding> = (0..contenders).map(|_| sibling(&first)).collect();
 
     // One connection per contender models independent instances racing the
     // Turn lock. Each contender either inserts, observes the durable limit, or
@@ -150,7 +150,7 @@ fn concurrent_distinct_inserts_never_exceed_the_sixteen_attempt_budget() {
         })
         .expect("durable budget count is readable");
     assert_eq!(
-        i64::try_from(inserted).expect("inserted count fits"),
+        15 + i64::try_from(inserted).expect("inserted count fits"),
         durable_count,
         "every inserted resolution corresponds to one durable row"
     );

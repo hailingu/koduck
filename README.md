@@ -30,6 +30,14 @@ development standards used to evolve it.
 - [docs/delivery/](docs/delivery/) — release and Git tag standards. Read both
   files before planning a release or tag operation.
 
+## Local SonarQube gate
+
+Install with `sh tools/sonarqube/install.sh`. Both Git hooks use
+`scripts/sonar-quality-gate.sh`, adapted from the PlotWeave gate. Koduck
+authentication uses `KODUCK_SONAR_TOKEN` exported by `~/.zshrc`; no credential
+is stored in this repository. See [the workflow guide](tools/sonarqube/README.md)
+for the exact staged-snapshot, incremental-issue, coverage and CI contract.
+
 ## Repository Structure
 
 ```text
