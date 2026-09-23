@@ -194,6 +194,132 @@ fn exact_retry_rejects_a_branch_at_the_stored_item() {
     runtime.block_on(pool.close());
 }
 
+/// A zero-sequence root invalidates both a new append and an exact stored
+/// retry, including read-only reconciliation, without changing durable state.
+#[test]
+fn zero_sequence_root_rejects_fresh_and_stored_corrections() {
+    let (runtime, pool) = connected_pool();
+    let _permit = runtime.block_on(crate::test_migrations::reserve_database());
+    let tenant =
+        TenantId::new(format!("cand11-zero-root-{}", Uuid::new_v4())).expect("fixture tenant");
+    let thread = ThreadId::new();
+    let turn = TurnId::new();
+    runtime.block_on(seed_completed_turn(&pool, &tenant, &thread, &turn));
+    let root = runtime.block_on(seeded_input_id(&pool, &tenant, &thread, &turn));
+    let stored = correction_command(&tenant, thread, turn, ItemId::new(), root);
+    let executor = SqlxPostgresExecutor::new(pool.clone(), runtime.handle().clone());
+    let original = executor.correct(stored.clone()).expect("admit correction");
+    let fresh = correction_command(&tenant, thread, turn, ItemId::new(), stored.item_id());
+    let schema = format!("cand11_zero_root_{}", Uuid::new_v4().simple());
+    let copied = runtime.block_on(copy_items(&pool, &schema, &stored));
+    let copied_executor = SqlxPostgresExecutor::new(copied.clone(), runtime.handle().clone());
+
+    runtime.block_on(set_copied_sequence(&copied, &stored, root, 0));
+    assert_eq!(
+        copied_executor.correct(fresh.clone()),
+        Err(CorrectionError::CorruptHistory)
+    );
+    assert_existing_result(
+        &runtime,
+        &copied,
+        &stored,
+        &Err(CorrectionError::CorruptHistory),
+    );
+    assert_durable_state(&runtime, &copied, &tenant, thread, turn, 2, 3);
+    assert_eq!(runtime.block_on(copied_sequence(&copied, &stored, root)), 0);
+
+    runtime.block_on(set_copied_sequence(&copied, &stored, root, 1));
+    assert_existing_result(&runtime, &copied, &stored, &Ok(original));
+    copied_executor
+        .correct(fresh)
+        .expect("repaired chain admits correction");
+    assert_durable_state(&runtime, &copied, &tenant, thread, turn, 3, 4);
+    runtime.block_on(remove_copy(&pool, &copied, &schema));
+    runtime.block_on(pool.close());
+}
+
+/// A strictly increasing negative-to-zero chain still has invalid sequence
+/// state; neither a fresh append nor either exact-match path may accept it.
+#[test]
+fn negative_root_and_zero_correction_ancestor_fail_closed() {
+    let (runtime, pool) = connected_pool();
+    let _permit = runtime.block_on(crate::test_migrations::reserve_database());
+    let tenant =
+        TenantId::new(format!("cand11-negative-chain-{}", Uuid::new_v4())).expect("fixture tenant");
+    let thread = ThreadId::new();
+    let turn = TurnId::new();
+    runtime.block_on(seed_completed_turn(&pool, &tenant, &thread, &turn));
+    let root = runtime.block_on(seeded_input_id(&pool, &tenant, &thread, &turn));
+    let first = correction_command(&tenant, thread, turn, ItemId::new(), root);
+    let executor = SqlxPostgresExecutor::new(pool.clone(), runtime.handle().clone());
+    executor.correct(first.clone()).expect("first correction");
+    let second = correction_command(&tenant, thread, turn, ItemId::new(), first.item_id());
+    let original = executor.correct(second.clone()).expect("second correction");
+    let fresh = correction_command(&tenant, thread, turn, ItemId::new(), second.item_id());
+    let schema = format!("cand11_negative_chain_{}", Uuid::new_v4().simple());
+    let copied = runtime.block_on(copy_items(&pool, &schema, &second));
+    let copied_executor = SqlxPostgresExecutor::new(copied.clone(), runtime.handle().clone());
+
+    runtime.block_on(set_copied_sequence(&copied, &second, root, -1));
+    runtime.block_on(set_copied_sequence(&copied, &second, first.item_id(), 0));
+    assert_eq!(
+        copied_executor.correct(fresh.clone()),
+        Err(CorrectionError::CorruptHistory)
+    );
+    assert_existing_result(
+        &runtime,
+        &copied,
+        &second,
+        &Err(CorrectionError::CorruptHistory),
+    );
+    assert_durable_state(&runtime, &copied, &tenant, thread, turn, 3, 4);
+    assert_eq!(
+        runtime.block_on(copied_sequence(&copied, &second, root)),
+        -1
+    );
+    assert_eq!(
+        runtime.block_on(copied_sequence(&copied, &second, first.item_id())),
+        0
+    );
+
+    runtime.block_on(set_copied_sequence(&copied, &second, root, 1));
+    runtime.block_on(set_copied_sequence(&copied, &second, first.item_id(), 2));
+    assert_existing_result(&runtime, &copied, &second, &Ok(original));
+    copied_executor
+        .correct(fresh)
+        .expect("repaired chain admits correction");
+    assert_durable_state(&runtime, &copied, &tenant, thread, turn, 4, 5);
+    runtime.block_on(remove_copy(&pool, &copied, &schema));
+    runtime.block_on(pool.close());
+}
+
+/// Alters only one private copied row; the migrated table keeps its positive
+/// sequence constraint while these restored-history shapes remain testable.
+async fn set_copied_sequence(
+    pool: &PgPool,
+    command: &CorrectionCommand,
+    item: ItemId,
+    sequence: i64,
+) {
+    sqlx::query("UPDATE turn_items SET sequence = $3 WHERE tenant_id = $1 AND item_id = $2")
+        .bind(command.trust().tenant_id.as_str())
+        .bind(item.as_uuid())
+        .bind(sequence)
+        .execute(pool)
+        .await
+        .expect("set the private copied sequence");
+}
+
+/// Reads the copied row's sequence to prove failed admission did not repair it.
+async fn copied_sequence(pool: &PgPool, command: &CorrectionCommand, item: ItemId) -> i64 {
+    sqlx::query_scalar("SELECT sequence FROM turn_items WHERE tenant_id = $1 AND item_id = $2")
+        .bind(command.trust().tenant_id.as_str())
+        .bind(item.as_uuid())
+        .fetch_one(pool)
+        .await
+        .expect("read the private copied sequence")
+}
+
 /// Adds one copied successor with a distinct sequence, then advances the
 /// fixture counter so only the duplicate edge makes stored history invalid.
 async fn add_extra_successor(

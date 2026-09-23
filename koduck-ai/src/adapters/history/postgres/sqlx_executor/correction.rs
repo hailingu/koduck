@@ -402,7 +402,7 @@ async fn highest_sequence(
 }
 
 /// The one-shot server-side ancestry summary: the bounded recursive walk
-/// plus its count, payload-cap, ordering, root-kind, and branch checks
+/// plus its count, payload-cap, sequence, root-kind, and branch checks
 /// (ADR-0004 CA-03 and CA-06).
 const SUMMARY_SQL: &str = "WITH RECURSIVE chain AS ( \
    SELECT i.item_id, i.corrects_item_id, i.sequence, i.item_type, \
@@ -426,7 +426,7 @@ const SUMMARY_SQL: &str = "WITH RECURSIVE chain AS ( \
  SELECT \
    (SELECT count(*) FROM chain), \
    (SELECT bool_or(payload_bytes > $5) FROM chain), \
-   (SELECT bool_or(later_seq >= earlier_seq) FROM ( \
+   (SELECT bool_or(later_seq <= 0 OR later_seq >= earlier_seq) FROM ( \
       SELECT sequence AS later_seq, \
              LAG(sequence) OVER (ORDER BY depth) AS earlier_seq \
       FROM chain) w), \
@@ -463,7 +463,8 @@ const STREAMED_ANCESTRY_SQL: &str = "WITH RECURSIVE chain AS ( \
   AND i.item_id = c.item_id ORDER BY c.depth";
 
 /// Validates the bounded predecessor ancestry: cycle-free, strictly
-/// earlier, terminating at a supported message root, branch-free, and
+/// positive, strictly earlier, terminating at a supported message root,
+/// branch-free, and
 /// within the node and stored-payload caps (CA-03 and CA-06).
 ///
 /// The whole summary is computed server-side in one bounded recursive query
@@ -502,7 +503,7 @@ async fn validate_ancestry(
 }
 
 /// Applies the CA-03/CA-06 admission precedence to one walked summary: the
-/// ordering violation (which also subsumes cycles) precedes the node cap,
+/// sequence violation (which also subsumes cycles) precedes the node cap,
 /// so a truncated cycle is reported as corruption rather than a resource
 /// bound.
 async fn reject_invalid_summary(
@@ -516,19 +517,17 @@ async fn reject_invalid_summary(
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     command: &CorrectionCommand,
 ) -> Result<(), WriteFailure> {
-    let (node_count, oversized, order_violation, last_type, branched) = summary.clone();
+    let (node_count, oversized, sequence_violation, last_type, branched) = summary.clone();
 
     // A missing or out-of-scope predecessor admits no chain (CA-03).
     if node_count == 0 {
         return Err(resolved(CorrectionError::InvalidPredecessor));
     }
-    // Every ancestor is strictly earlier than its descendant (CA-03). This
-    // is checked before the node cap and also subsumes cycle rejection:
-    // sequences cannot strictly decrease around a loop, so any cyclic
-    // ancestry necessarily violates the order at its revisit — even when
-    // the bounded walk truncates at the cap — and fails closed as corrupt
-    // durable state rather than a resource bound.
-    if order_violation == Some(true) {
+    // Every ancestor must have a positive sequence strictly earlier than its
+    // descendant (CA-03). This precedes the node cap and subsumes cycles:
+    // sequence order cannot strictly decrease around a loop, even when the
+    // bounded walk truncates before reaching its root.
+    if sequence_violation == Some(true) {
         return Err(resolved(CorrectionError::CorruptHistory));
     }
     // Observing one node beyond the admission limit is a resource bound

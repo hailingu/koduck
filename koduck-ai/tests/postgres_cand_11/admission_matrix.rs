@@ -881,7 +881,9 @@ fn nonpositive_counter_schema_proof(harness: &Harness, pool: &sqlx::PgPool) {
 fn stored_identities(harness: &Harness, pool: &sqlx::PgPool) {
     exact_retry_returns_original(harness, pool);
     identity_drift_conflicts(harness, pool);
-    nonterminal_and_malformed_stored_identities(harness, pool);
+    nonterminal_stored_identity(harness, pool);
+    stale_stored_identity_sequence(harness, pool);
+    malformed_stored_identity_payloads(harness, pool);
     misordered_stored_retry_fails_closed(harness, pool);
     oversized_identity_drift_conflicts_before_cap(harness, pool);
     foreign_scope_predecessor_fails_closed(harness, pool);
@@ -995,11 +997,9 @@ fn identity_drift_conflicts(harness: &Harness, pool: &sqlx::PgPool) {
         "a stored non-correction identity is an identity conflict"
     );
 }
-/// An exact match on a nonterminal turn is inconsistent durable state, and
-/// malformed below-cap stored retry payloads fail closed before content
-/// equality can be evaluated.
-fn nonterminal_and_malformed_stored_identities(harness: &Harness, pool: &sqlx::PgPool) {
-    // An exact match on a nonterminal turn is inconsistent durable state.
+/// An exact match on a nonterminal Turn is inconsistent durable state, while
+/// identity drift still takes precedence over that state check.
+fn nonterminal_stored_identity(harness: &Harness, pool: &sqlx::PgPool) {
     let nonterminal = fresh_fixture("ac2-nonterminal-retry");
     let input = harness
         .runtime
@@ -1021,14 +1021,15 @@ fn nonterminal_and_malformed_stored_identities(harness: &Harness, pool: &sqlx::P
         Err(CorrectionError::CorruptHistory),
         "an exact stored match on a nonterminal turn is corruption"
     );
-    // Identity drift still takes precedence on the same nonterminal turn.
     assert_eq!(
         harness.correct(command(&nonterminal, identity, input, "drift")),
         Err(CorrectionError::IdentityConflict)
     );
+}
 
-    // A stored exact match whose sequence reached the Turn counter is
-    // corrupt durable state, not a resolvable retry (CA-03/CA-05).
+/// A stored exact match at or beyond the Turn counter is corrupt history and
+/// leaves both the stored rows and the counter unchanged (CA-03/CA-05).
+fn stale_stored_identity_sequence(harness: &Harness, pool: &sqlx::PgPool) {
     let stale_fixture = fresh_fixture("ac2-retry-stale-sequence");
     let input = harness
         .runtime
@@ -1058,9 +1059,11 @@ fn nonterminal_and_malformed_stored_identities(harness: &Harness, pool: &sqlx::P
     );
     let after = harness.runtime.block_on(snapshot(pool, &stale_fixture));
     assert_unchanged(&before, &after);
+}
 
-    // Malformed below-cap stored retry payloads fail closed before content
-    // equality can be evaluated.
+/// Malformed below-cap stored retry payloads fail closed before replacement
+/// content can be compared (CA-04/CA-06).
+fn malformed_stored_identity_payloads(harness: &Harness, pool: &sqlx::PgPool) {
     for payload in [
         "{\"content\":",
         "{\"text\":\"no content\"}",

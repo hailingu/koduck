@@ -491,6 +491,60 @@ implementation exists and the declared production-boundary checks run.
 
 ## Supporting Notes [Optional]
 
+### Nonpositive ancestor sequence and stored-identity test remediation — 2026-09-23
+
+The owner linked PR 15 review `5286127327` of `97e5caf` in task
+`01a0c834-b8cb-7082-9103-5cd0e65eb3de`, authorizing bounded round 11
+remediation. CA-03 requires every ancestor sequence to be valid as well as
+strictly ordered; CA-04 applies that check to an exact retry and read-only
+reconciliation. The bounded server-side ancestry summary owns this invariant
+for both stored and fresh correction paths. The same review identified a
+92-line test scenario function exceeding the common standard's non-waivable
+80-line executable-unit limit.
+
+| State / precondition | Action / transition | Observable result and invariant | Owner / verification |
+| --- | --- | --- | --- |
+| Completed Turn with a positive root and lawful Correction chain | Admit a fresh Correction; retry or reconcile a stored Correction | Fresh admission succeeds; exact match returns its original Item; all ancestor sequences remain positive and strictly ordered | `validate_ancestry`; existing AC-2 and focused recovery checks |
+| Private copy changes the root sequence from 1 to 0, leaving the stored Correction and Turn counter intact | Admit a successor; retry or reconcile the stored Correction | `CorruptHistory` and zero mutation; relative ordering alone cannot admit a nonpositive root | `zero_sequence_root_rejects_fresh_and_stored_corrections` |
+| Private copy changes root sequence to -1 and an interior Correction ancestor to 0, preserving increasing chain order | Admit a third Correction; retry or reconcile the second | `CorruptHistory` and zero mutation; every ancestor, including a Correction, must have a positive sequence | `negative_root_and_zero_correction_ancestor_fail_closed` |
+| Repair the private sequence values to their lawful positive values | Retry or reconcile the stored identity, then admit the waiting successor | Original Item and one new admission without duplicate mutation; recovery does not relax lawful retry behavior | Both focused regressions |
+| Stored identity differs from the caller's replacement bytes while ancestry is corrupt | Retry the reused identity | `IdentityConflict` retains precedence over ancestry validation | `stored_retry` ordering; existing `exact_retry_rejects_a_branch_at_the_stored_item` checks drift over corrupt history |
+
+The existing `nonterminal_and_malformed_stored_identities` test combines
+nonterminal, stale-counter, and malformed-payload cases; separate named case
+functions preserve those assertions and make each executable unit reviewable.
+The A-6 measurement at `849b0c2` was accurate for that revision: this
+function was 60 physical lines then. A later stale-counter regression grew it
+to 92 lines at `97e5caf`; this round corrects that subsequent overrun rather
+than retroactively changing the original approval evidence.
+The private copied-table regressions exercise otherwise unseedable restored
+history without changing migrated production constraints or adding load
+sampling. No public contract, SQL query count, or error precedence changes.
+
+Verification: the focused zero-root regression first failed because fresh
+admission returned `Ok(Item)` with root sequence 0 (0.19 seconds). After the
+summary predicate also rejected `sequence <= 0`, all five colocated retry
+tests passed (0.81 seconds), including the negative-root/zero-Correction
+chain, exact retry, read-only reconciliation, unchanged corrupt values and
+counter, and recovery. The complete Rust/PostgreSQL suite passed 494 tests
+across 25 binaries; `cargo fmt --all --check`, all-target/all-feature Clippy
+with warnings denied, and 184 governance tests also passed. The PR records
+governance validation, commit/push gates, exact-revision CI, and original-thread
+dispositions.
+
+Point-in-time decomposition review: `correction.rs` is 693 physical lines,
+still one cohesive correction admission/reconciliation owner below the
+800-line exception limit; the affected `reject_invalid_summary` is 54 lines.
+The colocated private-history test file is 491 lines; its new regressions are
+40 and 51 lines. `admission_matrix.rs` is 1,315 lines, the existing cohesive
+AC-2 scenario owner below the 1,800-line exception limit. Its formerly
+92-line mixed scenario is now three separate nonterminal, stale-sequence, and
+malformed-payload functions of 27, 31, and 30 lines; no executable-unit hard
+limit remains in the affected diff. Cyclomatic complexity is `N/A — no
+configured complexity tool`; manual nesting review found no new nested
+control flow. The SQL change reuses the bounded summary and adds no query or
+test concurrency.
+
 ### Stored-retry branch at matching Correction remediation — 2026-09-23
 
 The owner linked PR 15 review `5285905211` of `ef218b56` in task
