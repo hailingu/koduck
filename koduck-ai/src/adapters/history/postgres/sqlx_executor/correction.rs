@@ -427,8 +427,8 @@ async fn highest_sequence(
 }
 
 /// The one-shot server-side ancestry summary: the bounded recursive walk
-/// plus its count, payload-cap, sequence, root-kind, and branch checks
-/// (ADR-0004 CA-03 and CA-06).
+/// plus its count, payload-cap, sequence, root-kind, and branch checks.
+/// Each branch check reads at most two successors (ADR-0004 CA-03/CA-06).
 const SUMMARY_SQL: &str = "WITH RECURSIVE chain AS ( \
    SELECT i.item_id, i.corrects_item_id, i.sequence, i.item_type, \
           octet_length(i.payload)::BIGINT AS payload_bytes, 1 AS depth \
@@ -456,11 +456,10 @@ const SUMMARY_SQL: &str = "WITH RECURSIVE chain AS ( \
              LAG(sequence) OVER (ORDER BY depth) AS earlier_seq \
       FROM chain) w), \
    (SELECT item_type FROM chain ORDER BY depth DESC LIMIT 1), \
-   (SELECT bool_or(cnt > 1) FROM ( \
-      SELECT count(*) AS cnt \
-      FROM chain c JOIN turn_items s \
-        ON s.tenant_id = $1 AND s.corrects_item_id = c.item_id \
-      GROUP BY c.item_id) bc)";
+   (SELECT bool_or((SELECT count(*) > 1 FROM ( \
+      SELECT 1 FROM turn_items s \
+      WHERE s.tenant_id = $1 AND s.corrects_item_id = c.item_id \
+      LIMIT 2) successors)) FROM chain c)";
 
 /// The streamed bounded walk: the same depth-capped ancestry, one row per
 /// ancestor in walk order. Recursion retains metadata; the final same-snapshot
