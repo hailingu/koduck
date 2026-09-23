@@ -641,9 +641,13 @@ async fn reject_malformed_ancestors(
             || sequence <= 0
             || previous_sequence.is_some_and(|previous| sequence >= previous)
             || previous_target.is_some_and(|target| target != item_id);
-        // CA-05: even a correctly encoded Correction deeper in the chain
-        // cannot be a terminal Item in durable history.
-        invalid_structure |= item_type == "correction" && is_terminal;
+        // CA-03/CA-05: neither a supported message root nor any Correction
+        // can be a terminal Item in durable history.
+        invalid_structure |= is_terminal
+            && matches!(
+                item_type.as_str(),
+                "user_message" | "agent_message_delta" | "correction"
+            );
         branched |= has_branch;
         // Exactly one decoded payload is retained at a time: the decoded
         // value drops before the next row is fetched (CA-06).

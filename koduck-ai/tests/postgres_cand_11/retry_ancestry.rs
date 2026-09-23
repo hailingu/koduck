@@ -16,7 +16,61 @@ use crate::harness::{
 pub(crate) fn run() {
     let harness = Harness::connect(2);
     schema_permitted_ancestry(&harness);
+    terminal_message_roots_fail_closed(&harness);
     corrupt_links(&harness);
+}
+
+/// A restored terminal flag on either message-root kind must not let fresh
+/// admission or an exact retry accept malformed durable ancestry (CA-03/CA-04).
+fn terminal_message_roots_fail_closed(harness: &Harness) {
+    let corrupt = CorruptFixture::create(harness);
+    for kind in ["user_message", "agent_message_delta"] {
+        let fixture = fresh_fixture("terminal-message-root");
+        harness
+            .runtime
+            .block_on(seed_turn(&harness.pool, &fixture, "completed", 3, true));
+        let chain = harness
+            .runtime
+            .block_on(seed_chain(&corrupt.pool, &fixture, 2, None));
+        harness.runtime.block_on(async {
+            sqlx::query(
+                "UPDATE turn_items SET item_type = $3, is_terminal = TRUE \
+                 WHERE tenant_id = $1 AND item_id = $2",
+            )
+            .bind(fixture.tenant.as_str())
+            .bind(chain[0])
+            .bind(kind)
+            .execute(&corrupt.pool)
+            .await
+            .expect("seed a terminal message root in the isolated history");
+        });
+        let before = harness.runtime.block_on(snapshot(&corrupt.pool, &fixture));
+        assert_eq!(
+            harness.correct_on(
+                &corrupt.pool,
+                command(
+                    &fixture,
+                    ItemId::new(),
+                    ItemId::from_uuid(chain[1]),
+                    "successor",
+                )
+            ),
+            Err(CorrectionError::CorruptHistory),
+            "fresh admission must reject a terminal {kind} root"
+        );
+        assert_unchanged(
+            &before,
+            &harness.runtime.block_on(snapshot(&corrupt.pool, &fixture)),
+        );
+        assert_rejected(
+            harness,
+            &corrupt.pool,
+            &fixture,
+            &chain,
+            CorrectionError::CorruptHistory,
+        );
+    }
+    corrupt.teardown();
 }
 
 /// Each case retains an exact stored identity while corrupting one ancestor.
