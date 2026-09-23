@@ -6,7 +6,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 import gate
-from git_snapshot import index_snapshot
+from git_snapshot import RustSourceScope, index_snapshot
+from scan_runtime import CoverageResult
 from sonar_api import require_pass
 import test_gate
 from test_gate import git
@@ -52,11 +53,22 @@ class FlowTests(unittest.TestCase):
             with index_snapshot(self.root) as snapshot:
                 with (
                     patch.object(gate, "preflight"),
-                    patch.object(gate, "coverage", return_value={"code.py": {1: True}}),
+                    patch.object(
+                        gate,
+                        "coverage",
+                        return_value=CoverageResult(
+                            {"code.py": {1: True}},
+                            RustSourceScope(frozenset(), frozenset()),
+                        ),
+                    ),
                     patch.object(gate, "scan", return_value=("task", "analysis")),
                 ):
                     record = gate.analyze(
-                        self.root, snapshot, self.base, {}, SonarFixture(issue)
+                        self.root,
+                        snapshot,
+                        self.base,
+                        {"tests": "**/tests/**"},
+                        SonarFixture(issue),
                     )
                 self.assertEqual(record["tree"], snapshot.tree)
                 self.assertEqual(record["base"], self.base)
@@ -67,6 +79,33 @@ class FlowTests(unittest.TestCase):
                         require_pass(record, snapshot.tree, self.base, record["policy"])
                 else:
                     require_pass(record, snapshot.tree, self.base, record["policy"])
+
+    def test_changed_production_rust_under_scanner_test_path_blocks(self):
+        """Reject a compiled source the static Sonar test mapping would hide."""
+        name = "src/feature/tests/engine.rs"
+        path = self.root / name
+        path.parent.mkdir(parents=True)
+        path.write_text("pub fn value() -> u64 { 1 }\n")
+        git(self.root, "add", name)
+        report = CoverageResult(
+            {name: {1: False}}, RustSourceScope(frozenset({name}), frozenset())
+        )
+        with index_snapshot(self.root) as snapshot:
+            sonar = SonarFixture()
+            with (
+                patch.object(gate, "preflight"),
+                patch.object(gate, "coverage", return_value=report),
+                patch.object(gate, "scan") as scan,
+            ):
+                with self.assertRaisesRegex(RuntimeError, "RUST_PRODUCTION_TEST_PATH"):
+                    gate.analyze(
+                        self.root,
+                        snapshot,
+                        self.base,
+                        {"tests": "**/tests/**"},
+                        sonar,
+                    )
+                scan.assert_not_called()
 
     def test_cached_result_never_skips_fresh_push_scan(self):
         revision = git(self.root, "rev-parse", "HEAD")

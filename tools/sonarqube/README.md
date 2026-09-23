@@ -153,22 +153,26 @@ Sonar compliance if someone bypasses those hooks.
 
 ### Rust test-module coverage boundary — 2026-09-23
 
-PR 15 reviews `5286757657` and `5287659484` identified that test-only Rust
-modules under `src/` could enter production coverage and that scanning raw
-source for `#[cfg(test)]` could exempt a compiled module when the apparent
-declaration was only a comment. Dedicated `tests/` paths now define the
-test-only boundary for both changed lines and imported coverage.
+PR 15 reviews `5286757657`, `5287659484`, and `5288161841` identified three
+unsafe ways to classify Rust by path or raw text. The gate now uses the existing
+strict Clippy build's dependency files: a Rust file is test-only only when it
+appears in a test build and in no non-test build. This single classification
+governs both changed lines and imported coverage.
 
 | State / precondition | Action / entry point | Observable outcome and invariant | Verification |
 | --- | --- | --- | --- |
-| A changed Rust module exists under a dedicated `tests/` path | Classify the Git diff and imported coverage | Its lines never increase production covered or coverable counts | `test_rust_test_modules_do_not_count_as_changed_production` |
+| A Rust file appears only in test-build dependencies | Classify the Git diff and imported coverage | Its lines never increase production covered or coverable counts | `test_rust_test_modules_do_not_count_as_changed_production` and compiler-scope fixture |
 | A changed Rust production sibling and a test-only module coexist | Classify the same revision | Production changes remain counted; test-only changes cannot mask an under-80% production diff | The same focused Git fixture and the normal feature gate |
 | A comment contains a fake `#[cfg(test)] mod foo;` but the real `mod foo;` is active | Classify the Git diff and imported coverage | The compiled `foo.rs` remains production in both paths | `test_comment_cannot_exempt_compiled_rust_module_from_coverage` |
+| A production `#[path]` declaration imports `tests/engine.rs` | Classify the Git diff and coverage, then check Sonar's test-path mapping | The file is included in both local sets; the gate rejects a changed file that Sonar would classify as a test | `test_compiled_rust_module_under_tests_path_remains_production` and scan-scope check |
+| Clippy's current compilation evidence is missing or malformed | Classify Rust scope | Stop verification instead of granting any test-only exemption | Compiler-scope parser regression |
 
 This serial, local classification has no retry or concurrent transition. A
-new source revision is classified from its own snapshot. Rust test-only modules
-must live under a dedicated `tests/` path to receive this exemption; other
-modules remain production regardless of comments or attributes.
+new source revision is classified from its own snapshot. Rust files absent
+from the proven test-only set remain production, regardless of comments,
+attributes, names, or directories. A changed production file under Sonar's
+test-path patterns blocks the gate because Sonar cannot analyze it as main
+source with the current static scanner mapping.
 
 ### Correction retry and ancestry snapshot — 2026-09-23
 

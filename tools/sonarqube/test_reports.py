@@ -166,12 +166,17 @@ class ReportTests(unittest.TestCase):
             with (
                 patch.object(scan_runtime, "run", process),
                 patch.object(scan_runtime, "verify_shell_entrypoints"),
+                patch.object(
+                    scan_runtime,
+                    "compiled_rust_scope",
+                    return_value=scan_runtime.RustSourceScope(frozenset(), frozenset()),
+                ),
             ):
                 result = scan_runtime.coverage(
                     root, root, root / "reports", {"test_timeout": 2}
                 )
             self.assertEqual(
-                set(result),
+                set(result.hits),
                 {
                     "src/lib.rs",
                     "tools/governance-validator/validate.mjs",

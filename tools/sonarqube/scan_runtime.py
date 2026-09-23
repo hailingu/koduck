@@ -5,14 +5,23 @@ import re
 import signal
 import subprocess
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 
 from coverage_report import read_lcov, read_python, write_generic
-from git_snapshot import git, is_production_source
+from git_snapshot import RustSourceScope, compiled_rust_scope, git, is_production_source
 from shell_coverage import verify_shell_entrypoints
 
 VALIDATOR = "tools/governance-validator"
 VENV_PYTHON = ".venv/bin/python"
+
+
+@dataclass(frozen=True)
+class CoverageResult:
+    """One snapshot's executable hits and compiler-proven Rust test scope."""
+
+    hits: dict[str, dict[int, bool]]
+    rust_scope: RustSourceScope
 
 
 def run(
@@ -98,10 +107,12 @@ def preflight(config: dict, tools: Path) -> None:
         raise RuntimeError("SONAR_DATABASE_MISSING: isolated PostgreSQL URL required")
 
 
-def rust_coverage(snapshot: Path, output: Path, timeout: int) -> dict:
+def rust_coverage(
+    snapshot: Path, output: Path, timeout: int
+) -> tuple[dict, RustSourceScope]:
     """Verify Rust formatting/lints and exercise PostgreSQL tests with fresh LLVM coverage."""
     run(["cargo", "fmt", "--all", "--check"], snapshot, timeout)
-    run(
+    clippy_output = run(
         [
             "cargo",
             "clippy",
@@ -109,6 +120,7 @@ def rust_coverage(snapshot: Path, output: Path, timeout: int) -> dict:
             "koduck-ai",
             "--all-targets",
             "--all-features",
+            "--message-format=json",
             "--",
             "-D",
             "warnings",
@@ -116,6 +128,7 @@ def rust_coverage(snapshot: Path, output: Path, timeout: int) -> dict:
         snapshot,
         timeout,
     )
+    rust_scope = compiled_rust_scope(snapshot, clippy_output)
     rust = output / "rust.lcov"
     run(
         [
@@ -135,7 +148,7 @@ def rust_coverage(snapshot: Path, output: Path, timeout: int) -> dict:
         snapshot,
         timeout,
     )
-    return read_lcov(rust, snapshot)
+    return read_lcov(rust, snapshot), rust_scope
 
 
 def javascript_coverage(
@@ -222,17 +235,21 @@ def python_coverage(snapshot: Path, tools: Path, output: Path, timeout: int) -> 
     return result
 
 
-def coverage(snapshot: Path, tools: Path, output: Path, config: dict) -> dict:
+def coverage(snapshot: Path, tools: Path, output: Path, config: dict) -> CoverageResult:
     """Run each supported language boundary and import one same-source report."""
     output.mkdir()
     timeout = config["test_timeout"]
-    result = rust_coverage(snapshot, output, timeout)
+    result, rust_scope = rust_coverage(snapshot, output, timeout)
     result.update(javascript_coverage(snapshot, tools, output, timeout))
     if (snapshot / "tools/sonarqube/test_gate.py").exists():
         result.update(python_coverage(snapshot, tools, output, timeout))
-    result = {path: hits for path, hits in result.items() if is_production_source(path)}
+    result = {
+        path: hits
+        for path, hits in result.items()
+        if is_production_source(path, rust_scope.test_only)
+    }
     write_generic(result, output / "coverage.xml")
-    return result
+    return CoverageResult(result, rust_scope)
 
 
 def scan(

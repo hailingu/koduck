@@ -4,6 +4,7 @@
 import argparse
 import contextlib
 import fcntl
+from fnmatch import fnmatchcase
 import hashlib
 import json
 import os
@@ -92,8 +93,17 @@ def analyze(root: Path, snapshot, base: str, config: dict, sonar: Sonar) -> dict
         output = Path(temporary)
         # Test before submitting either scan: verification failure retains the prior dashboard.
         coverage_output = output / "coverage"
-        hits = coverage(snapshot.path, TOOLS, coverage_output, config)
-        changed = changed_lines(snapshot.path, base, snapshot.revision)
+        report = coverage(snapshot.path, TOOLS, coverage_output, config)
+        hits = report.hits
+        changed = changed_lines(
+            snapshot.path, base, snapshot.revision, report.rust_scope.test_only
+        )
+        test_patterns = config["tests"].split(",")
+        for name in changed:
+            if name in report.rust_scope.production and any(
+                fnmatchcase(name, pattern) for pattern in test_patterns
+            ):
+                raise RuntimeError("SONAR_RUST_PRODUCTION_TEST_PATH: " + name)
         with revision_snapshot(root, base) as baseline:
             task, base_analysis = scan(baseline, config, sonar, output / "baseline")
             old_issues = sonar.findings()

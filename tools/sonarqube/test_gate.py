@@ -1,6 +1,7 @@
 """Behavioral regression checks for immutable Git and Sonar push admission."""
 
 import importlib
+import json
 import subprocess
 import tempfile
 import unittest
@@ -91,27 +92,36 @@ class SnapshotTests(unittest.TestCase):
         test_module.write_text("#[test]\nfn fixture() { assert_eq!(2, 2); }\n")
         git(self.root, "add", ".")
         git(self.root, "commit", "-m", "add Rust module")
-        changed = module.changed_lines(self.root, base, "HEAD")
+        scope = module.RustSourceScope(
+            frozenset({"src/feature.rs"}),
+            frozenset({"src/feature/tests/case.rs"}),
+        )
+        changed = module.changed_lines(self.root, base, "HEAD", scope.test_only)
         self.assertIn("src/feature.rs", changed)
         self.assertNotIn("src/feature/tests/case.rs", changed)
-        self.assertFalse(module.is_production_source("src/feature/tests/case.rs"))
+        self.assertFalse(
+            module.is_production_source("src/feature/tests/case.rs", scope.test_only)
+        )
         runtime = implementation("scan_runtime")
         output = self.root / "coverage"
         with (
             patch.object(
                 runtime,
                 "rust_coverage",
-                return_value={
-                    "src/feature.rs": {5: False},
-                    "src/feature/tests/case.rs": {2: True},
-                },
+                return_value=(
+                    {
+                        "src/feature.rs": {5: False},
+                        "src/feature/tests/case.rs": {2: True},
+                    },
+                    scope,
+                ),
             ),
             patch.object(runtime, "javascript_coverage", return_value={}),
         ):
             imported = runtime.coverage(
                 self.root, self.root, output, {"test_timeout": 1}
             )
-        self.assertEqual(imported, {"src/feature.rs": {5: False}})
+        self.assertEqual(imported.hits, {"src/feature.rs": {5: False}})
 
     def test_comment_cannot_exempt_compiled_rust_module_from_coverage(self):
         """A commented test attribute cannot hide a compiled production module."""
@@ -125,21 +135,93 @@ class SnapshotTests(unittest.TestCase):
         production_module.write_text("pub fn live() -> u64 { 1 }\n")
         git(self.root, "add", ".")
         git(self.root, "commit", "-m", "add compiled Rust module")
-        changed = module.changed_lines(self.root, base, "HEAD")
+        scope = module.RustSourceScope(
+            frozenset({"src/feature.rs", "src/feature/foo.rs"}), frozenset()
+        )
+        changed = module.changed_lines(self.root, base, "HEAD", scope.test_only)
         self.assertIn("src/feature/foo.rs", changed)
         runtime = implementation("scan_runtime")
         with (
             patch.object(
                 runtime,
                 "rust_coverage",
-                return_value={"src/feature/foo.rs": {1: False}},
+                return_value=({"src/feature/foo.rs": {1: False}}, scope),
             ),
             patch.object(runtime, "javascript_coverage", return_value={}),
         ):
             imported = runtime.coverage(
                 self.root, self.root, self.root / "coverage", {"test_timeout": 1}
             )
-        self.assertEqual(imported, {"src/feature/foo.rs": {1: False}})
+        self.assertEqual(imported.hits, {"src/feature/foo.rs": {1: False}})
+
+    def test_compiled_rust_module_under_tests_path_remains_production(self):
+        """A directory named tests cannot hide a production Rust module."""
+        module = implementation("git_snapshot")
+        base = git(self.root, "rev-parse", "HEAD")
+        owner = self.root / "src/feature.rs"
+        owner.parent.mkdir()
+        owner.write_text(
+            '#[path = "feature/tests/engine.rs"]\nmod engine;\n'
+            "pub fn live() -> u64 { engine::value() }\n"
+        )
+        production_module = self.root / "src/feature/tests/engine.rs"
+        production_module.parent.mkdir(parents=True)
+        production_module.write_text("pub fn value() -> u64 { 1 }\n")
+        git(self.root, "add", ".")
+        git(self.root, "commit", "-m", "add compiled Rust module under tests")
+        scope = module.RustSourceScope(
+            frozenset({"src/feature.rs", "src/feature/tests/engine.rs"}),
+            frozenset(),
+        )
+        changed = module.changed_lines(self.root, base, "HEAD", scope.test_only)
+        self.assertIn("src/feature/tests/engine.rs", changed)
+        runtime = implementation("scan_runtime")
+        with (
+            patch.object(
+                runtime,
+                "rust_coverage",
+                return_value=({"src/feature/tests/engine.rs": {1: False}}, scope),
+            ),
+            patch.object(runtime, "javascript_coverage", return_value={}),
+        ):
+            imported = runtime.coverage(
+                self.root, self.root, self.root / "coverage", {"test_timeout": 1}
+            )
+        self.assertEqual(imported.hits, {"src/feature/tests/engine.rs": {1: False}})
+
+    def test_compiler_dependencies_prove_rust_test_only_scope(self):
+        """A test-path file compiled by a non-test target never gets exempted."""
+        module = implementation("git_snapshot")
+        package = f"path+file://{self.root}#0.1.0"
+        deps = self.root / "target/debug/deps"
+        deps.mkdir(parents=True)
+        (deps / "fixture-prod.d").write_text(
+            "fixture-prod.d: src/lib.rs src/feature/tests/engine.rs\n"
+        )
+        (deps / "fixture-test.d").write_text(
+            "fixture-test.d: src/lib.rs src/feature/tests/engine.rs "
+            "src/feature/tests/case.rs\n"
+        )
+        artifacts = [
+            {
+                "reason": "compiler-artifact",
+                "package_id": package,
+                "filenames": [str(deps / f"libfixture-{kind}.rmeta")],
+                "profile": {"test": kind == "test"},
+            }
+            for kind in ("prod", "test")
+        ]
+        serialized = "\n".join(json.dumps(artifact) for artifact in artifacts)
+        scope = module.compiled_rust_scope(self.root, serialized)
+        self.assertIn("src/feature/tests/engine.rs", scope.production)
+        self.assertNotIn("src/feature/tests/engine.rs", scope.test_only)
+        self.assertIn("src/feature/tests/case.rs", scope.test_only)
+        (deps / "fixture-test.d").unlink()
+        with self.assertRaisesRegex(RuntimeError, "SONAR_RUST_DEPFILE_MISSING"):
+            module.compiled_rust_scope(self.root, serialized)
+        (deps / "fixture-test.d").write_text("")
+        with self.assertRaisesRegex(RuntimeError, "SONAR_RUST_DEPFILE_INVALID"):
+            module.compiled_rust_scope(self.root, serialized)
 
 
 class AdmissionTests(unittest.TestCase):
