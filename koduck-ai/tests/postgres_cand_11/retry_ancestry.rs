@@ -16,8 +16,55 @@ use crate::harness::{
 pub(crate) fn run() {
     let harness = Harness::connect(2);
     schema_permitted_ancestry(&harness);
+    misordered_sole_successor(&harness);
     terminal_message_roots_fail_closed(&harness);
     corrupt_links(&harness);
+}
+
+/// A sole direct successor with an earlier sequence is corrupt even though
+/// the stored correction and its own ancestors are ordered (CA-03/CA-04).
+fn misordered_sole_successor(harness: &Harness) {
+    let fixture = fresh_fixture("retry-misordered-successor");
+    let root = harness
+        .runtime
+        .block_on(seed_turn(&harness.pool, &fixture, "completed", 4, true))
+        .expect("seeded root message");
+    let stored = ItemId::new();
+    harness.runtime.block_on(seed_item(
+        &harness.pool,
+        &fixture,
+        3,
+        stored.as_uuid(),
+        "correction",
+        r#"{"content":"committed"}"#,
+        false,
+        Some(root),
+    ));
+    harness.runtime.block_on(seed_item(
+        &harness.pool,
+        &fixture,
+        2,
+        Uuid::new_v4(),
+        "correction",
+        r#"{"content":"successor"}"#,
+        false,
+        Some(stored.as_uuid()),
+    ));
+    let before = harness.runtime.block_on(snapshot(&harness.pool, &fixture));
+    assert_eq!(
+        harness.correct(command(
+            &fixture,
+            stored,
+            ItemId::from_uuid(root),
+            "committed",
+        )),
+        Err(CorrectionError::CorruptHistory),
+        "an exact retry must reject its sole sequence-misordered successor"
+    );
+    assert_unchanged(
+        &before,
+        &harness.runtime.block_on(snapshot(&harness.pool, &fixture)),
+    );
 }
 
 /// A restored terminal flag on either message-root kind must not let fresh

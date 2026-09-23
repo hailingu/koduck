@@ -277,12 +277,13 @@ async fn stored_retry(
         // identity-content conflicts have taken precedence (CA-04/CA-05).
         return Err(resolved(CorrectionError::CorruptHistory));
     }
-    let sequence = stored_retry_sequence(&mut *transaction, command, sequence).await?;
+    let stored_sequence = sequence;
+    let sequence = stored_retry_sequence(&mut *transaction, command, stored_sequence).await?;
     // CA-03/CA-04 apply to retries and reconciliation as well as new writes.
     // A valid stored successor is allowed; its ancestry and own successor
     // shape must both be sound.
     validate_ancestry(transaction, command).await?;
-    if stored_item_has_branch(transaction, command).await? {
+    if stored_item_has_invalid_successor(transaction, command, stored_sequence).await? {
         return Err(resolved(CorrectionError::CorruptHistory));
     }
     Ok(Some(Item {
@@ -293,20 +294,23 @@ async fn stored_retry(
 }
 
 /// A retry starts its ancestry at the predecessor, so separately inspect the
-/// stored Correction's own edge with a two-row bound (CA-03/CA-04).
-async fn stored_item_has_branch(
+/// stored Correction's own direct successors with a two-row bound (CA-03/CA-04).
+/// A single successor must also follow the stored Correction in sequence.
+async fn stored_item_has_invalid_successor(
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     command: &CorrectionCommand,
+    stored_sequence: i64,
 ) -> Result<bool, WriteFailure> {
-    sqlx::query_scalar(
-        "SELECT COUNT(*) > 1 FROM (SELECT 1 FROM turn_items \
-         WHERE tenant_id = $1 AND corrects_item_id = $2 LIMIT 2) successors",
+    let successors: Vec<i64> = sqlx::query_scalar(
+        "SELECT sequence FROM turn_items \
+         WHERE tenant_id = $1 AND corrects_item_id = $2 LIMIT 2",
     )
     .bind(command.trust().tenant_id.as_str())
     .bind(command.item_id().as_uuid())
-    .fetch_one(&mut **transaction)
+    .fetch_all(&mut **transaction)
     .await
-    .map_err(classify_write_error)
+    .map_err(classify_write_error)?;
+    Ok(successors.len() > 1 || successors.into_iter().any(|next| next <= stored_sequence))
 }
 
 /// Rechecks identity and bounds the body in one READ COMMITTED statement, so
