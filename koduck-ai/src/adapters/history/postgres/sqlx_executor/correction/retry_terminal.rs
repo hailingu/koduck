@@ -1,7 +1,7 @@
 // ADR: koduck-ai/docs/adr/ADR-0004-authenticated-correction-admission.md
 
-//! CA-03/CA-04/CA-05: admission, retry, and reconciliation reject a terminal
-//! Correction even when restored history lacks the production shape constraint.
+//! CA-03/CA-04/CA-05: private-history fixtures verify that admission, retry,
+//! and reconciliation reject malformed Correction flags and successor shape.
 
 use sqlx::PgPool;
 use tokio::runtime::Runtime;
@@ -135,6 +135,113 @@ fn terminal_correction_ancestor_is_rejected() {
     assert!(!runtime.block_on(terminal_flag(&copied, &third)));
     runtime.block_on(remove_copy(&pool, &copied, &schema));
     runtime.block_on(pool.close());
+}
+
+/// The stored retry's own successor shape matters even though the ancestry
+/// walk begins at its predecessor and cannot count children of that Item.
+#[test]
+fn exact_retry_rejects_a_branch_at_the_stored_item() {
+    let (runtime, pool) = connected_pool();
+    let _permit = runtime.block_on(crate::test_migrations::reserve_database());
+    let tenant =
+        TenantId::new(format!("cand11-retry-branch-{}", Uuid::new_v4())).expect("fixture tenant");
+    let thread = ThreadId::new();
+    let turn = TurnId::new();
+    runtime.block_on(seed_completed_turn(&pool, &tenant, &thread, &turn));
+    let root = runtime.block_on(seeded_input_id(&pool, &tenant, &thread, &turn));
+    let command = correction_command(&tenant, thread, turn, ItemId::new(), root);
+    let public_executor = SqlxPostgresExecutor::new(pool.clone(), runtime.handle().clone());
+    let original = public_executor
+        .correct(command.clone())
+        .expect("admit correction");
+    let schema = format!("cand11_retry_branch_{}", Uuid::new_v4().simple());
+    let copied = runtime.block_on(copy_items(&pool, &schema, &command));
+    let copied_executor = SqlxPostgresExecutor::new(copied.clone(), runtime.handle().clone());
+    let child = correction_command(&tenant, thread, turn, ItemId::new(), command.item_id());
+    copied_executor
+        .correct(child.clone())
+        .expect("one valid successor");
+    assert_existing_result(&runtime, &copied, &command, &Ok(original.clone()));
+    assert_durable_state(&runtime, &copied, &tenant, thread, turn, 3, 4);
+
+    let extra = ItemId::new();
+    runtime.block_on(add_extra_successor(&copied, &command, &child, extra));
+    assert_existing_result(
+        &runtime,
+        &copied,
+        &command,
+        &Err(CorrectionError::CorruptHistory),
+    );
+    let content_drift = CorrectionCommand::new(
+        command.trust().clone(),
+        thread,
+        turn,
+        command.item_id(),
+        root,
+        "different replacement",
+    )
+    .expect("valid content mismatch");
+    assert_eq!(
+        copied_executor.correct(content_drift),
+        Err(CorrectionError::IdentityConflict)
+    );
+    assert_durable_state(&runtime, &copied, &tenant, thread, turn, 4, 5);
+
+    runtime.block_on(remove_extra_successor(&copied, &command, extra));
+    assert_existing_result(&runtime, &copied, &command, &Ok(original));
+    assert_durable_state(&runtime, &copied, &tenant, thread, turn, 3, 4);
+    runtime.block_on(remove_copy(&pool, &copied, &schema));
+    runtime.block_on(pool.close());
+}
+
+/// Adds one copied successor with a distinct sequence, then advances the
+/// fixture counter so only the duplicate edge makes stored history invalid.
+async fn add_extra_successor(
+    pool: &PgPool,
+    command: &CorrectionCommand,
+    child: &CorrectionCommand,
+    extra: ItemId,
+) {
+    sqlx::query(
+        "INSERT INTO turn_items (tenant_id, thread_id, turn_id, sequence, item_id, \
+         item_type, payload, is_terminal, corrects_item_id) \
+         SELECT tenant_id, thread_id, turn_id, 4, $3, item_type, payload, \
+                is_terminal, corrects_item_id FROM turn_items \
+         WHERE tenant_id = $1 AND item_id = $2",
+    )
+    .bind(command.trust().tenant_id.as_str())
+    .bind(child.item_id().as_uuid())
+    .bind(extra.as_uuid())
+    .execute(pool)
+    .await
+    .expect("add a second successor in the private copy");
+    set_fixture_counter(pool, command, 5).await;
+}
+
+/// Removes only the extra copied child and restores the valid Turn counter.
+async fn remove_extra_successor(pool: &PgPool, command: &CorrectionCommand, extra: ItemId) {
+    sqlx::query("DELETE FROM turn_items WHERE tenant_id = $1 AND item_id = $2")
+        .bind(command.trust().tenant_id.as_str())
+        .bind(extra.as_uuid())
+        .execute(pool)
+        .await
+        .expect("remove extra copied successor");
+    set_fixture_counter(pool, command, 4).await;
+}
+
+/// Keeps the Turn counter consistent with the private copied Item sequences.
+async fn set_fixture_counter(pool: &PgPool, command: &CorrectionCommand, counter: i64) {
+    sqlx::query(
+        "UPDATE public.turns SET next_sequence = $4 \
+         WHERE tenant_id = $1 AND thread_id = $2 AND turn_id = $3",
+    )
+    .bind(command.trust().tenant_id.as_str())
+    .bind(command.thread_id().as_uuid())
+    .bind(command.turn_id().as_uuid())
+    .bind(counter)
+    .execute(pool)
+    .await
+    .expect("keep the fixture Turn counter consistent");
 }
 
 /// Checks the write and read-only exact-match owners against the same result.

@@ -268,13 +268,34 @@ async fn stored_retry(
     let sequence: i64 = row.try_get("sequence").map_err(classify_write_error)?;
     let sequence = stored_retry_sequence(&mut *transaction, command, sequence).await?;
     // CA-03/CA-04 apply to retries and reconciliation as well as new writes.
-    // A valid stored successor is allowed; its ancestry must still be sound.
+    // A valid stored successor is allowed; its ancestry and own successor
+    // shape must both be sound.
     validate_ancestry(transaction, command).await?;
+    if stored_item_has_branch(transaction, command).await? {
+        return Err(resolved(CorrectionError::CorruptHistory));
+    }
     Ok(Some(Item {
         item_id: ItemId::from_uuid(item_id),
         sequence,
         payload: ItemPayload::Correction(correction),
     }))
+}
+
+/// A retry starts its ancestry at the predecessor, so separately inspect the
+/// stored Correction's own edge with a two-row bound (CA-03/CA-04).
+async fn stored_item_has_branch(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    command: &CorrectionCommand,
+) -> Result<bool, WriteFailure> {
+    sqlx::query_scalar(
+        "SELECT COUNT(*) > 1 FROM (SELECT 1 FROM turn_items \
+         WHERE tenant_id = $1 AND corrects_item_id = $2 LIMIT 2) successors",
+    )
+    .bind(command.trust().tenant_id.as_str())
+    .bind(command.item_id().as_uuid())
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(classify_write_error)
 }
 
 /// Enforces the cap again in the body-fetching statement, because READ COMMITTED

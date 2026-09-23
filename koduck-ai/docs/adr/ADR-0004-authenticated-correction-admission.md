@@ -491,6 +491,55 @@ implementation exists and the declared production-boundary checks run.
 
 ## Supporting Notes [Optional]
 
+### Stored-retry branch at matching Correction remediation — 2026-09-23
+
+The owner linked PR 15 review `5285905211` of `ef218b56` in task
+`01a0c834-b8cb-7082-9103-5cd0e65eb3de`, authorizing this bounded round 10
+remediation. CA-03 permits at most one direct successor per chain node; CA-04
+requires malformed matching history to fail. Exact retry and read-only
+reconciliation must examine the matching Correction as well as its predecessor
+chain. The shared stored-retry path owns this invariant.
+
+| State / precondition | Action / transition | Observable result and invariant | Owner / verification |
+| --- | --- | --- | --- |
+| A valid stored Correction has one lawful successor | Exact retry or reconciliation of the stored identity | Original Item, no row or counter mutation; a single successor remains valid | `stored_retry`; `exact_retry_rejects_a_branch_at_the_stored_item` |
+| A constraint-free copy adds a second direct successor with a distinct sequence and a consistent Turn counter | Exact retry or reconciliation of the stored identity | `CorruptHistory`; no successful retry may hide a branched matching Item, and no row or counter changes | Both entry points; the same regression |
+| The branched stored Correction also conflicts with the caller's replacement bytes | Retry the reused identity | `IdentityConflict` retains precedence over branch corruption | `stored_retry`; the same regression |
+| The extra successor is removed and the counter restored | Retry or reconcile the original identity | Original Item again with no duplicate append | Both entry points; the same recovery checks |
+
+The regression reuses the existing scoped two-row copy, admits one lawful
+successor, and adds one extra successor only inside the constraint-free private
+table. It retains unique sequences and a consistent Turn counter so branch
+corruption is isolated from sequence corruption. The production successor
+constraint remains intact. The check reads at most two successor identities
+for this matching Item after identity precedence and the existing bounded
+retry/ancestry validations. It does not change the fresh-write tip rule,
+payload cap, lock order, allocation, or public contract. A second successor
+cannot arise through lawful writes under the production unique index, so no
+new permitted concurrent transition or load sampling is introduced.
+
+Verification: the focused regression first failed because an exact retry
+returned the original Item through two direct successors (0.20 seconds),
+then passed after the bounded check (0.23 seconds). All four matrix rows pass
+for both entry points where applicable. The complete Rust/PostgreSQL suite
+passed 492 tests across 25 binaries; `cargo fmt --all --check`,
+all-target/all-feature Clippy with warnings denied, 184 governance tests,
+and governance validation also passed. Local runs used three build jobs,
+serial tests, and process-local
+`DEVELOPER_DIR=/Library/Developer/CommandLineTools`. The PR records the
+commit/push gates, exact-revision CI, and review disposition.
+
+Decomposition review: `correction.rs` is 694 physical lines and remains the
+cohesive correction admission/reconciliation owner; no 800-line exception is
+needed. `stored_retry` is 70 lines, below the 80-line hard limit; the branch
+guard remains beside the existing matched-identity validations so its
+precedence is visible. The bounded successor query is a 14-line private
+helper. The colocated test module is 365 lines; the new 53-line regression
+keeps its before/after durable-state checks together. These are point-in-time
+measurements, not layout assertions in tests. Cyclomatic complexity is
+`N/A — no configured complexity tool`; manual nesting review found no new
+nested control flow.
+
 ### Terminal Correction ancestor remediation — 2026-09-23
 
 The owner linked PR 15 review `5280828942` of `bd1ec932` in task
