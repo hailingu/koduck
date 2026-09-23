@@ -2,24 +2,24 @@
 
 ## Metadata [Required]
 
-- **Decision Status**: Proposed
+- **Decision Status**: Accepted
 - **Implementation Status**: Not Started
 - **Date**: 2026-09-22
 - **Author**: @codex
 - **Decision Owner**: @linhai
 - **Required Approver**: @linhai
 - **Record Scope**: Project
-- **Approver [Conditionally Required — Decision Status is or has been `Accepted`]**: Pending — awaiting eligible non-author approval
-- **Approval Time [Conditionally Required — Decision Status is or has been `Accepted`]**: Pending — not approved
-- **Approval Evidence [Conditionally Required — Decision Status is or has been `Accepted`]**: Pending — not approved
-- **Rejector [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is Proposed
-- **Rejection Time [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is Proposed
-- **Rejection Evidence [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is Proposed
-- **Rejection Reason [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is Proposed
-- **Retired By [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — Decision Status is Proposed
-- **Retirement Time [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — Decision Status is Proposed
-- **Retirement Evidence [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — Decision Status is Proposed
-- **Retirement Reason [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — Decision Status is Proposed
+- **Approver [Conditionally Required — Decision Status is or has been `Accepted`]**: @linhai
+- **Approval Time [Conditionally Required — Decision Status is or has been `Accepted`]**: 2026-09-23T14:22:55Z
+- **Approval Evidence [Conditionally Required — Decision Status is or has been `Accepted`]**: Approve
+- **Rejector [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is Accepted
+- **Rejection Time [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is Accepted
+- **Rejection Evidence [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is Accepted
+- **Rejection Reason [Conditionally Required — Decision Status is `Rejected`]**: N/A — Decision Status is Accepted
+- **Retired By [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — Decision Status is Accepted
+- **Retirement Time [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — Decision Status is Accepted
+- **Retirement Evidence [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — Decision Status is Accepted
+- **Retirement Reason [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — Decision Status is Accepted
 - **Blocked From [Conditionally Required — Implementation Status is `Blocked`]**: N/A — Implementation Status is Not Started
 - **Blocker And Evidence [Conditionally Required — Implementation Status is `Blocked`]**: N/A — Implementation Status is Not Started
 - **Blocker Owner [Conditionally Required — Implementation Status is `Blocked`]**: N/A — Implementation Status is Not Started
@@ -101,8 +101,7 @@ Out of scope:
   Markdown parser.
 - Follow `AGENTS.md` Approval and Status, Scope Routing, and source test-first
   requirements, plus the common software-engineering standard.
-- This Proposed record authorizes no implementation before an eligible
-  non-author approver supplies the canonical approval evidence.
+- Implementation follows the accepted scope and its recorded acceptance checks.
 
 ### Open Questions [Conditionally Required — material questions exist or were resolved during drafting]
 
@@ -281,10 +280,10 @@ reason adequacy remains a disclosed human-review limit, not a CLI guarantee.
 
 | Risk dimension | Applicability and scenario, or specific N/A reason | Owning boundary | Deterministic verification method | Exact expected result | Acceptance check IDs | Status | Actual evidence |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| concurrency and ordering | N/A — the new rule is a stateless predicate over one parsed document; no scheduling or shared state changes | ADR lifecycle validator | N/A — no concurrent transition introduced | N/A — no changed concurrency invariant | N/A — no triggered check | N/A — no shared mutable state change | N/A — assessed against the touchpoints above |
-| timeout and deadline | N/A — no timer, deadline, external call, or wait is added | ADR lifecycle validator | N/A — no new deadline behavior | N/A — no deadline transition | N/A — no triggered check | N/A — no timing policy change | N/A — assessed against the touchpoints above |
-| cancellation and interruption | N/A — the synchronous metadata predicate owns no cancellable operation or cleanup lifecycle | ADR lifecycle validator | N/A — no cancellable transition | N/A — no cancellation outcome changes | N/A — no triggered check | N/A — no cancellation behavior change | N/A — assessed against the touchpoints above |
-| resource bounds and backpressure | N/A — reuse existing metadata parsing and completeness checks; no queue, collection, or input-size policy is introduced | ADR lifecycle validator | N/A — no new resource mechanism | N/A — existing bounds unchanged | N/A — no triggered check | N/A — no resource policy change | N/A — assessed against the touchpoints above |
+| concurrency and ordering | N/A — the new rule is a stateless predicate over one parsed document; no scheduling or shared state changes | ADR lifecycle validator | AC-5 structured diff review of the declared touchpoints for scheduling and shared state | No scheduling or shared-state behavior added | AC-5 | N/A — no shared mutable state change | N/A — assessed against the touchpoints above |
+| timeout and deadline | N/A — no timer, deadline, external call, or wait is added | ADR lifecycle validator | AC-5 structured diff review of the declared touchpoints for timers, deadlines, and waits | No timer, deadline, external call, or wait added | AC-5 | N/A — no timing policy change | N/A — assessed against the touchpoints above |
+| cancellation and interruption | N/A — the synchronous metadata predicate owns no cancellable operation or cleanup lifecycle | ADR lifecycle validator | AC-5 structured diff review of the declared touchpoints for cancellation and cleanup | No cancellable operation or cleanup lifecycle added | AC-5 | N/A — no cancellation behavior change | N/A — assessed against the touchpoints above |
+| resource bounds and backpressure | N/A — reuse existing metadata parsing and completeness checks; no queue, collection, or input-size policy is introduced | ADR lifecycle validator | AC-5 structured diff review of the declared touchpoints for queues, collections, and input-size policy | No queue, collection, or input-size policy added | AC-5 | N/A — no resource policy change | N/A — assessed against the touchpoints above |
 | framework or trust-boundary rejection | Applicable — a rejected record omits its reason or attempts to supply it through non-active or ambiguous metadata | Markdown-to-lifecycle validation boundary | Real CLI fixture regression groups for RR-2 and RR-3 | Exit 1 with reason diagnostic for invalid input; exit 0 after valid correction | AC-1, AC-2, AC-3 | Not Started | Not run — implementation not started |
 
 ## Acceptance Checks [Required]
@@ -302,10 +301,10 @@ reason adequacy remains a disclosed human-review limit, not a CLI guarantee.
 
 | ID | Item | Completion Criterion | Expected Evidence | Status | Actual Evidence |
 | --- | --- | --- | --- | --- | --- |
-| A-1 | ADR approved | Eligible non-author identity, time, and exact Approval Evidence: Approve recorded | Metadata and approval context | Not Started | Pending — not approved |
+| A-1 | ADR approved | Eligible non-author identity, time, and exact Approval Evidence: Approve recorded | Metadata and approval context | Complete | @linhai reapproved the revised ADR-0016 in the current task on 2026-09-23; active metadata records the exact evidence and time |
 | A-2 | Complete task delivered | T-1 complete and AC-1 through AC-6 Pass with actual evidence | Implementation Plan and Acceptance Checks | Not Started | Pending — implementation not started |
 | A-3 | Reciprocal ADD link synchronized, when applicable | N/A — repository governance is not derived from an ADD candidate | Architecture Source assessment | N/A — no ADD candidate | N/A — governance-only scope |
-| A-4 | Requirement levels satisfied | Required proposal content complete, conditional triggers assessed, and retained optional content accurate | Structured document review | Complete | 2026-09-22 proposal review: required content and conditional assessments are present; approval and implementation evidence remain explicitly future-stage fields |
+| A-4 | Requirement levels satisfied | Required proposal content complete, conditional triggers assessed, and retained optional content accurate | Structured document review | Complete | Required content and conditional assessments are present; revised planned risk rows passed Accepted-stage validation on 2026-09-23; approval metadata is complete and implementation evidence remains future-stage |
 | A-5 | Acceptance checks are decidable | Every check identifies T-1, input, method, exact result, and evidence | Structured acceptance-check review | Complete | 2026-09-22 proposal review: AC-1 through AC-6 each identify one subtask, input, reproducible method, binary outcome, and evidence |
 | A-6 | Engineering exceptions governed, when applicable | No changed unit exceeds an unapproved exception limit or the executable-unit hard limit | Point-in-time source measurements and decomposition review | Not Started | Pending — implementation measurement required |
 | A-7 | Contract and baseline risks covered | RR-1 through RR-4 covered and applicable risk row Pass, with specific N/A reasons for other dimensions | Traceability and risk matrices | Not Started | Pending — implementation not started |
@@ -314,14 +313,15 @@ reason adequacy remains a disclosed human-review limit, not a CLI guarantee.
 ## Supporting Notes [Optional]
 
 The Decision Owner and Required Approver name the repository-governance owner
-already identified by the linked Accepted ADR-0015. This does not infer the
-current requester's identity from the machine login or claim an approval.
-Authentication or self-declaration in the current approval context must establish
-the approving actor before acceptance.
+already identified by the linked Accepted ADR-0015. @linhai self-declared in
+the current task before explicitly approving ADR-0016; the machine login was
+not used as approval identity. That approval was invalidated when the planned
+Risk Coverage Matrix columns were completed to satisfy the Accepted-stage gate.
+@linhai then reapproved the revised record in the same task.
 
 The source implementation must follow the existing review-ready and required-CI
-gates. The user separately requested submission of this proposal to existing
-PR #15; that instruction does not accept the ADR or authorize implementation.
+gates. The user separately requested submission of the proposal to existing
+PR #15; that instruction did not itself accept the ADR or authorize implementation.
 CI requirements remain unchanged; local SonarQube remains the existing
 CI-correspondence exception.
 
@@ -350,3 +350,6 @@ or code marker cites the old path. Retain Superseded By: None without a replacem
 | Date | Change | Author |
 | --- | --- | --- |
 | 2026-09-22 | Proposed only the user-selected conditional ADR rejection-reason requirement; retained the two declined policy changes outside scope; implementation has not begun | @codex |
+| 2026-09-23 | Accepted after @linhai explicitly approved ADR-0016 in the current task; implementation remains Not Started | @linhai |
+| 2026-09-23 | Reset to Proposed at 2026-09-23T14:14:22Z after approval-invalidating completion of four Risk Coverage Matrix planned rows; prior Approver: @linhai; Approval Time: 2026-09-23T14:12:30Z; Approval Evidence: Approve; no Approval Context Revision was recorded; reapproval required | @codex |
+| 2026-09-23 | Accepted after @linhai reapproved the revised ADR-0016 in the current task; implementation remains Not Started | @linhai |
