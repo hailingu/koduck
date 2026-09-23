@@ -164,6 +164,7 @@ tests exit may contribute Shell hits to the admission report.
 | Candidate Python test knows the coverage output path | Write a syntactically valid Shell hit for an unexecuted script | The script stays uncovered; candidate-owned files cannot award gate hits | `test_candidate_python_test_cannot_forge_gate_shell_hits` |
 | Candidate tests pass and exact versioned Shell entry points are present | Run the scanner-owned hook, entry-point, and installer fixtures after tests | Real execution produces source-bound hits while hook failure, stdin, token selection, and installation outcomes remain correct | `test_trusted_shell_verification_executes_versioned_entrypoints` |
 | Scanner runs under system Python without the pinned Bash parser | Start the trusted fixture probes | Use the pinned verification Python for probes; scanner interpreter choice cannot silently remove traces | `test_trusted_shell_verification_executes_versioned_entrypoints` with an unusable scanner interpreter |
+| CI installs the parser in the Python user site while fixture `HOME` is isolated | Start a Bash trace probe | Preserve the interpreter's user package base without exposing the real home to fixture scripts | `test_trace_probe_keeps_user_site_with_isolated_fixture_home` |
 | Candidate test fails, fixture behavior drifts, or source bytes differ | Attempt Shell report collection | Admission fails; no unchecked or stale report is imported | Python process failure test, fixture checks, `test_changed_source_invalidates_recorded_hits` |
 
 The invariant owner is `python_coverage` for process separation and
@@ -173,7 +174,7 @@ collector. This local serial workflow has no concurrent completion or retry
 transition; a failed run must be corrected and rerun. The scanned Shell files
 are bounded local scripts, so no large-input dimension applies.
 
-Verification passed all 43 Python tests, 184 governance tests, governance
+Verification passed all 44 Python tests, 184 governance tests, governance
 validation, Ruff checks, and the whitespace check. The trusted fixture run
 covered all 28 executable lines in the four maintained Shell entry points.
 The first sandboxed Python run could not bind its local HTTP fixture; rerunning

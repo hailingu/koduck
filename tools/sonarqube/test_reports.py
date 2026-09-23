@@ -1,6 +1,7 @@
 """Exercise coverage generation and scanner report handling at process boundaries."""
 
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -33,6 +34,23 @@ class ReportTests(unittest.TestCase):
             report.write_text("SF:/outside/foreign.rs\nDA:2,1\n")
             with self.assertRaisesRegex(RuntimeError, "FOREIGN_PATH"):
                 coverage_report.read_lcov(report, root)
+
+    def test_trace_probe_keeps_user_site_with_isolated_fixture_home(self):
+        """CI user-site parser packages remain available to the trusted probe."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture_home = root / "fixture-home"
+            user_base = root / "installed-user-packages"
+            with patch.object(
+                shell_coverage.site, "getuserbase", return_value=str(user_base)
+            ):
+                environment = shell_coverage.trace_environment(
+                    root,
+                    {"HOME": str(fixture_home), "PATH": os.environ["PATH"]},
+                    Path(sys.executable),
+                )
+            self.assertEqual(environment["HOME"], str(fixture_home))
+            self.assertEqual(environment["PYTHONUSERBASE"], str(user_base))
 
     def test_candidate_python_test_cannot_forge_gate_shell_hits(self):
         """A candidate test can write output files but cannot award Shell hits."""

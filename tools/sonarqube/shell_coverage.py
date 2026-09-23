@@ -3,6 +3,7 @@
 import hashlib
 import json
 import os
+import site
 import shlex
 import shutil
 import subprocess
@@ -158,6 +159,7 @@ def trace_environment(
         "KODUCK_SHELL_TRACE": str(directory / "trace"),
         "KODUCK_TRACE_PYTHON": str(probe_python or sys.executable),
         "KODUCK_TRACE_HELPER": str(Path(__file__).resolve()),
+        "PYTHONUSERBASE": site.getuserbase(),
     }
 
 
