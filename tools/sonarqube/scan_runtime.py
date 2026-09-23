@@ -230,7 +230,11 @@ def coverage(snapshot: Path, tools: Path, output: Path, config: dict) -> dict:
     result.update(javascript_coverage(snapshot, tools, output, timeout))
     if (snapshot / "tools/sonarqube/test_gate.py").exists():
         result.update(python_coverage(snapshot, tools, output, timeout))
-    result = {path: hits for path, hits in result.items() if is_production_source(path)}
+    result = {
+        path: hits
+        for path, hits in result.items()
+        if is_production_source(path, snapshot)
+    }
     write_generic(result, output / "coverage.xml")
     return result
 

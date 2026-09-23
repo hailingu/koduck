@@ -38,6 +38,7 @@ struct Fixture {
     turn: TurnId,
     command: CorrectionCommand,
     target: Uuid,
+    alternate_target: Option<Uuid>,
     schema: String,
     key: i64,
     reader: PgPool,
@@ -56,7 +57,7 @@ fn payload_growth_between_statements_is_bounded() {
         ReadCase::RetryAncestor,
         ReadCase::ReconcileAncestor,
     ] {
-        let fixture = runtime.block_on(Fixture::create(&pool, case));
+        let fixture = runtime.block_on(Fixture::create(&pool, case, false));
         let outcome = runtime.block_on(grow_during_precheck(&pool, &fixture, case));
         runtime.block_on(fixture.remove_projection(&pool));
         assert_durable_state(
@@ -91,9 +92,59 @@ fn payload_growth_between_statements_is_bounded() {
     runtime.block_on(pool.close());
 }
 
+/// A retry must not authenticate a body with identity metadata from an older
+/// READ COMMITTED statement after a maintenance writer retargets that row.
+#[test]
+fn retry_identity_change_between_statements_is_rejected() {
+    let (runtime, pool) = connected_pool();
+    let _permit = runtime.block_on(crate::test_migrations::reserve_database());
+    for case in [ReadCase::Retry, ReadCase::Reconcile] {
+        let fixture = runtime.block_on(Fixture::create(&pool, case, true));
+        let outcome = runtime.block_on(retarget_during_precheck(&pool, &fixture, case));
+        runtime.block_on(fixture.remove_projection(&pool));
+        assert_eq!(outcome, Err(CorrectionError::IdentityConflict), "{case:?}");
+        assert_durable_state(
+            &runtime,
+            &pool,
+            &fixture.tenant,
+            fixture.thread,
+            fixture.turn,
+            3,
+            4,
+        );
+    }
+    runtime.block_on(pool.close());
+}
+
+/// The second ancestry snapshot must reject a newly unsupported root even
+/// when the earlier summary saw the old supported message root.
+#[test]
+fn ancestor_retargeted_after_summary_is_rejected() {
+    let (runtime, pool) = connected_pool();
+    let _permit = runtime.block_on(crate::test_migrations::reserve_database());
+    for case in [
+        ReadCase::NewAncestor,
+        ReadCase::RetryAncestor,
+        ReadCase::ReconcileAncestor,
+    ] {
+        let fixture = runtime.block_on(Fixture::create(&pool, case, false));
+        runtime.block_on(fixture.remove_projection(&pool));
+        let reader = runtime.block_on(connect_scoped_reader("public"));
+        let outcome =
+            runtime.block_on(retarget_root_during_summary(&pool, &reader, &fixture, case));
+        runtime.block_on(reader.close());
+        assert_eq!(
+            outcome,
+            Err(CorrectionError::InvalidPredecessor),
+            "{case:?}"
+        );
+    }
+    runtime.block_on(pool.close());
+}
+
 impl Fixture {
     /// Seeds through the existing production fixture and a real admitted correction.
-    async fn create(pool: &PgPool, case: ReadCase) -> Self {
+    async fn create(pool: &PgPool, case: ReadCase, identity_barrier: bool) -> Self {
         let tenant =
             TenantId::new(format!("cand11-read-race-{}", Uuid::new_v4())).expect("fixture tenant");
         let thread = ThreadId::new();
@@ -115,15 +166,47 @@ impl Fixture {
         } else {
             root.as_uuid()
         };
+        let alternate_target = if identity_barrier {
+            let other = Uuid::new_v4();
+            sqlx::query(
+                "INSERT INTO turn_items (tenant_id, thread_id, turn_id, sequence, item_id, \
+                 item_type, payload, is_terminal, corrects_item_id) VALUES \
+                 ($1, $2, $3, 3, $4, 'user_message', '{\"content\":\"other\"}', FALSE, NULL)",
+            )
+            .bind(tenant.as_str())
+            .bind(thread.as_uuid())
+            .bind(turn.as_uuid())
+            .bind(other)
+            .execute(pool)
+            .await
+            .expect("seed alternate same-scope target");
+            sqlx::query(
+                "UPDATE turns SET next_sequence = 4 WHERE tenant_id = $1 AND thread_id = $2 AND turn_id = $3",
+            )
+            .bind(tenant.as_str())
+            .bind(thread.as_uuid())
+            .bind(turn.as_uuid())
+            .execute(pool)
+            .await
+            .expect("advance fixture counter");
+            Some(other)
+        } else {
+            None
+        };
         let schema = format!("cand11_read_race_{}", Uuid::new_v4().simple());
         let key = i64::from_ne_bytes(*Uuid::new_v4().as_bytes().first_chunk().expect("key bytes"));
-        let reader = create_projection(pool, &schema, target, key).await;
+        let reader = if identity_barrier {
+            create_identity_projection(pool, &schema, target, key).await
+        } else {
+            create_projection(pool, &schema, target, key).await
+        };
         Self {
             tenant,
             thread,
             turn,
             command,
             target,
+            alternate_target,
             schema,
             key,
             reader,
@@ -161,6 +244,25 @@ async fn create_projection(pool: &PgPool, schema: &str, target: Uuid, key: i64) 
     .execute(pool)
     .await
     .expect("create a fixture-only read barrier");
+    connect_scoped_reader(schema).await
+}
+
+/// Pauses the matching row's correction target in the first metadata snapshot.
+async fn create_identity_projection(pool: &PgPool, schema: &str, target: Uuid, key: i64) -> PgPool {
+    sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+        "CREATE SCHEMA {schema}; \
+         CREATE FUNCTION {schema}.paused_corrects(value UUID) RETURNS UUID \
+         LANGUAGE plpgsql VOLATILE AS $body$ BEGIN \
+         PERFORM pg_advisory_xact_lock({key}); RETURN value; END $body$; \
+         CREATE VIEW {schema}.turn_items AS SELECT \
+         tenant_id, thread_id, turn_id, sequence, item_id, item_type, payload, \
+         is_terminal, CASE WHEN item_id = '{target}'::uuid \
+             THEN {schema}.paused_corrects(corrects_item_id) \
+             ELSE corrects_item_id END AS corrects_item_id FROM public.turn_items"
+    )))
+    .execute(pool)
+    .await
+    .expect("create a fixture-only identity barrier");
     connect_scoped_reader(schema).await
 }
 
@@ -257,21 +359,142 @@ async fn grow_during_precheck(
     outcome
 }
 
+/// Commits a changed target while the first metadata statement is paused.
+async fn retarget_during_precheck(
+    pool: &PgPool,
+    fixture: &Fixture,
+    case: ReadCase,
+) -> Result<Item, CorrectionError> {
+    let mut writer = pool.acquire().await.expect("writer connection");
+    let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&fixture.reader)
+        .await
+        .expect("reader identity");
+    sqlx::query("SELECT pg_advisory_lock($1)")
+        .bind(fixture.key)
+        .execute(&mut *writer)
+        .await
+        .expect("hold the identity barrier");
+    let writer_step = async {
+        wait_for_barrier(&mut writer, pid).await;
+        sqlx::query(
+            "UPDATE turn_items SET corrects_item_id = $3 WHERE tenant_id = $1 AND item_id = $2",
+        )
+        .bind(fixture.tenant.as_str())
+        .bind(fixture.target)
+        .bind(fixture.alternate_target.expect("alternate target"))
+        .execute(&mut *writer)
+        .await
+        .expect("commit concurrent identity change");
+        sqlx::query("SELECT pg_advisory_unlock($1)")
+            .bind(fixture.key)
+            .execute(&mut *writer)
+            .await
+            .expect("release the identity barrier");
+    };
+    let (outcome, ()) = tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::join!(
+            read(&fixture.reader, fixture.command.clone(), case),
+            writer_step
+        )
+    })
+    .await
+    .expect("the deterministic identity race settles");
+    sqlx::query(
+        "UPDATE turn_items SET corrects_item_id = $3 WHERE tenant_id = $1 AND item_id = $2",
+    )
+    .bind(fixture.tenant.as_str())
+    .bind(fixture.target)
+    .bind(fixture.command.predecessor_item_id().as_uuid())
+    .execute(&mut *writer)
+    .await
+    .expect("restore the writer's identity change");
+    outcome
+}
+
+/// Changes a root into a valid, unsupported Usage after the summary snapshot.
+async fn retarget_root_during_summary(
+    pool: &PgPool,
+    reader: &PgPool,
+    fixture: &Fixture,
+    case: ReadCase,
+) -> Result<Item, CorrectionError> {
+    let mut writer = pool.acquire().await.expect("writer connection");
+    let original: String =
+        sqlx::query_scalar("SELECT payload FROM turn_items WHERE tenant_id = $1 AND item_id = $2")
+            .bind(fixture.tenant.as_str())
+            .bind(fixture.target)
+            .fetch_one(&mut *writer)
+            .await
+            .expect("original root payload");
+    let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(reader)
+        .await
+        .expect("reader identity");
+    sqlx::query("SELECT pg_advisory_lock($1)")
+        .bind(fixture.key)
+        .execute(&mut *writer)
+        .await
+        .expect("hold the summary barrier");
+    *super::PAUSE_BEFORE_ANCESTRY_STREAM
+        .lock()
+        .expect("ancestry test barrier mutex") =
+        Some((fixture.command.item_id().as_uuid(), fixture.key));
+    let writer_step = async {
+        wait_for_barrier(&mut writer, pid).await;
+        sqlx::query(
+            "UPDATE turn_items SET item_type = 'usage', \
+             payload = '{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}' \
+             WHERE tenant_id = $1 AND item_id = $2",
+        )
+        .bind(fixture.tenant.as_str())
+        .bind(fixture.target)
+        .execute(&mut *writer)
+        .await
+        .expect("retarget root after summary snapshot");
+        sqlx::query("SELECT pg_advisory_unlock($1)")
+            .bind(fixture.key)
+            .execute(&mut *writer)
+            .await
+            .expect("release the summary barrier");
+    };
+    let (outcome, ()) = tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::join!(read(reader, fixture.command.clone(), case), writer_step)
+    })
+    .await
+    .expect("the deterministic ancestry race settles");
+    *super::PAUSE_BEFORE_ANCESTRY_STREAM
+        .lock()
+        .expect("ancestry test barrier mutex") = None;
+    sqlx::query(
+        "UPDATE turn_items SET item_type = 'user_message', payload = $3 \
+         WHERE tenant_id = $1 AND item_id = $2",
+    )
+    .bind(fixture.tenant.as_str())
+    .bind(fixture.target)
+    .bind(original)
+    .execute(&mut *writer)
+    .await
+    .expect("restore the writer's root change");
+    outcome
+}
+
 /// Checks SQL result values themselves: no oversized body crosses the driver
 /// boundary, even if the decoder would otherwise reject it after allocation.
 async fn assert_bounded_projection(writer: &mut sqlx::PgConnection, fixture: &Fixture) {
-    let payload: Option<String> = sqlx::query_scalar(STORED_PAYLOAD_SQL)
-        .bind(fixture.tenant.as_str())
-        .bind(fixture.target)
-        .bind(MAX_STORED_PAYLOAD_BYTES)
-        .fetch_one(&mut *writer)
-        .await
-        .expect("bounded retry projection");
+    let (_, _, _, _, _, _, payload): (Uuid, Uuid, String, Option<Uuid>, i64, bool, Option<String>) =
+        sqlx::query_as(STORED_PAYLOAD_SQL)
+            .bind(fixture.tenant.as_str())
+            .bind(fixture.target)
+            .bind(MAX_STORED_PAYLOAD_BYTES)
+            .fetch_one(&mut *writer)
+            .await
+            .expect("bounded retry projection");
     assert!(
         payload.is_none(),
         "the oversized body must not reach the driver"
     );
-    let rows = sqlx::query_as::<_, (Uuid, Option<Uuid>, String, bool, Option<String>)>(
+    let rows = sqlx::query_as::<_, (Uuid, Option<Uuid>, String, i64, bool, Option<String>, bool)>(
         STREAMED_ANCESTRY_SQL,
     )
     .bind(fixture.tenant.as_str())
@@ -282,7 +505,7 @@ async fn assert_bounded_projection(writer: &mut sqlx::PgConnection, fixture: &Fi
     .fetch_all(&mut *writer)
     .await
     .expect("bounded ancestor projection for the one/two-node fixture");
-    for (identity, _, _, _, payload) in rows {
+    for (identity, _, _, _, _, payload, _) in rows {
         if identity == fixture.target {
             assert!(
                 payload.is_none(),

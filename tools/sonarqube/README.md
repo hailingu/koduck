@@ -151,6 +151,44 @@ Sonar compliance if someone bypasses those hooks.
 
 ## Verification
 
+### Rust test-module coverage boundary — 2026-09-23
+
+PR 15 review `5286757657` identified that files reached only through a Rust
+`#[cfg(test)] mod` declaration under `src/` could be counted as production
+lines by the path-only feature-diff gate. The Git snapshot classifier owns the
+file boundary for both changed lines and imported coverage.
+
+| State / precondition | Action / entry point | Observable outcome and invariant | Verification |
+| --- | --- | --- | --- |
+| A changed Rust file is declared only as a `#[cfg(test)]` module under `src/` | Classify the Git diff and imported coverage | Its lines never increase production covered or coverable counts | `test_cfg_test_rust_modules_do_not_count_as_changed_production` |
+| A changed Rust production sibling and a test-only module coexist | Classify the same revision | Production changes remain counted; test-only changes cannot mask an under-80% production diff | The same focused Git fixture and the normal feature gate |
+| A module's test-only declaration is absent or unclear | Classify its source file | Fail conservatively into production coverage rather than silently exempting it | The production sibling in the focused fixture |
+
+This serial, local classification has no retry or concurrent transition. A
+new source revision is classified from its own snapshot. The source parser's
+scope is the ordinary Rust module declaration syntax used by the affected
+files; unfamiliar attributes remain production rather than gaining an
+unverified exemption.
+
+### Correction retry and ancestry snapshot — 2026-09-23
+
+PR 15 reviews `5286757657` and `5286672140` exercise CA-03/CA-04 against a
+concurrent maintenance writer. The PostgreSQL correction adapter owns these
+invariants at direct admission and reconciliation entry points.
+
+| State and event ordering | Expected outcome | Invariant | Verification |
+| --- | --- | --- | --- |
+| Exact retry identity remains unchanged through payload read | Return the stored correction | Metadata and body describe one identity | Existing exact-retry tests |
+| Writer retargets the matching row after a metadata precheck | Reject `IdentityConflict` | A body from a different identity never authenticates the old metadata | New two-connection race test |
+| Writer retargets an ancestor after summary and before streamed read | Reject unsupported root or corruption | The streamed ancestry independently satisfies CA-03 | New two-connection race test |
+| Writer grows a payload between statements | Reject `ResourceLimit` before transferring the body | Every body projection enforces the cap in its own snapshot | Existing payload-read race tests |
+
+The identity and ancestry race fixtures failed against the prior implementation
+with an incorrectly successful `Item`, then passed after the second-snapshot
+checks. The full Rust targets, Clippy, format check, 45 Sonar tool tests, 184
+governance tests, and governance validation passed with three test threads and
+one Cargo build job for the Rust run.
+
 ### Trusted Shell evidence — 2026-09-23
 
 PR 15 review `5286414606` identified that a Python test could write forged
@@ -173,6 +211,13 @@ are the Python test subprocess, trusted fixture driver, and Shell report
 collector. This local serial workflow has no concurrent completion or retry
 transition; a failed run must be corrected and rerun. The scanned Shell files
 are bounded local scripts, so no large-input dimension applies.
+
+Review `5286757657` exposed a remaining trust gap: the candidate Shell process
+itself receives the writable trace path and probe helper. A local fixture
+invoked the probe for an unexecuted branch and caused `collect()` to mark that
+branch covered. The earlier 28/28 result therefore does not prove that
+candidate Shell code cannot forge hits. This finding remains open pending a
+trusted external evidence boundary or a separately approved gate contract.
 
 Verification passed all 44 Python tests, 184 governance tests, governance
 validation, Ruff checks, and the whitespace check. The trusted fixture run

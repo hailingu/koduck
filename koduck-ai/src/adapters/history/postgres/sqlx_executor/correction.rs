@@ -16,7 +16,7 @@ use sqlx::Row;
 use uuid::Uuid;
 
 use crate::application::{CorrectionCommand, CorrectionError, CorrectionStore};
-use crate::domain::{Item, ItemId, ItemPayload};
+use crate::domain::{Item, ItemPayload};
 
 use super::super::commit_reconciliation;
 use super::super::payload_codec::DurableItemCodec;
@@ -39,6 +39,12 @@ mod retry_terminal;
 #[cfg(test)]
 static DROP_COMMIT_ACK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+/// Test-only barrier placed strictly after the ancestry summary and before
+/// the streamed statement so a two-connection READ COMMITTED race is exact.
+#[cfg(test)]
+static PAUSE_BEFORE_ANCESTRY_STREAM: std::sync::Mutex<Option<(Uuid, i64)>> =
+    std::sync::Mutex::new(None);
+
 /// The exact write and reconciliation budget of each attempt (CA-07).
 const ATTEMPT_BUDGET: Duration = Duration::from_secs(2);
 
@@ -52,9 +58,12 @@ const MAX_STORED_PAYLOAD_BYTES: i64 = 1_048_576;
 /// The size predicate and returned body share one statement snapshot (CA-06).
 /// An oversized row remains distinguishable from an absent row without sending
 /// its payload to the client.
-const STORED_PAYLOAD_SQL: &str = "SELECT \
-    CASE WHEN octet_length(payload)::BIGINT <= $3 THEN payload END \
+const STORED_PAYLOAD_SQL: &str = "SELECT thread_id, turn_id, item_type, corrects_item_id, \
+    sequence, is_terminal, CASE WHEN octet_length(payload)::BIGINT <= $3 THEN payload END \
     FROM turn_items WHERE tenant_id = $1 AND item_id = $2";
+
+/// Identity metadata and bounded body returned by one retry-read snapshot.
+type RetryPayloadRow = (Uuid, Uuid, String, Option<Uuid>, i64, bool, Option<String>);
 
 impl CorrectionStore for SqlxPostgresExecutor {
     fn correct(&self, command: CorrectionCommand) -> Result<Item, CorrectionError> {
@@ -248,7 +257,7 @@ async fn stored_retry(
     if payload_bytes > MAX_STORED_PAYLOAD_BYTES {
         return Err(resolved(CorrectionError::ResourceLimit));
     }
-    let payload_text = bounded_retry_payload(transaction, command).await?;
+    let (payload_text, sequence, is_terminal) = bounded_retry_payload(transaction, command).await?;
     let payload = DurableItemCodec::decode(&item_type, &payload_text, corrects)
         .map_err(|_| resolved(CorrectionError::CorruptHistory))?;
     let ItemPayload::Correction(correction) = payload else {
@@ -257,15 +266,12 @@ async fn stored_retry(
     if correction.content().as_bytes() != command.content().as_bytes() {
         return Err(resolved(CorrectionError::IdentityConflict));
     }
-    let is_terminal: bool = row.try_get("is_terminal").map_err(classify_write_error)?;
     if is_terminal || !is_terminal_status(turn_status) {
         // A Correction is nonterminal and is only created after the Turn
         // terminates. Either violation is malformed matching data, after
         // identity-content conflicts have taken precedence (CA-04/CA-05).
         return Err(resolved(CorrectionError::CorruptHistory));
     }
-    let item_id: Uuid = row.try_get("item_id").map_err(classify_write_error)?;
-    let sequence: i64 = row.try_get("sequence").map_err(classify_write_error)?;
     let sequence = stored_retry_sequence(&mut *transaction, command, sequence).await?;
     // CA-03/CA-04 apply to retries and reconciliation as well as new writes.
     // A valid stored successor is allowed; its ancestry and own successor
@@ -275,7 +281,7 @@ async fn stored_retry(
         return Err(resolved(CorrectionError::CorruptHistory));
     }
     Ok(Some(Item {
-        item_id: ItemId::from_uuid(item_id),
+        item_id: command.item_id(),
         sequence,
         payload: ItemPayload::Correction(correction),
     }))
@@ -298,20 +304,34 @@ async fn stored_item_has_branch(
     .map_err(classify_write_error)
 }
 
-/// Enforces the cap again in the body-fetching statement, because READ COMMITTED
-/// permits the stored payload to grow after the metadata-only precheck (CA-06).
+/// Rechecks identity and bounds the body in one READ COMMITTED statement, so
+/// concurrent metadata drift cannot authenticate a different row snapshot.
 async fn bounded_retry_payload(
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     command: &CorrectionCommand,
-) -> Result<String, WriteFailure> {
-    sqlx::query_scalar::<_, Option<String>>(STORED_PAYLOAD_SQL)
+) -> Result<(String, i64, bool), WriteFailure> {
+    let row: Option<RetryPayloadRow> = sqlx::query_as(STORED_PAYLOAD_SQL)
         .bind(command.trust().tenant_id.as_str())
         .bind(command.item_id().as_uuid())
         .bind(MAX_STORED_PAYLOAD_BYTES)
-        .fetch_one(&mut **transaction)
+        .fetch_optional(&mut **transaction)
         .await
-        .map_err(classify_write_error)?
-        .ok_or(resolved(CorrectionError::ResourceLimit))
+        .map_err(classify_write_error)?;
+    let Some((thread, turn, kind, corrects, sequence, terminal, payload)) = row else {
+        return Err(resolved(CorrectionError::IdentityConflict));
+    };
+    if thread != command.thread_id().as_uuid()
+        || turn != command.turn_id().as_uuid()
+        || kind != "correction"
+        || corrects != Some(command.predecessor_item_id().as_uuid())
+    {
+        return Err(resolved(CorrectionError::IdentityConflict));
+    }
+    Ok((
+        payload.ok_or(resolved(CorrectionError::ResourceLimit))?,
+        sequence,
+        terminal,
+    ))
 }
 
 /// Validates the stored retry's sequence state before its durable Item is
@@ -441,14 +461,14 @@ const SUMMARY_SQL: &str = "WITH RECURSIVE chain AS ( \
 /// ancestor in walk order. Recursion retains metadata; the final same-snapshot
 /// projection yields a bounded body or NULL for an oversized row (CA-03/CA-06).
 const STREAMED_ANCESTRY_SQL: &str = "WITH RECURSIVE chain AS ( \
-   SELECT i.item_id, i.corrects_item_id, i.item_type, 1 AS depth \
+   SELECT i.item_id, i.corrects_item_id, i.item_type, i.sequence, 1 AS depth \
    FROM turn_items i \
    WHERE i.tenant_id = $1 AND i.thread_id = $2 AND i.turn_id = $3 \
      AND i.item_id = $4 \
    UNION ALL \
-   SELECT n.item_id, n.corrects_item_id, n.item_type, c.depth + 1 \
+   SELECT n.item_id, n.corrects_item_id, n.item_type, n.sequence, c.depth + 1 \
    FROM chain c CROSS JOIN LATERAL ( \
-     SELECT n2.item_id, n2.corrects_item_id, n2.item_type \
+     SELECT n2.item_id, n2.corrects_item_id, n2.item_type, n2.sequence \
      FROM turn_items n2 \
      WHERE n2.tenant_id = $1 AND n2.thread_id = $2 AND n2.turn_id = $3 \
        AND n2.item_id = c.corrects_item_id \
@@ -456,8 +476,10 @@ const STREAMED_ANCESTRY_SQL: &str = "WITH RECURSIVE chain AS ( \
    ) n \
    WHERE c.depth < 4097 \
  ) \
- SELECT c.item_id, c.corrects_item_id, c.item_type, i.is_terminal, \
-        CASE WHEN octet_length(i.payload)::BIGINT <= $5 THEN i.payload END \
+ SELECT c.item_id, c.corrects_item_id, c.item_type, c.sequence, i.is_terminal, \
+        CASE WHEN octet_length(i.payload)::BIGINT <= $5 THEN i.payload END, \
+        (SELECT count(*) > 1 FROM (SELECT 1 FROM turn_items s \
+          WHERE s.tenant_id = $1 AND s.corrects_item_id = c.item_id LIMIT 2) successors) \
  FROM chain c JOIN turn_items i \
    ON i.tenant_id = $1 AND i.thread_id = $2 AND i.turn_id = $3 \
   AND i.item_id = c.item_id ORDER BY c.depth";
@@ -571,9 +593,24 @@ async fn reject_malformed_ancestors(
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     command: &CorrectionCommand,
 ) -> Result<(), WriteFailure> {
+    #[cfg(test)]
+    {
+        let barrier = *PAUSE_BEFORE_ANCESTRY_STREAM
+            .lock()
+            .expect("ancestry test barrier mutex");
+        if let Some((_, key)) =
+            barrier.filter(|(identity, _)| *identity == command.item_id().as_uuid())
+        {
+            sqlx::query("SELECT pg_advisory_xact_lock($1)")
+                .bind(key)
+                .execute(&mut **transaction)
+                .await
+                .map_err(classify_write_error)?;
+        }
+    }
     // The streamed walk must also plan per execution with the bound scope
     // values; see the summary's cached-generic-plan note.
-    let rows = sqlx::query_as::<_, (Uuid, Option<Uuid>, String, bool, Option<String>)>(
+    let rows = sqlx::query_as::<_, (Uuid, Option<Uuid>, String, i64, bool, Option<String>, bool)>(
         STREAMED_ANCESTRY_SQL,
     )
     .bind(command.trust().tenant_id.as_str())
@@ -585,26 +622,54 @@ async fn reject_malformed_ancestors(
     .fetch(&mut **transaction);
     tokio::pin!(rows);
     let mut identities = HashSet::new();
+    let mut previous_sequence = None;
+    let mut previous_target = None;
+    let mut last_type = None;
+    let mut invalid_structure = false;
+    let mut oversized = false;
+    let mut malformed = false;
+    let mut branched = false;
     while let Some(row) = rows.next().await {
-        let (item_id, corrects, item_type, is_terminal, payload) =
+        let (item_id, corrects, item_type, sequence, is_terminal, payload, has_branch) =
             row.map_err(classify_write_error)?;
-        let payload = payload.ok_or(resolved(CorrectionError::ResourceLimit))?;
-        // A repeated identity inside the bounded walk can only be a cycle
-        // (CA-03); the summary's order check also rejects cycles, so this
-        // duplicate-identity check is belt-and-braces corruption defense.
-        if !identities.insert(item_id) {
-            return Err(resolved(CorrectionError::CorruptHistory));
-        }
+        invalid_structure |= !identities.insert(item_id)
+            || sequence <= 0
+            || previous_sequence.is_some_and(|previous| sequence >= previous)
+            || previous_target.is_some_and(|target| target != item_id);
         // CA-05: even a correctly encoded Correction deeper in the chain
         // cannot be a terminal Item in durable history.
-        if item_type == "correction" && is_terminal {
-            return Err(resolved(CorrectionError::CorruptHistory));
-        }
+        invalid_structure |= item_type == "correction" && is_terminal;
+        branched |= has_branch;
         // Exactly one decoded payload is retained at a time: the decoded
         // value drops before the next row is fetched (CA-06).
-        if DurableItemCodec::decode(&item_type, &payload, corrects).is_err() {
-            return Err(resolved(CorrectionError::CorruptHistory));
+        if let Some(payload) = payload {
+            malformed |= DurableItemCodec::decode(&item_type, &payload, corrects).is_err();
+        } else {
+            oversized = true;
         }
+        previous_sequence = Some(sequence);
+        previous_target = corrects;
+        last_type = Some(item_type);
+    }
+    if identities.is_empty() {
+        return Err(resolved(CorrectionError::InvalidPredecessor));
+    }
+    if invalid_structure {
+        return Err(resolved(CorrectionError::CorruptHistory));
+    }
+    if identities.len() > MAX_ANCESTOR_NODES {
+        return Err(resolved(CorrectionError::ResourceLimit));
+    }
+    match last_type.as_deref() {
+        Some("user_message" | "agent_message_delta") => {}
+        Some("correction") => return Err(resolved(CorrectionError::CorruptHistory)),
+        _ => return Err(resolved(CorrectionError::InvalidPredecessor)),
+    }
+    if oversized {
+        return Err(resolved(CorrectionError::ResourceLimit));
+    }
+    if branched || malformed {
+        return Err(resolved(CorrectionError::CorruptHistory));
     }
     Ok(())
 }

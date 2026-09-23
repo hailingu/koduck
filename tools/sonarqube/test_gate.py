@@ -5,6 +5,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 def implementation(name):
@@ -74,6 +75,40 @@ class SnapshotTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(RuntimeError, "PUSH_INPUT"):
             module.push_revisions(self.root, "malformed\n")
+
+    def test_cfg_test_rust_modules_do_not_count_as_changed_production(self):
+        """Count a production sibling but exclude a Rust cfg(test) module."""
+        module = implementation("git_snapshot")
+        base = git(self.root, "rev-parse", "HEAD")
+        owner = self.root / "src/feature.rs"
+        owner.parent.mkdir()
+        owner.write_text("#[cfg(test)]\nmod case;\n\npub fn live() -> u64 { 1 }\n")
+        test_module = self.root / "src/feature/case.rs"
+        test_module.parent.mkdir()
+        test_module.write_text("#[test]\nfn fixture() { assert_eq!(2, 2); }\n")
+        git(self.root, "add", ".")
+        git(self.root, "commit", "-m", "add Rust module")
+        changed = module.changed_lines(self.root, base, "HEAD")
+        self.assertIn("src/feature.rs", changed)
+        self.assertNotIn("src/feature/case.rs", changed)
+        self.assertFalse(module.is_production_source("src/feature/case.rs", self.root))
+        runtime = implementation("scan_runtime")
+        output = self.root / "coverage"
+        with (
+            patch.object(
+                runtime,
+                "rust_coverage",
+                return_value={
+                    "src/feature.rs": {4: False},
+                    "src/feature/case.rs": {2: True},
+                },
+            ),
+            patch.object(runtime, "javascript_coverage", return_value={}),
+        ):
+            imported = runtime.coverage(
+                self.root, self.root, output, {"test_timeout": 1}
+            )
+        self.assertEqual(imported, {"src/feature.rs": {4: False}})
 
 
 class AdmissionTests(unittest.TestCase):
