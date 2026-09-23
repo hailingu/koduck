@@ -8,14 +8,14 @@
 - **Architecture Owner**: @linhai
 - **Required Approver**: @linhai
 - **Approver [Conditionally Required — Design Status is or has been `Current`]**: @linhai
-- **Approval Time [Conditionally Required — Design Status is or has been `Current`]**: 2026-09-04T13:37:24+08:00
+- **Approval Time [Conditionally Required — Design Status is or has been `Current`]**: 2026-09-23T14:01:07Z
 - **Approval Evidence [Conditionally Required — Design Status is or has been `Current`]**: Approve
 - **Retired By [Conditionally Required — Design Status is `Deprecated` or `Superseded`]**: N/A — Design Status is `Current`; the document has not been retired
 - **Retirement Time [Conditionally Required — Design Status is `Deprecated` or `Superseded`]**: N/A — Design Status is `Current`; the document has not been retired
 - **Retirement Evidence [Conditionally Required — Design Status is `Deprecated` or `Superseded`]**: N/A — Design Status is `Current`; the document has not been retired
 - **Retirement Reason [Conditionally Required — Design Status is `Deprecated` or `Superseded`]**: N/A — Design Status is `Current`; the document has not been retired
 - **Scope Level**: Repository / Cross-project
-- **Scope**: The future Koduck AI runtime and its contracts with API clients, model providers, authentication, memory, tool execution, background work, and extension providers
+- **Scope**: The Koduck AI runtime and its single-instance, per-Thread mutation ownership profile; contracts with API clients, providers, identity, storage, and tool execution; optional extensions and Memory, with automatic background takeover and multi-agent work deferred
 - **Trello Sources**: [Koduck card 4WI4sszw](https://trello.com/c/4WI4sszw/2-%E8%B0%83%E7%A0%94-adr-%E6%98%8E%E7%A1%AE-ai-%E6%9C%8D%E5%8A%A1%E9%87%8D%E6%9E%84%E8%BE%B9%E7%95%8C%E4%B8%8E-codex-%E5%AF%B9%E9%BD%90%E7%9B%AE%E6%A0%87)
 - **Figma Sources [Conditionally Required — UI is in scope]**: N/A — this design covers service and protocol boundaries and does not change a Web or native UI
 - **Related**: [Koduck predecessor baseline](https://github.com/hailingu/koduck-quant/tree/c414ddccdbc45a99fcd3d606ca0fe1f75730b7fe/koduck-ai); [OpenAI Codex reference baseline](https://github.com/openai/codex/tree/3c60d4da648bfa98e3c51c5161ac2720519c733e)
@@ -40,58 +40,41 @@ Unlabeled fields inside a `[Required]` section are required.
 
 ## Context And Solution Summary [Required]
 
-Koduck is a from-scratch successor to `koduck-quant`. The new repository
-currently contains governance scaffolding and no services. The predecessor's
-`koduck-ai`, fixed at commit `c414ddccdbc45a99fcd3d606ca0fe1f75730b7fe`, is
-functional research evidence only: its infrastructure has been removed, it is
-not an operating baseline, and its contracts are not compatibility or rollback
-requirements. It is a Rust AI gateway and
-orchestrator with REST/SSE APIs, provider adapters, a native tool-use loop,
-MCP clients, agent profiles, skills, memory and multitask clients, background
-workers, authentication, and reliability policy in one crate. The baseline has
-161 tracked Rust source files; multiple orchestration, provider, configuration,
-and worker files exceed 800 physical lines, including a 2,073-line native tool
-loop. These measurements are review signals, not a conclusion that mechanical
-file splitting is the target architecture.
+Koduck is a from-scratch successor to `koduck-quant`. The predecessor at
+`c414ddccdbc45a99fcd3d606ca0fe1f75730b7fe` and public Codex at
+`3c60d4da648bfa98e3c51c5161ac2720519c733e` remain fixed research baselines,
+not compatibility obligations. The repository now contains `koduck-ai`:
+CAND-1, CAND-2, CAND-3, and CAND-11 are complete. Their Accepted ADRs,
+contracts, source, tests, and historical evidence remain authoritative.
 
-OpenAI Codex is used as a public reference, fixed at commit
-`3c60d4da648bfa98e3c51c5161ac2720519c733e`. Its relevant architectural ideas
-are a provider-independent core, explicit thread/turn/item lifecycle, a typed
-application protocol, replaceable thread storage, distinct execution and
-sandbox responsibilities, explicit approval requests, and separately loaded
-MCP, skill, plugin, and repository-instruction capabilities. Codex is not a
-product specification for Koduck and its code layout is not a migration plan.
+**Solution summary**: Keep the provider-neutral core, owned REST/SSE boundary,
+PostgreSQL canonical history, identity isolation, and default-deny execution.
+For the next delivery stage, support independent conversations in parallel
+through one active AI application instance per environment and one mutation
+owner per Thread. A conflicting fresh write receives an explicit busy or
+conflict result. Stop and cancellation remain serviceable while inference or
+compaction is pending. Exact retries use the operation's stable identity;
+uncertain effects never trigger a fresh execution automatically.
 
-**Solution summary**: Build the future Koduck AI capability around an owned,
-provider-independent agent core and a versioned thread/turn/item domain model.
-Define new northbound REST/SSE and owned persistence contracts from this target
-model; use predecessor behavior only to identify functional scenarios. Move capability discovery, policy
-evaluation, approval, and execution behind explicit ports; require privileged
-execution to run through a least-privilege execution boundary. Treat model
-providers, storage, MCP, skills, repository instructions, and presentation
-protocols as independently replaceable adapters. Preserve the intended
-multi-provider, tenant, semantic-memory, and background-task capabilities
-rather than adopting Codex's product-specific local persistence and auth model
-or inheriting removed predecessor infrastructure. Before every Turn-inference
-request, including an inference that continues an active tool loop, C-2 checks
-the effective provider-context token budget and, when needed, automatically
-builds or reuses a provenance-bearing derived compaction snapshot plus a
-bounded recent tail; canonical Thread/Turn/Item history remains complete and
-unchanged.
+Automatic context compaction remains in scope, with one producer workflow per
+Thread. It creates a bounded summary and preserves the exact recent tail and
+complete canonical history. A stale result is discarded and the attempt fails
+visibly; competing-builder winner adoption, replacement-chain recovery, and
+automatic cross-instance work takeover are outside this delivery stage.
 
-**Greenfield operating model**: No predecessor deployment, APISIX route, shared
-history, or fallback path exists. Each candidate defines and verifies the new
-contract it owns before first promotion. A failed candidate is not promoted;
-its source or artifact is reverted or quarantined without attempting route-back
-to removed infrastructure. After the first verified Koduck AI release exists,
-any deployment rollback must target a verified new artifact under a separate
-accepted OCR.
+**Greenfield operating model**: The predecessor has no operating deployment,
+shared history, or fallback route. A failed candidate is not promoted. Any
+deployment or rollback needs its own governing OCR. The single-instance
+profile requires stop-before-start replacement and proof that an old process
+cannot continue serving or executing when its replacement starts. Process-local
+coordination is never evidence that two overlapping instances are safe.
 
-**Design boundary**: This ADD defines solution capabilities, logical data,
-component responsibilities, flows, constraints, and ordered ADR candidates. It
-does not authorize implementation, select source files or crates, define a
-physical schema, freeze wire-field definitions, add dependencies, or prescribe
-executable build, test, deployment, or rollback commands.
+**Design boundary**: This ADD proposes outcomes, ownership, flows, and future
+ADR candidates. It does not authorize implementation, change deployed behavior,
+waive checks, or prescribe source files, schemas, commands, or test code.
+Existing lease fencing, durable terminal arbitration, correction validation,
+and security controls are retained. Removing an implemented guarantee needs a
+separate Accepted ADR; this revision does not rewrite completed candidates.
 
 ## Requirement Baseline [Required]
 
@@ -99,38 +82,50 @@ executable build, test, deployment, or rollback commands.
 | --- | --- | --- | --- | --- | --- |
 | R-1 | [Card 4WI4sszw](https://trello.com/c/4WI4sszw/2-%E8%B0%83%E7%A0%94-adr-%E6%98%8E%E7%A1%AE-ai-%E6%9C%8D%E5%8A%A1%E9%87%8D%E6%9E%84%E8%BE%B9%E7%95%8C%E4%B8%8E-codex-%E5%AF%B9%E9%BD%90%E7%9B%AE%E6%A0%87) | Research the current AI-service baseline against public OpenAI Codex and establish an auditable target boundary and migration direction. | A traceable gap matrix, adoption decisions with reasons, external-contract and security boundaries, dependency-ordered migration slices with validation and rollback boundaries, and a project Full ADR proposal after ADD approval. | Highest board position. No source, configuration, dependency, build, release, or deployment work before an eligible approver accepts the governing ADR. Trello is coordination context, not decision authority. | 2026-09-01 |
 
+The Trello requirement above retains its last checked baseline; the card was
+not reread or changed in this task. The following scope refinement records the
+user's direction separately rather than attributing new text to that card.
+
+| ID | Source | Requirement baseline | Acceptance outcome | Constraint | Last checked |
+| --- | --- | --- | --- | --- | --- |
+| R-2 | Current Codex task, user messages on 2026-09-23: request to assess real concurrency and reduce development/testing weight, followed by “同意你的建议” | Use the proposed personal/small-user independent-conversation profile: one active instance, parallel Threads, one Thread mutation owner, explicit conflicts, and deferred automatic takeover/shared editing. | A coherent narrower solution and candidate set; essential retry, stop, isolation, durability, and execution-safety coverage retained; unused distributed recovery is not a first-release prerequisite. | Agreement authorizes drafting this revision; it is not the canonical approval of the resulting ADD. This is a chosen scope, not measured user counts or a capacity claim. | 2026-09-23 — conversation scope only |
+
 ## Goals And Non-Goals [Required]
 
 Goals:
 
-- Establish one auditable predecessor functional-research baseline and one immutable Codex reference baseline.
-- Define which Codex concepts Koduck adopts, adopts with adjustment, or does not adopt.
-- Separate orchestration policy from transport, provider, storage, extension, and privileged-execution concerns.
-- Preserve the predecessor's functional intent as research scenarios while defining new owned Koduck contracts without wire-parity or runtime-fallback obligations.
-- Define least-privilege, approval, isolation, audit, cancellation, and recovery boundaries before tool execution expands.
-- Preserve continuous conversation beyond the provider-context budget through automatic, provenance-bearing compaction without deleting, rewriting, or silently truncating canonical history.
-- Provide ordered, independently reviewable ADR candidates with binary architecture-level acceptance context.
+- Keep independent user conversations responsive and isolated.
+- Give each Thread one owner of conversation mutations while serving control
+  requests without waiting for a provider response.
+- Preserve durable history, exact-action approval, truthful terminal results,
+  and retry identity across failures.
+- Support long conversations with bounded context compaction and explicit
+  failure when a safe context cannot be assembled.
+- Separate the first usable release from optional integrations and distributed
+  execution, with each future candidate owning one implementation boundary.
 
-Non-goals:
+Non-goals for this delivery stage:
 
-- Forking OpenAI Codex or promising feature parity with its CLI, desktop app, cloud product, or UI.
-- Reusing Codex's ChatGPT-specific authentication, account, rate-limit, or model-catalog behavior.
-- Making local JSONL or SQLite state the canonical Koduck conversation or memory store.
-- Selecting a physical crate layout, wire schema, database schema, dependency set, or implementation framework.
-- Changing current APIs, deployments, runtime configuration, or service ownership in this ADD.
-- Implementing proactive multi-agent orchestration before the single-agent lifecycle and execution policy are proven.
+- Multiple active AI instances, automatic failover or background checkpoint
+  takeover, and availability during instance replacement.
+- Collaborative editing of one Thread by different subjects, automatic merge
+  of conflicting edits, or concurrent compaction builders for one Thread.
+- Adoption of another builder's summary followed by automatic suffix recovery.
+- Codex product parity, a code fork, automatic provider fallback, or a new UI.
+- Removing existing checks or Accepted implementation contracts through an ADD.
 
 ## Functional Capability Design [Required]
 
 | ID | Actor | Trigger | Capability and outcome | Business rules and edge cases | Requirements |
 | --- | --- | --- | --- | --- | --- |
-| F-1 | API client or presentation adapter | A user starts, resumes, forks, steers, interrupts, or reads work | Represent work as a stable thread containing ordered turns and typed items, with explicit active and terminal states. | Resume always starts a new turn on the same thread from canonical history; it never reactivates a terminal turn. An authenticated client interrupt produces `interrupted`; a platform, policy, or dependency stop produces `cancelled`. Both are terminal. New versioned REST/SSE behavior is defined by owned contracts. | R-1 |
-| F-2 | Agent core | A turn is accepted | Assemble instructions, context, available capabilities, model input, and policy into one observable orchestration lifecycle. | Provider-specific types do not enter the domain model; state transitions have one owner; partial results and terminal errors remain distinguishable. Before each Turn-inference request — initial, resumed, forked, or following durable provider/tool output in an active Turn — context below the configured soft token budget uses effective history directly, while context above that budget uses one valid derived compaction snapshot plus a bounded recent tail. Initial construction, reconstruction, and rolling advancement use bounded recursive producer steps: one bounded causally closed seed range, then the immediately preceding bounded snapshot content plus one bounded contiguous causally closed delta per successor step. D-9 reuse and commitment match the summarized prefix's own version/digest; final inference establishment separately matches the request-wide effective-context version/digest, including the selected committed snapshot identity/content digest or an explicit direct-history marker plus the exact tail. A tail-only append preserves a valid prefix snapshot while any prefix correction rebuilds it. When the preserved snapshot plus its grown exact tail no longer fits, the core advances it through bounded successor steps, staging, prefix fencing, committed-winner selection, and explicit failure handling. Missing, stale, corrupt, source-drifted, or failed compaction never silently discards context or permits a stale or losing staged summary in the next request. | R-1 |
-| F-3 | Model adapter | The core requests Turn inference or bounded context-summary production | Translate owned model-neutral input, streamed inference output, and compaction-producer results to and from one configured provider without leaking provider wire types into the core. | CAND-1 has no provider fallback; time, token, retry, and output budgets are bounded; usage and terminal status are preserved. Compaction output is untrusted and the adapter neither owns D-9 persistence nor decides when it is used. Any later automatic provider fallback requires a separate Accepted ADR. | R-1 |
-| F-4 | Tool or MCP provider | The core needs capability discovery or invocation | Discover typed tools, validate requests, evaluate policy, request approval when required, and dispatch through an execution boundary. | Untrusted descriptions and results never grant authority; default deny applies to unknown privileged effects; approval is bound to the exact action and scope. | R-1 |
-| F-5 | Thread-store adapter | Thread state changes | Persist canonical thread/turn/item history and metadata through an owned store port backed by an AI-owned durable store. | One canonical owner per datum; appends are ordered and idempotent; local caches are reconstructable and never silently become truth. Semantic Memory and background Multitask integrations do not own canonical turn history. | R-1 |
-| F-6 | Extension owner | Instructions, skills, plugins, or MCP capabilities change | Load validated, provenance-bearing extension metadata without changing core orchestration code. | Precedence is deterministic; invalid extensions fail visibly; tenant and thread isolation is preserved; extensions cannot widen permissions by declaration. | R-1 |
-| F-7 | Operator or reviewer | A privileged action, failure, or recovery occurs | Observe structured lifecycle, policy, approval, execution, and recovery evidence without exposing secrets or sensitive prompt content. | Content logging is minimized and redacted; correlation IDs connect events; audit evidence distinguishes request, decision, attempt, and result. | R-1 |
+| F-1 | Authenticated API client | Start, continue, stop, read, or optionally fork work | Ordered Thread/Turn/Item lifecycle and truthful visible result. | Resume creates a new Turn; terminal Turns do not reactivate. Client stop is interrupted; platform/dependency stop is cancelled. Fresh competing writes are busy/conflict; same-operation retries resolve through their canonical identity. | R-1, R-2 |
+| F-2 | Agent core | Before each inference, including continuation after a Tool result | Assemble direct effective history or one validated summary plus exact tail within budget. | One compaction workflow per Thread; bounded sequential producer steps; stale, cancelled, corrupt, or unfit output cannot reach inference. No history is silently dropped and no competing summary is adopted. | R-1, R-2 |
+| F-3 | Provider adapter | Inference or a summary step | Translate owned input and normalize bounded output, usage, cancellation, and errors. | One explicitly selected provider initially; no automatic fallback. Provider results are untrusted data, not execution authority. | R-1 |
+| F-4 | Tool/approval boundary | Model requests a capability or a human decides an approval | Apply policy and bind authorization to one exact bounded execution attempt. | Default deny, same-owner approval, no duplicate dispatch, bounded cancellation and failure. Real capabilities remain disabled until separately authorized. | R-1, R-2 |
+| F-5 | Thread store | History, correction, or lineage changes | Own canonical durable data, ordered appends, and operation-specific idempotency. | Publish only after durability; corrections retain original Items. Stale corrections return conflict, never automatic merge. Derived snapshots cannot replace canonical history. | R-1, R-2 |
+| F-6 | Extension owner | Optional capability metadata changes | Load a coherent validated capability snapshot with provenance. | Invalid metadata fails visibly; tenant/Thread isolation and non-escalation remain mandatory. This integration is not a prerequisite for static empty inventories. | R-1 |
+| F-7 | Operator or reviewer | Failure, approval, execution, or recovery occurs | Observe correlated, redacted lifecycle and audit evidence. | No secrets or sensitive prompt content in routine diagnostics. An uncertain external effect remains uncertain until reconciled. | R-1, R-2 |
+| F-8 | Admission owner | Competing requests or instance restart | Admit one mutation workflow per Thread and bound total active work across Threads. | Busy Threads do not block independent Threads. Stop/cancel and canonical approval decisions remain serviceable; they do not grant a second conversation writer. Existing crash closure stays supported; automatic resumption of a lost computation is deferred. | R-2 |
 
 ## Data Model Design [Conditionally Required — data is created, updated, deleted, transferred, retained, or changes ownership, classification, lifecycle, relationships, or invariants]
 
@@ -138,1086 +133,258 @@ Non-goals:
 
 | ID | Entity | Purpose | Ownership | Classification | Lifecycle |
 | --- | --- | --- | --- | --- | --- |
-| D-1 | Thread | Stable container for one user-visible body of work and its lineage. | Koduck AI thread-store domain; durable data is provided by its approved AI-owned store adapter. | Tenant/user content and metadata; potentially sensitive. | Created, optionally forked, active, archived, or deleted under owner policy. Thread deletion does not silently cascade to separately retained D-6/D-7 security evidence. |
-| D-2 | Turn | One accepted input-to-terminal-outcome execution attempt within a thread. | Agent core for live state and foreground-liveness reconciliation; thread store for durable history and fenced liveness leases. | Potentially sensitive prompts, context references, and policy metadata. | Queued or started, with `recovery-pending` as a nonterminal started substate when durability is unavailable, then completed, interrupted, failed, or cancelled. Every foreground started turn has a C-2-owned heartbeat on a C-6-persisted lease generation. After the deterministic liveness window expires, a healthy C-2 reconciler fences the lost owner and appends `cancelled`; if C-6 was unavailable, reconciliation occurs when it returns. A terminal turn never returns to active. `Interrupted` means an authenticated client stopped it; `cancelled` means the platform, policy, or a dependency stopped it. Resume creates a new turn. |
-| D-3 | Item | Ordered typed unit within a turn, such as input, reasoning summary, tool call, approval-status projection, tool result, file change, or agent message. | Agent core creates domain items; thread store persists them; presentation adapters project them. D-6, not D-3, owns approval authority. | Classification follows payload; tool and model output is untrusted. An approval projection carries the D-6 identity and status but no independent authority. | Appended with stable identity and order. A correction is a new versioned item that references the prior item; the prior item is never mutated or removed. |
-| D-4 | Capability Descriptor | Validated description and schema for a tool, MCP capability, skill, or plugin, including effect classification, idempotency, retry safety, and applicable deadline/output constraints. | Extension/tool registry. | Public or internal metadata; descriptions and self-declared execution properties remain untrusted until validated by policy. | Discovered, validated, enabled, refreshed, disabled, or withdrawn with provenance and a stable version. |
-| D-5 | Permission Profile | Named limits for filesystem, network, process, data, and service access. | Security policy domain. | Security-sensitive policy, not a secret. | Defined and versioned, then selected and optionally narrowed for a turn. Approval never mutates or widens the profile; when policy permits an approval path, D-6 authorizes only its exact D-7 attempt. |
-| D-6 | Approval Request | Canonical security record for one exact proposed privileged action, target, parameters, effect, requested scope, rationale, and decision. | Approval/policy domain through C-5; thread items are projections only. | Security audit data; may contain sensitive paths or command metadata. | Requested, accepted for one exact bounded execution attempt, declined, cancelled, or expired, then linked to that attempt's result if accepted. Reusable session/turn grants are outside this ADD and require a future Accepted ADR. |
-| D-7 | Execution Attempt | One bounded tool or process invocation and its observable result. | Execution boundary. | Potentially sensitive input/output and diagnostics. | Prepared, policy-checked, optionally approved, running, then succeeded, failed, timed out, or cancelled. A foreground attempt references the current D-2 lease generation; C-5 rejects dispatch or result commitment after that generation is fenced. |
-| D-8 | Extension Manifest | Provenance, declared capabilities, configuration needs, and compatibility information for an extension. | Extension registry. | Internal configuration metadata; secrets referenced but never embedded. | Discovered, validated, activated, updated, disabled, or rejected. |
-| D-9 | Context Compaction Snapshot | Reconstructable provider-context projection with a stable snapshot identity and content digest, summarizing one causally closed canonical history prefix while retaining its inclusive source range, prefix-scoped effective-history version and digest, policy version, producer identity, token accounting, predecessor snapshot identity/content digest when recursively produced, newly absorbed contiguous source range, and recent-tail boundary. A causally closed prefix ends at a durable Item boundary where no provider-visible request/result group, including a Tool call and its matching Tool result, is split between the summarized prefix and exact recent tail; it may end inside an active Turn only at such a boundary before its next inference. The assembled inference request separately carries a request-wide effective-context version/digest covering either an explicit direct-history marker or the selected committed D-9 identity/content digest, its prefix provenance, and the exact retained tail. | C-2 context-assembly policy; C-6 stores the derived snapshot through a narrow owned port but does not make it canonical history. | Derived tenant/user conversation content; as sensitive as the summarized source. | Built automatically before any Turn-inference request whose effective context exceeds the soft budget. A seed step consumes one bounded causally closed canonical range; each successor step consumes only the immediately preceding bounded snapshot content plus one bounded contiguous causally closed canonical delta, records the predecessor and absorbed range, and is capped by per-step input/output limits plus a bounded pass budget. Producer results form one ordered staged chain: its first member is a seed or is anchored to an exact selected committed D-9, and every later member names the immediately preceding staged member identity/content digest. The complete chain remains staged until one C-6 transaction validates the anchor, every member link, contiguous absorbed ranges, target-prefix keys, foreground Turn, and prefix provenance. That transaction commits or selects every member atomically and returns the final committed winner. Identical existing content is idempotent; a non-identical winner at the earliest conflicting member aborts the request chain with no member committed and returns that winner. C-2 discards the conflicting member and descendants, adopts the winner, and rechecks its covered prefix plus exact tail before producing anything else. If the winner already covers the target and fits, the regenerated suffix is empty and C-2 retries the atomic target-state transaction with that winner; otherwise C-2 rebuilds the complete remaining suffix across one or more bounded contiguous-delta passes, promoting each replacement member as predecessor, and retries C-6 only when the replacement tip plus exact tail fits. A tail-only append does not invalidate D-9; it produces a new request-wide version/digest after reassembly with the same committed snapshot and new exact tail. If that snapshot plus the grown exact tail no longer fits, bounded successor steps extend it over later contiguous closed ranges. A correction or other incompatible change inside the summarized prefix invalidates D-9 and forces bounded seed-and-successor reconstruction. Any snapshot-winner, prefix, or tail change after request assembly is detected by the separate request-wide inference-establishment fence. A Resume-staged chain becomes visible atomically with its new Turn or neither does; a Fork-staged child chain becomes visible atomically with child identity, lineage, and first Turn or none does. D-9 is superseded by a later snapshot, discarded when its producer returns after predecessor/prefix drift, interrupt, fencing, or cancellation, and deleted with its owning Thread under the same content-retention policy. |
-
-### D-9 Canonical Identity Contract
-
-C-6 owns one versioned deterministic identity rule for every D-9 member. Before
-C-2 can use a staged member as a successor predecessor, it derives that
-member's canonical identity under the C-6 contract from the canonical target
-scope and fork lineage, target-prefix key and inclusive absorbed range,
-prefix-scoped source provenance, policy and producer identity, predecessor's
-canonical identity and content digest (or the seed marker), and the staged
-content digest. C-6 recomputes and validates the same identity inside the
-atomic chain transaction.
-
-Two builders with the same canonical tuple and content therefore produce the
-same member identity before either chain is committed. C-6 never substitutes a
-different identity for an identical member, so every staged descendant already
-names the identity that an identical committed winner exposes. Two members
-with the same target-prefix key but different canonical content or provenance
-remain non-identical conflict candidates; they do not alias. An identity-rule
-version mismatch, non-canonical encoding, digest mismatch, or predecessor
-identity mismatch rejects the complete request chain with no member committed.
+| D-1 | Thread | One subject-owned conversation and optional immutable fork lineage. | C-6 canonical data; C-2 mutation admission. | Potentially sensitive user content. | Created, active, optionally forked, archived/deleted under owner policy. One mutation workflow at a time after CAND-17; multiple readers are allowed. |
+| D-2 | Turn | One input-to-terminal attempt. | C-2 live lifecycle; C-6 durable state and existing fenced lease. | Sensitive input and policy references. | Started, possibly recovery-pending, then completed/interrupted/failed/cancelled under existing contracts. A terminal Turn never becomes active again. |
+| D-3 | Item | Ordered input, model output, Tool projection/result, or append-only correction. | C-6 canonical history; C-2 presentation projection. | Payload-dependent sensitive and untrusted content. | Appended with stable identity/order. Correction references prior content and never deletes or rewrites it. Approval projections have no independent authority. |
+| D-4 | Capability Descriptor | Validated tool/extension metadata and bounded effect semantics. | C-4. | Untrusted configuration metadata until validated. | Discovered, validated, enabled, refreshed, disabled, or rejected. |
+| D-5 | Permission Profile | Bound filesystem/network/process/data permissions. | C-5. | Security policy. | Selected and optionally narrowed; model output, extension metadata, and approval cannot widen it. |
+| D-6 | Approval Request | Canonical decision for one exact action. | C-5 through its durable port. | Minimized security audit data. | Requested, accepted/declined/cancelled/expired, then associated with its one attempt. No reusable session grant. |
+| D-7 | Execution Attempt | One bounded effect and its outcome. | C-5. | Sensitive untrusted inputs/outputs and audit data. | Prepared, authorized, running, succeeded/failed/timed out/cancelled. Existing foreground lease and terminal guards remain binding. |
+| D-8 | Extension Manifest | Provenance and declared capabilities. | C-4. | Internal metadata; secrets referenced rather than embedded. | Loaded, validated, activated, updated, disabled, or rejected. |
+| D-9 | Context Compaction Snapshot | Reconstructable summary of a bounded, causally closed effective-history prefix. | C-2 production policy; C-6 derived storage. | As sensitive as source history. | Produced sequentially by the Thread owner, published only when complete and current, reused while prefix provenance matches, otherwise discarded/rebuilt on a later attempt. Intermediate producer results are not a durable chain. |
 
 ### Relationships And Invariants
 
 | Relationship | Cardinality and meaning | Invariant |
 | --- | --- | --- |
-| Thread contains Turn | One thread contains zero or more ordered turns. | A turn belongs to exactly one thread; its thread identity does not change. |
-| Turn contains Item | One turn contains one or more ordered items, including any later correction item. | For the same canonical snapshot/version, replay produces the same externally observable sequence. A correction appends a new ordered item that references its predecessor; it never rewrites prior replay history. |
-| Thread forks Thread | A thread may have one parent and zero or more children. | Fork lineage is immutable and cross-tenant lineage is prohibited. |
-| Foreground Turn holds Liveness Lease | Each foreground started turn has one current C-6-persisted lease generation renewed by its C-2 owner. | Only the current generation may append or dispatch/commit a foreground D-7 attempt. Missing heartbeats beyond the deterministic liveness window fence the old owner; concurrent reconcilers use one conditional, idempotent terminal transition keyed by turn and lease generation, producing exactly one `cancelled`. An expired owner can never resume or overwrite that result. |
-| Turn selects Permission Profile | Each turn resolves exactly one effective profile. | Later extension, model output, or approval cannot mutate or widen the resolved profile; an accepted D-6 remains a one-attempt authorization evaluated against policy. |
-| Approval Request projects to Item | One D-6 record may produce status-projection items in its owning turn. | D-6 is canonical; a D-3 projection references the exact D-6 version, cannot authorize execution, and is corrected only by appending a later projection. |
-| Approval Request authorizes Execution Attempt | One accepted D-6 approval authorizes exactly one bounded D-7 execution attempt with the same action, target, parameters, effect, and scope. | Any parameter, target, effect, scope, or attempt-identity drift requires a new policy evaluation and a new approval. No session/turn-wide reusable grant exists in this design. |
-| Capability Descriptor produces Execution Attempt | An attempt references one validated descriptor version. | Execution is rejected if the descriptor is missing, stale beyond policy, disabled, or incompatible. |
-| Extension Manifest exposes Capability Descriptor | One manifest may expose many descriptors. | Removing or disabling a manifest makes its descriptors unavailable without rewriting history. |
-| Context Compaction Snapshot summarizes Item range | One D-9 snapshot covers one contiguous, durable, causally closed prefix of effective canonical history and retains a bounded unsummarized tail after that prefix. A Tool call and its matching Tool result, and every other provider-visible request/result group, must remain together in the prefix or together in the tail; the boundary never cuts an open group. The prefix may end inside an active Turn only at such a boundary before its next inference. | The stable snapshot identity/content digest, target Thread, tenant, subject, fork lineage, inclusive source range, prefix-scoped effective-history version and digest, causal-closure proof, policy version, producer identity, and, for a successor, exact predecessor identity/digest plus newly absorbed contiguous range must match before reuse. A seed producer input is one bounded closed source range; a successor input is the immediately preceding bounded snapshot content plus one bounded contiguous closed delta, never the complete expanded canonical prefix. A staged chain is anchored to no predecessor for a seed or to one selected committed D-9 for advancement; each later staged member must name the immediately preceding member. C-6 atomically validates the anchor, every predecessor identity/digest, contiguous absorbed range, target-prefix key, and current prefix source before committing/selecting the complete chain. The chain commits all members or none. An identical winner is idempotent; a non-identical winner at any member aborts the request chain, commits none of its members, and returns the earliest conflicting winner. C-2 must adopt and re-evaluate that winner before rebuilding: when it covers the target prefix and fits with the exact tail, the replacement suffix is empty; otherwise the complete remaining suffix must absorb every required uncovered contiguous range across bounded passes before another atomic attempt. A tail-only append leaves the prefix key valid and reuses the committed D-9 with a freshly read exact tail; if the snapshot plus grown tail no longer fits, one or more bounded successor steps absorb later ranges within a bounded pass budget. A correction or other drift within the summarized prefix rejects or supersedes D-9 and forces bounded seed-and-successor reconstruction. Generation-bound inference establishment separately compares the assembled request-wide effective-context version/digest — covering the final committed chain winner identity/content digest, prefix provenance, and exact tail, or a direct-history marker — with current canonical and snapshot state, so any winner, prefix, or tail drift after assembly triggers bounded reassembly. Resume atomically commits/selects the complete staged chain with its new Turn and binds the Turn to the final winner, or exposes neither. A Fork reserves its child Thread identity and immutable lineage before snapshot selection; a parent-scoped D-9 is never reused as child-scoped data. The complete child-bound staged chain may be built only from authorized causally closed parent ranges ending at or before the exact fork point and is committed atomically with child lineage and first Turn, or no chain member or child state becomes visible. If no causally closed bounded step or pass budget can satisfy the snapshot-plus-tail budget, compaction fails visibly. D-9 is untrusted conversation content and cannot become instructions, policy, identity, approval, or execution authority. It never replaces or authorizes deletion of D-1/D-2/D-3 data. |
+| Thread contains Turn | Many historical Turns; at most one admitted mutation workflow under the new profile. | Subject/tenant scope is immutable; an independent Thread is not serialized behind this Thread. |
+| Turn contains Item | Ordered Items and later corrections. | Raw replay remains complete and ordered; rejected writes do not advance history. |
+| Submission identity identifies Turn | One authenticated operation identity maps to one accepted Turn after CAND-18. | Identical retries return the same identity/outcome; changed input under that identity conflicts. Observing an existing acceptance never grants authority to execute that Turn again. No success is inferred from an ambiguous acknowledgement. |
+| Thread forks Thread | Optional single immutable parent and exact fork point. | No cross-owner lineage. Child creation is idempotent and atomic for child/lineage/first-Turn state. Later inference failure retains that committed child and its truthful Turn outcome. |
+| Foreground Turn holds lease | Existing CAND-1 generation and heartbeat. | Expired owners cannot append or dispatch; orphan closure has one durable cancelled terminal. Single-instance scope does not waive existing arbitration tests. |
+| Approval authorizes Attempt | One accepted exact-action D-6 binds one D-7. | Duplicate decisions cannot duplicate an effect; parameter or authority drift requires new authorization. |
+| Manifest exposes Descriptor | One manifest can expose many validated descriptors. | Disabled, incompatible, or stale descriptors cannot authorize execution; history is unchanged. |
+| Snapshot summarizes prefix | One published summary plus its exact recent tail forms provider context. | Scope, source range/version, summary identity/content, and policy/producer provenance are validated. Tool request/result groups stay together. Tail-only growth can reuse a matching prefix; prefix changes invalidate it. Canonical history is never replaced. |
+| Thread owner controls inference | The same owner admits context work and final inference establishment. | Before dispatch, the selected context and current Turn/lease/control state still match. Stale or late work fails without inference, winner adoption, or automatic rebuild within the same failed attempt. |
+
+D-9 reuse includes tenant, subject, Thread, and applicable fork lineage. A child
+does not borrow a parent's snapshot identity; it derives its own context from
+authorized canonical history. Producer steps remain bounded: a seed consumes
+one closed source range, and a successor consumes the prior bounded summary
+plus one contiguous closed range. The final summary alone is published through
+C-6. Exhausted budgets or source drift end the attempt visibly. Any previously
+published snapshot remains merely a cache that must be revalidated before use.
 
 ## Architecture Design [Required]
 
 | ID | Component or dependency | Responsibility | Conceptual inputs and outputs | Dependencies | Accepted constraints |
 | --- | --- | --- | --- | --- | --- |
-| C-1 | Presentation boundary | Expose the new versioned REST/SSE contract, authenticated approval protocol, and future typed application protocols; translate them to owned domain requests, approval decisions, and events. | Client and approver requests, gateway context, thread/turn operations, approval decisions; typed lifecycle events and owned REST/SSE responses. | C-2, C-5, C-7. | C-1 delegates signed-claim validation and trust-context construction to C-7; it never validates identity by itself. The new contract is authoritative; predecessor wire parity is not required. UI design is out of scope. |
-| C-2 | Agent core | Own thread/turn orchestration, state transitions, effective-context assembly, automatic context-compaction policy, budgets, cancellation, foreground lease heartbeats, orphan reconciliation, and provider-independent policy flow. | Owned turn input, instructions, canonical context references, prefix-scoped D-9 provenance and committed identity/content digest, request-wide effective-context provenance, and causally closed recent-tail boundaries, capabilities, lease-expiry signals; bounded model context, ordered staged D-9 chains, committed derived compaction snapshots, typed items, and terminal outcomes. | C-3, C-4, C-5, C-6, C-7. | Any healthy C-2 instance may reconcile an expired foreground lease, but only through C-6 generation fencing. C-2 checks context before every Turn-inference request. Seed construction consumes one bounded closed canonical range; reconstruction and rolling advancement recursively use the prior bounded snapshot content plus one bounded contiguous closed delta per C-3 call, never the complete expanded prefix, and stop at a configured pass budget. C-2 supplies one ordered staged chain with an optional selected committed anchor, every member's predecessor identity/digest and absorbed range, and all target-prefix provenance to C-6. C-6 atomically validates and commits/selects the complete chain, then returns its final committed winner. A non-identical conflict commits none of the request chain; C-2 discards the conflicting staged member and descendants, rereads and adopts the earliest conflicting winner, then rechecks its covered prefix and exact-tail fit. A winner that already completes the target uses an empty replacement suffix; otherwise C-2 loops across every remaining bounded contiguous delta, promoting each replacement member as predecessor, until the replacement tip plus tail fits or the pass budget ends. Only then may it retry the atomic chain transaction. Final inference establishment separately revalidates request-wide provenance containing the final committed winner identity/content digest, prefix provenance, and exact tail, or a direct-history marker, while also checking that the Turn remains nonterminal, its lease generation remains current, and no authenticated interrupt or cancellation has won. Tail-only drift reassembles the request while retaining D-9 when its prefix still matches; when the valid snapshot plus exact tail no longer fits, C-2 performs bounded successor steps; prefix drift rejects D-9 and performs bounded seed-and-successor reconstruction. All drift and chain-conflict recovery is bounded, and late or losing compaction output is discarded. Compaction may create only derived target-scoped D-9 projections, must keep each provider-visible request/result group wholly in the prefix or tail, and must fail visibly rather than silently omit uncovered history. Resume compaction atomically commits/selects the complete staged chain with the new Turn and binds that Turn to the final winner; Fork compaction follows child identity and lineage reservation and commits the complete child chain only with atomic child state. No provider wire types, Web handlers, database types, or privileged host execution enter the core. |
-| C-3 | Provider adapters | Translate owned Turn-inference requests, streams, and the owned bounded compaction-producer request for OpenAI-compatible and other configured providers. | Model-neutral messages, Tool schemas, a bounded seed range or immediately preceding bounded snapshot content plus one bounded contiguous causally closed delta, and budgets; model events, bounded compaction output, usage, and normalized errors. | External provider APIs. | Every producer request independently satisfies input, output, time, and retry limits; C-3 does not load the complete expanded prefix, read canonical history or D-9 persistence, select a committed winner, or control the C-2 pass budget. Provider selection is explicit; the initial baseline has no automatic fallback. Compaction input/output is untrusted conversation content and grants no authority. Secrets remain in adapter configuration boundaries. |
-| C-4 | Capability and extension registry | Load repository instructions, agent profiles, skills, plugins, and MCP/tool descriptors with precedence and provenance. | Configured roots and remote catalogs; validated descriptors and diagnostics. | MCP/tool providers, configuration. | Metadata is untrusted; extension declarations never grant execution authority. |
-| C-5 | Policy, approval, and execution boundary | Resolve permission profiles, evaluate effects, own canonical D-6 approval records, bind each accepted approval to one D-7 attempt, validate the current foreground lease generation through C-6, and dispatch through sandboxed or isolated executors. | Proposed action, immutable trust context, and applicable turn lease generation; authenticated approval decision delivered through C-1; policy decision, D-6 status, execution events and result returned through C-2. | C-6, Tool service, MCP providers, platform sandbox or isolated worker. | C-5 exposes owned ports and does not depend on C-1. It rejects dispatch and result commitment from a fenced foreground owner. Default deny, cancellation, timeout, output cap, and audit are mandatory; C-2 never performs direct host execution, and no reusable session/turn approval exists. |
-| C-6 | Thread-store port and AI-owned durable adapter | Persist and retrieve canonical history, metadata, lineage, foreground liveness leases, checkpoints, idempotency state, and reconstructable D-9 compaction snapshots in a shared durable store owned by the AI service boundary. | Versioned Thread/turn/item appends and bounded range queries, target-scoped derived snapshot reads, atomic ordered staged-chain validation/commit/winner selection, committed-winner identity/content reads, generation- and request-wide-source/snapshot-bound inference-establishment checks, atomic Resume staged-chain/final-winner/new-Turn commit, Fork child-identity/lineage reservation and atomic child-chain/final-winner/child-state commit, lease acquire/renew/expire operations; ordered history, prefix-scoped and request-wide effective-history versions/digests, D-9 identity/content/provenance, metadata, and fenced lease generations. | AI-owned PostgreSQL datastore; later semantic Memory and background Multitask adapters consume owned projections or commands. | Lease expiry and orphan terminal transition are conditional and idempotent by turn plus generation. A stale generation or terminal Turn rejects foreground chain commitment and inference establishment. One chain transaction validates its optional selected committed anchor, every staged member's predecessor identity/content digest, contiguous absorbed range, target-prefix key, and current prefix provenance. All request members commit/select atomically or none do. Identical existing content converges idempotently. A non-identical winner at the earliest conflicting member aborts the whole request chain with no member committed and returns that winner descriptor/content. C-6 accepts the next atomic attempt with that selected winner and an empty staged suffix when it already covers the target, or with only bounded descendants for remaining uncovered ranges; C-2 owns that winner-first choice. Any changed request-wide effective-context provenance or final selected winner identity/content digest rejects inference establishment. Tail-only appends do not invalidate a prefix-matching D-9. A failed Resume compaction or final commit exposes no staged-chain member or new Turn; a successful atomic Resume binds the Turn to the final selected chain winner. Every atomic Resume or Fork target-state transaction revalidates cancellation and lease fencing before any mutation and returns a typed cancellation or fenced outcome with zero mutation. A cancelled or failed Fork compaction or final commit exposes no child identity, lineage, staged-chain member, or Turn, except that its abort rechecks for a child concurrently committed by another attempt of the same reservation, validates any found child against the reservation identity and exact fork point, and returns the validated existing child or its typed failure instead of acknowledging zero state. An already-committed child for a reservation — whether committed through the direct-history or a compacted transaction — is detected at reservation time and by every child-state transaction and returned to idempotent retries instead of committing a second child; a committed child-scope chain winner implies that reservation's child, lineage, and first Turn are already committed, so an idempotent Fork retry reads and returns that existing child state. The AI-owned store is canonical for Thread/Turn/Item; D-9 and process-local state are reconstructable only and never authorize canonical-history mutation. |
-| C-7 | Identity and trust-context adapter | Validate gateway/JWT identity and construct immutable tenant/user/thread trust context. | Credentials and gateway context; validated principal and scopes. | APISIX and Auth/JWKS. | Headers cannot replace missing signed claims; secrets and raw credentials do not enter history or logs. |
-| C-8 | Observability and audit boundary | Emit structured lifecycle, provider, policy, approval, execution, retry, and recovery signals. | Correlated events from C-1 through C-7; redacted logs, metrics, traces, and evidence references. | Logging, metrics, tracing backends. | Content minimized by default; sensitive content requires explicit environment-safe diagnostics and redaction. |
+| C-1 | Presentation boundary | Translate authenticated requests and durable events; expose busy/conflict and retry outcomes when their contracts are accepted. | Chat/control/approval requests; REST/SSE results. | C-2, C-5, C-7. | Existing wire contracts remain binding until changed by an Accepted ADR; no UI scope. |
+| C-2 | Agent core | Own per-Thread admission, lifecycle, effective projection, context budget, sequential compaction, and prompt control handling. | Owned requests, context, provider and tool results; durable Items and terminals. | C-3, C-4, C-5, C-6. | One mutation owner after CAND-17; bounded parallelism across Threads; existing lease/terminal rules retained. |
+| C-3 | Provider adapter | Translate inference and bounded summary steps. | Owned context and budgets; normalized output, usage, errors. | Configured provider. | No store access, orchestration ownership, or implicit fallback. |
+| C-4 | Capability/extension registry | Supply coherent validated metadata with provenance. | Configured roots/catalogs; descriptors and diagnostics. | Configuration and extension providers. | Metadata cannot grant authority; the existing static empty inventory remains valid. |
+| C-5 | Policy, approval, execution | Own exact-action authorization, bounded dispatch, cancellation, and audit. | Proposed effect and trusted decision; attempt results and projections. | C-6 and authorized isolated executors. | Existing Accepted CAND-2 contract, default deny, single-dispatch arbitration, and generation fencing. |
+| C-6 | AI-owned store port and PostgreSQL adapter | Own canonical history, existing leases, retry records, optional lineage, and derived snapshots. | Scoped requests; canonical state, atomic outcomes, typed conflicts. | PostgreSQL. | Existing Accepted CAND-1/CAND-3/CAND-11 contracts. D-9 adds no second history owner or competing-builder recovery protocol. |
+| C-7 | Identity and trust-context adapter | Carry validated identity and scopes from the gateway/Auth boundary. | Credentials/gateway context; immutable principal. | APISIX and Auth/JWKS. | Runtime handoff and strip/reissue rules remain binding; untrusted headers cannot supply authority. |
+| C-8 | Observability/audit boundary | Correlate lifecycle, conflicts, failures, and effects with redaction. | Bounded signals; logs/metrics/traces/audit evidence. | Existing telemetry sinks and durable audit owner. | No raw secrets or routine sensitive content; observations do not authorize work. |
 
-The table's Dependencies column defines implementation dependency direction.
-Return events and responses in the diagram below do not reverse that direction:
-C-5 returns owned policy/approval/execution events through C-2, while C-1 is an
-adapter that invokes the C-5 decision port after C-7 validation.
+The single-instance constraint covers ingress and all workers that could write
+the same canonical history. PostgreSQL remains the canonical store even though
+the delivery profile has one active application instance. Optional Memory and
+Multitask integrations never gain direct history-writing authority. Deployment
+enforcement belongs to a later OCR; this design is not proof of a running
+topology. Existing Accepted ADRs listed in the central index take precedence
+over this non-authorizing design for implemented behavior.
+
+The Thread mutation owner is the owner of a conversation workflow, not a
+requirement to route every SQL statement through one queue. Existing C-5
+approval transitions, C-6 lease renewal, stop arbitration, and orphan closure
+retain their canonical conditional guards. They can serve the current workflow
+or close it without admitting a second conversation producer. Future correction
+or fork delivery must use the same admission boundary when enabled; this ADD
+does not claim that those routes already exist.
 
 ### Mermaid Architecture Diagram [Required]
 
 ```mermaid
 flowchart LR
-  subgraph Clients ["Client and gateway boundary"]
-    Client["API clients"]
-    Approver["Human approver"]
-    Gateway["APISIX / Auth / JWKS"]
+  Client["Authenticated client"] --> C7
+  Gateway["APISIX / Auth / JWKS"] --> C7
+  subgraph AI["One active AI application instance per environment"]
+    C7["C-7 Identity / trust"] --> C1["C-1 REST / SSE"]
+    C1 --> C2["C-2 Thread owner / lifecycle / context"]
+    C1 -->|"Approval decision"| C5["C-5 Policy / approval / execution"]
+    C2 --> C3["C-3 Provider adapter"]
+    C2 --> C4["C-4 Capability registry"]
+    C2 --> C5
+    C2 --> C6["C-6 Canonical store / derived snapshots"]
+    C5 --> C6
+    C1 --> C8["C-8 Redacted observability / audit"]
+    C2 --> C8
+    C5 --> C8
+    C6 -->|"Durable state / typed outcome"| C2
   end
-  subgraph Runtime ["Koduck AI runtime boundary"]
-    C1["C-1 Presentation boundary"]
-    C7["C-7 Identity and trust-context adapter"]
-    C2["C-2 Agent core"]
-    C4["C-4 Capability and extension registry"]
-    C5["C-5 Policy, approval, and execution boundary"]
-    C3["C-3 Provider adapters"]
-    C6["C-6 Thread-store port and AI-owned durable adapter"]
-    C8["C-8 Observability and audit boundary"]
-  end
-  subgraph External ["External systems and isolated execution"]
-    Providers["Model providers"]
-    Extensions["Instructions / profiles / skills / plugins / MCP and tool catalogs"]
-    Executor["Sandboxed or isolated executors / Tool service"]
-    Stores["AI-owned PostgreSQL datastore"]
-    MemoryJobs["Semantic Memory / background Multitask"]
-    Telemetry["Logs / metrics / traces / audit evidence"]
-  end
-
-  Client -->|"REST / SSE or typed lifecycle operations"| C1
-  Approver -->|"Authenticated approval decision"| C1
-  Gateway -->|"Validated credentials and gateway context"| C7
-  C7 -->|"Immutable tenant / user / thread trust context"| C1
-  C7 -->|"Validated principal and scopes"| C2
-  C1 -->|"Owned thread / turn requests"| C2
-  C1 -->|"Validated exact approval decision"| C5
-  C2 -->|"Turn inference or bounded seed / predecessor-plus-delta compaction step and budgets"| C3
-  C3 -->|"Provider-native inference or compaction request"| Providers
-  Providers -->|"Inference stream or compaction output / usage / errors"| C3
-  C3 -->|"Typed model events or untrusted compaction result"| C2
-  Extensions -->|"Untrusted manifests and descriptors"| C4
-  C4 -->|"Validated snapshot with provenance"| C2
-  C2 -->|"Proposed capability action and current lease generation"| C5
-  C5 -->|"Validate foreground lease generation"| C6
-  C5 -->|"Bounded action after policy and approval"| Executor
-  Executor -->|"Untrusted execution result"| C5
-  C5 -->|"D-6 projection, attempt result, or non-execution outcome"| C2
-  C2 -->|"Atomic staged-chain D-9 operations; final-winner-bound inference; atomic Resume and Fork state; leases / checkpoints"| C6
-  C6 -->|"Canonical operations plus committed D-9 chain/final-winner identity and request-fenced atomic Resume / Fork state"| Stores
-  Stores -->|"Durable source versions/digests, committed D-9 chain identity/content/provenance, lineage / Turn state, lease expiry, and recovery input"| C6
-  C6 -->|"Versioned semantic-memory projections and background-state contracts"| MemoryJobs
-  C6 -->|"Durable replay, committed D-9 chain/final-winner identity/content, source provenance, inference fence, and child commit result"| C2
-  C2 -->|"Typed items and terminal outcomes"| C1
-  C1 -->|"Owned REST / SSE responses and lifecycle events"| Client
-  C1 -.->|"Ingress and projection events"| C8
-  C2 -.->|"Lifecycle and budget events"| C8
-  C3 -.->|"Provider events"| C8
-  C4 -.->|"Discovery diagnostics"| C8
-  C5 -.->|"Policy / approval / execution events"| C8
-  C6 -.->|"Persistence and recovery events"| C8
-  C7 -.->|"Identity validation events"| C8
-  C8 -->|"Redacted telemetry and evidence references"| Telemetry
+  C3 --> Provider["Configured model provider"]
+  Provider -->|"Untrusted bounded output"| C3
+  C4 --> Extensions["Configured extension sources"]
+  C5 --> Executor["Authorized isolated executor; disabled until enabled"]
+  C6 --> DB["AI-owned PostgreSQL"]
+  C8 --> Telemetry["Telemetry / durable audit evidence"]
+  C1 -->|"Durable events / busy / conflict"| Client
+  C2 -.->|"Deferred background integration"| Multitask["Multitask"]
+  C2 -.->|"Optional projection / retrieval"| Memory["Semantic Memory"]
 ```
 
 ## Control Flow Design [Conditionally Required — the solution has multiple steps, branches, retries, asynchronous work, or failure recovery]
 
 | ID | Trigger and precondition | Happy path | Branches and retries | Failure handling | Observable result |
 | --- | --- | --- | --- | --- | --- |
-| CF-1 | Client starts or continues a turn / identity and thread access are valid | C-1 normalizes input; C-2 durably creates the started turn and input, acquires and renews its fenced foreground lease through C-6, and resolves capabilities and policy. Before every C-3 Turn-inference request — including after durable provider/tool output continues an active Turn — C-2 assembles effective context and checks the soft token budget. It uses direct effective history when within budget or one committed prefix-provenance-matching D-9 plus exact recent tail when over budget. Initial construction or reconstruction starts from one bounded causally closed canonical range; each successor step sends only the immediately preceding bounded snapshot content plus one bounded contiguous causally closed delta to C-3. Rolling advancement starts from the selected committed D-9 and stages successors until the snapshot plus tail fits or the bounded pass budget ends. C-2 submits the ordered chain, optional committed anchor, member predecessor identities/digests, absorbed ranges, and target-prefix provenance to one C-6 atomic chain operation. C-6 commits/selects every member or none and returns the final committed winner identity/content digest. C-2 then derives request-wide provenance over that final winner, prefix provenance, and exact tail, or a direct-history marker, and at inference establishment revalidates it plus the nonterminal Turn, current lease generation, and absence of an authenticated interrupt or cancellation. It appends every externally visible item and terminal outcome through C-6 before C-1 publishes it. | Missing, stale, corrupt, incompatible, prefix-provenance-mismatched, or causally open D-9 state is rejected and rebuilt through bounded seed-and-successor steps; no producer call receives the complete expanded canonical prefix. Producer output remains in one ordered staged chain until the atomic anchor/member/range/prefix fence passes. Identical existing content is idempotent. A non-identical winner at any member aborts the request chain with no member committed; C-2 discards that member and descendants, rereads and adopts the earliest conflicting committed winner, and rechecks its coverage and exact-tail fit. If the winner already completes the target, the replacement suffix is empty; only uncovered contiguous ranges produce bounded successors. A correction inside the summarized prefix rejects D-9 and triggers bounded recursive reconstruction. A tail-only append retains a prefix-valid D-9 but changes request-wide provenance, so C-2 rereads the exact tail; if it no longer fits, successor steps absorb later closed ranges. Any final committed-winner, prefix, or tail drift after assembly rejects request establishment and restarts assembly within the same bounded drift/pass budget. Each Tool call/result group remains wholly summarized or wholly exact. Provider retry follows a bounded budget and the same final fence; no provider or legacy runtime fallback occurs. An authenticated interrupt cancels in-flight compaction when possible and yields `interrupted`; a platform, policy, dependency, or lease-generation stop yields `cancelled`. Any late or losing producer result is ignored. | If recursive construction or advancement cannot prove complete and causally closed coverage, any seed/successor producer fails, no valid next bounded range can fit, a chain member conflicts and winner-first bounded recovery cannot converge, a committed winner cannot be reread, the atomic chain transaction rejects a member's identity-rule version, encoding, digest, or predecessor identity as invalid, or pass/drift budgets exhaust, C-2 issues no subsequent Turn-inference request and durably terminates the accepted active Turn as `failed`; no context is silently discarded and no orphan Tool result is sent. If interrupt, terminal state, cancellation, lease fencing, anchor/member/prefix drift, winner drift, or request-wide drift wins, the applicable fence discards the complete staged chain or conflicting suffix, rejects chain commitment or inference establishment, and either rebuilds from the new source/winner or preserves the winning durable terminal. A later append failure enters `recovery-pending` and closes `failed` when C-6 returns. Liveness expiry fences the old generation and exactly one reconciler appends `cancelled`. | The client sees rejection with no turn, a direct context or context assembled from the exact final committed chain winner and exact tail bound into every fenced inference, the winning durable terminal with no post-terminal, prefix-stale, winner-stale, or request-stale inference, a durable typed `failed` recursive-compaction terminal without a subsequent inference, a replayable prefix plus `durability-unavailable`, or an eventual durable `cancelled` orphan terminal. No expired, terminal, prefix-stale, winner-stale, or request-stale owner can commit compaction, append, or report completion. |
-| CF-2 | Model requests a capability / descriptor is active and compatible | C-4 resolves validated effect, idempotency, retry, and budget metadata; C-5 validates the exact action and current foreground lease generation and, when approval is required, creates canonical D-6 state, obtains the decision through C-1/C-7, and binds acceptance to one D-7 attempt. It executes allowed work in isolation and returns any D-6 projection plus the untrusted result to C-2. | Policy may deny, request narrower input, allow without approval, or require approval. Pre-effect work may retry within metadata and budget; once a privileged D-7 starts, any retry is a new attempt requiring current-lease validation, fresh policy evaluation, and, when required, a new approval. | A fenced lease, decline, cancel, or expiry becomes a typed non-execution result; fencing during execution prevents result commitment and records a cancelled/failed attempt according to observed effect state. Descriptor drift restarts evaluation without reusing approval. | Canonical audit evidence links descriptor version, policy, lease generation, D-6 when applicable, D-7 attempt, result, and D-3 projections without treating projections as authority. |
-| CF-3 | Thread is resumed or forked / caller has access | The operation splits before source loading. Fork first reserves an unpublished child Thread identity and immutable lineage at the exact fork point — before any canonical source load, so an idempotent retry returns an already-committed child even when the parent source is unavailable, corrupt, or lacks a version adapter — then binds all D-9 selection and construction to that child scope and joins the shared load. Resume and other operations begin with the shared load: C-6 loads canonical ordered history, committed D-9 identity/content/prefix provenance when present, request-wide provenance, and lineage, and Resume binds context assembly to the existing Thread. C-2 uses direct effective history below budget, a fitting committed target-bound D-9 plus exact recent tail, or a bounded recursive seed/successor chain above budget. Each seed consumes one bounded closed range; each successor consumes only its immediately preceding bounded snapshot content plus one bounded contiguous closed delta. Resume atomically validates and commits/selects the complete staged chain, compares request-wide provenance, and commits the new Turn bound to the final winner, or commits neither. Fork atomically validates and commits/selects the complete child chain while committing child identity, lineage, and first Turn bound to the final winner. | Resume may reuse only an existing-Thread prefix-provenance and causal-closure match. A tail-only append retains that committed snapshot and triggers exact-tail reassembly with its identity/content digest; if it no longer fits, bounded successor steps form one staged chain anchored to that committed winner. A prefix correction rejects it and starts a seed-anchored staged chain. Identical existing members converge idempotently; a non-identical winner aborts the whole request chain and returns the earliest conflict. For Resume, C-2 adopts that winner and rechecks target coverage plus exact-tail fit before retrying the atomic Turn transaction: a final-member winner may complete recovery with an empty replacement suffix, while only remaining uncovered contiguous ranges produce bounded descendants. For Fork, a non-identical child-scope winner can only come from this reservation's own atomic child-state commit, so C-2 reads and validates the already-committed child, lineage, and first Turn against the reservation identity and exact fork point and returns that existing child as the idempotent result instead of running winner-first recovery or reporting zero visible child state. An already-committed child for the reservation — including one committed through the direct-history transaction — is detected at reservation time and returned to any later retry as the validated idempotent result, and every child-state transaction that finds the reservation's child already committed returns that existing child instead of committing a second child. A winner returned by a drift-recovery retry takes the same validation and completes drift recovery by returning the validated child; a missing or mismatched child fails visibly as inconsistent child state with the committed child remaining visible, rather than a zero-visible-state abort. Fork never reuses a parent-scoped snapshot; it may stage a child-bound chain only from authorized contiguous closed parent ranges ending at or before the fork point. Request-wide drift after assembly retries with the same final committed winner only while its identity/content/prefix remains selected and fits; otherwise C-2 rereads the winner or regenerates within bounded budgets. Incompatible historical Item versions use a versioned adapter. Foreground orphan closure belongs to CF-1; background recovery belongs to CF-5. | Canonical corruption, unavailable or changed request source, seed/successor producer failure or cancellation, no bounded causally closed next range, pass-budget exhaustion, a Resume chain conflict that cannot converge within the bounded winner-first retry budget, a Fork committed-child validation mismatch against its reservation, committed-winner read failure, typed chain-validation rejection of a member's identity-rule version, encoding, digest, or predecessor identity, or final atomic-commit failure issues no Turn-inference request. Resume exposes no staged-chain member or new Turn; Fork aborts the reservation and exposes no child Thread, lineage, staged-chain member, or Turn, except when this reservation's child was already committed and its read or validation fails, where the already-visible child is preserved and reported through the typed read or inconsistent-child-state failure instead of an impossible rollback, and every Fork abort after construction begins rechecks for a child concurrently committed by another attempt of the same reservation, validates any found child against the reservation identity and exact fork point, and returns the validated existing child — or reports its typed read or inconsistent-child-state failure — instead of acknowledging an impossible zero-visible state. No path silently truncates history, emits an orphan Tool result, mutates canonical Items, crosses scope, reuses parent D-9 as child data, partially commits a request chain, uses a losing staged summary, commits a Turn against stale winner/request provenance, or reactivates a terminal Turn. | The original terminal Turn and complete canonical replay remain unchanged. A successful compacted Resume atomically exposes the complete D-9 chain and one new Turn bound to its final committed winner. A successful compacted Fork atomically exposes the complete child-bound D-9 chain, one child Thread with stable lineage, and its first Turn bound to the final winner; a Fork retry whose reservation already committed returns the existing child as the idempotent result; a direct-history path creates no D-9, every cancelled or failed Fork whose reservation never committed its child has zero visible child state, and a Fork whose reservation's child was already committed returns that existing child or reports the typed read or inconsistent-child-state failure while it remains visible. |
-| CF-4 | Extension inventory changes or a configured source becomes unavailable | When reachable, C-4 discovers, parses, validates, records provenance, and atomically publishes a new capability snapshot. | Invalid entries are excluded with diagnostics. If the source is unavailable, the prior valid snapshot remains active only when an explicit stale policy permits its age and scope; otherwise new resolutions fail closed. | Source loss or load failure never widens permissions and never partially publishes an inconsistent catalog. In-flight turns retain their already resolved snapshot. | New turns observe one coherent fresh or explicitly stale snapshot, or a typed capability-unavailable failure with provenance diagnostics. |
-| CF-5 | Background work is accepted / identity, idempotency, and capability policy are valid | C-1/C-2 create durable work intent; Multitask schedules; workers execute the same core lifecycle and C-6 records checkpoints and terminal state. | Duplicate submission returns the existing identity; lease loss or restart resumes only from a durable checkpoint permitted by task semantics. | Unsafe or ambiguous recovery stops and requires a new attempt; abandoned work has a truthful terminal state. | Foreground and background work expose compatible lifecycle and evidence semantics. |
+| CF-1 | Owned start/continue request | Resolve submission identity; admit Thread owner; durably start Turn; assemble direct context or one bounded sequential summary; validate context/control state; infer and publish durable Items; repeat after Tool result; commit terminal and release ownership. | Exact retry observes the canonical operation; a fresh competing write is busy. Independent Threads proceed. | Stop/cancel remains serviceable. Source drift, producer failure, timeout, or budget exhaustion fails visibly; late output is ignored. Existing durability recovery may retain ownership until state is settled. | One accepted Turn and one truthful durable terminal; no stale inference or duplicate acceptance. |
+| CF-2 | Model proposes a capability | C-4 resolves metadata; C-5 checks policy/lease; if needed obtains one exact approval; conditionally dispatches once; persists outcome; C-2 appends projection before continuing. | Denial/decline/cancel/expiry never dispatches; exact retries observe canonical state. | A terminal Turn or fenced lease prevents later dispatch/commit; unknown effects are not automatically repeated. | One bounded authorized attempt or typed denial/failure. |
+| CF-3 | Owned Resume or optional Fork | Resume enters CF-1 as a new Turn; Fork admits the parent mutation boundary, validates exact source point, atomically creates child/lineage/first Turn, then performs child context/inference under its owner. | Same fork identity returns committed child before repeating creation; changed identity-bound content conflicts; a busy source rejects new work. | Before child commit, failure exposes no new child. After commit, summary/inference failure preserves child state and closes its Turn truthfully; ambiguous commits reconcile by identity. | No duplicate child; parent history unchanged; no atomic summary-plus-child transaction required. |
+| CF-4 | Optional registry update | Load, validate, and publish one coherent capability snapshot. | Keep the prior valid snapshot when a replacement is rejected. | Report source/validation failure; metadata never widens permissions. | Valid versioned metadata or an explicit failure. |
+| CF-5 | Request for automatically recoverable background work | No scheduling or takeover in this delivery profile. | CAND-8/CAND-9 remain Deferred until measured need and a later approved scope. | Any exposed unsupported request rejects before creating work. Existing foreground orphan closure remains available. | No background job or implied automatic resume. |
+| CF-6 | Owned correction against a terminal Turn, when correction delivery is enabled | Resolve owned exact retry before fresh-write admission; otherwise acquire Thread admission, validate ownership/current predecessor, atomically append one correction, and release owner. | Identical retries return original result; new writes against a stale predecessor conflict; active Thread writes are busy under CAND-17. | Rejection leaves history unchanged; uncertain acknowledgement uses existing CAND-11 reconciliation. | One durable correction, no automatic merge, unchanged original Items and Turn terminal. |
 
 ### Mermaid Control Flow [Conditionally Required — Control Flow Design is triggered]
 
 ```mermaid
-flowchart TB
-  subgraph CF1 ["CF-1 Foreground turn lifecycle"]
-    CF1Start["Start or continue turn"] --> CF1Auth{"Identity and thread access valid?"}
-    CF1Auth -->|"No"| CF1Reject["Reject before model or tool use"]
-    CF1Auth -->|"Yes"| CF1Append["C-1 normalizes; C-2 appends started turn and input"]
-    CF1Append --> CF1InputStored{"Started turn and input durable?"}
-    CF1InputStored -->|"No"| CF1NoTurn["Reject with durability-unavailable; no turn accepted"]
-    CF1InputStored -->|"Yes"| CF1Lease["C-2 acquires and renews fenced foreground lease through C-6"]
-    CF1Lease --> CF1Resolve["Resolve capabilities, policy, and effective context"]
-    CF1Lease -.->|"Heartbeat absent beyond liveness window"| CF1Orphan["Fence expired owner generation"]
-    CF1Orphan --> CF1OrphanCancel["C-2 reconcilers race through one conditional idempotency key"] --> CF1Persist
-    CF1Resolve --> CF1Budget{"Effective context within soft token budget before next inference?"}
-    CF1Budget -->|"Yes"| CF1RequestFence
-    CF1Budget -->|"No"| CF1Snapshot{"Valid prefix-provenance- and causal-closure-matching D-9 available?"}
-    CF1Snapshot -->|"Yes, prefix provenance and causal closure match"| CF1Reuse["Reuse D-9 with exact tail; keep each Tool round wholly summarized or wholly exact"]
-    CF1Snapshot -->|"No, bounded seed range and closed boundary available"| CF1Build["Request seed D-9 from one bounded causally closed range through C-3"]
-    CF1Snapshot -->|"No, no fitting seed range, closed boundary, or available source"| CF1CompactFail["Prepare failed terminal; no next Turn-inference request"] --> CF1Persist
-    CF1Build --> CF1BuildResult{"Bounded producer outcome?"}
-    CF1BuildResult -->|"Typed producer failure"| CF1CompactFail
-    CF1BuildResult -->|"Authenticated interrupt won"| CF1Interrupt
-    CF1BuildResult -->|"Platform, policy, dependency, or lease stop"| CF1Cancel
-    CF1BuildResult -->|"Valid bounded output"| CF1Built["Derive canonical deterministic member identity and append D-9 to ordered staged chain"] --> CF1BuiltFits{"Current staged-chain tip plus exact recent tail fits budget?"}
-    CF1BuiltFits -->|"No"| CF1BuildPass{"Bounded recursive pass budget remains?"}
-    CF1BuildPass -->|"No"| CF1CompactFail
-    CF1BuildPass -->|"Yes"| CF1BuildRange{"Next bounded contiguous causally closed delta available?"}
-    CF1BuildRange -->|"No"| CF1CompactFail
-    CF1BuildRange -->|"Yes"| CF1BuildNext["Request successor from staged predecessor content plus bounded delta through C-3"] --> CF1BuildResult
-    CF1BuiltFits -->|"Yes"| CF1D9Pending{"Ordered staged D-9 chain pending?"}
-    CF1Reuse --> CF1Fits{"Existing D-9 plus grown exact recent tail fits budget?"}
-    CF1Fits -->|"Yes"| CF1D9Pending
-    CF1Fits -->|"No"| CF1AdvancePredecessor["Set rolling predecessor to committed D-9"] --> CF1AdvanceSource{"Next bounded contiguous causally closed delta available?"}
-    CF1AdvanceSource -->|"No"| CF1CompactFail
-    CF1AdvanceSource -->|"Yes"| CF1Advance["Request successor from current rolling predecessor content plus bounded delta through C-3"]
-    CF1Advance --> CF1AdvanceResult{"Bounded producer outcome?"}
-    CF1AdvanceResult -->|"Typed producer failure"| CF1CompactFail
-    CF1AdvanceResult -->|"Authenticated interrupt won"| CF1Interrupt
-    CF1AdvanceResult -->|"Platform, policy, dependency, or lease stop"| CF1Cancel
-    CF1AdvanceResult -->|"Valid bounded output"| CF1Advanced["Append successor to ordered staged chain with predecessor and absorbed-range provenance"] --> CF1AdvancedFits{"Current staged-chain tip plus exact recent tail fits budget?"}
-    CF1AdvancedFits -->|"No"| CF1AdvancePass{"Bounded successor pass budget remains?"}
-    CF1AdvancePass -->|"No"| CF1CompactFail
-    CF1AdvancePass -->|"Yes"| CF1AdvancePromote["Promote staged successor to rolling predecessor"] --> CF1AdvanceSource
-    CF1AdvancedFits -->|"Yes"| CF1D9Pending
-    CF1D9Pending -->|"No"| CF1RequestFence{"Request provenance with direct marker or committed D-9 identity/content digest current, Turn nonterminal, lease current, and no interrupt or cancellation?"}
-    CF1D9Pending -->|"Yes"| CF1CommitD9{"Atomic anchor/member/range/prefix/Turn/lease validation commits or selects the complete chain?"}
-    CF1CommitD9 -->|"Yes or identical existing members"| CF1Winner["C-6 returns final committed chain winner identity and content digest"] --> CF1WinnerRead["Read final committed winner content"] --> CF1WinnerReadable{"Winner content read succeeds?"}
-    CF1WinnerReadable -->|"Yes"| CF1RequestFence
-    CF1WinnerReadable -->|"No, typed read failure"| CF1CompactFail
-    CF1CommitD9 -->|"No, earliest non-identical member winner"| CF1ChainConflict["No request member committed; discard conflicting member and descendants; adopt winner and recheck coverage plus exact-tail fit"] --> CF1ChainRetry{"Bounded winner-first conflict-recovery budget remains?"}
-    CF1ChainRetry -->|"Yes"| CF1Resolve
-    CF1ChainRetry -->|"No"| CF1CompactFail
-    CF1CommitD9 -->|"No, terminal or fence won"| CF1FenceLost{"Winning durable state"}
-    CF1CommitD9 -->|"No, prefix changed"| CF1PrefixDrift["Discard complete staged chain and rebuild summarized prefix"]
-    CF1CommitD9 -->|"No, typed durability failure"| CF1CompactFail
-    CF1CommitD9 -->|"No, typed validation failure"| CF1CompactFail
-    CF1RequestFence -->|"Yes"| CF1Dispatch{"Atomically establish inference for the same source and selected committed-snapshot provenance?"}
-    CF1Dispatch -->|"Yes"| CF1Provider["Issue Turn-inference request through C-3"]
-    CF1Dispatch -->|"No, terminal or fence won"| CF1FenceLost
-    CF1Dispatch -->|"No, final winner, prefix, or tail changed"| CF1RequestDrift["Reread final winner and exact tail; retain D-9 only if identity, digest, and prefix still match"]
-    CF1Dispatch -->|"No, typed durability failure"| CF1CompactFail
-    CF1PrefixDrift --> CF1DriftBudget{"Bounded source-drift retry remains?"}
-    CF1RequestDrift --> CF1DriftBudget
-    CF1DriftBudget -->|"Yes"| CF1Resolve
-    CF1DriftBudget -->|"No"| CF1CompactFail
-    CF1FenceLost -->|"Authenticated interrupt"| CF1Interrupt
-    CF1FenceLost -->|"Existing terminal"| CF1TerminalStop
-    CF1FenceLost -->|"Cancelled or fenced"| CF1Cancel
-    CF1RequestFence -->|"Authenticated interrupt won"| CF1Interrupt
-    CF1RequestFence -->|"Existing terminal"| CF1TerminalStop["Discard staged or late compaction output; preserve terminal; no inference"] --> CF1Done
-    CF1RequestFence -->|"Fenced, platform, policy, or dependency stop"| CF1Cancel
-    CF1RequestFence -->|"Winner, prefix, or tail changed"| CF1RequestDrift
-    CF1Provider --> CF1Outcome{"Next provider or control outcome"}
-    CF1Outcome -->|"Stream item"| CF1Item["Append item through C-6"]
-    CF1Item --> CF1ItemStored{"Item durable?"}
-    CF1ItemStored -->|"Yes"| CF1Publish["C-1 publishes durable item; continue current stream"] --> CF1Outcome
-    CF1ItemStored -->|"No"| CF1StoreFail["Stop generation; emit out-of-band durability-unavailable"]
-    CF1Outcome -->|"Retryable and budget remains"| CF1Budget
-    CF1Outcome -->|"Durable tool or control result requires next inference"| CF1Budget
-    CF1Outcome -->|"Authenticated client interrupt"| CF1Interrupt["Discard staged or late compaction output; prepare or preserve interrupted terminal"] --> CF1Persist
-    CF1Outcome -->|"Platform, policy, dependency, or lease stop"| CF1Cancel["Discard staged or late compaction output; prepare or preserve cancelled terminal"] --> CF1Persist
-    CF1Outcome -->|"Terminal provider failure"| CF1Fail["Prepare failed terminal"] --> CF1Persist
-    CF1Outcome -->|"Success"| CF1Persist["C-6 appends terminal outcome"]
-    CF1Persist --> CF1Stored{"Append durable?"}
-    CF1Stored -->|"No"| CF1StoreFail
-    CF1Stored -->|"Yes"| CF1Done["Emit ordered durable terminal lifecycle"]
-    CF1StoreFail --> CF1Recovery["Keep turn nonterminal; when C-6 returns, prepare failed terminal"] --> CF1Persist
-  end
-
-  subgraph CF2 ["CF-2 Capability policy, approval, and execution"]
-    CF2Start["Model proposes capability action"] --> CF2Descriptor{"C-4 descriptor active and compatible?"}
-    CF2Descriptor -->|"No or drifted"| CF2Refresh["Refresh and resolve exact descriptor"]
-    CF2Refresh --> CF2Fresh{"Fresh compatible descriptor available?"}
-    CF2Fresh -->|"No"| CF2NoExec["Typed non-execution result"]
-    CF2Fresh -->|"Yes"| CF2Policy["C-5 validates lease generation, input, and effect"]
-    CF2Descriptor -->|"Yes"| CF2Policy
-    CF2Policy --> CF2Lease{"Foreground lease current or not applicable?"}
-    CF2Lease -->|"No"| CF2NoExec
-    CF2Lease -->|"Yes"| CF2Decision{"Policy decision"}
-    CF2Decision -->|"Deny or require narrower input"| CF2NoExec["Typed non-execution result"]
-    CF2Decision -->|"Approval required"| CF2Present["C-1/C-7 presents canonical exact D-6 request"]
-    CF2Present --> CF2Approval{"Accept, decline, cancel, or expire?"}
-    CF2Approval -->|"Decline / cancel / expire"| CF2NoExec
-    CF2Approval -->|"Accept one exact D-7 attempt"| CF2Execute["Dispatch to isolated executor"]
-    CF2Decision -->|"Allow"| CF2Execute
-    CF2Execute --> CF2ExecOutcome{"Execution outcome"}
-    CF2ExecOutcome -->|"Pre-effect retryable failure and metadata permits"| CF2Reevaluate["Create new attempt candidate; reevaluate policy and approval"] --> CF2Policy
-    CF2ExecOutcome -->|"Timeout or cancellation"| CF2Stop["Terminate attempt with typed outcome"]
-    CF2ExecOutcome -->|"Owner generation fenced"| CF2Fenced["Reject result commit; record cancelled or failed from observed effect state"]
-    CF2ExecOutcome -->|"Failure or effect may have occurred"| CF2Failure["Record typed failed attempt; do not auto-retry"]
-    CF2ExecOutcome -->|"Success"| CF2Result["Return D-6 projection and untrusted result to C-2"]
-    CF2NoExec --> CF2Audit["Link descriptor, policy, applicable D-6/D-7, result, and projections"]
-    CF2Stop --> CF2Audit
-    CF2Fenced --> CF2Audit
-    CF2Failure --> CF2Audit
-    CF2Result --> CF2Audit
-  end
-
-  subgraph CF3 ["CF-3 Resume or fork"]
-    CF3Start["Resume or fork request"] --> CF3Access{"Caller has access?"}
-    CF3Access -->|"No"| CF3Reject["Reject without creating work"]
-    CF3Access -->|"Yes"| CF3Kind{"Resume or fork?"}
-    CF3Kind -->|"Resume"| CF3Load["C-6 loads canonical history, prefix-scoped D-9 provenance, request-wide provenance, and lineage"]
-    CF3Load --> CF3History{"Canonical history complete and valid?"}
-    CF3History -->|"No"| CF3Fail["Fail visibly; do not truncate history"]
-    CF3History -->|"Yes"| CF3Version{"Historical item version compatible?"}
-    CF3Version -->|"No, adapter exists"| CF3Translate["Apply versioned translation"] --> CF3Operation
-    CF3Version -->|"No adapter"| CF3Fail
-    CF3Version -->|"Yes"| CF3Operation{"Resume or fork?"}
-    CF3Operation -->|"Resume"| CF3ResumeScope["Bind D-9 provenance to existing Thread"] --> CF3Budget
-    CF3Operation -->|"Fork"| CF3Budget
-    CF3Kind -->|"Fork"| CF3ForkScope["Reserve unpublished child identity and immutable lineage"]
-    CF3ForkScope --> CF3ForkReserved{"Reservation reserved?"}
-    CF3ForkReserved -->|"Reserved"| CF3ForkExisting
-    CF3ForkReserved -->|"Reservation fails"| CF3Fail
-    CF3ForkReserved -->|"Client cancellation won"| CF3Cancelled
-    CF3ForkExisting{"Child already committed for this reservation?"}
-    CF3ForkExisting -->|"Yes, validated against reservation and fork point"| CF3ForkReturn["Return existing child, lineage, and first Turn as the idempotent result; sequence terminates"]
-    CF3ForkExisting -->|"Yes, but missing, mismatched, or unreadable"| CF3Inconsistent
-    CF3ForkExisting -->|"No"| CF3Load
-    CF3Budget{"Effective context within soft token budget?"}
-    CF3Budget -->|"Yes"| CF3Direct["Use effective history directly"]
-    CF3Budget -->|"No"| CF3Snapshot{"Valid target-scope and causally closed D-9 available? Never reuse parent D-9 for Fork"}
-    CF3Snapshot -->|"Yes, prefix provenance and causal closure match"| CF3Reuse["Reuse target-bound D-9 with exact tail; keep each Tool round wholly summarized or wholly exact"]
-    CF3Snapshot -->|"No, bounded seed range and closed boundary available"| CF3Build["Request seed target-bound D-9 from one bounded causally closed range through C-3"]
-    CF3Snapshot -->|"No, no fitting seed range, closed boundary, or available source"| CF3Fail
-    CF3Build --> CF3BuildResult{"Bounded producer outcome?"}
-    CF3BuildResult -->|"Typed producer failure"| CF3Fail
-    CF3BuildResult -->|"Cancelled"| CF3Cancelled["Discard staged chain; cancellation won before commit"]
-    CF3BuildResult -->|"Valid bounded output"| CF3Built["Derive canonical deterministic member identity and append D-9 to staged child or Resume chain"] --> CF3BuiltFits{"Current staged-chain tip plus exact recent tail fits budget?"}
-    CF3BuiltFits -->|"No"| CF3BuildPass{"Bounded recursive pass budget remains?"}
-    CF3BuildPass -->|"No"| CF3Fail
-    CF3BuildPass -->|"Yes"| CF3BuildRange{"Next bounded contiguous causally closed delta available?"}
-    CF3BuildRange -->|"No"| CF3Fail
-    CF3BuildRange -->|"Yes"| CF3BuildNext["Request successor from staged predecessor content plus bounded delta through C-3"] --> CF3BuildResult
-    CF3BuiltFits -->|"Yes"| CF3CompactContext["Use complete staged chain tip plus retained recent tail"]
-    CF3Reuse --> CF3Fits{"Existing D-9 plus grown exact recent tail fits budget?"}
-    CF3Fits -->|"Yes"| CF3CompactContext
-    CF3Fits -->|"No"| CF3AdvancePredecessor["Set rolling predecessor to committed D-9"] --> CF3AdvanceSource{"Next bounded contiguous causally closed delta available?"}
-    CF3AdvanceSource -->|"No"| CF3Fail
-    CF3AdvanceSource -->|"Yes"| CF3Advance["Request successor from current rolling predecessor content plus bounded delta through C-3"]
-    CF3Advance --> CF3AdvanceResult{"Bounded producer outcome?"}
-    CF3AdvanceResult -->|"Typed producer failure"| CF3Fail
-    CF3AdvanceResult -->|"Cancelled"| CF3Cancelled
-    CF3AdvanceResult -->|"Valid bounded output"| CF3Advanced["Append successor to ordered staged chain with predecessor and absorbed-range provenance"] --> CF3AdvancedFits{"Current staged-chain tip plus exact recent tail fits budget?"}
-    CF3AdvancedFits -->|"No"| CF3AdvancePass{"Bounded successor pass budget remains?"}
-    CF3AdvancePass -->|"No"| CF3Fail
-    CF3AdvancePass -->|"Yes"| CF3AdvancePromote["Promote staged successor to rolling predecessor"] --> CF3AdvanceSource
-    CF3AdvancedFits -->|"Yes"| CF3CompactContext
-    CF3Direct --> CF3DirectCommit{"Commit direct-history Resume or Fork against request-wide source and direct marker?"}
-    CF3DirectCommit -->|"Resume"| CF3DirectResumeCommit{"Atomic request check appends new Turn bound to direct-history marker?"}
-    CF3DirectResumeCommit -->|"No, request-source drift"| CF3Drift
-    CF3DirectResumeCommit -->|"No, cancelled or fenced"| CF3Cancelled
-    CF3DirectResumeCommit -->|"No, typed durability failure"| CF3Fail
-    CF3DirectResumeCommit -->|"Yes"| CF3DirectResume["Expose new Turn with direct history and no D-9"]
-    CF3DirectCommit -->|"Fork"| CF3DirectForkCommit{"Atomic source check commits child, lineage, and first Turn bound to direct-history marker?"}
-    CF3DirectForkCommit -->|"No, request-source drift"| CF3Drift
-    CF3DirectForkCommit -->|"No, child already committed"| CF3ForkWinner
-    CF3DirectForkCommit -->|"No, cancelled or fenced"| CF3Cancelled
-    CF3DirectForkCommit -->|"No, typed durability failure"| CF3Fail
-    CF3DirectForkCommit -->|"Yes"| CF3DirectFork["Expose child Thread and stable lineage with no D-9"]
-    CF3CompactContext --> CF3CompactCommit{"Atomically commit or select complete chain with compacted Resume or Fork target?"}
-    CF3CompactCommit -->|"Resume"| CF3ResumeCommit{"Validate anchor, every member/range, prefix, and request; commit/select complete chain plus new Turn or none?"}
-    CF3ResumeCommit -->|"No, earliest non-identical member winner"| CF3ChainConflict["No chain member or target state committed; discard conflicting member and descendants; adopt winner and recheck coverage plus exact-tail fit"]
-    CF3ResumeCommit -->|"No, request source, final winner, prefix, or tail drifted"| CF3Drift["Discard stale staged chain or direct assembly; reread current source and committed winner; restart bounded assembly"]
-    CF3ResumeCommit -->|"No, cancelled or fenced"| CF3Cancelled
-    CF3ResumeCommit -->|"No, typed durability failure"| CF3Fail
-    CF3ResumeCommit -->|"No, typed validation failure"| CF3Fail
-    CF3ResumeCommit -->|"Yes"| CF3Resume["Expose new Turn bound to final committed chain winner"]
-    CF3CompactCommit -->|"Fork"| CF3ForkCommit{"Validate child anchor, every member/range, and source; commit/select complete child chain plus child state or none?"}
-    CF3ForkCommit -->|"No, earliest non-identical member winner"| CF3ForkWinner["Committed child-chain winner proves this reservation's child already committed; validate existing child, lineage, and first Turn against the reservation"]
-    CF3ForkCommit -->|"No, child already committed without a chain winner"| CF3ForkWinner
-    CF3ForkWinner -->|"Matches reservation"| CF3ForkReturn
-    CF3ForkWinner -->|"Missing or mismatched"| CF3Inconsistent["Report typed inconsistent-child-state or read failure; the committed child remains visible; no zero-state abort"]
-    CF3ForkWinner -->|"Read fails"| CF3Inconsistent
-    CF3ForkCommit -->|"No, request-source drift"| CF3Drift
-    CF3ForkCommit -->|"No, cancelled or fenced"| CF3Cancelled
-    CF3ForkCommit -->|"No, typed durability failure"| CF3Fail
-    CF3ForkCommit -->|"No, typed validation failure"| CF3Fail
-    CF3ForkCommit -->|"Yes"| CF3Fork["Expose child Thread and stable lineage bound to final chain winner"]
-    CF3Drift --> CF3DriftBudget{"Bounded source-drift retry remains?"}
-    CF3DriftBudget -->|"Yes"| CF3Budget
-    CF3DriftBudget -->|"No"| CF3Fail
-    CF3ChainConflict --> CF3ChainRetry{"Bounded winner-first conflict-recovery budget remains?"}
-    CF3ChainRetry -->|"Yes"| CF3Budget
-    CF3ChainRetry -->|"No"| CF3Fail
-    CF3Cancelled --> CF3Abort
-    CF3Fail --> CF3Abort["Discard staged chain and abort any fork reservation, rechecking whether this Fork reservation's child was already committed"]
-    CF3Abort --> CF3AbortState{"This Fork reservation's child already committed?"}
-    CF3AbortState -->|"No, or Resume operation"| CF3AbortZero["Report typed failure or cancellation with zero visible child state; no inference"]
-    CF3AbortState -->|"Yes, validated against reservation and fork point"| CF3ForkReturn
-    CF3AbortState -->|"Yes, but unreadable or inconsistent"| CF3Inconsistent
-  end
-
-  subgraph CF4 ["CF-4 Extension inventory refresh"]
-    CF4Start["Configured source changes or becomes unavailable"] --> CF4Reachable{"Source reachable?"}
-    CF4Reachable -->|"No, stale policy permits age and scope"| CF4Prior["Keep prior valid snapshot and report stale status"]
-    CF4Reachable -->|"No stale permission"| CF4Fail["Fail closed with capability-unavailable diagnostics"]
-    CF4Reachable -->|"Yes"| CF4Discover["Discover, parse, validate, and record provenance"]
-    CF4Discover --> CF4Valid{"Entry valid?"}
-    CF4Valid -->|"No"| CF4Exclude["Exclude entry and emit diagnostics"] --> CF4Snapshot
-    CF4Valid -->|"Yes"| CF4Snapshot["Build coherent candidate snapshot"]
-    CF4Snapshot --> CF4Publish{"Atomic publish succeeds?"}
-    CF4Publish -->|"Yes"| CF4Done["New turns use new snapshot; in-flight turns retain resolved snapshot"]
-    CF4Publish -->|"No, stale policy permits age and scope"| CF4Prior
-    CF4Publish -->|"No stale permission"| CF4Fail
-  end
-
-  subgraph CF5 ["CF-5 Background work"]
-    CF5Start["Submit background work"] --> CF5Validate{"Identity, idempotency, and policy valid?"}
-    CF5Validate -->|"No"| CF5Reject["Reject without scheduling"]
-    CF5Validate -->|"Duplicate"| CF5Existing["Return existing work identity"]
-    CF5Validate -->|"Yes"| CF5Intent["Persist work intent and schedule with Multitask"]
-    CF5Intent --> CF5Worker["Worker runs the same core lifecycle"]
-    CF5Worker --> CF5Checkpoint["C-6 records checkpoint and lease progress"]
-    CF5Checkpoint --> CF5Outcome{"Terminal, lease loss, or restart?"}
-    CF5Outcome -->|"Terminal"| CF5Done["Record truthful compatible terminal state"]
-    CF5Outcome -->|"Recoverable from permitted checkpoint"| CF5Worker
-    CF5Outcome -->|"Unsafe or ambiguous recovery"| CF5Stop["Stop; record abandonment and require a new attempt"]
-  end
+flowchart TD
+  CF1["CF-1 Start / continue"] --> Identity{"Owned identity / exact retry?"}
+  Identity -->|"Invalid or conflicting"| Reject["Typed rejection / unavailable; do not start another write"]
+  Identity -->|"Existing operation"| Replay["Return canonical identity / outcome"]
+  Identity -->|"Fresh"| Admit{"Thread admission available?"}
+  Admit -->|"No"| Busy["Busy; independent Threads unaffected"]
+  Admit -->|"Yes"| Start["Durable Turn start; own lifecycle"]
+  Start --> Context{"Effective context fits?"}
+  Context -->|"Yes"| Fence["Validate context / Turn / lease / controls"]
+  Context -->|"No"| Compact["Single bounded seed / successor workflow"]
+  Compact -->|"Complete and current"| Publish["Publish final derived snapshot"]
+  Publish -->|"Success"| Fence
+  Publish -->|"Failure / stale source / cancelled"| End
+  Compact -->|"Failure / drift / limit / cancellation"| End["Durable truthful terminal; settle before release"]
+  Fence -->|"Invalid / stopped"| End
+  Fence -->|"Valid"| Infer["Inference; durable output before publication"]
+  Infer -->|"Complete / failure"| End
+  Control["Stop / cancel remains serviceable"] -->|"Signal current owner / canonical arbitration"| End
+  Infer -->|"Tool request"| CF2["CF-2 Policy / exact approval"]
+  CF2 -->|"Denied / declined / expired / stopped"| ToolResult["Persist typed Tool outcome"]
+  CF2 -->|"Authorized and current"| Execute["One bounded dispatch"]
+  Execute -->|"Result / timeout / cancellation"| ToolResult
+  ToolResult -->|"Turn still active"| Context
+  ToolResult -->|"Turn terminal"| End
+  CF3["CF-3 Resume / Fork"] --> Kind{"Operation?"}
+  Kind -->|"Resume"| CF1
+  Kind -->|"Fork enabled"| ForkRetry{"Existing owned fork identity?"}
+  ForkRetry -->|"Yes"| Replay
+  ForkRetry -->|"No"| ForkAdmission{"Parent available and source valid?"}
+  ForkAdmission -->|"Busy / invalid"| Reject
+  ForkAdmission -->|"Yes"| Child["Atomic child / lineage / first Turn"]
+  Child -->|"Committed; transfer to child owner"| Context
+  Child -->|"Proven rejection / pre-commit cancellation"| Reject
+  Child -->|"Uncertain acknowledgement"| Reconcile["Read canonical identity; no fresh duplicate"]
+  Reconcile -->|"Committed"| Replay
+  Reconcile -->|"Absent or unresolved"| Reject
+  CF4["CF-4 Optional registry update"] --> Registry{"Metadata valid?"}
+  Registry -->|"Yes"| Snapshot["Publish coherent capability snapshot"]
+  Registry -->|"No"| Retain["Report failure; retain prior valid snapshot"]
+  CF5["CF-5 Deferred background request"] --> Unsupported["Reject before scheduling"]
+  CF6["CF-6 Correction"] --> CorrectionRetry{"Owned exact retry?"}
+  CorrectionRetry -->|"Yes"| Replay
+  CorrectionRetry -->|"Fresh"| CorrectionAdmission{"Thread free / Turn terminal / tip current?"}
+  CorrectionAdmission -->|"No"| Reject
+  CorrectionAdmission -->|"Yes"| Correction["Atomic append; retain original history"]
+  Correction -->|"Commit proven"| Replay
+  Correction -->|"Acknowledgement uncertain"| Reconcile
 ```
 
 ## Interaction Flow Design [Conditionally Required — a human or external system interacts with the solution]
 
 | ID | Actor and entry state | Actions | System feedback and transitions | Exit state | Figma reference |
 | --- | --- | --- | --- | --- | --- |
-| IX-1 | API client with authenticated principal and an existing or new thread | Start, steer, interrupt, resume, fork, or read a thread. | C-1 obtains trust context from C-7. Every lifecycle item is published only after C-6 confirms durability. Resume first loads canonical history and any committed D-9 winner, checks the context budget, and uses direct history or that winner only when it plus the exact tail fits. Otherwise C-2 runs bounded recursive production into one ordered staged chain: a seed consumes one bounded closed range; each successor consumes the immediately preceding staged snapshot content plus one bounded contiguous closed delta, never the complete expanded prefix. Before creating the new Turn, C-6 atomically validates every chain link/range/prefix, commits/selects all members or none, and binds the Turn to the final committed winner identity/content digest. A non-identical member conflict returns the earliest committed winner with no partial chain commit. C-2 adopts that winner and rechecks target coverage plus exact-tail fit; an already-complete winner retries the target-state transaction with an empty replacement suffix, while an incomplete winner drives one or more bounded C-3 successor passes until the complete remaining suffix tip plus exact tail fits. C-6 is retried only after that suffix is complete. Fork applies the same bounded child-scoped chain after reserving unpublished child identity and immutable lineage, never reusing parent-scoped D-9. A non-identical conflict winner in the reserved child scope can only come from this reservation's own atomic child-state commit, so Fork reads and validates the already-committed child, lineage, and first Turn against the reservation identity and exact fork point and returns that existing child as the idempotent result instead of running winner-first recovery or reporting zero visible child state; an already-committed child — including one committed through the direct-history transaction — is detected at reservation time and by every child-state transaction, initial or retry, and returned through the same validation instead of committing a second child; the same adoption applies at the initial chain commit and at any drift-recovery retry that returns a child conflict winner, completing drift recovery with the validated existing child, and a missing or mismatched child reports a typed inconsistent-child-state failure that preserves the visible child. Request-source drift after assembly — including drift returned by the direct-history commit or any conflict-recovery retry — discards the stale staged chain or direct assembly and restarts bounded context reassembly within the shared drift budget instead of rejecting; reassembly that still fits below budget commits through the atomic direct-marker transaction, a prefix-valid committed winner with a refreshed exact tail retries the winner-bound transaction without producer passes, an earliest conflict winner returned by a drift-recovery retry exits into winner-first conflict recovery rather than restarting assembly, and only drift- or pass-budget exhaustion, producer or closed-range failure during reassembly, durability failure, or validation failure rejects. Source, producer, closed-range, pass-budget, winner-first conflict retry, committed-winner read, typed chain-validation rejection, cancellation, or atomic-commit failure rejects Resume with no staged-chain member or Turn and, except for an already-committed child of this reservation — adopted, conflicting, or failing read or validation — which is returned as the idempotent result or reported through its typed failure while remaining visible, aborts Fork with zero visible child state, and a cancelled Resume — at any producer pass or atomic target transaction — reports the cancellation outcome with no D-9 or Turn, while a cancelled Fork preserves the cancellation outcome with zero visible child state when the reservation's child was never committed, and its abort recheck returns the validated existing child or the typed child-state failure otherwise. `Interrupted` reports an authenticated client stop; `cancelled` reports a platform, policy, dependency, or reconciled foreground-owner stop. | A durable terminal Turn, one atomic complete D-9 chain and new Turn bound to its final winner when Resume compaction is needed, one atomic visible child plus complete child chain and first Turn bound to its final winner when Fork compaction is needed, or a rejected/cancelled request with no side effect. Initial durability, recursive producer/pass, chain winner selection/read, or atomic-commit failure creates no staged-chain member or Turn for Resume and exposes no child identity, lineage, staged-chain member, or Turn for a Fork whose reservation never committed its child; when this reservation's child was already committed, that existing child remains visible and is returned as the idempotent result or reported through its typed read or inconsistent-child-state failure; a later outage exposes only the durable prefix plus `durability-unavailable`; an orphan becomes durably `cancelled` after the liveness window. | N/A — service/protocol interaction only; no UI is designed here. |
-| IX-2 | Human approver using the authenticated approval protocol exposed by C-1 and validated through C-7 | Inspect the canonical D-6 action, target, parameters, effect, scope, rationale, and risk; accept, decline, or cancel that exact request. | C-5 remains the D-6 authority. C-1 carries the request and decision but does not own approval state; C-2/C-6 append user-visible D-3 status projections referencing D-6. Acceptance binds exactly one D-7 attempt, and the execution result is reported separately. | Declined/cancelled/expired with no execution, or accepted with one linked terminal D-7 attempt. Any retry is a newly evaluated attempt and approval when required. | N/A — approval protocol semantics only; presentation design requires future Figma context. |
-| IX-3 | MCP, tool, model, memory, auth, or multitask system | Initialize or negotiate, exchange versioned requests/events, report capabilities, and return results. | Compatibility, deadline, correlation, retryability, and terminal status are explicit. | Success, compatible degradation, or typed failure without authority escalation. | N/A — external-system interaction. |
+| IX-1 | Authenticated client; new or owned Thread | Start, retry, continue, stop, Resume, or optional Fork. | Stable retry returns the existing operation; busy/conflict is explicit; accepted work streams only durable events. Fork creation precedes child inference and its identity survives later inference failure. Stop remains available during provider/summary waits. | Canonical completed/interrupted/cancelled/failed state or typed pre-admission rejection; no hidden automatic takeover. | N/A — service protocol only |
+| IX-2 | Authenticated approver; requested action | Accept, decline, or cancel the exact request; possibly repeat a decision. | Canonical D-6 transition; duplicate/conflicting decisions cannot dispatch twice. A Turn stop or authority expiry can prevent execution despite a late acceptance. | One canonical decision and at most one authorized attempt. | N/A — service protocol only |
+| IX-3 | Operator or integration caller | Observe failures, replace the instance, or request deferred background work. | Foreground orphan closure remains truthful; deferred submissions create no job. Replacement requires old-instance stop and later OCR verification before new admission. | No simultaneous application owners; uncertain external effects require reconciliation or explicit new action. | N/A — no operator UI design |
+| IX-4 | Authenticated owner; terminal content | Correct content, retry, or submit a stale edit. | Exact retry returns its durable result; busy/stale edits receive typed rejection and can be refreshed and explicitly resubmitted. No automatic merge. | One append or no mutation; original history retained. | N/A — service boundary only |
 
 ### Mermaid Interaction Flow [Conditionally Required — Interaction Flow Design is triggered]
 
 ```mermaid
 sequenceDiagram
-  participant Client as API client
-  participant Approver as Human approver
-  participant C1 as C-1 Presentation boundary
-  participant Identity as C-7 Identity adapter
-  participant Core as C-2 Agent core
-  participant Store as C-6 Thread store
-  participant Policy as C-5 Policy and execution
-  participant External as IX-3 External system
-
-  Note over Client,Store: IX-1 Client lifecycle interaction
-  Client->>C1: Start, steer, resume, fork, read, or interrupt
-  C1->>Identity: Validate signed claims and requested ownership
-  Identity-->>C1: Immutable trust context or typed rejection
-  alt Identity or request rejected
-    C1-->>Client: Typed rejection with no side effect
-  else Request accepted
-    C1->>Core: Owned thread or turn operation
-    alt Operation is Fork
-      Core->>Store: Reserve unpublished child identity and immutable lineage at exact fork point
-      Store-->>Core: Reservation and authorized parent source, already-committed child state for this reservation, or typed failure
-      alt Reservation fails or client cancellation wins
-        Core->>Store: Abort any reservation idempotently, rechecking whether this reservation's child was already committed
-        Store-->>Core: Zero visible child state acknowledged, already-committed child state when a concurrent attempt committed it, or a typed read failure when committed child state cannot be read
-        Core->>Core: Validate any found existing child against this reservation identity and exact fork point before returning it
-        Core-->>C1: Fork rejected or cancelled with no child state, the validated existing child as the idempotent result, or the typed read or inconsistent-child-state failure for a found child
-        C1-->>Client: Typed rejection or cancellation, idempotent existing-child result, or typed child-state failure and sequence terminates
-      else An earlier attempt of this reservation already committed the child
-        Core->>Store: Read the existing child, immutable lineage, and first Turn and validate them against this reservation identity and exact fork point
-        Store-->>Core: Existing child state validated or typed failure
-        alt Existing child state matches this reservation
-          Core-->>C1: Child identity, immutable lineage, and first Turn bound to its committed provenance
-          C1-->>Client: Fork succeeded with the existing visible child as the idempotent result and sequence terminates
-        else Existing child state missing or mismatched
-          Core-->>C1: Typed failure with inconsistent child state
-          C1-->>Client: Typed failure and sequence terminates
-        else Reading existing child state fails
-          Core-->>C1: Typed read failure with the existing child preserved
-          C1-->>Client: Typed failure and sequence terminates
-        end
-      else Child scope and authorized parent source are reserved
-        Note over Core,Store: The reserved Fork scope joins the shared state load below and keeps its idempotent existing-child result even when the parent source cannot be loaded
-      end
-    else Resume or other accepted operation
-      Note over Core,Store: Non-Fork operations join the shared state load below
-    end
-    Core->>Store: Append or load ordered state and lineage
-    Store-->>Core: Durable state, checkpoint, or typed failure
-    alt Storage unavailable
-      alt A Fork child scope was reserved before this load
-        Core->>Store: Abort child reservation, rechecking whether this reservation's child was already committed
-        Store-->>Core: Zero visible child state acknowledged, already-committed child state when a concurrent attempt committed it, or a typed read failure when committed child state cannot be read
-        Core->>Core: Validate any found existing child against this reservation identity and exact fork point before returning it
-        Core-->>C1: Durability-unavailable rejection with no child state, the validated existing child as the idempotent result, or the typed read or inconsistent-child-state failure for a found child
-        C1-->>Client: Durability-unavailable rejection, idempotent existing-child result, or typed child-state failure and sequence terminates
-      else No durable started turn exists
-        Core-->>C1: Reject operation, no turn was accepted
-        C1-->>Client: Durability-unavailable rejection with no side effect
-      else Durable started turn exists
-        Core-->>C1: Stop work, no unpersisted item is publishable
-        C1-->>Client: Out-of-band durability-unavailable notification
-        opt C-6 recovers
-          Core->>Store: Append failed terminal for recovery-pending turn
-          Store-->>Core: Durable failed terminal acknowledgement
-        end
-      end
-    else Active work
-      alt Operation is Resume
-        Core->>Store: Load canonical history, committed D-9 identity/content/prefix provenance, and request provenance
-        Store-->>Core: Bounded source and matching committed D-9 content or typed failure
-        alt Source is unavailable, corrupt, or incomplete
-          Core-->>C1: Typed source failure with no D-9 or new Turn
-          C1-->>Client: Resume rejected with no side effect and sequence terminates
-        else Complete bounded source is available
-          Core->>Core: Check soft budget and whether the committed D-9 winner plus exact tail fits before creating the new Turn
-          alt Direct context or reusable D-9 plus exact tail fits
-            Core->>Store: Atomically validate direct marker or committed D-9 identity/content plus source provenance and append new Turn
-            Store-->>Core: New Turn identity, typed request-source drift, typed cancellation or fenced stop, typed zero-mutation durability failure, or typed zero-mutation validation failure
-            alt Typed request-source drift
-              loop Bounded direct-path drift recovery until the direct commit succeeds or the drift budget ends
-                Core->>Core: Reread the current canonical source and recheck the soft budget
-                alt Cancellation wins during drift recovery
-                  Core->>Core: Mark drift recovery cancelled and exit without another transaction attempt
-                else Context still fits as direct history
-                  Core->>Store: Retry the atomic direct-marker and new-Turn transaction
-                  Store-->>Core: New Turn committed, another request drift, typed cancellation or fenced stop, or typed zero-mutation durability failure
-                  alt Retry commits the new Turn
-                    Core->>Core: Mark drift recovery complete and exit the drift loop
-                  else Retry returns another request drift
-                    Core->>Core: Retain the current source for the next bounded drift iteration
-                  else Retry returns typed cancellation or fenced stop
-                    Core->>Core: Mark drift recovery cancelled and exit without another transaction attempt
-                  else Retry returns typed zero-mutation durability failure
-                    Core->>Core: Mark drift recovery failed and exit without another transaction attempt
-                  end
-                else Prefix-valid committed D-9 winner plus refreshed exact tail fits
-                  Core->>Store: Retry the atomic committed-winner and new-Turn transaction with refreshed source provenance
-                  Store-->>Core: New Turn committed bound to the committed winner, another request drift, typed cancellation or fenced stop, typed zero-mutation durability failure, or typed zero-mutation validation failure
-                  alt Retry commits the winner-bound new Turn
-                    Core->>Core: Mark drift recovery complete and exit the drift loop
-                  else Retry returns another request drift
-                    Core->>Core: Retain the current source and committed winner for the next bounded drift iteration
-                  else Retry returns typed cancellation or fenced stop
-                    Core->>Core: Mark drift recovery cancelled and exit without another transaction attempt
-                  else Retry returns typed zero-mutation durability failure
-                    Core->>Core: Mark drift recovery failed and exit without another transaction attempt
-                  else Retry returns typed zero-mutation validation failure
-                    Core->>Core: Mark drift recovery failed and exit without another transaction attempt
-                  end
-                else Context is over budget after drift
-                  Core->>Core: Mark drift recovery routed into over-budget compaction and exit the direct-path drift loop
-                end
-              end
-              alt Drift recovery was cancelled
-                Core-->>C1: Resume cancelled with no D-9 or new Turn
-                C1-->>Client: Typed cancellation with no side effect and sequence terminates
-              else Drift recovery was routed into over-budget compaction
-                Core->>Core: Run the over-budget bounded seed/successor compaction passes, winner-first conflict recovery, and atomic complete-chain commit flow within the same drift budget, applying the over-budget branch rules above
-                alt Over-budget compaction commits the complete chain plus new Turn
-                  Note over Core,Store: Resume may enter active work using the final committed winner while the source terminal Turn remains unchanged
-                else Over-budget compaction is cancelled, fails, or exhausts the shared budget
-                  Core-->>C1: Typed cancellation or compaction failure with no D-9 or new Turn
-                  C1-->>Client: Typed cancellation or rejection with no side effect and sequence terminates
-                end
-              else New Turn did not commit
-                Core-->>C1: Typed drift or durability failure and no new Turn
-                C1-->>Client: Resume rejected with no side effect and sequence terminates
-              else New Turn is durable
-                Note over Core,Store: Resume may enter active work and source terminal Turn remains unchanged
-              end
-            else Typed durability failure
-              Core-->>C1: Typed durability failure and no new Turn
-              C1-->>Client: Resume rejected with no side effect and sequence terminates
-            else Typed validation failure
-              Core-->>C1: Typed validation failure and no new Turn
-              C1-->>Client: Resume rejected with no side effect and sequence terminates
-            else Typed cancellation or fenced stop
-              Core-->>C1: Resume cancelled with no D-9 or new Turn
-              C1-->>Client: Typed cancellation with no side effect and sequence terminates
-            else New Turn is durable
-              Note over Core,Store: Resume may enter active work and source terminal Turn remains unchanged
-            end
-          else Context is over budget
-            alt No reusable prefix-valid D-9 exists
-              Core->>Core: Select one bounded causally closed seed range
-            else Prefix-valid D-9 exists but its grown exact tail no longer fits
-              Core->>Core: Select committed predecessor content plus next bounded contiguous closed delta
-            end
-            loop Each bounded seed or successor pass until snapshot plus tail fits or pass budget ends
-              Core->>External: Send bounded seed range or predecessor snapshot content plus one bounded closed delta through C-3
-              External-->>Core: Bounded compaction output, cancellation, or typed producer failure
-              alt Producer returns bounded compaction output
-                Core->>Core: Derive canonical deterministic identity and append member with predecessor and absorbed-range provenance
-              else Producer returns cancellation
-                Core->>Core: Mark construction cancelled and exit without a member or another producer call
-              else Producer returns typed failure
-                Core->>Core: Mark construction failed and exit without a member or another producer call
-              end
-            end
-            alt Producer cancelled the pass
-              Core-->>C1: Resume cancelled with no D-9 or new Turn
-              C1-->>Client: Typed cancellation with no side effect and sequence terminates
-            else Producer fails, no bounded closed delta fits, or pass budget ends
-              Core-->>C1: Typed context-compaction failure with no D-9 or new Turn
-              C1-->>Client: Resume rejected with no side effect and sequence terminates
-            else Ordered staged context chain is complete
-              Core->>Store: Atomically validate optional anchor, every member link/range, prefix, and request provenance, then commit/select complete chain and append new Turn bound to final winner
-              Store-->>Core: Final chain winner plus Turn committed, earliest non-identical conflict, typed request-source drift, typed cancellation or fenced stop, typed zero-mutation durability failure, or typed zero-mutation validation failure
-              alt Earliest non-identical member conflict
-                loop Bounded winner-first conflict recovery until the transaction succeeds or budget ends
-                  Core->>Core: Discard conflicting member and descendants, adopt winner, and recheck target coverage plus exact-tail fit
-                  alt Winner covers target and fits with exact tail
-                    Core->>Store: Retry atomic new-Turn transaction with winner and empty staged suffix
-                    Store-->>Core: Winner plus Turn committed, another conflict, typed request-source drift, typed cancellation or fenced stop, typed zero-mutation durability failure, or typed zero-mutation validation failure
-                    alt Retry returns another earliest conflict winner
-                      Core->>Core: Retain returned winner for the next bounded conflict iteration
-                    else Retry returns typed request-source drift
-                      Core->>Core: Mark conflict recovery routed into request-drift recovery and exit the conflict loop
-                    else Retry returns typed cancellation or fenced stop
-                      Core->>Core: Mark recovery cancelled and exit without another transaction attempt
-                    else Retry returns typed zero-mutation durability failure
-                      Core->>Core: Mark recovery failed and exit without another transaction attempt
-                    else Retry returns typed zero-mutation validation failure
-                      Core->>Core: Mark recovery failed and exit without another transaction attempt
-                    else Retry commits winner plus new Turn
-                      Core->>Core: Mark recovery complete and exit the conflict loop
-                    end
-                  else Uncovered contiguous range remains
-                    loop Each remaining bounded successor pass until replacement tip plus exact tail fits or pass budget ends
-                      Core->>External: Regenerate successor from current replacement predecessor plus next uncovered contiguous closed delta
-                      External-->>Core: Replacement bounded suffix member, cancellation, or typed failure
-                      alt Producer returns replacement bounded suffix member
-                        Core->>Core: Derive canonical deterministic identity, append replacement member, and promote it to current predecessor
-                      else Producer returns cancellation
-                        Core->>Core: Mark conflict recovery cancelled and exit without a member or another producer call
-                      else Producer returns typed failure
-                        Core->>Core: Mark conflict recovery failed and exit without a member or another producer call
-                      end
-                    end
-                    alt Producer cancelled the replacement pass
-                      Core->>Core: Mark conflict recovery cancelled without retrying the atomic target transaction
-                    else Producer fails, no next closed delta exists, or pass budget ends before fit
-                      Core->>Core: Mark conflict recovery failed without retrying the atomic target transaction
-                    else Complete remaining suffix fits with exact tail
-                      Core->>Store: Retry atomic complete-chain and new-Turn transaction
-                      Store-->>Core: Final chain winner plus Turn, another earliest conflict, typed request-source drift, typed cancellation or fenced stop, typed zero-mutation durability failure, or typed zero-mutation validation failure
-                      alt Retry returns another earliest conflict winner
-                        Core->>Core: Retain returned winner for the next bounded conflict iteration
-                      else Retry returns typed request-source drift
-                        Core->>Core: Mark conflict recovery routed into request-drift recovery and exit the conflict loop
-                      else Retry returns typed cancellation or fenced stop
-                        Core->>Core: Mark recovery cancelled and exit without another transaction attempt
-                      else Retry returns typed zero-mutation durability failure
-                        Core->>Core: Mark recovery failed and exit without another transaction attempt
-                      else Retry returns typed zero-mutation validation failure
-                        Core->>Core: Mark recovery failed and exit without another transaction attempt
-                      else Retry commits complete chain plus new Turn
-                        Core->>Core: Mark recovery complete and exit the conflict loop
-                      end
-                    end
-                  else Winner does not fit and no bounded closed range remains
-                    Core->>Core: Mark conflict recovery failed without another producer request
-                  end
-                end
-                alt Conflict recovery was cancelled
-                  Core-->>C1: Resume cancelled with no D-9 or new Turn
-                  C1-->>Client: Typed cancellation with no side effect and sequence terminates
-                else Conflict recovery was routed into request-drift recovery
-                  Core->>Core: Run the bounded request-drift recovery flow above — discard the stale staged chain, reread the current canonical source and committed winner, and restart bounded assembly — within the shared drift budget
-                  alt Request-drift recovery commits a new Turn
-                    Note over Core,Store: Resume may enter active work using its committed provenance — the direct-history marker or the final committed chain winner — while the source terminal Turn remains unchanged
-                  else Request-drift recovery is cancelled, fails, or exhausts the shared budget
-                    Core-->>C1: Typed cancellation or drift, conflict, validation, or durability failure with no D-9 or new Turn
-                    C1-->>Client: Resume rejected or cancelled with no side effect and sequence terminates
-                  end
-                else Complete chain and new Turn did not commit
-                  Core-->>C1: Typed conflict, validation, or durability failure with no D-9 or new Turn
-                  C1-->>Client: Resume rejected with no side effect and sequence terminates
-                else Complete chain and new Turn are durable
-                  Note over Core,Store: Resume may enter active work using the final committed winner while the source terminal Turn remains unchanged
-                end
-              else Request source drifted before commit
-                loop Bounded request-drift recovery until the reassembled chain commits or the drift budget ends
-                  Core->>Core: Discard the stale staged chain, reread the current canonical source and committed winner, and restart bounded context assembly
-                  alt Cancellation wins during reassembly
-                    Core->>Core: Mark drift recovery cancelled and exit without another producer call or transaction attempt
-                  else Reassembly fails or the drift or pass budget ends
-                    Core->>Core: Mark drift recovery failed without another transaction attempt
-                  else Reassembled context fits as direct history below budget
-                    Core->>Store: Retry the atomic direct-marker and new-Turn transaction
-                    Store-->>Core: New Turn committed, another request drift, typed cancellation or fenced stop, or typed zero-mutation durability failure
-                    alt Retry commits the direct-marker new Turn
-                      Core->>Core: Mark drift recovery complete and exit the drift loop
-                    else Retry returns another request drift
-                      Core->>Core: Retain the current source for the next bounded drift iteration
-                    else Retry returns typed cancellation or fenced stop
-                      Core->>Core: Mark drift recovery cancelled and exit without another transaction attempt
-                    else Retry returns typed zero-mutation durability failure
-                      Core->>Core: Mark drift recovery failed and exit without another transaction attempt
-                    end
-                  else Prefix-valid committed D-9 winner plus refreshed exact tail fits
-                    Core->>Store: Retry the atomic committed-winner and new-Turn transaction with refreshed source provenance
-                    Store-->>Core: New Turn committed bound to the committed winner, another request drift, typed cancellation or fenced stop, typed zero-mutation durability failure, or typed zero-mutation validation failure
-                    alt Retry commits the winner-bound new Turn
-                      Core->>Core: Mark drift recovery complete and exit the drift loop
-                    else Retry returns another request drift
-                      Core->>Core: Retain the current source and committed winner for the next bounded drift iteration
-                    else Retry returns typed cancellation or fenced stop
-                      Core->>Core: Mark drift recovery cancelled and exit without another transaction attempt
-                    else Retry returns typed zero-mutation durability failure
-                      Core->>Core: Mark drift recovery failed and exit without another transaction attempt
-                    else Retry returns typed zero-mutation validation failure
-                      Core->>Core: Mark drift recovery failed and exit without another transaction attempt
-                    end
-                  else Reassembled chain is complete
-                    Core->>Store: Retry the atomic complete-chain and new-Turn transaction
-                    Store-->>Core: Final chain winner plus Turn committed, another request drift, earliest conflict winner, typed cancellation or fenced stop, typed zero-mutation durability failure, or typed zero-mutation validation failure
-                    alt Retry commits the complete chain plus new Turn
-                      Core->>Core: Mark drift recovery complete and exit the drift loop
-                    else Retry returns another request drift
-                      Core->>Core: Retain the current source for the next bounded drift iteration
-                    else Retry returns an earliest conflict winner
-                      Core->>Core: Mark drift recovery routed into winner-first conflict recovery and exit the drift loop
-                    else Retry returns typed cancellation or fenced stop
-                      Core->>Core: Mark drift recovery cancelled and exit without another transaction attempt
-                    else Retry returns typed zero-mutation durability failure
-                      Core->>Core: Mark drift recovery failed and exit without another transaction attempt
-                    else Retry returns typed zero-mutation validation failure
-                      Core->>Core: Mark drift recovery failed and exit without another transaction attempt
-                    end
-                  end
-                end
-                alt Drift recovery was cancelled
-                  Core-->>C1: Resume cancelled with no D-9 or new Turn
-                  C1-->>Client: Typed cancellation with no side effect and sequence terminates
-                else Drift recovery was routed into winner-first conflict recovery
-                  Core->>Core: Run the bounded winner-first conflict recovery flow above from the returned winner — adopt it, recheck target coverage plus exact-tail fit, and retry the atomic transaction — within the shared conflict budget
-                  alt Winner-first conflict recovery commits the complete chain plus new Turn
-                    Note over Core,Store: Resume may enter active work using the final committed winner while the source terminal Turn remains unchanged
-                  else Winner-first conflict recovery is cancelled, fails, or exhausts the shared budget
-                    Core-->>C1: Typed cancellation or conflict, drift, validation, or durability failure with no D-9 or new Turn
-                    C1-->>Client: Resume rejected or cancelled with no side effect and sequence terminates
-                  end
-                else Complete chain and new Turn did not commit
-                  Core-->>C1: Typed drift, conflict, validation, or durability failure with no D-9 or new Turn
-                  C1-->>Client: Resume rejected with no side effect and sequence terminates
-                else The new Turn is durable through direct marker or complete chain
-                  Note over Core,Store: Resume may enter active work using its committed provenance — the direct-history marker or the final committed chain winner — while the source terminal Turn remains unchanged
-                end
-              else Atomic commit failed with typed zero-mutation durability failure
-                Core-->>C1: Typed durability failure with no D-9 or new Turn
-                C1-->>Client: Resume rejected with no side effect and sequence terminates
-              else Atomic commit rejected with typed validation failure
-                Core-->>C1: Typed validation failure with no D-9 or new Turn
-                C1-->>Client: Resume rejected with no side effect and sequence terminates
-              else Transaction cancelled or fenced before commit
-                Core-->>C1: Resume cancelled with no D-9 or new Turn
-                C1-->>Client: Typed cancellation with no side effect and sequence terminates
-              else Complete chain and new Turn are durable
-                Note over Core,Store: Resume may enter active work using the final committed winner while the source terminal Turn remains unchanged
-              end
-            end
+  actor User as Authenticated client / approver
+  participant API as C-1 with C-7 trust
+  participant Core as C-2 Thread owner
+  participant Store as C-6 canonical store
+  participant Policy as C-5 approval / execution
+  participant Provider as C-3 provider
+  rect rgb(240, 245, 250)
+    Note over User,Provider: IX-1 Start / Resume / optional Fork
+    User->>API: Owned request with stable operation identity where supported
+    API->>Core: Resolve identity and request Thread admission
+    Core->>Store: Read canonical retry / validate ownership
+    alt Exact retry already accepted
+      Store-->>API: Existing operation identity and canonical outcome
+      API-->>User: Observe existing work, no duplicate creation
+    else Fresh request but Thread busy or identity conflicts
+      Core-->>API: Typed busy / conflict
+      API-->>User: Refresh or explicitly retry later
+    else Fresh admitted work
+      Core->>Store: Commit Turn, for Fork commit child / lineage / first Turn
+      Store-->>Core: Proven durable state
+      par Owned context and inference workflow
+        opt Effective context exceeds budget
+          loop Bounded steps while no failure or stop has occurred
+            Core->>Provider: Closed seed range or prior summary plus bounded delta
+            Provider-->>Core: Bounded summary or typed failure / cancellation
+          end
+          alt Complete current summary and live owner
+            Core->>Store: Conditionally publish final snapshot
+            Store-->>Core: Current snapshot or typed failure
+          else Incomplete / stale / failed / stopped
+            Core->>Core: Discard staged result and retain failure
           end
         end
-      else Operation is Fork
-        Note over Core,Store: The Fork child scope was reserved and its committed-child state checked before the shared state load above
-        Core->>Core: Bind context to child scope and check soft budget
-          alt Child context is over budget
-            loop Each bounded child seed or successor pass until snapshot plus tail fits or pass budget ends
-              Core->>External: Send bounded child seed range or predecessor content plus one bounded closed delta through C-3
-              External-->>Core: Bounded child compaction output, cancellation, or typed failure
-              alt Producer returns bounded child compaction output
-                Core->>Core: Derive canonical deterministic identity and append child member with predecessor and absorbed-range provenance
-              else Producer returns cancellation
-                Core->>Core: Mark child construction cancelled and exit without a member or another producer call
-              else Producer returns typed failure
-                Core->>Core: Mark child construction failed and exit without a member or another producer call
-              end
-            end
-            alt Producer cancelled the pass
-              Core->>Store: Abort child reservation and discard staged output, rechecking whether this reservation's child was already committed
-              Store-->>Core: Zero visible child state acknowledged, already-committed child state when a concurrent attempt committed it, or a typed read failure when committed child state cannot be read
-              Core->>Core: Validate any found existing child against this reservation identity and exact fork point before returning it
-              Core-->>C1: Fork cancelled with no child state, the validated existing child as the idempotent result, or the typed read or inconsistent-child-state failure for a found child
-              C1-->>Client: Typed cancellation, idempotent existing-child result, or typed child-state failure and sequence terminates
-            else Producer fails, no bounded closed delta fits, or pass budget ends
-              Core->>Store: Abort child reservation and discard staged output, rechecking whether this reservation's child was already committed
-              Store-->>Core: Zero visible child state acknowledged, already-committed child state when a concurrent attempt committed it, or a typed read failure when committed child state cannot be read
-              Core->>Core: Validate any found existing child against this reservation identity and exact fork point before returning it
-              Core-->>C1: Fork failed with no child state, the validated existing child as the idempotent result, or the typed read or inconsistent-child-state failure for a found child
-              C1-->>Client: Typed failure, idempotent existing-child result, or typed child-state failure and sequence terminates
-            else Child-bound staged context chain is complete
-              Core->>Store: Atomically validate child anchor, every member link/range, and source, then commit/select complete child chain with child, lineage, and first Turn bound to final winner
-              Store-->>Core: Final child-chain winner and all child state, already-committed child state for this reservation, earliest non-identical conflict, typed request-source drift, typed cancellation or fenced stop, typed zero-mutation durability failure, or typed zero-mutation validation failure
-              alt Child state for this reservation is already committed
-                Note over Core,Store: The child already exists, whether committed through the direct-history or a compacted transaction, so validate and return it instead of committing a second child
-                Core->>Store: Read the existing child, immutable lineage, and first Turn and validate them against this reservation identity and exact fork point
-                Store-->>Core: Existing child state validated or typed failure
-                alt Existing child state matches this reservation
-                  Core-->>C1: Child identity, immutable lineage, and first Turn bound to its committed provenance
-                  C1-->>Client: Fork succeeded with the existing visible child as the idempotent result and sequence terminates
-                else Existing child state missing or mismatched
-                  Core-->>C1: Typed failure with inconsistent child state
-                  C1-->>Client: Typed failure and sequence terminates
-                else Reading existing child state fails
-                  Core-->>C1: Typed read failure with the existing child preserved
-                  C1-->>Client: Typed failure and sequence terminates
-                end
-              else Earliest non-identical member conflict
-                Note over Core,Store: A committed child-scope chain winner can only come from this reservation's own atomic child-state commit, so the child already exists
-                Core->>Store: Read the existing child, immutable lineage, and first Turn bound to that winner and validate them against this reservation identity and exact fork point
-                Store-->>Core: Existing child state validated or typed failure
-                alt Existing child state matches this reservation
-                  Core-->>C1: Child identity, immutable lineage, and first Turn bound to final committed winner
-                  C1-->>Client: Fork succeeded with the existing visible child as the idempotent result and sequence terminates
-                else Existing child state missing or mismatched
-                  Core-->>C1: Typed failure with inconsistent child state
-                  C1-->>Client: Typed failure and sequence terminates
-                else Reading existing child state fails
-                  Core-->>C1: Typed read failure with the existing child preserved
-                  C1-->>Client: Typed failure and sequence terminates
-                end
-              else Request source drifted before commit
-                loop Bounded request-drift child recovery until the reassembled child chain commits or the drift budget ends
-                  Core->>Core: Discard the stale staged child chain, reread the current authorized parent source, and restart bounded child context assembly
-                  alt Cancellation wins during child reassembly
-                    Core->>Core: Mark child drift recovery cancelled and exit without another producer call or transaction attempt
-                  else Reassembly fails or the drift or pass budget ends
-                    Core->>Core: Mark child drift recovery failed without another transaction attempt
-                  else Reassembled child context fits as direct history below budget
-                    Core->>Store: Retry the atomic direct-marker child-state transaction
-                    Store-->>Core: Child state committed, already-committed child state for this reservation, another request drift, typed cancellation or fenced stop, or typed zero-mutation durability failure
-                    alt Retry commits the direct-marker child state
-                      Core->>Core: Mark child drift recovery complete and exit the drift loop
-                    else Retry finds this reservation's child already committed
-                      Core->>Store: Read the existing child, immutable lineage, and first Turn and validate them against this reservation identity and exact fork point
-                      Store-->>Core: Existing child state validated or typed failure
-                      alt Existing child state matches this reservation
-                        Core->>Core: Mark child drift recovery complete with the validated existing child
-                      else Existing child state missing or mismatched
-                        Core->>Core: Mark child drift recovery failed with inconsistent child state
-                      else Reading existing child state fails
-                        Core->>Core: Mark child drift recovery failed with the existing child state unreadable
-                      end
-                    else Retry returns another request drift
-                      Core->>Core: Retain the current source for the next bounded drift iteration
-                    else Retry returns typed cancellation or fenced stop
-                      Core->>Core: Mark child drift recovery cancelled and exit without another transaction attempt
-                    else Retry returns typed zero-mutation durability failure
-                      Core->>Core: Mark child drift recovery failed and exit without another transaction attempt
-                    end
-                  else Reassembled child chain is complete
-                    Core->>Store: Retry the atomic complete-child-chain and child-state transaction
-                    Store-->>Core: Final child-chain winner and child state, another request drift, already-committed child state for this reservation, earliest child conflict winner, typed cancellation or fenced stop, typed zero-mutation durability failure, or typed zero-mutation validation failure
-                    alt Retry commits the complete child chain plus child state
-                      Core->>Core: Mark child drift recovery complete and exit the drift loop
-                    else Retry returns another request drift
-                      Core->>Core: Retain the current source for the next bounded drift iteration
-                    else Retry finds this reservation's child already committed without a chain winner
-                      Core->>Store: Read the existing child, immutable lineage, and first Turn and validate them against this reservation identity and exact fork point
-                      Store-->>Core: Existing child state validated or typed failure
-                      alt Existing child state matches this reservation
-                        Core->>Core: Mark child drift recovery complete with the validated existing child
-                      else Existing child state missing or mismatched
-                        Core->>Core: Mark child drift recovery failed with inconsistent child state
-                      else Reading existing child state fails
-                        Core->>Core: Mark child drift recovery failed with the existing child state unreadable
-                      end
-                    else Retry returns an earliest child conflict winner
-                        Core->>Store: Read the existing child, immutable lineage, and first Turn bound to that winner and validate them against this reservation identity and exact fork point
-                        Store-->>Core: Existing child state validated or typed failure
-                        alt Existing child state matches this reservation
-                          Core->>Core: Mark child drift recovery complete with the validated existing child
-                        else Existing child state missing or mismatched
-                          Core->>Core: Mark child drift recovery failed with inconsistent child state
-                        else Reading existing child state fails
-                          Core->>Core: Mark child drift recovery failed with the existing child state unreadable
-                        end
-                    else Retry returns typed cancellation or fenced stop
-                      Core->>Core: Mark child drift recovery cancelled and exit without another transaction attempt
-                    else Retry returns typed zero-mutation durability failure
-                      Core->>Core: Mark child drift recovery failed and exit without another transaction attempt
-                    else Retry returns typed zero-mutation validation failure
-                      Core->>Core: Mark child drift recovery failed and exit without another transaction attempt
-                    end
-                  end
-                end
-                alt Child drift recovery was cancelled
-                  Core->>Store: Abort child reservation and discard staged chain, rechecking whether this reservation's child was already committed
-                  Store-->>Core: Zero visible child state acknowledged, already-committed child state when a concurrent attempt committed it, or a typed read failure when committed child state cannot be read
-                  Core->>Core: Validate any found existing child against this reservation identity and exact fork point before returning it
-                  Core-->>C1: Fork cancelled with no child state, the validated existing child as the idempotent result, or the typed read or inconsistent-child-state failure for a found child
-                  C1-->>Client: Typed cancellation, idempotent existing-child result, or typed child-state failure and sequence terminates
-                else Child drift recovery completed through a validated existing child
-                  Core-->>C1: Child identity, immutable lineage, and first Turn bound to its committed provenance
-                  C1-->>Client: Fork succeeded with the existing visible child as the idempotent result and sequence terminates
-                else Existing child state was missing or mismatched
-                  Core-->>C1: Typed failure with inconsistent child state
-                  C1-->>Client: Typed failure and sequence terminates
-                else Existing child state could not be read
-                  Core-->>C1: Typed read failure with the existing child preserved
-                  C1-->>Client: Typed failure and sequence terminates
-                else Complete child chain and child state did not commit
-                  Core->>Store: Abort child reservation and discard staged chain, rechecking whether this reservation's child was already committed
-                  Store-->>Core: Zero visible child state acknowledged, already-committed child state when a concurrent attempt committed it, or a typed read failure when committed child state cannot be read
-                  Core->>Core: Validate any found existing child against this reservation identity and exact fork point before returning it
-                  Core-->>C1: Fork failed with no child state, the validated existing child as the idempotent result, or the typed read or inconsistent-child-state failure for a found child
-                  C1-->>Client: Typed failure, idempotent existing-child result, or typed child-state failure and sequence terminates
-                else Child state is durable through direct marker or complete child chain
-                  Core-->>C1: Child identity, immutable lineage, and first Turn bound to its committed provenance
-                  C1-->>Client: Fork succeeded with visible child
-                end
-              else Atomic commit failed with typed zero-mutation durability failure
-                Core->>Store: Abort child reservation and discard staged chain, rechecking whether this reservation's child was already committed
-                Store-->>Core: Zero visible child state acknowledged, already-committed child state when a concurrent attempt committed it, or a typed read failure when committed child state cannot be read
-                Core->>Core: Validate any found existing child against this reservation identity and exact fork point before returning it
-                Core-->>C1: Fork failed with no child state, the validated existing child as the idempotent result, or the typed read or inconsistent-child-state failure for a found child
-                C1-->>Client: Typed failure, idempotent existing-child result, or typed child-state failure and sequence terminates
-              else Atomic commit rejected with typed validation failure
-                Core->>Store: Abort child reservation and discard staged chain, rechecking whether this reservation's child was already committed
-                Store-->>Core: Zero visible child state acknowledged, already-committed child state when a concurrent attempt committed it, or a typed read failure when committed child state cannot be read
-                Core->>Core: Validate any found existing child against this reservation identity and exact fork point before returning it
-                Core-->>C1: Fork rejected with no child state, the validated existing child as the idempotent result, or the typed read or inconsistent-child-state failure for a found child
-                C1-->>Client: Typed validation failure, idempotent existing-child result, or typed child-state failure and sequence terminates
-              else Transaction cancelled or fenced before commit
-                Core->>Store: Abort child reservation and discard staged chain, rechecking whether this reservation's child was already committed
-                Store-->>Core: Zero visible child state acknowledged, already-committed child state when a concurrent attempt committed it, or a typed read failure when committed child state cannot be read
-                Core->>Core: Validate any found existing child against this reservation identity and exact fork point before returning it
-                Core-->>C1: Fork cancelled with no child state, the validated existing child as the idempotent result, or the typed read or inconsistent-child-state failure for a found child
-                C1-->>Client: Typed cancellation, idempotent existing-child result, or typed child-state failure and sequence terminates
-              else Child state is durable
-                Core-->>C1: Child identity, immutable lineage, and first Turn bound to final committed winner
-                C1-->>Client: Fork succeeded with visible child
-              end
-            end
-          else Direct child context fits
-            Core->>Store: Atomically commit child, lineage, and first Turn without D-9
-            Store-->>Core: All child state committed, already-committed child state for this reservation, typed request-source drift, typed cancellation or fenced stop, or typed zero-mutation durability failure
-            alt Typed request-source drift
-              loop Bounded direct-path child drift recovery until the direct child commit succeeds or the drift budget ends
-                Core->>Core: Reread the current authorized parent source and recheck the child soft budget
-                alt Cancellation wins during child drift recovery
-                  Core->>Core: Mark child drift recovery cancelled and exit without another transaction attempt
-                else Child context still fits as direct history
-                  Core->>Store: Retry the atomic direct-marker child-state transaction
-                  Store-->>Core: Child state committed, already-committed child state for this reservation, another request drift, typed cancellation or fenced stop, or typed zero-mutation durability failure
-                  alt Retry commits the child state
-                    Core->>Core: Mark child drift recovery complete and exit the drift loop
-                  else Retry finds this reservation's child already committed
-                    Core->>Store: Read the existing child, immutable lineage, and first Turn and validate them against this reservation identity and exact fork point
-                    Store-->>Core: Existing child state validated or typed failure
-                    alt Existing child state matches this reservation
-                      Core->>Core: Mark child drift recovery complete with the validated existing child
-                    else Existing child state missing or mismatched
-                      Core->>Core: Mark child drift recovery failed with inconsistent child state
-                    else Reading existing child state fails
-                      Core->>Core: Mark child drift recovery failed with the existing child state unreadable
-                    end
-                  else Retry returns another request drift
-                    Core->>Core: Retain the current source for the next bounded drift iteration
-                  else Retry returns typed cancellation or fenced stop
-                    Core->>Core: Mark child drift recovery cancelled and exit without another transaction attempt
-                  else Retry returns typed zero-mutation durability failure
-                    Core->>Core: Mark child drift recovery failed and exit without another transaction attempt
-                  end
-                else Child context is over budget after drift
-                  Core->>Core: Mark child drift recovery routed into over-budget child compaction and exit the direct-path child drift loop
-                end
-              end
-              alt Child drift recovery was cancelled
-                Core->>Store: Abort child reservation, rechecking whether this reservation's child was already committed
-                Store-->>Core: Zero visible child state acknowledged, already-committed child state when a concurrent attempt committed it, or a typed read failure when committed child state cannot be read
-                Core->>Core: Validate any found existing child against this reservation identity and exact fork point before returning it
-                Core-->>C1: Fork cancelled with no child state, the validated existing child as the idempotent result, or the typed read or inconsistent-child-state failure for a found child
-                C1-->>Client: Typed cancellation, idempotent existing-child result, or typed child-state failure and sequence terminates
-                else Child drift recovery completed through a validated existing child
-                  Core-->>C1: Child identity, immutable lineage, and first Turn bound to its committed provenance
-                  C1-->>Client: Fork succeeded with the existing visible child as the idempotent result and sequence terminates
-                else Existing child state was missing or mismatched
-                  Core-->>C1: Typed failure with inconsistent child state
-                  C1-->>Client: Typed failure and sequence terminates
-              else Existing child state could not be read
-                Core-->>C1: Typed read failure with the existing child preserved
-                C1-->>Client: Typed failure and sequence terminates
-              else Child drift recovery was routed into over-budget child compaction
-                Core->>Core: Run the over-budget bounded child seed/successor compaction passes, idempotent existing-child handling, and atomic complete-child-chain commit flow within the same drift budget, applying the over-budget child branch rules above
-                alt Over-budget child compaction commits the complete child chain plus child state
-                  Core-->>C1: Child identity, immutable lineage, and first Turn bound to final committed winner
-                  C1-->>Client: Fork succeeded with visible child
-                else Over-budget child compaction is cancelled, fails, adopts an existing child, or exhausts the shared budget
-                  Core-->>C1: Typed cancellation or failure with the committed-child abort rules applied, or the validated existing child as the idempotent result
-                  C1-->>Client: Typed cancellation or failure, or idempotent existing-child result, and sequence terminates
-                end
-              else Child state did not commit
-                Core->>Store: Abort child reservation, rechecking whether this reservation's child was already committed
-                Store-->>Core: Zero visible child state acknowledged, already-committed child state when a concurrent attempt committed it, or a typed read failure when committed child state cannot be read
-                Core->>Core: Validate any found existing child against this reservation identity and exact fork point before returning it
-                Core-->>C1: Fork failed with no child state, the validated existing child as the idempotent result, or the typed read or inconsistent-child-state failure for a found child
-                C1-->>Client: Typed failure, idempotent existing-child result, or typed child-state failure and sequence terminates
-              else Child state is durable
-                Core-->>C1: Child identity, immutable lineage, and first Turn
-                C1-->>Client: Fork succeeded with visible child
-              end
-            else Child state for this reservation is already committed
-              Note over Core,Store: The child already exists, whether committed through the direct-history or a compacted transaction, so validate and return it instead of committing a second child
-              Core->>Store: Read the existing child, immutable lineage, and first Turn and validate them against this reservation identity and exact fork point
-              Store-->>Core: Existing child state validated or typed failure
-              alt Existing child state matches this reservation
-                Core-->>C1: Child identity, immutable lineage, and first Turn bound to its committed provenance
-                C1-->>Client: Fork succeeded with the existing visible child as the idempotent result and sequence terminates
-              else Existing child state missing or mismatched
-                Core-->>C1: Typed failure with inconsistent child state
-                C1-->>Client: Typed failure and sequence terminates
-              else Reading existing child state fails
-                Core-->>C1: Typed read failure with the existing child preserved
-                C1-->>Client: Typed failure and sequence terminates
-              end
-            else Typed durability failure
-              Core->>Store: Abort child reservation, rechecking whether this reservation's child was already committed
-              Store-->>Core: Zero visible child state acknowledged, already-committed child state when a concurrent attempt committed it, or a typed read failure when committed child state cannot be read
-              Core->>Core: Validate any found existing child against this reservation identity and exact fork point before returning it
-              Core-->>C1: Fork failed with no child state, the validated existing child as the idempotent result, or the typed read or inconsistent-child-state failure for a found child
-              C1-->>Client: Typed failure, idempotent existing-child result, or typed child-state failure and sequence terminates
-            else Typed cancellation or fenced stop
-              Core->>Store: Abort child reservation, rechecking whether this reservation's child was already committed
-              Store-->>Core: Zero visible child state acknowledged, already-committed child state when a concurrent attempt committed it, or a typed read failure when committed child state cannot be read
-              Core->>Core: Validate any found existing child against this reservation identity and exact fork point before returning it
-              Core-->>C1: Fork cancelled with no child state, the validated existing child as the idempotent result, or the typed read or inconsistent-child-state failure for a found child
-              C1-->>Client: Typed cancellation, idempotent existing-child result, or typed child-state failure and sequence terminates
-            else Child state is durable
-              Core-->>C1: Child identity, immutable lineage, and first Turn
-              C1-->>Client: Fork succeeded with visible child
-            end
-          end
-      else Other accepted lifecycle operation
-        Note over Client,Store: Start, steer, read, or interrupt follows its owned lifecycle path
-      end
-      opt Start or steer, successful Resume, or successful Fork enters active work
-        Core->>Store: Append next lifecycle item
-        Store-->>Core: Durable item acknowledgement
-        Core-->>C1: Durable progress or approval-status projection
-        C1-->>Client: Ordered replayable feedback
-        alt Authenticated client interrupts
-          Client->>C1: Interrupt exact active turn
-          C1->>Core: Interrupt active work
-          Core->>Store: Persist interrupted terminal state
-          Store-->>Core: Durable terminal acknowledgement
-          C1-->>Client: Explicit interrupted feedback
-        else Platform, policy, dependency, or orphan reconciler cancels
-          Core->>Store: Persist cancelled terminal state
-          Store-->>Core: Durable terminal acknowledgement
-          C1-->>Client: Explicit cancelled feedback
-        else Work reaches normal terminal
-          Core->>Store: Persist completed or failed terminal outcome
-          Store-->>Core: Durable terminal acknowledgement
-          Core-->>C1: Completed or failed terminal event
-          C1-->>Client: Durable terminal feedback
+        alt No prior failure and context / Turn / lease / control validation passes
+          Core->>Provider: Infer from validated context
+          Provider-->>Core: Bounded output or typed failure / cancellation
+          Core->>Store: Persist valid output and arbitrate canonical terminal
+        else Failed validation or earlier context failure
+          Core->>Store: Settle failure under existing durability rules, no inference
+        end
+      and Prompt control path while either provider operation is pending
+        opt User requests stop
+          User->>API: Stop owned Turn
+          API->>Core: Prompt control signal
+          Core->>Store: Canonical interruption / terminal arbitration
+          Core-->>Provider: Cancel outstanding work and ignore late result
         end
       end
+      Store-->>API: Durable canonical outcome or unresolved durability result
+      API-->>User: Actual outcome, committed child remains visible after later failure
     end
   end
-
-  Note over Approver,Policy: IX-2 Human approval interaction
-  Core->>Policy: Propose exact privileged action and scope
-  alt Approval required
-    Policy-->>Core: Canonical pending D-6 identity and projection
-    Core->>Store: Append D-3 projection referencing D-6
-    Core-->>C1: Present canonical exact D-6 request
-    C1-->>Approver: Show action, target, parameters, effect, scope, rationale, and risk
-    alt Decision arrives before expiry
-      Approver->>C1: Accept, decline, or cancel exact D-6 identity
-      C1->>Identity: Validate approver identity and scope
-      Identity-->>C1: Immutable approver trust context or rejection
-      alt Approver identity rejected
-        C1-->>Approver: Typed rejection, request remains pending until expiry
-      else Approver identity valid
-        C1->>Policy: Validated decision for exact D-6 identity
-        alt Approver accepts exact scope
-          Policy->>External: Execute one bounded D-7 attempt
-          External-->>Policy: Typed terminal result
-          Policy-->>Core: Canonical D-6/D-7 terminal status and projection
-          Core->>Store: Append D-3 projection referencing D-6/D-7
-          Core-->>C1: Separate execution result
-          C1-->>Approver: Report linked terminal attempt
-        else Approver declines or cancels
-          Policy-->>Core: Canonical non-execution status and projection
-          Core->>Store: Append D-3 projection referencing D-6
-          Core-->>C1: Confirm no execution
-          C1-->>Approver: Report declined or cancelled
-        end
-      end
-    else Request expires before a valid decision
-      Policy-->>Core: Canonical expired status and projection
-      Core->>Store: Append D-3 projection referencing D-6
-      Core-->>C1: Expiry notification
-      C1-->>Approver: Report expiry
+  rect rgb(245, 250, 240)
+    Note over User,Policy: IX-2 Exact-action decision
+    User->>API: Accept / decline / cancel approval
+    API->>Policy: Validated identity, scope, and decision
+    Policy->>Store: Conditional canonical decision / dispatch claim
+    alt Authorized, current, and first dispatch claim
+      Policy->>Policy: One bounded isolated attempt
+      Policy->>Store: Persist outcome and audit
+    else Duplicate / denied / stopped / expired
+      Policy-->>API: Canonical outcome or typed rejection, no new dispatch
     end
-  else Policy allows without approval
-    Policy->>External: Execute within resolved profile
-    External-->>Policy: Typed terminal result
-    Policy-->>Core: Linked terminal attempt
-  else Policy denies
-    Policy-->>Core: Typed non-execution result
+    API-->>User: Decision / attempt outcome
   end
-
-  Note over Core,External: IX-3 External-system interaction
-  Core->>External: Initialize or negotiate version and capabilities
-  External-->>Core: Compatible capabilities or typed incompatibility
-  alt Compatible
-    Core->>External: Versioned request with deadline and correlation
-    alt Successful terminal response
-      External-->>Core: Correlated events and success
-    else Retryable pre-effect failure within budget
-      External-->>Core: Typed retryable failure
-      alt Privileged effect
-        Core->>Policy: Create new D-7 candidate and reevaluate policy
-        Policy-->>Core: Fresh approval required when applicable
-      else Non-effect idempotent dependency call
-        Core->>Core: Apply declared retry and budget metadata
-      end
-      Core->>External: Preserve logical correlation and use a new attempt identity
-      External-->>Core: Terminal response
-    else Cancellation or deadline
-      Core->>External: Cancel exact operation
-      External-->>Core: Cancelled or timed-out terminal status
-    else Non-retryable failure
-      External-->>Core: Typed terminal failure without added authority
+  rect rgb(250, 245, 240)
+    Note over User,Store: IX-3 Operator / integration lifecycle
+    User->>API: Request deferred background work
+    API-->>User: Unsupported, no job created
+    User->>Core: Stop old instance through the future approved operation
+    Note over Core,Store: Replacement admission waits for proven old-instance stop, foreground orphan closure remains enabled
+    Core->>Store: Reconcile canonical state after restart, no effect replay
+    Store-->>User: Durable outcome or explicitly unresolved effect
+  end
+  rect rgb(245, 240, 250)
+    Note over User,Store: IX-4 Correction
+    User->>API: Owned correction and stable correction identity
+    API->>Core: Resolve retry and Thread admission
+    Core->>Store: Canonical CAND-11 correction operation if admitted
+    alt Exact retry or fresh current tip
+      Store-->>User: Existing or newly committed correction identity
+    else Busy / stale tip / invalid ownership / failure
+      Core-->>User: Typed rejection or reconciliation outcome, no merge
     end
-  else Incompatible
-    Core-->>C1: Compatible degradation when defined, otherwise typed failure
   end
 ```
 
@@ -1225,52 +392,55 @@ sequenceDiagram
 
 | Quality attribute | Solution-level design | Architecture-level validation |
 | --- | --- | --- |
-| Security and least privilege | Immutable identity context, named permission profiles, default deny, bounded approvals, isolated execution, network/filesystem/process controls, and untrusted-output treatment. | A review matrix demonstrates that every privileged effect has one policy owner, one enforcement boundary, a deny path, and an audit result; no core path executes host effects directly. |
-| Privacy and secret safety | Credentials stay in adapter configuration; prompts, D-9 summaries, tool arguments/results, paths, and logs are minimized and redacted according to classification. Thread deletion removes user-content history, derived compaction snapshots, and approval projections under owner policy, while canonical D-6/D-7 security evidence follows a separately defined retention/deletion schedule with minimized or pseudonymized linkage. | Deterministic inspection shows no secret field in thread history, D-9 provenance, or diagnostics contracts; no compaction snapshot crosses tenant/subject/Thread or lineage scope; Fork never reuses a parent-scoped D-9 and may only stage a child-bound D-9 from the authorized parent prefix after reserving the child identity and lineage; no audit payload survives beyond its approved security/privacy retention; and all optional content diagnostics require explicit safe-environment gating. |
-| Reliability | Explicit lifecycle states, cancellation, timeout, per-step/pass/conflict-retry/token budgets, idempotency, append-before-publish ordering, anchor/member/range/prefix/final-winner/request-bound context compaction, pre-inference source/snapshot/terminal/lease fencing, fenced foreground liveness leases, checkpoint ownership, and truthful partial/terminal outcomes. | Each externally visible item is durable before publication. Cancellation, timeout, dependency/storage failure, approval decline, duplicate input, owner loss, anchor/member/snapshot mismatch, correction/source drift, causally open range, seed/successor producer failure, non-identical member conflict, and late completion each have an exact state. Every producer call is bounded to a seed range or predecessor snapshot plus one contiguous closed delta; pass exhaustion fails visibly. C-6 atomically commits/selects the complete ordered staged chain or none and returns the earliest non-identical conflicting winner. C-2 adopts and rechecks that winner before any producer call: a fitting final-member winner uses an empty suffix, while only uncovered contiguous ranges produce bounded descendants. C-6 returns the final committed winner only after every required member and target state are durable. Inference assembly rereads and binds that final winner identity/content digest plus exact tail before the generation-bound source/snapshot/terminal/lease fence. Tail appends reuse a valid winner, grown tails use successor steps, prefix corrections use bounded recursive rebuild, and winner/prefix/tail drift reassembles. Resume and Fork atomically bind visible state to the complete committed chain and final winner; a failed active Turn closes durably, while failed Resume/Fork exposes no request-chain member or new visible state when the Fork reservation has no committed child — a Fork whose reservation's child was already committed returns it or reports its typed read or inconsistent-child-state failure with the child remaining visible. Lease expiry produces exactly one `cancelled` terminal and rejects stale-owner writes/inference. |
-| Observability | Correlation across thread, turn, item, provider call, capability descriptor, approval, and execution attempt. | Traceability review can follow one request from ingress to its durable terminal state without relying on sensitive content. |
-| Contract evolution | New northbound REST/SSE and owned store contracts are versioned and provider neutral; predecessor contracts are research evidence only. | Contract tests verify the new C-1 and C-6 contracts directly. Later incompatible changes require separate accepted decisions; no legacy parity or route-back gate applies. |
-| Maintainability | One coherent owner for orchestration, presentation, provider translation, extension discovery, policy/execution, identity, and storage. | Dependency review shows inward dependencies toward owned contracts, no cycles, and no external provider/storage/transport types in the core. |
-| Scalability | Stateless presentation/core instances where practical; durable shared state behind adapters; foreground turns use fenced liveness leases, and background execution uses leases and checkpoints. | Architecture review demonstrates horizontal instances do not require process-local truth; any healthy C-2 instance can reconcile an orphan without accepting stale-owner writes or duplicating non-idempotent effects. |
-| Supply-chain and provenance | External reference concepts are pinned to immutable revisions; extensions and capability descriptors carry source and version provenance. | Evidence links resolve to immutable commits, and a catalog snapshot can identify the source/version of every active extension. |
+| Security and privacy | Keep tenant/subject ownership, exact-action approval, default deny, isolated execution, untrusted output treatment, and redaction. User-content deletion and separately retained D-6/D-7 audit evidence follow their respective owner policies. | Cross-owner requests fail without disclosure; duplicate decisions cannot repeat an effect; snapshots never cross scope or grant authority. |
+| Reliability | Durable publication, atomic owner transitions, bounded waits, operation-specific exact retries, prompt stop, and existing lease/terminal recovery. | Controlled completion/stop ordering and acknowledgement loss preserve one canonical outcome; uncertain effects are never blindly repeated. |
+| Concurrency | Independent Threads proceed in parallel; one admitted mutation workflow and one summary producer per Thread. A conflicting fresh write fails explicitly rather than accumulating an unbounded queue. | Two competing callers demonstrate admission, deduplication, or conflict. Add another participant only for a distinct recovery/control role. This is correctness evidence, not a user-capacity claim. |
+| Context integrity | Summary production is sequential and bounded; publish only the final current snapshot; preserve exact tail and Tool causality. | Under/at/over budgets, prefix correction, tail growth, cancellation, stale results, and unable-to-fit outcomes are explicit; raw history remains unchanged. |
+| Availability and deployment | One active application instance, stop-before-start replacement, PostgreSQL durability; no automatic takeover of work. | Future OCR establishes non-overlap and recovery. Release readiness discloses downtime and unmeasured capacity; existing multi-writer database safeguards are not removed. |
+| Test cost | Select deterministic semantic cases at the owning boundary; reuse shared fixtures and evidence; isolate capacity testing from race correctness. | Pure policy checks avoid external services. Transaction/lock claims retain real PostgreSQL checks; provider framing/cancellation claims retain an appropriate transport harness. No per-feature Cartesian product or repeated random race sampling is implied by this ADD. |
+| Governance compatibility | Existing required CI, SonarQube, contract traceability, and the five baseline risk dimensions remain binding. | Inapplicable future distributed scenarios have specific scope reasons; applicable existing checks are not relabeled N/A or deleted. Changing a required check requires its governing process. |
+| Maintainability and observability | One owner per policy/data boundary; correlated minimal diagnostics; adapters contain external types. | No duplicate canonical state or cross-boundary authority; failures identify the operation without exposing sensitive content. |
 
 ## Assumptions And Open Questions [Conditionally Required — assumptions or material questions exist]
 
 | ID | Assumption or question | Owner | Status | Resolution and evidence |
 | --- | --- | --- | --- | --- |
-| Q-1 | What is the AI-service research baseline when this repository has no service code? | @linhai | Resolved | Use the predecessor `koduck-quant` `koduck-ai` tree at commit `c414ddccdbc45a99fcd3d606ca0fe1f75730b7fe` only for functional research. The current repository [README](../../README.md) identifies Koduck as a from-scratch rebuild with no service, and repository-owner direction on 2026-08-11 confirms the predecessor infrastructure is removed and is not an operating baseline. |
-| Q-2 | Which Codex revision is the comparison baseline? | @linhai | Resolved | Use public `openai/codex` commit `3c60d4da648bfa98e3c51c5161ac2720519c733e`, observed from `refs/heads/main` on 2026-08-10. The 2026-08-10 ADD review by @linhai confirmed the immutable evidence baseline. |
-| Q-3 | Does “align with Codex” mean fork it or reproduce all product behavior? | @linhai | Resolved | No. The Trello outcome asks for boundaries and a migration proposal, and this ADD selects conceptual alignment with owned Koduck contracts. Forking and parity are explicit non-goals subject to approval with this ADD. |
-| Q-5 | What operating model applies when the predecessor infrastructure has been removed? | @linhai | Resolved | Repository-owner direction in the active Codex task on 2026-08-11 establishes a greenfield model: new implementation contracts are authoritative; the old baseline is functional research evidence only; no predecessor artifact, APISIX route, shared history, fallback, or route-back gate applies. |
-| Q-6 | How does a continuing Thread remain usable when its effective provider context exceeds the configured token budget? | @linhai | Resolved | R-1 requires reasoned adoption decisions from the fixed Codex reference baseline, whose E-11 implementation and tests demonstrate token-triggered automatic compaction across continued, resumed, and forked conversations. Repository owner `@linhai` confirmed on 2026-09-01 that the dependency-ordered CAND-15 persistence boundary, CAND-16 provider boundary, and CAND-14 C-2 policy boundary form the adjusted-adoption delivery set for that in-scope Codex capability. C-2 owns bounded recursive seed/successor policy, C-3 owns one bounded producer step, and C-6 atomically validates and commits/selects the complete ordered staged chain before returning its final provenance-bearing D-9 winner. Each successor absorbs only one bounded contiguous closed delta into the immediately preceding bounded snapshot. A conflicting winner commits none of the request chain; C-2 adopts and rechecks it, uses an empty replacement suffix when it already completes the target, and produces bounded descendants only for remaining uncovered ranges. Inference binds the final committed winner identity/content digest plus exact tail. Canonical D-1/D-2/D-3 history remains complete and unchanged, and unavailable, stale, corrupt, source-/winner-drifted, chain-conflicted, pass-exhausted, or failed compaction fails visibly instead of silently truncating context, partially committing a request chain, or using losing staged output. |
+| Q-1 | What is the predecessor baseline? | @linhai | Resolved | Fixed predecessor commit remains research only; the old infrastructure was removed. The current repository now has a service and completed candidates. |
+| Q-2 | Which Codex reference applies? | @linhai | Resolved | Preserve the fixed 2026-08-10 research baseline at `3c60d4da648bfa98e3c51c5161ac2720519c733e`; no claim about current Codex behavior. |
+| Q-3 | Does alignment imply product parity? | @linhai | Resolved | No; R-1 calls for reasoned boundary adoption and owned Koduck contracts. |
+| Q-5 | Is there a predecessor rollback path? | @linhai | Resolved | No; first promotion is greenfield and later rollback needs a verified Koduck artifact and governing OCR. |
+| Q-6 | Is automatic compaction retained? | @linhai | Resolved | Yes; R-2 narrows CAND-15/CAND-16/CAND-14 to one Thread owner, sequential bounded production, final-snapshot publication, and visible failure on drift. Historical competing-chain recovery is not an active candidate requirement. |
+| Q-7 | What concurrency profile should the next design target? | @linhai | Resolved | The user agreed to the preceding scope recommendation on 2026-09-23 and approved this concrete revision as `@linhai` in this task. The selected small-use single-instance profile does not infer actual traffic counts, production topology, or latency SLO. |
+| Q-8 | Does an ADD revision remove implemented guarantees or unblock a new ADR? | @linhai | Resolved | No. Completed ADRs remain authoritative. ADR-0016 is Proposed / Not Started in the inspected index and the repository-wide ADR serialization rule still applies. |
 
-No material question remains open for approval of this design. An approver may
-return the document to `Draft` by identifying a material unresolved issue
-instead of responding `Approve`.
+Numeric admission limits and endpoint details belong to the selected candidate's
+ADR. They must be fixed before its implementation, but are not assumed capacity
+facts in this solution view. This design proposes rejecting fresh competing
+writes rather than an optional unspecified queue policy.
 
 ## Risks And Trade-Offs [Required]
 
 | ID | Risk or trade-off | Impact | Mitigation |
 | --- | --- | --- | --- |
-| RK-1 | Treating Codex structure as a copy target rather than evidence. | Koduck could inherit irrelevant local-product, auth, UI, and persistence constraints. | Use the adoption matrix; every implementation decision must cite a Koduck outcome and be approved in its own ADR. |
-| RK-2 | Research evidence is mistaken for a compatibility obligation. | New contracts could inherit removed infrastructure and unverified wire behavior. | Label predecessor material as functional evidence only and test the new owned contract directly. |
-| RK-3 | Splitting a monolith creates distributed coupling instead of boundaries. | More crates or services without ownership clarity can worsen change cost and latency. | Define ports by failure, trust, data, and lifecycle boundaries; do not split solely by file size. |
-| RK-4 | Approval UI exists but enforcement remains in-process and bypassable. | Privileged effects may execute without the reviewed scope. | Bind decisions at C-5 and enforce the same policy below every execution path, including MCP and background workers. |
-| RK-5 | Canonical history and semantic memory ownership overlap. | Duplicate truth, inconsistent replay, or cross-tenant leakage. | Keep Thread/Turn/Item in the AI-owned store; CAND-12 defines the canonical effective correction projection before CAND-10 consumes it through a versioned semantic-memory contract, while CAND-9 independently owns background Multitask integration. |
-| RK-6 | The first owned REST/SSE contract omits a required functional scenario. | A greenfield release could be internally consistent but incomplete. | Derive scenario coverage from predecessor research and current product requirements, while making the new versioned contract and deterministic tests authoritative. |
-| RK-7 | Extension descriptions or tool results manipulate authority. | Prompt injection could cause unauthorized behavior or data access. | Treat all extension/model/tool content as untrusted; authorization comes only from identity, policy, and explicit approval. |
-| RK-8 | Multi-agent expansion multiplies unfinished lifecycle and permission risks. | Concurrency, lineage, budget, and approval semantics become ambiguous. | Defer proactive multi-agent execution until CAND-1 through CAND-5 and CAND-7 through CAND-16 are complete and verified. |
-| RK-9 | One-attempt approval increases prompts and latency compared with reusable session/turn grants. | High-frequency privileged workflows may be slower or encourage unsafe pressure to bypass approval. | Keep the CAND-2 baseline exact and auditable; any reusable grant requires measured need, a bounded revocation/scope model, and a separate Accepted ADR. |
-| RK-10 | Append-before-publish couples stream latency and availability to C-6. | First-item latency may increase, and a store outage stops otherwise usable model output. | CAND-1 must set and measure bounded append/backpressure thresholds, preserve the durable-prefix invariant, and fail closed; weakening durability requires a separate architecture decision. |
-| RK-11 | Foreground liveness windows can falsely classify a paused or partitioned owner as dead, or delay orphan closure when too long. | A live computation may be cancelled, while an overly conservative window leaves users waiting. | C-6 generation fencing makes the decision safe; CAND-1 must bound heartbeat, clock-skew, pause, and partition cases, and cancellation never transfers the same Turn to another owner. |
-| RK-12 | Automatic context compaction loses material detail, feeds an unbounded expanded prefix to the producer, reuses a stale prefix summary after a correction, invalidates a valid snapshot merely because the exact tail grows, fails to advance a still-valid active-Turn or Resume snapshot, partially commits a staged chain whose descendant names an uncommitted predecessor, uses a non-identical losing staged summary instead of the committed winner, needlessly regenerates after a final-member winner already covers the target, exposes a Resume snapshot without its new Turn, dispatches after snapshot-winner/prefix/tail drift, splits a Tool round across prefix and tail, skips an active-loop budget check, crosses ownership or fork boundaries, exposes partial Fork state, or lets late producer output launch inference after interrupt/fencing. | Later model behavior may rely on incomplete, stale, foreign, partially committed, or non-durable context; producer inputs may exceed bounds; conflict recovery may reabsorb covered history or fail despite a complete committed winner; work may fail as history grows; a request may diverge from durable D-9 state; an orphan Tool result or partial Resume/Fork state may appear; or work may continue after terminal even though canonical history is intact. | CAND-15 atomically validates the selected committed anchor plus every staged predecessor/range/prefix link, commits/selects the complete request chain or none, returns the earliest non-identical conflicting winner, accepts an empty-suffix retry anchored to that winner, and provides final-winner request fences plus all-or-zero Resume/Fork persistence. CAND-16 provides one bounded producer step accepting either a bounded seed range or immediately preceding bounded snapshot content plus one bounded contiguous closed delta. CAND-14 orchestrates a bounded seed/successor pass budget, discards a conflicting member and descendants, adopts and rechecks the returned winner, retries with an empty replacement suffix when it covers the target and fits, regenerates only descendants for uncovered contiguous ranges, binds only the final committed winner identity/content digest and exact tail into request provenance, reuses D-9 after tail-only append, recursively advances or rebuilds, checks every inference budget, permits only causally closed ranges, rejects post-terminal/stale writes, and fails visibly whenever complete current-source and committed-chain coverage cannot be proven. Resume and Fork atomically bind new visible state to the final chain winner; cancellation or failure exposes no staged-chain member. |
-| RK-13 | Identical concurrent D-9 builders assign different provisional identities to the same member, or a committed winner substitutes an identity that staged descendants do not reference. | A multi-member chain may fail exact predecessor validation after an otherwise idempotent match or may expose a descendant whose predecessor was never committed. | The CAND-15 C-6 contract owns one versioned deterministic canonical identity rule. C-2 derives each identity from the full canonical member tuple before constructing descendants; C-6 recomputes it atomically, never aliases identical members to a different identity, and rejects identity-version, encoding, digest, or predecessor mismatches with no member committed. |
-| RK-14 | Winner-first recovery treats a typed non-conflict zero-mutation transaction failure as if it returned another conflict winner. | Recovery may attempt to adopt a winner that does not exist, repeat invalid work after source or durability failure, or obscure the required immediate zero-side-effect rejection. | CAND-14 distinguishes all C-6 retry results: only another earliest conflict winner may continue the bounded loop; success exits complete; typed request-source drift, a recoverable source change, routes into bounded reassembly within the shared drift budget instead of terminating; every other typed non-conflict zero-mutation durability or validation failure exits immediately without another transaction attempt. Resume rejects with no D-9 or Turn, and Fork aborts with zero visible child state when the reservation has no committed child, with the abort recheck otherwise returning the validated existing child or its typed failure. |
-| RK-15 | A failed or cancelled compaction-producer response is treated as a successful D-9 member and the loop continues. | The core may derive identity from absent or failed output, append an invalid member, spend further provider calls after terminal failure, or delay the required zero-side-effect rejection until budget exhaustion. | CAND-14 branches on every producer response before identity derivation or chain mutation. Only bounded successful output may append and promote a member; failure or cancellation immediately exits initial construction, suffix regeneration, or drift reassembly with no member and no further producer request; a cancelled Resume reports the cancellation outcome with no D-9 or Turn, and a cancelled Fork child path preserves the cancellation outcome while aborting all child state created by this attempt, with the abort recheck returning a concurrently committed child of the same reservation or its typed failure. |
+| RK-1 | Two instances overlap despite the selected operating profile. | Process-local Thread ownership cannot protect shared history. | Keep existing database guards; require deployment non-overlap evidence before using CAND-17 as the runtime admission guarantee. Multi-instance support needs a later approved design. |
+| RK-2 | One Thread owner blocks control delivery during provider work. | Stop or approval cancellation becomes unresponsive. | Controls remain serviceable and canonical terminal/approval arbitration stays below every dispatch path; test blocked-provider cancellation. |
+| RK-3 | Retried submission creates a new identity. | Duplicate Turns or effects. | CAND-18 binds the client-stable authenticated submission identity and exact input. Until that contract is delivered, existing chat is not claimed to deduplicate arbitrary client resubmissions. |
+| RK-4 | Same-thread corrections or fork creation bypass admission. | Context becomes stale while inference is being established. | CAND-17 covers all runtime mutation entry points, including later ones; retain source validation and typed failure. Direct store tests retain existing concurrency safeguards. |
+| RK-5 | Single-instance failure stops active work. | Downtime and failed attempts rather than seamless continuation. | Preserve durable history and foreground orphan closure; disclose this trade-off. Never replay an uncertain external effect to simulate recovery. |
+| RK-6 | Simplifying compaction drops content or uses stale summaries. | Incorrect model context. | Bounded closed ranges, exact tail, provenance checks, final publication only, and fail-visible outcomes; no silent truncation or authority from summary content. |
+| RK-7 | Fork summary failure is mistaken for failed child creation. | Duplicate child on retry or false zero-state response. | Child identity/lineage/first Turn commit atomically before context work; return the committed identity and truthful failure; reconcile uncertain creation by the same identity. |
+| RK-8 | Test reduction removes a distinct invariant. | Undetected duplicate execution, leakage, or data loss. | Map retained semantic cases to owners; reuse evidence rather than deleting required coverage. Additional contenders need a distinct role; load claims need separate measurements. |
+| RK-9 | Deferred integrations silently return as release prerequisites. | First delivery inherits unneeded recovery and coordination cost. | CAND-5 uses an explicit delivered-capability inventory; CAND-8/CAND-9/CAND-6 are Deferred. Optional integrations are included only when selected and complete. |
 
 ## ADR Task Candidates [Required]
 
 Allowed task-candidate statuses: `Ready`, `Selected`, `Complete`, or `Deferred`.
+No Ready candidate is selectable while this ADD is Draft or while the ADR
+serialization gate is closed. Completed rows below are preserved as historical
+scope and reciprocal evidence. In particular, CAND-11's original 32-writer
+wording is historical: its Accepted ADR's owner-authorized 2026-09-10 amendment
+defines the current four-contender check. This revision neither reinstates 32
+writers nor changes that existing check to two.
 
 | ID | Complete outcome | Scope boundary | Dependencies | Acceptance context | Recommended ADR type | Status | Status reason or evidence | ADR path |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -1278,155 +448,108 @@ Allowed task-candidate statuses: `Ready`, `Selected`, `Complete`, or `Deferred`.
 | CAND-2 | Every tool and MCP invocation passes through one default-deny policy and isolated D-7 execution boundary; any required approval uses one canonical exact-action D-6 record, with cancellation, timeout, output-cap, lease fencing, and an auditable terminal result. | Includes C-1/C-7 approval transport, C-5 authority, C-6 foreground-lease validation, D-3 status projections, and new Tool/MCP adapters; excludes reusable session/turn grants, UI design, and expansion of allowed privileged capabilities. | CAND-1 complete; authenticated approval protocol and intended tool-effect inventory available. | Checks cover allow without approval, deny, invalid approver identity, decline, cancel, expiry, scope/attempt/lease drift, stale-owner dispatch and result rejection, pre-effect retry reapproval, timeout, cancellation, and untrusted output; recovery disables or reverts the unpromoted dispatcher and leaves tools unavailable rather than invoking a legacy path. | Full | Complete | Complete through the Accepted, Complete project Full ADR at `docs/adr/ADR-0003-default-deny-tool-approval-execution-boundary.md`; AC-1/AC-11 verification methods were revised under the adopted test standard and reapproved on 2026-08-20 | `docs/adr/ADR-0003-default-deny-tool-approval-execution-boundary.md` |
 | CAND-3 | Canonical history can represent a typed append-only correction relationship and raw replay returns every original and correction Item exactly once without rewriting prior history. | Primary implementation boundary: persistence and data behavior in C-6. Includes the correction Item type, durable relationship shape, payload codec, additive migration, structural fail-closed decoding, and ordered raw replay; excludes authenticated correction admission, write arbitration, stable-identity reconciliation, effective-context projection, provider integration, Thread forks, checkpoints, Memory, Multitask, routes, UI, and deployment. This representation-and-replay foundation forms one independently reviewable implementation pull request. | CAND-1 complete; the existing C-6 Item identity, append-before-publish, ordered replay, migration, and terminal contracts remain authoritative. | Checks cover typed codec round trips, same-scope relationship structure, self-reference and multiple-direct-successor rejection, immutable existing rows, deterministic original-plus-correction raw replay, corrupt-row fail-closed behavior, idempotent migration, and preservation of every CAND-1/CAND-2 row and terminal constraint. | Full | Complete | Complete through the Accepted, Complete service Full ADR at `koduck-ai/docs/adr/ADR-0003-correction-item-schema-and-raw-replay.md`; implementation is commit `c5211311e34bf` with AC-1 through AC-4 `Pass` | `koduck-ai/docs/adr/ADR-0003-correction-item-schema-and-raw-replay.md` |
 | CAND-11 | One authenticated correction request is admitted against a terminal subject-owned Turn with a valid current predecessor, and concurrent or retried writes converge to one durable successor or one typed zero-mutation rejection. | Primary implementation boundary: persistence and data behavior in the C-6 correction transaction. Includes the owned correction operation, tenant/subject/Thread/Turn/terminal/kind/predecessor validation, linear-chain admission, sequence allocation, stable correction identity, single-winner concurrency, deadline, and ambiguous-acknowledgement reconciliation; excludes raw representation already owned by CAND-3, effective-context projection, provider integration, routes, UI, and deployment. The safety invariants are one atomic transaction boundary and must remain one independently reviewable implementation pull request. | CAND-3 complete; authenticated trust context and the CAND-1 database deadline/reconciliation contracts remain authoritative. | Checks cover every terminal/nonterminal and ownership case, supported/unsupported predecessor kinds, earlier/current-tip validation, exact retry and identity drift, 32-writer single-winner behavior, committed-but-unacknowledged reconciliation, bounded attempts, and zero mutation for every rejection. | Full | Complete | Complete through the Accepted, Verified service Full ADR at `koduck-ai/docs/adr/ADR-0004-authenticated-correction-admission.md`; implementation is commit `849b0c2ffa722c70484e1516ab1e122ac3f8ca9c` with AC-1 through AC-6 `Pass` | `koduck-ai/docs/adr/ADR-0004-authenticated-correction-admission.md` |
-| CAND-12 | Canonical raw history is transformed into one deterministic effective correction projection that substitutes each valid chain tip at the original content position without adding a second conversational message. | Primary implementation boundary: domain and application projection policy in C-2. Includes a pure raw-to-effective resolver, multiple independent chains, repeated correction, original-position preservation, typed corruption rejection, and focused semantic tests; excludes correction writes, provider serialization, aggregate provider limits, routes, Memory delivery, UI, and deployment. One pure projection contract forms one independently reviewable implementation pull request. | CAND-11 complete so all admitted chains satisfy the canonical write invariants; CAND-3 raw replay remains the sole input. | Checks cover unchanged histories, user and coalesced-agent corrections, repeated and independent chains, no duplicate correction message, stable original ordering, missing/cyclic/branched/forward/cross-scope corruption, and deterministic typed fail-closed outcomes. | Full | Ready | N/A — Ready; dependency-ordered after CAND-11 | None |
-| CAND-13 | Provider input consumes the effective correction projection while retaining the existing provider-neutral message contract, aggregate history bounds, and fail-closed behavior. | Primary implementation boundary: provider-context integration. Includes wiring CAND-12 into provider-neutral input construction, unchanged no-correction serialization, 4096-Item and 1-MiB aggregate enforcement, no duplicate messages, and typed propagation of projection failures; excludes correction admission, projection-policy ownership, provider expansion, northbound routes, UI, Memory, and deployment. One provider adapter integration forms one independently reviewable implementation pull request. | CAND-12 complete; the CAND-1 provider-neutral context and aggregate-limit contracts remain authoritative. | Checks compare no-correction provider bytes with the existing baseline; cover corrected user and multi-delta agent messages, repeated chains, exact message order, no duplicate emission, 4096/4097-Item and 1-MiB/one-byte-over boundaries, corrupt projection propagation, and unchanged Tool-round causality. | Full | Ready | N/A — Ready; dependency-ordered after CAND-12 | None |
-| CAND-7 | One authenticated fork operation creates a child Thread and new Turn at an exact canonical fork point, with immutable parent/child lineage and without copying, rewriting, or transferring ownership of the parent history. | Primary implementation boundary: persistence and data behavior in C-6. Includes the owned fork-lineage relationship, fork-point identity, tenant isolation, lineage reads, additive durable-store evolution, and only the minimal C-1 fork operation plus C-2 child-Thread/new-Turn orchestration needed to exercise that boundary end to end; excludes broader client route redesign, checkpoints, background work, Memory, Multitask, and deployment. The supporting C-1/C-2 changes expose one C-6 lineage operation and do not add a second primary boundary, so the slice fits one independently reviewable implementation pull request. | CAND-11 complete to serialize additive C-6 evolution; there is no correction-semantic dependency. The source Thread and fork point are canonical and subject-owned. | Checks cover authenticated end-to-end fork, one immutable parent per child, an exact existing fork point, child-Turn creation, deterministic parent/child lineage reads, same-tenant and same-subject ownership, idempotent duplicate requests, zero mutation for missing or cross-owner sources, no lineage cycles, and unchanged parent replay. | Full | Ready | N/A — Ready; planned after CAND-11 for C-6 evolution sequencing | None |
-| CAND-15 | The AI-owned store exposes one reconstructable, target-scoped D-9 persistence contract whose bounded reads, deterministic canonical member identities, and one atomic staged-chain operation fence every predecessor/range/prefix link, commit or select every member or none, return the final committed winner, and bind request-wide inference plus atomic Resume/Fork state to that winner identity/content digest. | Primary implementation boundary: persistence and data behavior in C-6. Includes bounded versioned source/delta reads; one versioned deterministic D-9 identity rule over canonical scope, range, provenance, policy/producer, predecessor, and content inputs; stable identity/content digest and predecessor/absorbed-range metadata; ordered staged-chain input with an optional selected committed anchor; target-prefix keyed member reads and writes; atomic identity recomputation plus anchor/member/range/prefix validation; identical-content idempotency without identity substitution; earliest non-identical conflict selection with no request-member commit and typed winner descriptor/content return; empty-, one-, or multi-member replacement-suffix retry anchored to a returned winner; final-winner reads; separate generation- and request-wide-source/snapshot-bound inference establishment; atomic Resume chain commit/final-winner/new-Turn binding; child identity/lineage reservation; atomic Fork child-chain/final-winner/child/lineage/first-Turn binding; reconstructable deletion; and typed conflict results. Excludes soft-budget/pass or winner-first suffix-regeneration policy, provider calls, summary generation, canonical-history rewriting, routes, UI, deployment, Memory, and Multitask. One durable transaction and storage-port boundary forms one independently reviewable implementation pull request. | CAND-13 and CAND-7 complete so correction-aware source identity, aggregate limits, and immutable Fork lineage are authoritative; CAND-11 correction admission remains the source-changing transaction whose affected range determines whether only request assembly or also D-9 provenance is stale. | Checks cover bounded seed/delta reads; empty, one-member, and multi-member staged chains; seed and selected-committed-anchor forms; deterministic identity equality for concurrent seed, middle, and final members with the same canonical tuple/content; exact successor references to those identities before and after commit; distinct identities and typed target-prefix conflicts for changed canonical inputs; identity-rule-version, non-canonical-encoding, digest, and predecessor mismatches with no member committed; every absorbed range, target-prefix, and request-wide source equality; missing/reordered/duplicate/noncontiguous members; tail-only append preserving a committed snapshot while invalidating request assembly; prefix correction invalidation; correction or append between chain commit and inference establishment; concurrent non-identical builders conflicting at first/middle/final members with no partial request-chain commit and earliest-winner descriptor/content return; final-member winner plus empty-suffix atomic retry; first/middle conflicts plus successful one- and multi-member bounded suffix retries whose final tip covers the target before C-6 is called; rejection of inference assembled from losing output or stale final winner; terminal/lease races; tenant/subject/Thread/lineage isolation; reconstructable deletion; atomic Resume complete-chain/Turn binding to the final winner with all-or-zero state; parent-snapshot rejection; and atomic all-or-zero Fork child-chain/winner/child state after success, cancellation, producer failure, source/winner drift, a child-scope conflict returning the already-committed child state as the idempotent result, or commit failure, with every abort rechecking for a concurrently committed child of the same reservation and returning the validated existing child or its typed read or inconsistent-child-state failure instead of acknowledging an impossible zero-visible state. | Full | Ready | N/A — Ready; dependency-ordered after CAND-13 and CAND-7 | None |
-| CAND-16 | The configured C-3 provider adapter implements one owned compaction-producer step that accepts either one bounded model-neutral causally closed seed range or the immediately preceding bounded snapshot content plus one bounded contiguous causally closed delta, and returns bounded typed output, usage, and normalized terminal errors without reading or creating D-9 state. | Primary implementation boundary: provider and transport integration in C-3. Includes the owned seed/successor request variants for the selected provider, explicit model selection, independent per-step input/output token accounting, timeout, bounded retry, cancellation propagation, normalized errors, redaction, and rejection of malformed or oversized predecessor, delta, or output. Excludes C-2 pass/assembly policy, loading complete expanded prefixes, C-6 reads/writes or winner selection, snapshot provenance commitment, provider fallback/expansion, routes, UI, and deployment. One provider adapter operation forms one independently reviewable implementation pull request. | CAND-13 complete and the CAND-1 configured provider, provider-neutral types, secret handling, and no-fallback policy remain authoritative. | Checks cover exact seed and successor model-neutral/provider translation; predecessor snapshot and contiguous-delta separation; one-byte/one-token under, at, and over combined per-step input and output bounds; proof no request contains the complete expanded canonical prefix; producer/model identity; cancellation, retry exhaustion, malformed output, secret-safe diagnostics, normalized terminals, untrusted input/output treatment; and proof that the adapter neither reads nor commits D-9 or canonical history. | Full | Ready | N/A — Ready; dependency-ordered after CAND-13 | None |
-| CAND-14 | Before every Turn-inference request in an initial, resumed, forked, or already active tool-loop Turn, C-2 automatically assembles context within the configured soft token budget from exact effective history or one final committed D-9 chain winner plus a causally closed bounded recent tail, while complete canonical history remains unchanged and replayable. | Primary implementation boundary: domain and application context-assembly policy in C-2. Includes the per-inference soft-budget trigger; bounded seed-and-successor staged-chain orchestration using predecessor snapshot content plus one bounded contiguous closed delta; pass/conflict/retry budgets; optional committed anchor and member predecessor/range/prefix provenance; complete-chain commit/winner result handling; earliest-conflict winner adoption, target/fit recheck, empty-suffix completion, and complete bounded one- or multi-member suffix regeneration before transaction retry; request-wide provenance binding the final winner identity/content digest or direct marker plus exact tail; D-9 reuse/recursive reconstruction/rolling advancement; terminal, interrupt, cancellation, lease-generation, winner, prefix, and request-wide revalidation; staged-chain/losing/late-result rejection; atomic final-winner-bound Resume and Fork policy; and typed fail-closed outcomes. Excludes C-3 adapter implementation, C-6 persistence implementation, canonical-history deletion or rewriting, semantic Memory ownership, provider fallback, UI, deployment, and changes to the independent per-Turn output budget. One C-2 context-assembly policy forms one independently reviewable implementation pull request. | CAND-15 and CAND-16 complete; therefore CAND-13 correction-aware provider input, CAND-7 immutable fork lineage, CAND-11 source-changing correction admission, and CAND-1 interruptible lease-fenced inference establishment are available through their owned contracts. | Checks cover below/at/one-over soft budgets before initial inference, provider retry, and post-tool inference; seed-only, multi-successor initial/rebuild, active-Turn, Resume, and Fork compaction where the complete prefix exceeds producer input limits but every predecessor-plus-delta step remains bounded; ordered staged-chain construction; exact-tail retention and Tool-round causal boundaries; tail append reuse; prefix correction recursive rebuild; final-winner/prefix/tail drift; one-under/at/one-over step, winner-first conflict-recovery, zero/one/multi-member suffix-regeneration, and pass budgets; no complete expanded-prefix producer request; concurrent identical builders; concurrent non-identical builders conflicting at first/middle/final members where no request-chain member is partially committed, the earliest committed winner is adopted and rechecked, a final-member winner can complete with no successor request and an empty replacement suffix, first/middle conflicts loop across every required uncovered delta until the replacement tip plus exact tail fits before retrying C-6, and only the final committed winner enters request provenance and dispatch; blocked producer and chain-commit/inference races; stale/corrupt/missing snapshot; timeout/failure; isolation; bounded memory; canonical replay equality; and unable-to-fit outcomes. Resume checks cover fitting reuse and multi-step valid-but-insufficient advancement, proving the complete chain and Turn bind atomically to the final winner or neither appears. Fork checks prove child reservation precedes child-bound recursive compaction, cancellation/failure/winner drift exposes no child or chain member created by this attempt, a child-scope conflict winner returns the already-committed child, lineage, and first Turn as the idempotent result rather than entering winner-first recovery or reporting zero visible child state, and every Fork abort rechecks for a concurrently committed child of the same reservation and returns the validated existing child or its typed read or inconsistent-child-state failure instead of reporting zero visible child state. Every late or losing completion is ignored and no stale inference is established. | Full | Ready | N/A — Ready; dependency-ordered after CAND-15 and CAND-16 | None |
-| CAND-8 | The AI-owned store provides one durable checkpoint and idempotency boundary that can resume one logical background Turn after owner loss without process-local truth or duplicate commitment of non-idempotent effects. | Primary implementation boundary: persistence and data behavior in C-6. Includes checkpoint identity and monotonic state, resume ownership, idempotency records, lease fencing, and bounded recovery state; excludes Multitask transport, semantic Memory, context-compaction behavior, extension-registry snapshots, provider expansion, and deployment. The AI-owned resume state machine and its durable invariants fit one independently reviewable implementation pull request. | CAND-1 and CAND-2 complete. CAND-8 has no correction, fork-lineage, or context-compaction semantic dependency; it is scheduled after CAND-15 to serialize additive C-6 evolution and after CAND-14 only for review-priority sequencing. | Checks cover monotonic checkpoint advance, same logical job for duplicate idempotency keys, owner-loss resume, stale-owner fencing, concurrent resume single-winner behavior, terminal idempotency, tenant isolation, ambiguous-effect fail-closed handling, and preservation of canonical Thread/Turn/Item history. | Full | Ready | N/A — Ready; planned after CAND-14, with C-6 evolution sequenced after CAND-15, but semantically independent of CAND-7 and CAND-14 through CAND-16 | None |
-| CAND-4 | Repository instructions, agent profiles, skills, plugins, and MCP descriptors load through one provenance-bearing extension boundary and cannot widen execution permissions. | Primary implementation boundary: capability and extension registry behavior in C-4. Includes discovery, validation, precedence, coherent in-memory and, when required, durable registry snapshots, diagnostics, current extension adapters, and only the narrow C-6 storage port needed by C-4 for its own durable snapshot; excludes marketplace UI, remote installation, and new privileged tools. Registry snapshot ownership and semantics belong to CAND-4 rather than CAND-8, keeping one registry lifecycle and its supporting storage adapter in one independently reviewable implementation pull request. | CAND-1 and CAND-2 complete; CAND-4 defines and owns any durable registry-snapshot contract it requires and has no dependency on CAND-8 background checkpoint semantics. | Deterministic precedence, invalid-extension, source-loss, stale-policy, isolation, atomic snapshot consistency, durable snapshot reconstruction when persistence is selected, and permission-non-escalation checks; rollback disables the new registry and retains static known-safe configuration. | Full | Ready | N/A — Ready; independent of CAND-8 after CAND-1 and CAND-2 | None |
-| CAND-9 | One authenticated background submission reaches Multitask through a versioned contract, and its lease, checkpoint, retry, cancellation, and terminal results converge through the AI-owned resume boundary without transferring canonical Thread/Turn/Item ownership. | Primary implementation boundary: external background-work integration. Includes one owned Multitask contract and adapter, translation to the CAND-8 checkpoint/idempotency boundary, deadlines, cancellation, failure recovery, and only the minimal C-1 submission/status operation plus C-2 scheduling handoff needed to exercise the adapter end to end; excludes broader northbound route redesign, semantic Memory, new canonical-history ownership, provider expansion, UI, and deployment. The supporting C-1/C-2 changes expose one background adapter flow and do not add a second primary boundary, so the slice fits one independently reviewable implementation pull request. | CAND-2 and CAND-8 complete; the Multitask contract owner participates and the supported operation inventory is available. | Checks cover authenticated end-to-end submission/status, version negotiation, duplicate submission to one logical job, lease loss and resume, checkpoint handoff, cancellation, retry safety, terminal convergence, tenant isolation, bounded deadlines, unavailable dependency behavior, and rejection of any Multitask claim to canonical foreground history. | Full | Ready | N/A — Ready; dependency-ordered after CAND-8 | None |
-| CAND-10 | Semantic Memory receives and serves versioned, tenant-isolated projections and retrieval results without becoming canonical for Thread/Turn/Item, lineage, corrections, context-compaction snapshots, checkpoints, or terminal state. | Primary implementation boundary: external semantic-memory integration. Includes one owned projection/retrieval contract and adapter, provenance, version negotiation, idempotent delivery, deadlines, and reconstructable cache behavior; excludes memory ranking changes, background Multitask, canonical-history mutation, provider-context compaction, UI, and deployment. One external contract and adapter form one independently reviewable implementation pull request. | CAND-7 and CAND-12 complete; the Memory contract owner participates and projection eligibility is defined. CAND-10 owns its projection-delivery idempotency and does not depend on CAND-8 background-resume, CAND-13 provider-context semantics, or CAND-14 through CAND-16 context compaction. | Checks cover projection version/provenance, effective correction and fork representation, idempotent delivery, tenant and subject isolation, stale or incompatible version rejection, bounded retrieval, dependency loss, cache reconstruction, deletion/retention handling, and proof that Memory cannot authorize or rewrite canonical history or own D-9. | Full | Ready | N/A — Ready; dependency-ordered after CAND-7 and CAND-12, independent of CAND-8 and CAND-13 through CAND-16 | None |
-| CAND-5 | Foreground and background model turns use the new core across every provider already delivered by an Accepted ADR and satisfy the owned REST/SSE, lifecycle, recovery, and service-readiness contracts for first production promotion. | Primary implementation boundary: runtime assembly and production-readiness integration. Includes composition and readiness evidence for already-delivered provider, background, storage, policy, extension, and context-compaction boundaries plus consumer readiness and SLO evidence; excludes new provider or adapter behavior, product features, UI redesign, and deployment. The first promotion may use only the CAND-1 provider when no additional provider candidate has been added and completed; every additional provider requires a future Current ADD candidate and its own Accepted ADR before CAND-5 may include it. Because preceding candidates own behavior changes, this candidate contains only final composition and readiness gates in one independently reviewable implementation pull request. | CAND-1, CAND-2, CAND-3, CAND-4, and CAND-7 through CAND-16 complete and verified; the intended consumer and already-approved provider inventories are complete. | Exact approved-provider inventory, provider/stream/background/correction/context-compaction contract, recovery, SLO, error-budget, and promotion-stop checks; no undeclared provider or fallback is active. Before first promotion, failure quarantines the candidate; later rollback may target only a last verified new artifact under an OCR. | Full | Ready | N/A — Ready; final readiness candidate after all preceding single-agent candidates | None |
-| CAND-6 | Multi-agent execution has an approved lifecycle, lineage, budget, permission, approval, cancellation, and storage model or is explicitly rejected after evidence review. | Primary implementation boundary: multi-agent orchestration policy in C-2. Includes one architecture decision and one bounded pilot outcome using the completed single-agent contracts; excludes production rollout, new storage or execution authority, and UI design. One orchestration policy and bounded pilot fit one independently reviewable implementation pull request. | CAND-1 through CAND-5 and CAND-7 through CAND-16 complete and verified; single-agent metrics and incident evidence available. | Decision is supported by measured need and a deterministic safety/ownership review; rejection or deferral leaves no dormant production path. | Full | Deferred | Deferred until the complete single-agent target boundary is verified and evidence demonstrates a need | None |
+| CAND-18 | Repeating one authenticated chat submission identity resolves to the same accepted Turn or a typed identity conflict, including after uncertain acknowledgement. | Primary implementation boundary: C-6 submission identity and atomic acceptance. Includes durable identity/outcome binding and only the C-1/C-2 input plumbing necessary to exercise it; excludes Thread admission policy, provider changes, UI, and deployment. One durable acceptance outcome fits one implementation PR. | CAND-1 complete; existing subject ownership and bounded durability contracts retained. | Identical overlapping retries converge; different input under one identity conflicts; cross-owner lookup reveals nothing; ambiguous commit reconciles without a second Turn; no success is invented when unresolved. | Full | Ready | N/A — Ready; added for client retry semantics absent from the current chat contract | None |
+| CAND-17 | One active instance admits at most one conversation mutation workflow per Thread while independent Threads and prompt controls remain serviceable. | Primary implementation boundary: C-2 admission and lifecycle ownership. Includes existing runtime mutation entry points, owned admission for correction/fork consumers when enabled, busy/conflict outcomes, owner release after settlement, and minimal existing-route wiring; excludes new optional routes, distributed ownership, checkpoint takeover, persistence redesign, and deployment. One admission policy fits one implementation PR. | CAND-1/CAND-2/CAND-11 and CAND-18 complete; deployment must later prove single-instance non-overlap before relying on this profile. | Two competing fresh writes admit one owner; exact retry observes existing work without execution authority; other Threads proceed; stop and approval cancellation work during provider waits; every enabled runtime mutation entry point participates; failure/cancellation settles before release. | Full | Ready | N/A — Ready; prerequisite for the simplified same-Thread context workflow | None |
+| CAND-12 | Raw history produces one deterministic effective correction projection without duplicate conversational messages. | Primary implementation boundary: C-2 projection policy. Includes chain-tip substitution, original-position preservation, and typed corruption rejection; excludes writes, provider serialization, routes, Memory, and deployment. One pure projection contract fits one implementation PR. | CAND-11 and CAND-3 complete. | Unchanged, repeated, and independent chains preserve order; missing/cyclic/branched/forward/cross-scope data fails closed. Pure projection has no independent writer or timeout owner. | Full | Ready | N/A — Ready; independent of admission implementation | None |
+| CAND-13 | Provider input consumes the effective correction projection within existing aggregate bounds. | Primary implementation boundary: provider-context integration. Includes owned input construction and failure propagation; excludes projection policy, correction writes, provider expansion, UI, and deployment. One adapter integration fits one implementation PR. | CAND-12 complete; existing provider-neutral messages and aggregate limits retained. | No-correction behavior unchanged; corrected messages have exact order without duplication; aggregate boundaries and Tool causality remain enforced. | Full | Ready | N/A — Ready; after CAND-12 | None |
+| CAND-7 | An owned fork creates one child, immutable lineage, and first Turn at an exact canonical point. | Primary implementation boundary: C-6 lineage persistence. Includes atomic child/lineage/first-Turn creation and idempotent identity lookup, with minimal C-1/C-2 exposure; excludes summary production, checkpoint recovery, and deployment. One lineage outcome fits one implementation PR. | CAND-11/CAND-17 complete; canonical subject-owned source available. | Duplicate identity returns existing child; conflicts or invalid sources mutate nothing; parent replay unchanged. Child remains visible after subsequent inference/summary failure. | Full | Ready | N/A — Ready; optional feature, not a compaction prerequisite | None |
+| CAND-15 | One complete derived snapshot can be published, read, validated, and discarded without altering canonical history. | Primary implementation boundary: C-6 derived snapshot persistence. Includes bounded source reads, scoped provenance/content identity, conditional final-snapshot publication, current-context validation, and typed stale/conflict results; excludes intermediate-chain persistence, winner adoption, Turn/fork creation, provider calls, and deployment. One derived-storage contract fits one implementation PR. | CAND-13 complete; existing correction and lease/terminal contracts retained; runtime use requires CAND-17. | Complete current publication or no new snapshot; exact publication retry; changed source rejection; prefix correction invalidation; tail-only growth preserves valid prefix; isolation/deletion; unchanged raw replay. Fork scoping applies only when CAND-7 is enabled. | Full | Ready | N/A — Ready; simplified from competing staged-chain storage | None |
+| CAND-16 | The configured provider performs one bounded summary step over a seed range or prior summary plus contiguous delta. | Primary implementation boundary: C-3 provider transport. Includes owned input/output, accounting, deadlines, cancellation, normalized errors, and bounded retry; excludes history reads, storage, pass orchestration, fallback, and deployment. One provider operation fits one implementation PR. | CAND-13 complete; existing provider and trust contracts retained. | Bounded seed/successor input/output, malformed result, cancellation/timeout, normalized failure, no complete expanded prefix in a request, and no persistence access. | Full | Ready | N/A — Ready; producer boundary retained | None |
+| CAND-14 | The Thread owner assembles bounded context before each inference using direct history or one valid final summary and exact tail. | Primary implementation boundary: C-2 context policy. Includes sequential bounded seed/successor work, reuse/advancement, final publication, pre-inference state validation, and failure/cancellation; excludes adapter implementation, distributed builders, winner/suffix recovery, atomic summary-plus-Turn/fork creation, UI, and deployment. One context policy fits one implementation PR. | CAND-17/CAND-15/CAND-16 complete. Fork behavior applies only if CAND-7 is delivered. | Direct/over-budget paths; repeated bounded steps; exact tail and Tool causality; prefix/tail changes; stale/late result rejection; inability to fit; blocked-producer stop; no inference after failure; raw history unchanged. Failed context work closes an already-created Turn truthfully. | Full | Ready | N/A — Ready; one builder, explicit failure instead of competing-winner recovery | None |
+| CAND-8 | A future background Turn can resume from an owned durable checkpoint without duplicating effects. | Primary implementation boundary: C-6 checkpoint and recovery state. Excludes transport, summary policy, and deployment. One checkpoint state machine would fit one implementation PR after scope is revalidated. | Existing CAND-1/CAND-2 contracts; measured need and a later approved operating profile. | Future checkpoint monotonicity, identity, ownership loss, stale-owner rejection, and ambiguous-effect behavior; no current implementation or load claim. | Full | Deferred | R-2 postpones automatic background recovery and multi-instance takeover; reopen only for a concrete recoverable-job requirement | None |
+| CAND-4 | Extensions supply a coherent provenance-bearing capability snapshot without widening permissions. | Primary implementation boundary: C-4 registry. Includes validation/precedence and only its necessary snapshot storage interface; excludes marketplace UI, remote installation, and new privileged tools. One registry lifecycle fits one implementation PR. | CAND-1/CAND-2 complete; no background checkpoint dependency. | Deterministic precedence, invalid/source-loss outcomes, isolation, snapshot consistency, and permission non-escalation. | Full | Ready | N/A — Ready; optional integration, static inventory remains supported | None |
+| CAND-9 | A future Multitask adapter submits and observes an authenticated recoverable background job. | Primary implementation boundary: external background-work integration. Includes one owned adapter and minimal submission/status delivery; excludes canonical history ownership, Memory, new policy, and deployment. One adapter flow would fit one implementation PR after scope revalidation. | CAND-8 complete and concrete external job requirement with a contract owner. | Future duplicate submission, checkpoint handoff, cancellation, dependency failure, and isolation outcomes. | Full | Deferred | R-2 postpones recoverable external background scheduling; not required for foreground delivery | None |
+| CAND-10 | Optional Memory consumes owned effective projections and returns bounded scoped retrieval. | Primary implementation boundary: external semantic-memory integration. Includes projection/retrieval contract, provenance, idempotent delivery, and reconstructable cache behavior; excludes canonical mutation, compaction ownership, and deployment. One adapter fits one implementation PR. | CAND-12 complete; Memory contract owner and selected operation inventory; CAND-7 only if fork projections are included. | Isolation, version/provenance, stale rejection, bounded retrieval, dependency failure, retention, and no history-writing authority. | Full | Ready | N/A — Ready; optional and independent of deferred background recovery | None |
+| CAND-5 | The explicitly selected delivered capabilities compose into one verifiable single-instance release candidate. | Primary implementation boundary: runtime assembly/readiness. Includes composition and evidence for already-delivered contracts; excludes new behavior, deployment, optional integrations absent from the inventory, and automatic takeover. One assembly slice fits one implementation PR. | CAND-1/CAND-2/CAND-17/CAND-18 complete; every additional capability selected in this candidate's ADR must already be complete. Correction projection and long-context compaction require CAND-12/CAND-13 and CAND-14/CAND-15/CAND-16 respectively when advertised. | Exact capability/provider inventory; preserved contracts; single-instance operating constraint; admission, stop, retries, bounded failure, redaction, and explicit unmeasured capacity. Future OCR proves deployment non-overlap. | Full | Ready | N/A — Ready; optional forks, extensions, Memory, and deferred background work no longer block a smaller declared release | None |
+| CAND-6 | A later evidence-based decision accepts one bounded multi-agent orchestration outcome or keeps it deferred. | Primary implementation boundary: C-2 multi-agent policy. Excludes new storage/execution authority, production rollout, and UI. Revalidate one-PR scope before selection. | Delivered single-agent profile and measured need; later approved lifecycle/authority scope. | No dormant production path; evidence must justify any added ownership, cancellation, and effect semantics. | Full | Deferred | No present collaborative-agent requirement; independent user Threads do not establish one | None |
 
 ## Traceability [Required]
 
 | Requirement | Capabilities | Data entities | Components | Control / interaction flows | ADR task candidates |
 | --- | --- | --- | --- | --- | --- |
-| R-1 | F-1, F-2, F-3, F-4, F-5, F-6, F-7 | D-1 through D-9 | C-1 through C-8 | CF-1 through CF-5; IX-1 through IX-3 | CAND-1 through CAND-16 |
+| R-1 | F-1 through F-7 | D-1 through D-9 | C-1 through C-8 | CF-1 through CF-6; IX-1 through IX-4 | CAND-1 through CAND-16, with deferred candidates explicitly outside current delivery |
+| R-2 | F-1, F-2, F-4, F-5, F-7, F-8 | D-1, D-2, D-3, D-6, D-7, D-9 | C-1, C-2, C-3, C-5, C-6, C-8 | CF-1, CF-2, CF-3, CF-5, CF-6; IX-1 through IX-4 | CAND-17/CAND-18 admission and retries; simplified CAND-14/CAND-15; narrowed CAND-5 prerequisites; CAND-8/CAND-9/CAND-6 deferral; completed safeguards retained |
 
 ## Supporting Material [Optional]
 
-The repository owner directly authorized reducing the 32-writer verification
-scenario to four writers and synchronizing affected documents on 2026-09-10 in
-task `01a08909-759c-78b3-948a-367161280447`, without another approval ritual.
-This changes the test contention level only; the single-winner, idempotency,
-deadline, and zero-mutation outcomes remain the same. Original approval and
-completion evidence remain historical; current four-way verification is
-recorded in `koduck-ai/docs/adr/ADR-0004-authenticated-correction-admission.md`.
-
 ### Evidence Baselines
+
+The following is retained research evidence from the fixed predecessor/Codex
+baseline, not a fresh external review or a claim about current product versions.
 
 | Evidence ID | Immutable or repository source | Material conclusion |
 | --- | --- | --- |
-| E-1 | Current repository [README](../../README.md) | Koduck is a from-scratch rebuild of `koduck-quant`; no service has yet been added here. |
+| E-1 | Current repository [README](../../README.md) | Koduck is a from-scratch rebuild of `koduck-quant`; the current repository now contains `koduck-ai`. The no-service observation in the original design was historical. |
 | E-2 | [`koduck-ai` design at `c414ddcc`](https://github.com/hailingu/koduck-quant/blob/c414ddccdbc45a99fcd3d606ca0fe1f75730b7fe/koduck-ai/docs/design/ai-decoupled-architecture.md) | The predecessor intends `koduck-ai` to be an AI gateway/orchestrator and assigns memory, tools, auth, and gateway governance to surrounding services. |
 | E-3 | [`koduck-ai/src/lib.rs` at `c414ddcc`](https://github.com/hailingu/koduck-quant/blob/c414ddccdbc45a99fcd3d606ca0fe1f75730b7fe/koduck-ai/src/lib.rs) and [`app/mod.rs`](https://github.com/hailingu/koduck-quant/blob/c414ddccdbc45a99fcd3d606ca0fe1f75730b7fe/koduck-ai/src/app/mod.rs) | One crate contains API, app lifecycle, auth, background work, clients, configuration, context, LLM, MCP, orchestration, registry, reliability, session, skill, storage, streaming, and tasks, and exposes broad REST/SSE behavior. |
 | E-4 | [`native_tool_loop.rs` at `c414ddcc`](https://github.com/hailingu/koduck-quant/blob/c414ddccdbc45a99fcd3d606ca0fe1f75730b7fe/koduck-ai/src/api/llm_flow/native_tool_loop.rs) | Tool orchestration is concentrated in one 2,073-line source unit, indicating a high-coupling review area for later ADR design. |
 | E-11 | Codex [`compact.rs`](https://github.com/openai/codex/blob/3c60d4da648bfa98e3c51c5161ac2720519c733e/codex-rs/core/src/compact.rs#L106-L125), [`compact.rs` integration tests](https://github.com/openai/codex/blob/3c60d4da648bfa98e3c51c5161ac2720519c733e/codex-rs/core/tests/suite/compact.rs#L1070-L1175), and [`compact_resume_fork.rs`](https://github.com/openai/codex/blob/3c60d4da648bfa98e3c51c5161ac2720519c733e/codex-rs/core/tests/suite/compact_resume_fork.rs#L128-L196) at the fixed `3c60d4d` baseline | Codex implements a token-triggered automatic compaction task, verifies repeated automatic compaction after token-limit crossings, and preserves the compacted model-history prefix across Resume and Fork; dependency-ordered CAND-15, CAND-16, and CAND-14 are the persistence, provider, and policy slices of this adjusted R-1 adoption rather than separately sourced product requirements. |
-| E-5 | [`mcp/mod.rs` at `c414ddcc`](https://github.com/hailingu/koduck-quant/blob/c414ddccdbc45a99fcd3d606ca0fe1f75730b7fe/koduck-ai/src/mcp/mod.rs) | Koduck already supports a deliberately small MCP client surface and adapts discovered tools into its native tool pipeline. |
+| E-5 | [`mcp/mod.rs` at `c414ddcc`](https://github.com/hailingu/koduck-quant/blob/c414ddccdbc45a99fcd3d606ca0fe1f75730b7fe/koduck-ai/src/mcp/mod.rs) | The predecessor supported a deliberately small MCP client surface and adapts discovered tools into its native tool pipeline. |
 | E-6 | [`app-server` README at `3c60d4da`](https://github.com/openai/codex/blob/3c60d4da648bfa98e3c51c5161ac2720519c733e/codex-rs/app-server/README.md) | Codex separates a bidirectional application protocol and models threads, turns, typed events, approvals, skills, apps, auth, and command execution at that boundary. |
 | E-7 | [`thread-store` README at `3c60d4da`](https://github.com/openai/codex/blob/3c60d4da648bfa98e3c51c5161ac2720519c733e/codex-rs/thread-store/README.md) | Codex defines a replaceable `ThreadStore`, one metadata-write API, a `LiveThread` abstraction, and local/in-memory implementations. |
 | E-8 | [`core` README at `3c60d4da`](https://github.com/openai/codex/blob/3c60d4da648bfa98e3c51c5161ac2720519c733e/codex-rs/core/README.md), [`sandboxing`](https://github.com/openai/codex/blob/3c60d4da648bfa98e3c51c5161ac2720519c733e/codex-rs/core/src/sandboxing/mod.rs), and [`approvals`](https://github.com/openai/codex/blob/3c60d4da648bfa98e3c51c5161ac2720519c733e/codex-rs/core/src/tools/approvals.rs) | Codex treats filesystem/network sandbox selection and approval as explicit execution concerns rather than model-granted authority. |
 | E-9 | [`codex_mcp_interface.md` at `3c60d4da`](https://github.com/openai/codex/blob/3c60d4da648bfa98e3c51c5161ac2720519c733e/codex-rs/docs/codex_mcp_interface.md) | The public control surface uses thread/turn operations, typed notifications, and server-to-client approval requests; the MCP control interface is explicitly experimental. |
 | E-10 | [`agents_md.rs`](https://github.com/openai/codex/blob/3c60d4da648bfa98e3c51c5161ac2720519c733e/codex-rs/core/src/agents_md.rs), [`skills/loading.rs`](https://github.com/openai/codex/blob/3c60d4da648bfa98e3c51c5161ac2720519c733e/codex-rs/skills/src/loading.rs), and [`plugins/mod.rs`](https://github.com/openai/codex/blob/3c60d4da648bfa98e3c51c5161ac2720519c733e/codex-rs/core/src/plugins/mod.rs) | Repository instructions, skills, and plugins are separately loaded capabilities with explicit roots and services. |
 
-### Current-To-Target Gap Matrix
+### Adoption Decisions And Delivery Order
 
-| Area | Current predecessor baseline | Codex reference signal | Koduck target boundary | Gap disposition |
-| --- | --- | --- | --- | --- |
-| Lifecycle model | Session/chat/task concepts are spread across REST handlers, native loops, memory clients, task registries, and workers. | Explicit thread, turn, typed item, lifecycle events, resume/fork/interrupt. | One owned thread/turn/item domain used by foreground and background flows. | Adjusted adoption; translate existing session/task semantics instead of copying Codex wire types. |
-| Application protocol | The predecessor exposes REST/SSE routes, but they are research evidence rather than a live contract. | Typed bidirectional app-server protocol with generated schemas. | Define an owned versioned REST/SSE v1 boundary and add a provider-neutral typed application protocol when a consumer requires it. | Adjusted adoption without legacy wire parity. |
-| Core ownership | One crate combines transport, orchestration, provider, tools, MCP, background, storage, and policy concerns. | `codex-core` is consumed by multiple UIs; protocol, storage, execution, sandbox, skills, and app server are distinct packages. | Provider-neutral core with ports; split only at ownership, failure, trust, or lifecycle boundaries. | Adopt boundary principle, not exact crate list. |
-| Tool orchestration | Native model tool use and catalog dispatch exist; policy is split across foreground, background allowlists, tool service, and selected approval logic. | Central tool routing plus explicit approval and sandbox policy. | One policy/approval/execution boundary below every tool path. | Adjusted adoption; keep Tool service and MCP adapters. |
-| Sandboxing | Service isolation and allowlists exist, but no universal turn-scoped filesystem/network/process sandbox contract is evident across all tool paths. | Platform-specific sandboxing and named permission profiles. | Execution effects run in an isolated worker or platform sandbox with explicit profiles and deny-by-default enforcement. | Adopt security model; platform implementation remains an ADR choice. |
-| Storage | The predecessor used Memory/Multitask plus process-local registries and checkpoints; that infrastructure is no longer an operating baseline. | Replaceable `ThreadStore`; local rollout JSONL and SQLite-backed metadata. | Owned store port backed by an AI-owned shared PostgreSQL datastore; Memory and Multitask later consume separate semantic-memory/background contracts. | Adopt the store abstraction and shared durability, not predecessor ownership or process-local truth. |
-| Provider layer | The predecessor demonstrates multi-provider adapters, routing, normalized types, streaming, retry, and fallback, but is research evidence only. | Core client and model-provider packages focus strongly on OpenAI/Codex product needs. | Start with one explicitly selected provider and no automatic fallback; preserve the adapter boundary so later providers require their own accepted decision. | Adopt the boundary, not predecessor fallback behavior. |
-| MCP | Custom minimal stdio/HTTP MCP client adapts tools into the native loop. | MCP clients, resources, approvals, control server, and application integration are separate concerns; some surfaces are experimental. | Standards-compliant MCP adapter with version/capability negotiation, provenance, elicitation/approval routing, and untrusted output handling. | Adjusted adoption; avoid binding canonical Koduck APIs to experimental Codex control RPCs. |
-| Instructions/skills/plugins | Agent profile, skill, and MCP modules exist with uneven runtime activation and ownership. | Repository instructions, skill-root loading, plugins, and injections have distinct loaders/services. | One extension registry with deterministic precedence, snapshots, validation, provenance, and permission non-escalation. | Adopt with adjustment for tenant/thread isolation. |
-| Auth and identity | APISIX/JWT/JWKS and tenant/user claims anchor access. | ChatGPT account login and product-specific auth helpers. | Retain APISIX/Auth/JWKS identity and pass immutable trust context into the core. | Do not adopt Codex auth model. |
-| Observability | Structured tracing, reliability metrics, and guarded prompt diagnostics exist, but evidence spans many paths. | Typed lifecycle and approval/execution events provide explicit UI and audit signals. | Correlated typed events across ingress, turn, provider, tool, approval, storage, and recovery. | Adopt event discipline; preserve privacy constraints. |
-| Multi-agent | Background task and plan lineage exist; proactive subagent semantics are not a proven product requirement. | Agent spawning, messaging, wait, lineage, and collaboration modes exist. | Defer until the single-agent execution and store boundaries are verified and measured demand exists. | Do not adopt now. |
-
-### Adoption Decisions
-
-| Decision | Codex concept | Koduck disposition | Reason |
+| Research / existing boundary | Current delivered baseline | Gap selected for the next stage | Deferred or optional scope |
 | --- | --- | --- | --- |
-| AD-1 | Thread/turn/item lifecycle with typed events | Adopt after adjustment | It gives one replayable lifecycle, but Resume creates a new turn, terminal turns never reactivate, corrections are append-only items, and existing Koduck session/task identities map into owned types. |
-| AD-2 | Provider-independent core consumed by multiple presentation surfaces | Adopt | It directly addresses transport/provider/orchestration coupling and supports REST/SSE plus future clients. |
-| AD-3 | Replaceable thread store | Adopt after adjustment | CAND-1 establishes the consumer-owned port and AI-owned shared PostgreSQL adapter as canonical for Thread/Turn/Item; CAND-3 and CAND-11 separately add correction representation/replay and safe admission, while CAND-7 and CAND-8 add lineage, checkpoint, and idempotency semantics. CAND-9 and CAND-10 integrate Multitask and Memory through separate adapters without transferring canonical ownership; CAND-12 and CAND-13 separately own effective projection and provider consumption; CAND-15 adds only reconstructable D-9 persistence with source fencing, CAND-16 adds the provider producer operation, and CAND-14 owns their C-2 orchestration policy, never a second canonical history. |
-| AD-4 | Named permission profiles, bounded approvals, and platform/worker isolation | Adopt after adjustment | Model or extension output never grants authority. C-5 owns canonical D-6 records, C-1/C-7 carry authenticated decisions, D-3 is projection only, and the initial safety baseline authorizes one exact D-7 attempt rather than a reusable session/turn grant. |
-| AD-5 | Separate application protocol and generated schemas | Adopt after adjustment | Versioned types improve compatibility, but Codex app-server methods and experimental MCP control RPCs are not Koduck contracts. |
-| AD-6 | Repository instructions, skills, plugins, and MCP as separately loaded extension capabilities | Adopt after adjustment | Koduck needs tenant/thread isolation, provenance, and non-escalating permission semantics across these sources. |
-| AD-7 | Codex local rollout files and SQLite as canonical state | Do not adopt | Koduck requires shared multi-instance state in an AI-owned durable datastore; process-local rollout files remain non-canonical. |
-| AD-8 | ChatGPT account/auth/rate-limit/model-catalog behavior | Do not adopt | Koduck's APISIX/JWT/JWKS and multi-provider model are authoritative product boundaries. |
-| AD-9 | Codex CLI/TUI/desktop UI and filesystem operations API | Do not adopt as product scope | UI requires its own Figma context, and broad filesystem APIs are not required for the first service migration. |
-| AD-10 | Proactive multi-agent runtime | Do not adopt yet | It compounds lifecycle, permission, cost, cancellation, and storage risks before foundational boundaries are verified. |
-| AD-11 | Direct code fork or crate-for-crate rewrite | Do not adopt | Product requirements, external contracts, storage, auth, and deployment differ; conceptual alignment offers lower coupling and clearer ownership. |
+| Lifecycle and API | Owned authenticated REST/SSE, durable Turn state, interruption and orphan closure. | CAND-18 client retry identity and CAND-17 per-Thread admission. | Multi-subject editing and automatic execution takeover are excluded. |
+| History and storage | PostgreSQL canonical replay and owned post-terminal correction admission. | CAND-12/CAND-13 effective correction consumption; CAND-15 final derived snapshot storage. | CAND-7 fork lineage is optional; checkpoint recovery is deferred. |
+| Provider and long context | One configured provider with bounded streaming and no fallback. | CAND-16 bounded summary operation and CAND-14 single-owner context policy. | Competing summary chains and automatic winner adoption are excluded. |
+| Tools and extensions | Default-deny approval/execution boundary with an empty production capability inventory. | Retain current safety and enable only explicitly selected capabilities. | CAND-4 extension registry is optional; no implicit real executor activation. |
+| Surrounding integrations | Identity handoff is defined; Memory/Multitask do not own canonical history. | Retain trust and ownership boundaries. | CAND-10 Memory is optional; CAND-8/CAND-9 recoverable jobs are deferred. |
+| Runtime delivery | Implemented contracts and checks exist; this task supplies no deployment or load evidence. | CAND-5 composes the selected completed inventory for a single active instance. | Horizontal availability and multi-agent orchestration are not first-release conditions. |
 
-### External Contract And Security Boundary Inventory
+| Decision | Disposition for this revision | Reason and delivery boundary |
+| --- | --- | --- |
+| AD-1 | Keep Thread/Turn/Item and append-only evidence. | Completed lifecycle/correction contracts remain authoritative; CAND-12/CAND-13 add effective consumption. |
+| AD-2 | Keep provider-neutral core and owned adapter boundaries. | Each boundary has one owner; no crate-for-crate copy of Codex. |
+| AD-3 | Keep AI-owned PostgreSQL and reconstructable derived data. | CAND-18 adds stable submission identity; CAND-17 adds runtime admission; optional lineage and compaction remain separate candidates. |
+| AD-4 | Keep exact-action approval, least privilege, and isolated execution. | Existing CAND-2 protects effects even in single-user use. |
+| AD-5 | Retain versioned REST/SSE; add protocol behavior only through its Accepted ADR. | This design does not silently change current response or request fields. |
+| AD-6 | Keep extension provenance and isolation as an optional integration. | Empty/static inventories remain valid until concrete capabilities are enabled. |
+| AD-7 | Select one active application instance while retaining canonical PostgreSQL. | Replaces the prior future multi-instance delivery requirement; does not remove implemented durable fencing or authorize a storage migration. |
+| AD-8 | Retain Koduck identity and explicit provider configuration. | No adoption of Codex product-specific account or auth behavior. |
+| AD-9 | Keep UI and broad host execution outside this ADD. | New UI needs Figma; real executors need their own accepted capability scope. |
+| AD-10 | Defer automatic background takeover and multi-agent work. | Independent conversations do not require these features; reopen for measured need. |
+| AD-11 | Keep conceptual alignment rather than a direct code fork. | R-1 is satisfied by reasoned adoption, with R-2 bounding delivery cost. |
 
-| Boundary | Existing contract to preserve or assess | Target owner | Security and compatibility rule |
-| --- | --- | --- | --- |
-| Client or approver to AI | New versioned REST/SSE chat and approval protocol | C-1 with C-7 identity validation | The owned contract is authoritative; C-1 delegates signed-claim validation to C-7 before state/model/tool/approval work; bounded bodies, ordered durable stream terminals, and exact D-6 identities are mandatory. Predecessor routes supply functional scenarios only. |
-| Gateway/Auth to AI | APISIX routing and JWT/JWKS-derived tenant/user identity | C-7 | Signed claims are authoritative; forwarded headers cannot invent identity; JWKS failures follow explicit fail-closed/stale-key policy. |
-| AI to Memory | Future versioned semantic-memory projection and retrieval contract | Dedicated adapter outside canonical C-6 ownership | Tenant/user/thread ownership, deadlines, idempotency, version negotiation, and explicit separation from canonical turn history are mandatory. |
-| AI to Multitask | Future background submission, lease, checkpoint, retry, and terminal-state contract | Background-work adapter coordinated with C-2/C-6 | Duplicate submissions map to one logical job; lease loss cannot duplicate non-idempotent effects; credentials never enter history; Multitask does not own foreground canonical turns. |
-| AI to Tool | Capability discovery, schema validation, and execution | C-4/C-5 adapter | Descriptor provenance, exact version, default deny, idempotency, timeout, output cap, and audit apply. |
-| AI to MCP | JSON-RPC initialization, discovery, invocation, resources, and elicitation as supported | C-4/C-5 adapter | Server content is untrusted; transport does not grant authority; approvals and filesystem/network/process access remain locally enforced. |
-| AI to model provider | Provider-native HTTP/streaming for turn inference and the owned CAND-16 compaction-producer port | C-3 | Secrets stay at adapter boundary; provider/model selection is explicit; CAND-1 has no fallback; compaction output remains untrusted conversation content; provenance records the selected producer/model and policy version; redaction, token/time/retry limits, and normalized terminals apply. |
-| Core to executor | Owned action, profile, approval decision, and execution event contract | C-5 | Strongest trust boundary: no bypass, exact scope binding, isolation, cancellation, timeout, output limits, and audit evidence. |
-| Extensions to core | Instruction, profile, skill, plugin, and tool descriptors | C-4 | Deterministic precedence, provenance, schema validation, tenant/thread isolation, and zero permission escalation by content. |
+The near-term ordering is CAND-18 then CAND-17 for submission/admission;
+CAND-12 then CAND-13 for effective history; CAND-15 and CAND-16 can be designed
+as separate boundaries after their dependencies, followed by CAND-14 after
+CAND-17. Repository ADR serialization still governs when each may be drafted.
+CAND-5 inventories only capabilities actually selected and completed. CAND-7,
+CAND-4, and CAND-10 remain optional; CAND-8, CAND-9, and CAND-6 are deferred.
 
-### Ordered Greenfield Delivery Slices, Validation, And Recovery Boundaries
+| Delivery boundary | Validation outcome before promotion | Failure / recovery boundary |
+| --- | --- | --- |
+| Submission and admission | One canonical acceptance, one Thread owner, prompt controls and independent-Thread progress. | A failed candidate is not promoted. Later rollback must preserve accepted identity/history data and use its governing record; removing admission does not preserve the new single-owner guarantee. |
+| Effective history and context | Ordered effective messages, bounded validated context, unchanged raw replay. | Derived summaries can be discarded. When complete direct context cannot fit, fail explicitly; never fall back to truncated or stale input. |
+| Optional capabilities and integrations | Each advertised capability has a completed contract, owner, and failure outcome. | Disable the selected integration through its governing change while retaining canonical evidence; no substitute receives history-writing or execution authority. |
+| Runtime profile | Only declared completed capabilities are composed; required checks pass. | No first promotion on failure. A later OCR must prove stop-before-start non-overlap and identify a verified rollback artifact; no predecessor route-back exists. |
 
-The planned review-priority order is CAND-1, CAND-2, CAND-3, CAND-11, CAND-12,
-CAND-13, CAND-7, CAND-15, CAND-16, CAND-14, CAND-8, CAND-4, CAND-9, CAND-10, and CAND-5. CAND-6 remains
-deferred. The four correction slices are intentionally dependency ordered:
-CAND-3 owns representation and raw replay, CAND-11 owns safe admission,
-CAND-12 owns the pure effective projection, and CAND-13 owns provider-context
-integration. CAND-7 follows CAND-11 to serialize additive C-6 evolution but has
-no correction-semantic dependency. CAND-15 follows CAND-13 and CAND-7 to add
-only the prefix- and request-provenance-fenced D-9 persistence boundary; CAND-16 follows CAND-13 to add
-only the configured provider's compaction-producer operation. CAND-14 follows
-CAND-15 and CAND-16 so its C-2 policy orchestrates completed persistence and
-provider ports without crossing implementation boundaries. CAND-8 is independent
-of CAND-7 and CAND-14 through CAND-16 and follows them only for additive C-6 evolution
-sequencing; CAND-4 owns its registry
-snapshots and is independent of CAND-8; CAND-9 requires CAND-8; and CAND-10
-requires CAND-7 and CAND-12 but neither CAND-8 nor CAND-13 through CAND-16.
-Repository-wide ADR serialization still permits only one unfinished ADR at a
-time. CAND-11 is `Complete` through the Accepted, Verified `koduck-ai/docs/adr/ADR-0004-authenticated-correction-admission.md`. CAND-12 through CAND-16 remain `Ready` with no ADR and are eligible for dependency-ordered selection only while this ADD is `Current`; no candidate may be selected while the ADD is `Draft`. No slice assumes a predecessor deployment, legacy route,
-shared-history subset, or fallback. Each selected candidate requires one
-reciprocal Full ADR with no more than three implementation subtasks and
-deterministic checks.
-
-| Slice | Minimum architecture outcome | Architecture-level validation | Recovery boundary |
-| --- | --- | --- | --- |
-| 1 / CAND-1 | One tool-free authenticated turn crosses the new REST/SSE v1 boundary → core → provider → AI-owned C-6 adapter and reaches one explicit durable terminal state. | Owned-contract mapping, Resume-as-new-Turn, append-before-publish latency/backpressure, foreground liveness window, process crash, lease expiry, stale-owner fencing, exactly-one orphan cancellation, ordered replay, and provider/store failure all have binary states. | Before any promotion, quarantine or revert a failing candidate and retain its deterministic evidence; there is no predecessor route-back. After a verified new release exists, an OCR may select only a verified new artifact. |
-| 2 / CAND-2 | All tool/MCP effects cross one C-5 authority and isolated one-attempt D-7 boundary; required approvals use exact D-6 records and D-3 carries projections only. | Demonstrate allow without approval, deny, invalid approver, accept/decline/cancel/expiry, scope or attempt drift, retry reapproval, timeout, output cap, and untrusted-result handling. | Disable or revert the unpromoted dispatcher; after promotion, an OCR may restore the last verified new dispatcher artifact. No pending projection or partially authorized scope can execute. |
-| 3 / CAND-3 | Canonical history gains the typed correction representation, additive schema/codec support, and complete ordered raw replay without a correction write operation. | Typed round trips, same-scope relationship structure, immutable existing rows, fail-closed corrupt decoding, idempotent migration, and unchanged CAND-1/CAND-2 history have exact outcomes. | Do not enable correction admission; retain every canonical row and use only a verified schema/artifact pair that understands the additive representation. |
-| 4 / CAND-11 | One authenticated C-6 operation safely admits terminal-Turn corrections with linear-chain, stable-identity, deadline, and single-winner semantics. | Ownership/state/kind/predecessor matrices, exact retry, identity drift, 4-writer arbitration, ambiguous acknowledgement, and zero-mutation rejection have exact outcomes. | Disable correction admission while retaining already committed correction rows and raw replay; never weaken the schema to recover availability. |
-| 5 / CAND-12 | A pure C-2 projection substitutes each correction chain tip at its original content position and rejects corrupt history. | Unchanged, single, repeated, and independent chains; user/agent content; ordering; no duplicate message; and every corruption shape have deterministic semantic results. | Stop effective-projection consumers and retain raw canonical history; no projection result becomes a second source of truth. |
-| 6 / CAND-13 | Provider input consumes the effective correction projection with unchanged no-correction bytes, Tool causality, limits, and typed failure propagation. | Corrected user/agent contexts, repeated chains, exact order, no duplicate emission, 4096/4097 Items, 1-MiB/one-byte-over, corrupt input, and baseline provider bytes have exact outcomes. | Disable provider consumption of corrected history; retain raw history and correction admission state without falling back to semantically stale original content. |
-| 7 / CAND-7 | An authenticated fork crosses the minimal C-1/C-2 operation and creates a child Thread/new Turn with immutable lineage at one exact fork point in C-6. | End-to-end fork, parent/fork-point validity, tenant and subject isolation, idempotency, cycle rejection, deterministic lineage reads, and unchanged parent replay have exact outcomes. | Stop new forks and retain existing lineage as canonical metadata; do not copy or rewrite parent history during recovery. |
-| 8 / CAND-15 | C-6 provides bounded source/delta reads, versioned deterministic canonical D-9 member identities, atomic identity/anchor/member/range/prefix-fenced chain storage, deterministic final-winner selection and reads, final-winner-bound inference establishment, atomic Resume chain/winner/new-Turn state, and atomic Fork child-chain/winner/child state without owning compaction policy. | Empty/single/multi-member chains, selected anchors, same-tuple/content identity equality at seed/middle/final positions, exact staged-descendant predecessor references after identical convergence, changed-input separation, invalid identity version/encoding/digest rejection, every member link/range/key, first/middle/final non-identical conflicts with no partial request-chain commit and earliest-winner return, zero/one/multi-member replacement-suffix retries, request-wide provenance, tail/correction races, rejection of losing/stale-winner inference, terminal/lease fencing, isolation, reconstructable deletion, and all-or-zero final-winner-bound Resume/Fork state have exact transactional outcomes. | Disable D-9 writes and final-winner-bound inference establishment while retaining canonical history; remove or rebuild only reconstructable snapshots. |
-| 9 / CAND-16 | The configured C-3 adapter provides one bounded seed/successor compaction-producer operation without reading or committing D-9 or canonical history. | Seed-range and predecessor-snapshot-plus-contiguous-delta translation, combined input/output boundaries, proof no expanded prefix enters one call, producer identity, time/cancellation/retry exhaustion, malformed output, normalized failures, redaction, and zero persistence access have exact outcomes. | Disable the producer operation; retain the existing Turn-inference adapter and issue no compaction-dependent inference. |
-| 10 / CAND-14 | C-2 checks every inference budget and orchestrates direct history or one final committed D-9 chain winner plus exact tail through bounded seed/successor CAND-16 steps and CAND-15 atomic chain/winner/fence operations; staged, partially committed, losing, or late output cannot cross winner, prefix, request-wide, terminal, or lease fences. | Multi-pass initial/rebuild/active-Turn/Resume/Fork cases whose complete prefix exceeds one producer call; per-step/winner-first conflict/zero-one-multi-member suffix/pass boundaries; predecessor-plus-delta causality; tail reuse; prefix rebuild; earliest-conflict adoption and target/fit recheck; final-member winner completion without another producer call; first/middle conflict regeneration of the complete remaining suffix before C-6 retry; every Resume initial/conflict-suffix and Fork initial producer response proving success alone derives identity and appends while failure/cancellation creates no member and issues no later producer request; request-source drift after Resume/Fork assembly — including drift returned by direct-history commits — discarding the stale staged chain or direct assembly and restarting bounded reassembly within the shared drift budget, with rejection only on drift- or pass-budget exhaustion, producer or closed-range failure during reassembly, typed durability failure, or typed validation failure; Fork child initial-construction cancellation stopping immediately with the cancellation outcome preserved and zero visible child state when the reservation has no committed child, and a Fork child-scope conflict winner returning the already-committed child, lineage, and first Turn as the idempotent result instead of entering winner-first recovery or reporting zero visible child state, with an already-committed child — including one committed through the direct-history transaction — detected at reservation time before parent-source loading and by every direct-history or compacted child-state transaction, initial or retry, and validated and returned instead of committing a second child, while an unreadable or inconsistent committed child reports its typed failure preserving the visible state, and every Fork abort after construction begins rechecking for a concurrently committed child of the same reservation, validating any found child against the reservation identity and exact fork point, and returning the validated child or its typed failure instead of acknowledging an impossible zero-visible state; empty- and non-empty-suffix transaction retry matrices proving only another conflict winner continues, success exits complete, retry-time request-source drift routes into bounded reassembly instead of terminal rejection, drift-recovery retries distinguish another drift from an earliest conflict winner and route the winner into winner-first conflict recovery for Resume or idempotent existing-child adoption for Fork, where the retry validates and returns the existing child to complete drift recovery before any generic failure outcome, and every typed non-conflict durability or validation zero-mutation failure exits with no further transaction attempt, and a typed chain-validation rejection of an invalid identity-rule version, encoding, digest, or predecessor identity rejects Resume with no D-9 or Turn and aborts Fork with zero visible child state when the reservation has no committed child, with the abort-time recheck otherwise returning the validated existing child or its typed failure; drift reassembly yielding below-budget direct history commits through the atomic direct-marker transaction, a tail-only drift retaining a prefix-valid committed winner retries the winner-bound new-Turn transaction without producer passes, while drift pushing a formerly direct context over budget exits the direct-path loop and continues through the bounded seed/successor compaction passes and atomic complete-chain commit within the same drift budget; cancellation during Resume construction, suffix regeneration, or drift reassembly preserves the cancellation outcome with no D-9 or Turn, cancellation during child drift reassembly preserves the cancellation outcome with zero visible child state when the reservation has no committed child, and cancellation or fencing returned by any atomic target transaction exits to the same cancellation path with zero mutation; no partial request-chain commit; final-winner-bound request provenance; atomic chain/final-winner-bound Resume/Fork state; drift/race/failure/isolation/bounded-memory/canonical-replay/unable-to-fit outcomes are exact. | Disable C-2 snapshot creation and consumption; retain complete canonical history and only derived D-9 state. If direct effective history cannot fit, fail visibly rather than truncate, partially commit a request chain, use a losing snapshot, or emit an orphan Tool result. |
-| 11 / CAND-8 | The AI-owned store gains durable checkpoint, idempotency, and fenced background-resume state without an external job transport or any dependency on fork lineage or context compaction. | Monotonic checkpoints, duplicate-key convergence, owner-loss resume, stale-owner rejection, single-winner recovery, terminal idempotency, and ambiguous-effect handling have exact outcomes. | Stop resume admission when ownership is ambiguous, preserve canonical state, and use only a verified new schema/artifact pair; no external fallback owns recovery. |
-| 12 / CAND-4 | Instructions, profiles, skills, plugins, and MCP use one coherent C-4-owned extension snapshot and cannot widen permissions. | Precedence, provenance, invalid entry, source loss, stale snapshot, cross-tenant isolation, atomic publish, optional durable reconstruction, and permission non-escalation are deterministic. | Disable the registry and restore the static known-safe inventory; keep historical provenance evidence. |
-| 13 / CAND-9 | An authenticated background submission crosses the minimal C-1/C-2 handoff and one versioned Multitask adapter that consumes the AI-owned checkpoint/idempotency boundary. | End-to-end submission/status, contract versioning, duplicate submission, lease loss, checkpoint handoff, cancellation, retry safety, terminal convergence, tenant isolation, and dependency loss have exact outcomes. | Disable the Multitask adapter and stop new background submissions; retain AI-owned canonical state for later recovery without route-back to predecessor behavior. |
-| 14 / CAND-10 | Semantic Memory consumes versioned effective projections and returns bounded retrieval results without owning canonical history or D-9 context-compaction snapshots. | Projection provenance/versioning, effective correction and fork representation, idempotency, isolation, stale-version rejection, cache reconstruction, retention, and dependency loss have exact outcomes. | Disable projection and retrieval traffic, preserve canonical history, and discard or rebuild only reconstructable Memory projections and caches. |
-| 15 / CAND-5 | Foreground/background and only providers already delivered by Accepted ADRs run on the new core and meet first-production-promotion gates; absent another provider candidate, this is the single CAND-1 provider. | Exact approved-provider inventory, owned-contract conformance, stream ordering, correction/provider/context-compaction behavior, background recovery, SLO thresholds, error budgets, and promotion-stop triggers are exact; no undeclared provider or fallback is active. | A failed first-release candidate is not promoted. After first promotion, rollback may target only the last verified new path while preserving the canonical store and owned external contract. |
+Verification intent is the smallest deterministic set proving distinct
+invariants: duplicate identity, same-Thread contention, cross-Thread progress,
+both completion/stop orders, repeat approval, scope isolation, and truthful
+durability failure. Real transaction and transport claims retain their real
+boundaries. New cases use two contenders unless a third represents a distinct
+role; current four-contender Accepted checks remain unchanged. Capacity tests
+and fault campaigns need explicit workload/failure goals and are not inferred
+from that correctness set. No fresh performance threshold is claimed here.
 
 ## Approval And Review Checklist [Required]
 
-- [x] Scope routing, filename, number, metadata, and central index row are correct.
-- [x] Every Trello source has a captured baseline, acceptance outcome, and last-checked date.
-- [x] Every functional capability cites captured requirement IDs, and every stated behavior traces to those cited baselines.
-- [x] Data Model Design is triggered and ownership, lifecycle, sensitivity, relationships, and invariants are populated.
-- [x] Every architecture component has a responsibility, conceptual inputs and outputs, dependencies, and cited accepted constraints; the required Mermaid architecture diagram covers every component ID, boundary, dependency, and applicable conceptual flow and agrees with the table.
-- [x] Every triggered control or interaction section includes its required Mermaid diagram and structured table; the diagram covers every declared flow ID plus applicable ordering or transitions, branches, feedback, failure, and recovery, and agrees with the table. Each untriggered section records `N/A — <reason>`.
-- [x] UI is not in scope and the Figma trigger is explicitly assessed as not applicable.
-- [x] Cross-cutting concerns, risks, and assumptions are documented with their treatment, and every material question is resolved.
-- [x] Traceability connects every requirement to capabilities and ADR task candidates or records why no runtime candidate applies.
-- [x] Task candidates contain outcomes and boundaries but no source-file or executable implementation design; every new or materially changed candidate names one primary implementation boundary and fits one independently reviewable implementation pull request.
-- [x] Every `Selected` or `Complete` candidate has an exact reciprocal ADR path; CAND-1 is `Complete` through `docs/adr/ADR-0001-provider-neutral-turn-kernel.md`, CAND-2 is `Complete` through `docs/adr/ADR-0003-default-deny-tool-approval-execution-boundary.md`, and CAND-3 is `Complete` through the `Accepted, Complete` service ADR at `koduck-ai/docs/adr/ADR-0003-correction-item-schema-and-raw-replay.md`; all three ADRs' Architecture Source fields point back to this ADD and the matching candidate ID, and the candidate completed only after its ADR did. CAND-11 is `Complete` through the Accepted, Verified service ADR at `koduck-ai/docs/adr/ADR-0004-authenticated-correction-admission.md`, whose Architecture Source points back to this ADD and CAND-11. CAND-12 through CAND-16 remain `Ready` with no ADR and may be selected only after their dependencies and the repository-wide ADR serialization gate permit it.
-- [x] Every required section is complete; every conditional trigger is assessed and completed or marked `N/A — <reason>`; optional content is complete.
-- [x] `npm run validate --prefix tools/governance-validator` passes, including template-field, status, index, reciprocal-link, Mermaid syntax, and diagram/table ID checks.
-- [x] Repository owner and required approver `@linhai` reapproved the complete producer-failure exit, candidate-selection-gate, drift-reassembly, child-cancellation, retry-drift routing, direct-history drift-result, CF-1 durability-exit, CF-3 drift-recovery, Resume-cancellation, direct-commit drift-retry, over-budget drift-exit, drift winner-reuse, direct-drift cancellation, drift-conflict separation, producer-cancellation coverage, producer-outcome exclusivity, snapshot-edge outcome partition, commit-time cancellation fencing, chain-validation-failure outcome, Fork initial-construction cancellation-split, Fork staged-child-chain discard, compacted-Resume fitting-winner drift retry, Fork child-scope conflict idempotent-adoption, retry-time child-winner adoption completion, Fork existing-child detection across direct and compacted transactions, inconsistent-child-state CF-3 terminal, committed-child read-failure branching, idempotent-adoption sequence termination, committed-child zero-state exclusion, CF-3 committed-child adoption edges, conflict-winner read-failure branch, CF-3 reservation existing-child decision, IX-1 committed-child exit-state preservation, reservation-before-source-load ordering, provenance-neutral adoption terminal, abort-time committed-child recheck, drift-adoption provenance, CF-1 winner-read failure branch, CF-3 abort committed-child recheck, CF-3 reservation-failure branch, abort-recheck validation, reservation-abort recheck, candidate abort-adoption checks, duplicate abort-validation cleanup, abort-recheck read-failure outcome, delivery-matrix zero-state scoping, validation-failure zero-state scoping, cancelled-Fork feedback scoping, empty-suffix validation-failure, winner-bound validation-failure, Fork reservation before shared load, over-budget drift transition with modeled continuation, drift-reassembly rejection-outcome, conflict/drift recovery handoff, reliability-row committed-child qualification, drift-durable provenance-neutrality, and CF-3 table load-ordering corrections for automatic reviews `5085863664`, `5085923290`, `5086121809`, `5086269808`, `5086388217`, `5086580275`, `5086766960`, `5086850935`, `5087118888`, `5087270540`, `5087490898`, `5087639576`, `5087866479`, `5088213427`, `5088293998`, `5089327856`, `5089458967`, `5089587190`, `5089671852`, `5089734040`, `5089825280`, `5089885302`, `5089968070`, `5090072544`, `5090159875`, `5090269665`, `5090371797`, `5090505708`, `5090598621`, `5090682094`, `5090811035`, `5090938584`, `5091156227`, `5091273740`, `5091405100`, and `5091511902`, plus the follow-up audit correction at `2026-09-02T16:52:30+08:00` with no review ID, through the explicit ADD-0001 approval instruction and the subsequent identity-and-approval response `@linhai Approve` in task `01a06ae7-ba41-7562-b618-f6b85021cfdd`, recorded at `2026-09-04T13:37:24+08:00`; active approval metadata is complete and Design Status is `Current`.
+- [x] This revision changes an existing ADD; its path, identity, and completed reciprocal ADR links are preserved.
+- [x] Trello baseline and later conversational scope are separately attributed; no card freshness or traffic measurement is invented.
+- [x] Capabilities, data, component ownership, control flows, and interaction flows describe the selected single-instance profile.
+- [x] Architecture and triggered flow sections contain Mermaid diagrams matching their declared IDs; UI/Figma is not triggered.
+- [x] Completed candidates and Accepted safeguards remain historical and authoritative; new and changed candidates each have one primary implementation boundary.
+- [x] Automatic background recovery and multi-agent candidates are Deferred with explicit reasons; optional features are not implicit first-release dependencies.
+- [x] Required verification gates remain unchanged; reduced future scenario scope does not waive existing contracts or tests.
+- [x] Governance validation and 184 governance-validator tests pass; the two local structured review rounds are recorded in the 2026-09-23 Change Log. Final metadata-only evidence updates are revalidated before handoff.
+- [x] Required non-author approver `@linhai` approved this concrete revision; active approval fields and Design Status now record the Current state.
 
 ## Archival [Conditionally Required — Design Status is `Deprecated` or `Superseded`]
 
@@ -1438,6 +561,7 @@ This section is inactive because Design Status is `Current`. When triggered:
 - [ ] For supersession, set reciprocal `Supersedes` and `Superseded By` paths.
 - [ ] Update its single row in `docs/architecture/INDEX.md`; never delete the row.
 - [ ] Confirm no non-archived ADD/ADR or governed marker still cites the pre-archive path.
+
 
 ## Change Log [Required]
 
@@ -1563,3 +687,6 @@ This section is inactive because Design Status is `Current`. When triggered:
 | 2026-09-04 | Recorded ADD-0001 reapproval by required approver `@linhai` at `2026-09-04T13:37:24+08:00` in task `01a06ae7-ba41-7562-b618-f6b85021cfdd`: the user explicitly instructed `Approve ADD-0001`, then self-declared and confirmed `@linhai Approve`. Restored `Current` and active approval metadata without changing the approved solution or candidate scopes. Approval time is the recording time; prior approval and correction history remains above. No Approval Context Revision is recorded. | @codex |
 | 2026-09-04 | Selected CAND-11 through `koduck-ai/docs/adr/ADR-0004-authenticated-correction-admission.md` and recorded reciprocal navigation in the same change. Candidate outcome, scope, dependencies, and acceptance context are unchanged; this lifecycle/link update preserves ADD approval. | @codex |
 | 2026-09-05 | CAND-11 completed: the service ADR is `Accepted, Verified` and the implementation is commit `849b0c2ffa722c70484e1516ab1e122ac3f8ca9c` with AC-1 through AC-6 `Pass`; the candidate moved `Selected` to `Complete`. Candidate outcome, scope, dependencies, and acceptance context are unchanged; this lifecycle update preserves ADD approval. | @zcode |
+| 2026-09-23 | Approval-invalidating scope revision at `2026-09-23T13:50:31+00:00` after the user requested realistic concurrency analysis and agreed to the proposed reduction in the current Codex task. Selected one active application instance, independent parallel Threads, one Thread mutation owner, explicit busy/conflict outcomes, stable submission retries, and single-producer final-snapshot compaction. Added CAND-17/CAND-18 for distinct admission and durable submission-identity boundaries; narrowed future compaction and release prerequisites; deferred CAND-8/CAND-9 while retaining optional forks/extensions/Memory and deferred multi-agent work. Replaced the unimplemented competing-chain/winner/drift recovery design with the current concise flow tables and diagrams; prior details remain in Git history at `1c105015602fd7ff0abd218aa5d2bffa732a66b7`. Completed CAND-1/CAND-2/CAND-3/CAND-11 rows, all Accepted implementation contracts and tests, and the existing historical Change Log remain unchanged. Preserved prior approval: Approver `@linhai`, Approval Time `2026-09-04T13:37:24+08:00`, Approval Evidence: Approve; no Approval Context Revision was recorded. Design Status is Draft and active approval fields are Pending — reapproval required. Agreement to the direction is not recorded as formal approval. No Trello mutation, source/configuration change, new ADR, commit, or push occurs in this revision. | @codex |
+| 2026-09-23 | Local structured review round 1 examined working draft blob `402f8c5b5e3d7a70b3a6e5beb369e0a7f5945677` against base `1c105015602fd7ff0abd218aa5d2bffa732a66b7`: corrected exact-retry-before-admission ordering, distinguished conversation ownership from existing conditional control/store writes, restored the R-1 research-to-delivery and recovery mappings, and made summary publication/failure and prompt stop explicit in the diagrams. Round 2 examined the revised design ending at working draft blob `4ccc8fab20279d99792e89507e5f300581765976` with index blob `d7d0270865e5edb275817fdf5aa7fe42882f31c4`: completed candidate rows and the prior Change Log are unchanged; scope/index, required content, component/flow IDs, dependencies, single-boundary candidates, deferred scope, retry observation without execution authority, and retained Accepted constraints agree. Result: no unresolved finding in this local design review. These are pre-evidence working-draft identities, not pushed commit review coverage or formal approval. Governance validation and all 184 validator tests passed, and the whitespace/diff check passed. Source, runtime configuration, and tests were unchanged; Rust/PostgreSQL/Sonar execution is not part of this documentation-only verification. | @codex |
+| 2026-09-23 | Reapproved the revised ADD-0001 as Current. In this same task, the user first responded `Approve` to the concrete draft, then confirmed the required approval identity and approval in the reply `@linhai Approve`. The latter reply follows the identity-and-approval convention recorded for the prior ADD-0001 approval, so the active approver is `@linhai` and the recorded approval evidence is `Approve`; approval time `2026-09-23T14:01:07Z` is the recording time. The previous approval and invalidation remain in the Change Log. The approved solution, completed candidate rows, candidate statuses, and paths did not change in this approval update. No informational Approval Context Revision is recorded. | @codex |
