@@ -527,7 +527,7 @@ precondition demonstrably does not apply. AC-7 cannot be satisfied by unit doubl
 | A-5 | Acceptance checks are decidable | Each check names T-1, inputs, deterministic method, exact result, and evidence | Structured acceptance review | Complete | Round-4 correction supplies AC-7 metrics in the full admission line and defines combined-output capture; no fifth review pass claimed |
 | A-6 | Engineering exceptions governed, when applicable | No unapproved exception or executable-unit hard-limit violation in changed units | Changed-unit measurements and scope review | Not Started | Pending |
 | A-7 | Contracts and risks covered | PV-1 through PV-7 traced; applicable risk rows Pass; N/A rows cite actual scope review | Traceability, risk and acceptance evidence | Not Started | Pending |
-| A-8 | Governance validation passed | Independent validator exits 0 for this ADR and index; after a committed snapshot exists, add its tested SHA through the Supporting Notes evidence-only follow-up | npm test --prefix tools/governance-validator; npm run validate --prefix tools/governance-validator | Complete | 2026-09-24 approval-stage validation: tested ADR blob e9dd9842c0a130708830908109beaf55a7bb7e70, index blob f9346197517420be537971541548794f9b5f8bc6; governance tests 208/208 passed, governance validation passed, git diff --check exited 0. This row is a subsequent evidence-only update. No committed proposal SHA exists yet; the tested-commit follow-up in Supporting Notes remains required once committed |
+| A-8 | Governance validation passed | Independent validator exits 0 for this ADR and index; after a committed snapshot exists, add its tested SHA through the Supporting Notes evidence-only follow-up | npm test --prefix tools/governance-validator; npm run validate --prefix tools/governance-validator | Complete | Committed-snapshot validation at 2026-09-24T03:42:05.266569+00:00: commit fcfec6bbdffd2c95735bb1d293e1cd36bb7e1cfd, ADR blob 9446b671f327e11dcb1f051d004eb6683acbc862, index blob f9346197517420be537971541548794f9b5f8bc6; npm test --prefix tools/governance-validator: 208/208 passed; npm run validate --prefix tools/governance-validator: Governance validation passed. This subsequent evidence-only update cites the tested commit, not its own revision; approval and implementation status are unchanged |
 
 ## Supporting Notes [Optional]
 
@@ -569,7 +569,9 @@ follow-up below. No implementation source is changed by these draft corrections.
 
 Branch `codex/push-boundary-sonar` was created from local dev at the same base.
 The Codex task environment specifies the `codex/` branch prefix; this uses
-AGENTS.md's tool-prefix allowance. No fetch, commit or push occurred.
+AGENTS.md's tool-prefix allowance. No fetch, commit or push had occurred at
+the time of approval. The owner subsequently requested submission of the PR;
+A-8 now records the first committed snapshot's governance validation.
 The ADR is Accepted / Not Started following @linhai's explicit approval in this
 task, recorded at 2026-09-24T03:23:26Z. This status/evidence update changes no
 approved decision content and starts no additional agent review.
