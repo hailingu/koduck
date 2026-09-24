@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// ADR: docs/adr/ADR-0014-validator-structural-parsing-reliability.md
+// ADR: docs/adr/ADR-0016-adr-rejection-reason.md
 
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { relative, resolve, sep } from "node:path";
@@ -396,13 +396,20 @@ function validateBlockedMetadata(path, markdown, errors) {
 }
 
 // A Rejected record must carry the rejecting actor, time, and exact `Reject`
-// evidence so an unauthorized state transition cannot pass CI.
+// evidence so an unauthorized state transition cannot pass CI. A Rejected ADR
+// must additionally retain a concrete rejection reason (ADR-0016); OCRs and
+// non-Rejected ADRs require none.
 function validateRejectionMetadata(path, markdown, errors) {
   const rejector = metadata(markdown, "Rejector");
   const rejectionTime = metadata(markdown, "Rejection Time");
   const rejectionEvidence = metadata(markdown, "Rejection Evidence");
   if (!isValidActor(rejector) || !isValidTimestamp(rejectionTime) || rejectionEvidence !== "Reject") {
     errors.push(`${path}: Rejected requires complete Rejector, Rejection Time, and Rejection Evidence: Reject metadata`);
+  }
+  if (isRecordFilename(path.split("/").at(-1), "ADR-") && !isCompleteValue(metadata(markdown, "Rejection Reason"))) {
+    errors.push(
+      `${path}: ADR_REJECTION_REASON_REQUIRED — a Rejected ADR requires a complete active Rejection Reason metadata value`,
+    );
   }
 }
 
