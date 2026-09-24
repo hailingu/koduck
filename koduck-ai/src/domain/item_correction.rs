@@ -1,4 +1,5 @@
 // ADR: koduck-ai/docs/adr/ADR-0003-correction-item-schema-and-raw-replay.md
+// ADR: koduck-ai/docs/adr/ADR-0005-effective-correction-projection.md
 
 //! The typed correction Item representation and the raw-replay structure
 //! contract (ADR-0003 CR-01 through CR-05).
@@ -89,16 +90,36 @@ pub enum RawReplayStructureError {
 ///
 /// Returns the first [`RawReplayStructureError`] violation, if any.
 pub fn validate_raw_replay(items: &[Item]) -> Result<(), RawReplayStructureError> {
-    validate_replay_order(items)?;
-    validate_correction_structure(items)
+    validate_raw_replay_refs(items.iter())
+}
+
+/// Validates the same raw-replay structure contract over a restartable
+/// borrowed traversal (ADR-0005 EP-02): the iterator is cloned or restarted
+/// per validation pass, so each pass starts at the same first Item and the
+/// observable results are identical to [`validate_raw_replay`] for slice
+/// callers. This crate-private seam lets the scoped projection preserve
+/// per-entry provenance without cloning payload-bearing `Item` values.
+///
+/// # Errors
+///
+/// Returns the first [`RawReplayStructureError`] violation, if any.
+pub(crate) fn validate_raw_replay_refs<'a, I>(items: I) -> Result<(), RawReplayStructureError>
+where
+    I: Clone + Iterator<Item = &'a Item>,
+{
+    validate_replay_order(items.clone())?;
+    validate_correction_structure(&items.collect::<Vec<_>>())
 }
 
 /// Requires every Item identity to appear exactly once in strictly increasing
 /// sequence order (ADR-0003 CR-02).
 ///
 /// Sequence adjacency is not required. Validation never mutates the replay.
-fn validate_replay_order(items: &[Item]) -> Result<(), RawReplayStructureError> {
-    let mut identities = HashSet::with_capacity(items.len());
+fn validate_replay_order<'a, I>(items: I) -> Result<(), RawReplayStructureError>
+where
+    I: Iterator<Item = &'a Item>,
+{
+    let mut identities = HashSet::with_capacity(items.size_hint().0);
     let mut previous_sequence = 0_u64;
     for item in items {
         if item.sequence <= previous_sequence {
@@ -118,7 +139,7 @@ fn validate_replay_order(items: &[Item]) -> Result<(), RawReplayStructureError> 
 ///
 /// Target ordering is deliberately not judged here: CAND-11 admission owns
 /// predecessor currency and CAND-12 owns effective-order semantics.
-fn validate_correction_structure(items: &[Item]) -> Result<(), RawReplayStructureError> {
+fn validate_correction_structure(items: &[&Item]) -> Result<(), RawReplayStructureError> {
     let identities: HashSet<ItemId> = items.iter().map(|item| item.item_id).collect();
     let mut targets = HashSet::new();
     for item in items {

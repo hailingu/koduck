@@ -2,6 +2,7 @@
 // ADR: docs/adr/ADR-0003-default-deny-tool-approval-execution-boundary.md
 // ADR: docs/adr/ADR-0005-provider-delta-coalescing-and-512-item-turn-budget.md
 // ADR: koduck-ai/docs/adr/ADR-0004-authenticated-correction-admission.md
+// ADR: koduck-ai/docs/adr/ADR-0005-effective-correction-projection.md
 
 //! Provider-neutral application orchestration and consumer-owned ports.
 
@@ -11,6 +12,7 @@ pub(crate) mod attempt_store;
 mod audit;
 mod cancellation;
 mod canonical_dispatch;
+mod correction_projection;
 mod correction_store;
 mod deadline;
 mod delta_coalescer;
@@ -50,6 +52,9 @@ pub(crate) use cancellation::InterruptionOutcome;
 pub(crate) use cancellation::{AttemptCancellationService, ExecutionInterrupter};
 pub use cancellation::{CancelAcknowledgement, CancelPermit, CancelledEffectState};
 pub(crate) use cancellation::{PendingApprovalCancellation, PendingApprovalCanceller};
+pub use correction_projection::{
+    EffectiveItem, ProjectionError, ProjectionScope, ScopedProjectionItem, project_corrections,
+};
 pub use correction_store::{
     CorrectionCommand, CorrectionError, CorrectionStore, MAX_CORRECTION_CONTENT_BYTES,
 };
