@@ -1,20 +1,26 @@
-# Local SonarQube commit and push gate
+<!-- ADR: docs/adr/ADR-0017-push-boundary-sonarqube-verification.md -->
+# Local SonarQube push gate
 
-The repository owner authorized this workflow directly on 2026-09-05 in task
-`01a06ecc-0585-7b63-8311-2022f1a42315`: enable pre-commit analysis without an
-ADR/OCR, and permit Git pushes only after incremental SonarQube findings reach
-zero. The owner explicitly waived an ADR for implementing this workflow.
-Routine installation, disposable test databases and analysis through these
-entry points need no ADR, OCR or repeated approval. Other changes retain their
-normal governance. This instruction replaces ADR-0015's routing-only activation
-and per-operation authorization for this workflow; historical ADR evidence is
-not rewritten or presented as approval of this change.
+The repository owner authorized the original workflow directly on 2026-09-05 in
+task `01a06ecc-0585-7b63-8311-2022f1a42315`: enable local SonarQube analysis
+without an ADR/OCR, and permit Git pushes only after incremental SonarQube
+findings reach zero. The owner explicitly waived an ADR for implementing that
+workflow; this paragraph records the original authorization as history. The
+accepted `docs/adr/ADR-0017-push-boundary-sonarqube-verification.md` amended it
+on 2026-09-24: mandatory Sonar analysis moved from every commit to the push
+boundary, and the versioned `pre-commit` hook was removed. Routine
+installation, disposable test databases and analysis through these entry
+points still need no ADR, OCR or repeated approval. Other changes retain
+their normal governance. Historical ADR evidence is not rewritten or
+presented as approval of this change.
 
 ## Installation and use
 
 Run `sh tools/sonarqube/install.sh` in each checkout. It sets the repository-local
-`core.hooksPath=.githooks` without installing coverage dependencies.
-It refuses to overwrite another hook setup. Existing worktrees share Git config;
+`core.hooksPath=.githooks` and enables the versioned `pre-push` hook, without
+installing coverage dependencies. It refuses to overwrite another hook setup,
+including unmanaged hooks under the default hooks directory, because setting
+`core.hooksPath` would silently disable them. Existing worktrees share Git config;
 each worktree must contain this versioned hook directory.
 
 Prerequisites are Python 3.10+, Rust 1.95 with `llvm-tools-preview`,
@@ -33,31 +39,38 @@ repository files, reports or output. Commands started by Git inherit its process
 environment; GUI clients can use the zsh fallback for the token. Docker must be available
 when the workflow creates its own fixture database.
 
-- `python3 tools/sonarqube/gate.py pre-commit`: analyze the effective Git index.
-  Git's `commit -a` and partial-commit alternate indexes are honored. The normal
-  working tree and index are never stashed, reset or staged by the scanner.
 - `python3 tools/sonarqube/gate.py pre-push`: consume Git's ref-update lines
   from stdin and check every proposed commit target, including peeled tags.
   Deletions introduce no source and require no analysis. This command never
   performs a push itself.
 - `python3 tools/sonarqube/gate.py check --revision HEAD`: check a committed
   revision manually. Use `--base <ancestor-SHA>` to select an explicit baseline.
+- The retired `pre-commit` mode is no longer an accepted mode. The direct
+  Python CLI rejects it with exit status 2 through argument parsing before
+  loading credentials, creating the database fixture, acquiring the scan lock
+  or scanning. Calling the shell wrapper with the unsupported `pre-commit`
+  argument may still load credentials before Python rejects it; changing that
+  wrapper is outside the amendment's scope. Neither invocation is successful
+  verification.
 
-All commits trigger scanning, including documentation-only commits. This avoids
-an accidental extension-based bypass when scanner, dependency or build inputs
-change. Analysis/verification failure blocks the commit. A completed analysis
-with findings may be committed locally for repair; findings, a failed quality
-gate or insufficient coverage block **push**, completion and review-ready status.
-Do not use `--no-verify` to claim gate success. CI runs the separate checks described below.
+Creating a local commit performs no Sonar, coverage, Cargo, database or token
+work. Commits are local checkpoints and MUST NOT be claimed as
+Sonar-verified. Every push, including a documentation-only push, scans each
+distinct proposed target afresh regardless of file types or previously
+successful analysis; this avoids an accidental extension-based bypass when
+scanner, dependency or build inputs change. Findings, a failed quality gate
+or insufficient coverage block **push**, completion and review-ready status.
+Do not use `--no-verify` to claim gate success. CI runs the separate checks
+described below.
 
 ## Source identity and increment definition
 
-The scanner uses a private temporary clone with real Git history. For pre-commit
-it creates a disposable commit object in that clone containing exactly the
-effective index tree. Evidence binds the tree, baseline commit and policy hash;
-it never labels the old HEAD as the new source. The index is checked again
-before returning. Pre-push compares the proposed commit tree, not the caller's
-HEAD. Changing source, baseline or executable policy invalidates evidence.
+The scanner uses a private temporary clone with real Git history and checks
+out the exact proposed commit. Evidence binds the tree, baseline commit and
+policy hash; it never labels an old revision as the new source. Pre-push
+verifies the proposed object, not the caller's checkout HEAD, index or
+unstaged work. Changing source, baseline or executable policy invalidates
+evidence.
 
 The baseline is `git merge-base dev <target>` from local history, without an
 implicit fetch. An explicit `--base` must be an ancestor of the target. Each analysis
@@ -123,10 +136,72 @@ Incomplete pages, missing metrics and API failures block admission. Evidence is
 stored atomically under Git's common directory at `sonarqube/`, recording tree,
 revision, baseline, policy, task/analysis IDs, issue counts and coverage fractions.
 
+## Admission evidence from an actual push
+
+After `require_pass` accepts a target's record, `gate.check_revision` prints and
+flushes exactly one complete stdout line with these fields in this order:
+
+`Sonar push admitted: <revision> analysis=<analysis-id> tree=<tree> base=<base> policy=<policy> new_issues=<n> quality_gate=<status> covered=<c> coverable=<d>`
+
+`<revision>` is the resolved proposed commit and `<analysis-id>` its nonempty
+analysis ID. The tree, base and policy fields are the identity passed to
+`require_pass`; new_issues, quality_gate, covered and coverable are the
+identically named record values it accepted. Capture the complete line from
+the actual canonical pre-push invocation using the **combined stdout and
+stderr of `git push`**: the gate itself writes stdout, but Git routes hook
+stdout to its own stderr, so the line appears in the push output. The
+revision, tree, base and policy fields MUST equal the current values
+recomputed by the read-only procedure below. A missing field, the former
+shorter line, absent admission output or any mismatch does not qualify. Do
+not read persisted evidence or compute an evidence filename to qualify a
+line; failed results may still be stored before `require_pass` rejects them.
+
+Admission is per target. An earlier target's line remains valid when a later
+target fails or the remote rejects the Git push, provided that target's
+identity still matches. Other targets without their own qualifying lines
+remain unverified; a deletion-only invocation supplies no line; and neither
+the overall hook or Git exit status nor persisted files prove target
+admission. Matching successful pre-push evidence MAY satisfy the Sonar
+portion of local completion and review-ready verification instead of a
+second manual `check`; record the actual invocation, the admission line and
+the identity-comparison result, and report overall push success or failure
+separately. Every later push still scans afresh, and the admission line is
+not proof of remote Git publication.
+
+### Recomputing the current identity (read-only)
+
+Run this from the repository root with the workflow's required Python 3.10+
+(the `python3` on PATH), replacing the `HEAD` argument with the admitted
+target's exact commit. It uses existing helpers, reads no credentials or
+stored evidence, and starts no scanner or database. Compare its four output
+fields with the admission line; the analysis ID is retained from the captured
+post-`require_pass` output.
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 python3 - HEAD <<'PY'
+import json
+import sys
+from pathlib import Path
+
+root = Path.cwd()
+sys.path.insert(0, str(root / "tools/sonarqube"))
+from gate import policy_id
+from git_snapshot import feature_base, git
+
+revision = git(root, "rev-parse", sys.argv[1] + "^{commit}")
+print(json.dumps({
+    "revision": revision,
+    "tree": git(root, "rev-parse", revision + "^{tree}"),
+    "base": feature_base(root, revision),
+    "policy": policy_id(),
+}, sort_keys=True))
+PY
+```
+
 ## Local scanning and CI
 
-The owner removed the Docker runner build workflow on 2026-09-06. Local
-pre-commit and pre-push hooks invoke the installed scanner directly. No custom
+The owner removed the Docker runner build workflow on 2026-09-06. The local
+pre-push hook invokes the installed scanner directly. No custom
 runner image, registration or readiness variable is required. The optional
 PostgreSQL test fixture uses the existing upstream image without building it.
 

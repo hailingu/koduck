@@ -1,3 +1,0 @@
-#!/bin/sh
-# Owner-authorized Sonar analysis; see tools/sonarqube/README.md.
-exec sh "$(git rev-parse --show-toplevel)/scripts/sonar-quality-gate.sh" pre-commit

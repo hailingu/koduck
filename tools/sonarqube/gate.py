@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""Owner-authorized commit scanning and zero-incremental-finding push gate."""
+"""Owner-authorized push-boundary scanning and zero-incremental-finding admission."""
+
+# ADR: docs/adr/ADR-0017-push-boundary-sonarqube-verification.md
 
 import argparse
 import contextlib
@@ -18,9 +20,7 @@ from git_snapshot import (
     changed_lines,
     feature_base,
     git,
-    index_snapshot,
     push_revisions,
-    require_index,
     revision_snapshot,
 )
 from scan_runtime import coverage, preflight, scan
@@ -56,17 +56,6 @@ def store_evidence(folder: Path, record: dict) -> None:
         json.dump(record, handle, sort_keys=True)
         temporary = handle.name
     os.replace(temporary, path)
-
-
-def load_evidence(folder: Path, tree: str, base: str, policy: str) -> dict | None:
-    """Read only an exactly keyed record; malformed local files never pass."""
-    path = evidence_path(folder, tree, base, policy)
-    if not path.exists():
-        return None
-    try:
-        return json.loads(path.read_text())
-    except (OSError, ValueError):
-        raise RuntimeError("SONAR_EVIDENCE_INVALID") from None
 
 
 @contextlib.contextmanager
@@ -141,16 +130,27 @@ def analyze(root: Path, snapshot, base: str, config: dict, sonar: Sonar) -> dict
         }
 
 
-def report_result(record: dict) -> None:
-    """Report safe evidence and distinguish successful analysis from push permission."""
-    print(json.dumps(record, sort_keys=True), flush=True)
-    try:
-        require_pass(record, record["tree"], record["base"], record["policy"])
-    except RuntimeError as error:
-        print(
-            str(error) + ": commit may retain findings; push remains blocked",
-            flush=True,
-        )
+def report_admission(
+    record: dict, revision: str, tree: str, base: str, policy: str
+) -> None:
+    """Emit the per-target admission line only after require_pass accepted the record."""
+    print(
+        "Sonar push admitted: "
+        + " ".join(
+            (
+                revision,
+                "analysis=" + record["analysis"],
+                "tree=" + tree,
+                "base=" + base,
+                "policy=" + policy,
+                "new_issues=" + str(record["new_issues"]),
+                "quality_gate=" + record["quality_gate"],
+                "covered=" + str(record["covered"]),
+                "coverable=" + str(record["coverable"]),
+            )
+        ),
+        flush=True,
+    )
 
 
 def check_revision(
@@ -168,13 +168,13 @@ def check_revision(
         record = analyze(root, snapshot, base, config, sonar)
     store_evidence(folder, record)
     require_pass(record, tree, base, policy)
-    print("Sonar push admitted: " + revision + " analysis=" + record["analysis"])
+    report_admission(record, revision, tree, base, policy)
 
 
 def main() -> int:
-    """Dispatch local hooks and manual checks through one policy, without performing a Git push."""
+    """Dispatch the push hook and manual checks through one policy, without performing a Git push."""
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=["pre-commit", "pre-push", "check"])
+    parser.add_argument("mode", choices=["pre-push", "check"])
     parser.add_argument("--revision", default="HEAD")
     parser.add_argument("--base")
     args = parser.parse_args()
@@ -188,14 +188,7 @@ def main() -> int:
         config["host"], config["project"], os.environ.get("KODUCK_SONAR_TOKEN", "")
     )
     with project_lock(), database_fixture():
-        if args.mode == "pre-commit":
-            with index_snapshot(root) as snapshot:
-                base = feature_base(root, "HEAD")
-                record = analyze(root, snapshot, base, config, sonar)
-                require_index(root, snapshot.tree)
-                store_evidence(folder, record)
-                report_result(record)
-        elif args.mode == "pre-push":
+        if args.mode == "pre-push":
             for revision in push_revisions(root, sys.stdin.read()):
                 check_revision(root, revision, folder, config, sonar)
         else:

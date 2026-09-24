@@ -1,4 +1,5 @@
 #!/bin/sh
+# ADR: docs/adr/ADR-0017-push-boundary-sonarqube-verification.md
 # Install pinned verification tools and activate this checkout's versioned hooks.
 set -eu
 root=$(git rev-parse --show-toplevel)
@@ -16,6 +17,6 @@ if [ -z "$previous" ]; then
     fi
   done
 fi
-chmod +x "$root/.githooks/pre-commit" "$root/.githooks/pre-push"
+chmod +x "$root/.githooks/pre-push"
 git config --local core.hooksPath .githooks
-echo "SonarQube pre-commit and pre-push hooks enabled."
+echo "SonarQube pre-push hook enabled."

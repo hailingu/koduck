@@ -1,3 +1,4 @@
 #!/bin/sh
+# ADR: docs/adr/ADR-0017-push-boundary-sonarqube-verification.md
 # Ref updates arrive on stdin; do not substitute the currently checked-out HEAD.
 exec sh "$(git rev-parse --show-toplevel)/scripts/sonar-quality-gate.sh" pre-push
