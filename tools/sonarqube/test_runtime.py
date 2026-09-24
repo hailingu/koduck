@@ -1,6 +1,9 @@
 """Real subprocess and HTTP boundary tests for safe scan execution."""
 
+# ADR: docs/adr/ADR-0017-push-boundary-sonarqube-verification.md
+
 import io
+import json
 import os
 import tempfile
 import unittest
@@ -95,16 +98,22 @@ class RuntimeTests(unittest.TestCase):
 
 
 class EvidenceTests(unittest.TestCase):
-    """Catch admitting stale analysis state or an altered cached result."""
+    """Catch admitting stale analysis state through a mismatched identity key."""
 
-    def test_evidence_lookup_is_bound_to_tree_base_and_policy(self):
+    def test_evidence_is_persisted_under_its_identity_key(self):
         module = implementation("gate")
         with tempfile.TemporaryDirectory() as directory:
             folder = Path(directory)
-            record = {"tree": "a", "base": "b", "policy": "c"}
-            module.store_evidence(folder, record)
-            self.assertEqual(module.load_evidence(folder, "a", "b", "c"), record)
-            self.assertIsNone(module.load_evidence(folder, "a", "changed", "c"))
+            first = {"tree": "a", "base": "b", "policy": "c"}
+            second = {"tree": "a", "base": "changed", "policy": "c"}
+            module.store_evidence(folder, first)
+            module.store_evidence(folder, second)
+            path_first = module.evidence_path(folder, "a", "b", "c")
+            path_second = module.evidence_path(folder, "a", "changed", "c")
+            self.assertNotEqual(path_first, path_second)
+            self.assertEqual(json.loads(path_first.read_text()), first)
+            self.assertEqual(json.loads(path_second.read_text()), second)
+            self.assertFalse(module.evidence_path(folder, "other", "b", "c").exists())
 
 
 if __name__ == "__main__":

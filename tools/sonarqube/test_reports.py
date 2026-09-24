@@ -1,5 +1,7 @@
 """Exercise Rust LCOV import and scanner report handling at process boundaries."""
 
+# ADR: docs/adr/ADR-0017-push-boundary-sonarqube-verification.md
+
 import tempfile
 import unittest
 import xml.etree.ElementTree as ET
@@ -9,7 +11,7 @@ from unittest.mock import patch
 import coverage_report
 import scan_runtime
 import test_gate
-from git_snapshot import index_snapshot
+from git_snapshot import revision_snapshot
 
 
 class ReportTests(unittest.TestCase):
@@ -70,7 +72,7 @@ class ScanTests(unittest.TestCase):
                 return "fixture-analysis"
 
         with (
-            index_snapshot(self.root) as snapshot,
+            revision_snapshot(self.root, "HEAD") as snapshot,
             tempfile.TemporaryDirectory() as directory,
         ):
             output = Path(directory) / "scan"

@@ -1,5 +1,6 @@
 <!-- ADR: docs/adr/ADR-0001-provider-neutral-turn-kernel.md -->
 <!-- ADR: docs/adr/ADR-0015-local-sonarqube-feature-completion-gate.md -->
+<!-- ADR: docs/adr/ADR-0017-push-boundary-sonarqube-verification.md -->
 # Koduck Agent Guide
 
 > Language: English
@@ -138,7 +139,7 @@ following are true for its latest pushed commit:
   required CI is a blocker, not `N/A`. This CI-correspondence requirement
   exempts only the Local SonarQube Feature Completion Gate below: wherever a
   routing row lists `python3 tools/sonarqube/gate.py`, the command is a local
-  admission check enforced by the Git hooks at commit and push time, which the
+  admission check enforced by the Git hooks at push time, which the
   recorded owner instruction deliberately keeps out of CI;
 - every applicable contract clause is mapped to a passing acceptance check or
   deterministic test through the governing ADR's contract traceability;
@@ -1006,9 +1007,11 @@ implementation or operation continues.
 9. Apply the automatic-review rule in Work Coordination after each push and
    before merge or operational use.
 10. Run the narrowest relevant non-interactive checks, then the broader checks
-    required by the affected routing rows. The installed SonarQube pre-commit
-    hook scans the exact index; pre-push requires zero incremental issues, a passing analysis-bound Quality Gate, and at least
-    80% coverage of changed executable lines. Routine scans, installation and
+    required by the affected routing rows. The installed SonarQube pre-push
+    hook checks every proposed push target afresh; push requires zero
+    incremental issues, a passing analysis-bound Quality Gate, and at least
+    80% coverage of changed executable lines. Local commits perform no Sonar
+    work and are not Sonar verification. Routine scans, installation and
     disposable test databases through the canonical workflow require no ADR,
     OCR or repeated approval. Other external operations keep their normal gates.
     Clean disposable output and retain only safe verification evidence.
@@ -1037,10 +1040,10 @@ operations applies the independently matched row for each one.
 | `AGENTS.md`, `AGENTS.template.md`, `CLAUDE.md` | This guide's Non-Negotiable Gates, Execution Workflow, and Version-Control Safety sections | repository root | `npm test --prefix tools/governance-validator`; `npm run validate --prefix tools/governance-validator` | Run deterministic governance validation and perform a structured review of the affected instruction contracts. Documentation-only changes do not require Red-Green-Refactor. |
 | `docs/architecture/**` or `<service-or-package>/docs/architecture/**` | `docs/README.md` and this guide's Document Requirement Levels and Architecture Design Documents sections | repository root | `npm test --prefix tools/governance-validator`; `npm run validate --prefix tools/governance-validator` | Validate requirement levels, template fields, status, index and reciprocal links, and Mermaid syntax/ID coverage; also review Trello baseline capture, Figma references, solution completeness, task-detail boundary, and traceability. |
 | `docs/**` | `docs/README.md` and this guide's Document Requirement Levels, Architecture Design Documents, and Decision Records sections | repository root | `npm test --prefix tools/governance-validator`; `npm run validate --prefix tools/governance-validator` | Validate requirement levels, template fields, lifecycle status, index rows, paths, and cross-references, then perform the applicable structured review. Documentation-only changes do not require Red-Green-Refactor. |
-| `.githooks/**`, `scripts/sonar-quality-gate.sh`, `tools/sonarqube/**` | `docs/README.md`, common engineering and Python standards, `tools/sonarqube/README.md` | repository root | `python3 -m unittest discover -s tools/sonarqube -p 'test_*.py'`; `ruff check tools/sonarqube`; `ruff format --check tools/sonarqube`; `python3 tools/sonarqube/gate.py check --revision HEAD` | Canonical automatic commit/push gate; owner-authorized routine operation without ADR/OCR. Sonar scans run locally; CI retains hook regression and ordinary project checks. |
-| `tools/governance-validator/**` | `docs/README.md`, `docs/development/software-engineering-standard.md`, and this guide's Document Requirement Levels and Decision Records sections | `tools/governance-validator` | `npm test`; `npm run validate`; from repository root `python3 tools/sonarqube/gate.py check --revision HEAD` | This validator and its tests are source work: develop behavior test-first and keep dependencies exactly locked. |
+| `.githooks/**`, `scripts/sonar-quality-gate.sh`, `tools/sonarqube/**` | `docs/README.md`, common engineering and Python standards, `tools/sonarqube/README.md` | repository root | `python3 -m unittest discover -s tools/sonarqube -p 'test_*.py'`; `ruff check tools/sonarqube`; `ruff format --check tools/sonarqube`; `python3 tools/sonarqube/gate.py check --revision HEAD`, or matching successful pre-push evidence as defined in Local SonarQube Feature Completion Gate | Canonical automatic push gate; owner-authorized routine operation without ADR/OCR. Sonar scans run locally; CI retains hook regression and ordinary project checks. |
+| `tools/governance-validator/**` | `docs/README.md`, `docs/development/software-engineering-standard.md`, and this guide's Document Requirement Levels and Decision Records sections | `tools/governance-validator` | `npm test`; `npm run validate`; from repository root `python3 tools/sonarqube/gate.py check --revision HEAD`, or matching successful pre-push evidence as defined in Local SonarQube Feature Completion Gate | This validator and its tests are source work: develop behavior test-first and keep dependencies exactly locked. |
 | `.github/workflows/koduck-ai.yml` | `docs/README.md`, `docs/development/software-engineering-standard.md`, `docs/adr/ADR-0002-required-ai-ci-postgres-verification.md`, and this guide's Work Coordination and Decision Records sections | repository root | `npm test --prefix tools/governance-validator`; `npm run validate --prefix tools/governance-validator` | Keep every routed governance command inside an existing required `dev` check and preserve the exact three required check contexts. Configuration changes use governance validation plus a structured review of the routed commands and required check contexts. |
-| `koduck-ai/**`, root `Cargo.toml`, or root `Cargo.lock` | `docs/README.md`, `docs/development/software-engineering-standard.md`, and `docs/development/rust-standard.md` | repository root | `cargo fmt --all --check`; `cargo clippy -p koduck-ai --all-targets --all-features -- -D warnings`; `cargo test -p koduck-ai --all-targets --all-features`; `python3 tools/sonarqube/gate.py check --revision HEAD` | Use non-interactive commands. The canonical SonarQube workflow needs no ADR/OCR. These commands need no OCR when they satisfy Disposable Verification Execution; a retained, published, promoted, loaded, deployed, or later-consumed artifact is a Governed Build and requires an Accepted OCR. |
+| `koduck-ai/**`, root `Cargo.toml`, or root `Cargo.lock` | `docs/README.md`, `docs/development/software-engineering-standard.md`, and `docs/development/rust-standard.md` | repository root | `cargo fmt --all --check`; `cargo clippy -p koduck-ai --all-targets --all-features -- -D warnings`; `cargo test -p koduck-ai --all-targets --all-features`; `python3 tools/sonarqube/gate.py check --revision HEAD`, or matching successful pre-push evidence as defined in Local SonarQube Feature Completion Gate | Use non-interactive commands. The canonical SonarQube workflow needs no ADR/OCR. These commands need no OCR when they satisfy Disposable Verification Execution; a retained, published, promoted, loaded, deployed, or later-consumed artifact is a Governed Build and requires an Accepted OCR. |
 | Release or Git tag operation | `docs/delivery/releases.md`, `docs/delivery/git-tags.md`, and the governing Accepted OCR | repository root | Commands approved by the OCR | Treat tag creation or mutation, release publication, and artifact publication as external operational writes. |
 
 Verification commands in a source or configuration routing row need no OCR
@@ -1158,8 +1161,13 @@ multi-environment promotion is needed. Release and Git tag operations follow
   baseline must have zero incremental unresolved issues,
   a passing analysis-bound Quality Gate, and at least 80% coverage of changed
   executable lines. A proven zero executable-line diff is permitted; missing
-  coverage is a failure. The hook workflow defines the Git-based increment and
-  same-source coverage proof in `tools/sonarqube/README.md`.
+  coverage is a failure. Each routed
+  `python3 tools/sonarqube/gate.py check --revision HEAD` command may be
+  satisfied instead by matching successful pre-push evidence as defined in
+  Local SonarQube Feature Completion Gate; a second manual check solely to
+  duplicate that result is not required. The hook workflow defines the
+  Git-based increment and same-source coverage proof in
+  `tools/sonarqube/README.md`.
 - ADR verification MUST be reproducible from each declared acceptance check's
   preconditions, method, and expected result. Evidence without a predetermined,
   binary acceptance point does not prove completion.
@@ -1180,27 +1188,31 @@ The repository owner's direct instruction on 2026-09-05, recorded in
 `tools/sonarqube/README.md`, enables the canonical workflow without a new ADR.
 For this workflow it overrides ADR-0015's conditional routing activation and
 per-operation approval requirements. Historical accepted records remain
-historical evidence, not approval of this later instruction.
+historical evidence, not approval of this later instruction. The Accepted
+`docs/adr/ADR-0017-push-boundary-sonarqube-verification.md` amended that
+instruction on 2026-09-24: mandatory analysis moved from commit to push.
 
-- Install with `sh tools/sonarqube/install.sh`. Every commit scans the effective
-  index through `.githooks/pre-commit`; every push checks its actual proposed
-  ref targets through `.githooks/pre-push`. Routine installation, disposable
-  test databases and analysis require no ADR, OCR or repeated `Approve`.
+- Install with `sh tools/sonarqube/install.sh`. Every push checks its actual
+  proposed ref targets through `.githooks/pre-push`; commits perform no Sonar
+  work and MUST NOT be claimed as Sonar-verified. Routine installation,
+  disposable test databases and analysis require no ADR, OCR or repeated
+  `Approve`.
 - The only scanner entry point is `python3 tools/sonarqube/gate.py` with
-  `pre-commit`, `pre-push`, or `check --revision <commit>`; configuration,
+  `pre-push` or `check --revision <commit>`; the retired `pre-commit` mode is
+  rejected by the direct Python CLI with exit status 2 before credentials,
+  database creation, lock acquisition or scanning. Configuration,
   timeouts, stable scope and coverage tools are pinned under `tools/sonarqube/`.
   Do not improvise scanner parameters, weaken a finding, or claim a scan from
   an unrelated revision as passing evidence.
-- A completed analysis may be committed locally with findings for repair.
-  Push, feature completion and review-ready status require zero incremental
+- Push, feature completion and review-ready status require zero incremental
   unresolved issues, Quality Gate `OK` for the exact
   analysis, and at least 80% coverage of the feature's changed executable lines.
-  Analysis failures block commits; missing/stale evidence blocks pushes.
-- Pre-commit scans a disposable Git snapshot of the effective index and records
-  its tree identity; pre-push matches the proposed commit's tree. Unstaged work
-  is excluded. Coverage is generated/imported from that same snapshot. The
-  index is rechecked after scanning. Source, baseline or policy changes
-  invalidate evidence.
+  Analysis failures block pushes; missing/stale evidence blocks pushes.
+- Pre-push verifies each proposed commit target through a disposable
+  committed-revision snapshot; the checkout's HEAD, index and unstaged work
+  never substitute for the proposed object. Coverage is generated/imported
+  from that same snapshot. Source, baseline or policy changes invalidate
+  evidence.
 - The baseline is local `dev`'s merge base with the target; manual checks may
   specify an ancestor with `--base`. Identically scoped base and target analyses
   establish incremental
@@ -1223,6 +1235,24 @@ historical evidence, not approval of this later instruction.
   Per the owner’s 2026-09-06 instruction, CI does not run Sonar or build a
   runner image. Local hooks enforce Sonar admission; CI does not prove Sonar
   compliance when hooks are bypassed.
+- Matching successful pre-push evidence is one complete
+  `Sonar push admitted: <revision> analysis=<analysis-id> tree=<tree> base=<base> policy=<policy> new_issues=<n> quality_gate=<status> covered=<c> coverable=<d>`
+  line that `gate.check_revision` printed and flushed after `require_pass`
+  accepted that target's record, captured from the combined stdout and stderr
+  of the actual canonical pre-push invocation (`git push` routes hook stdout
+  to its stderr), whose revision, tree, base and policy equal the current
+  values recomputed by the read-only identity procedure in
+  `tools/sonarqube/README.md`. A missing field, the former shorter line,
+  absent admission output, an identity mismatch, persisted evidence files, or
+  the aggregate hook or Git exit status does not qualify. Admission is per
+  target: an earlier target's line stays valid when a later target fails or
+  the remote rejects the push, targets without their own qualifying lines
+  remain unverified, and a deletion-only invocation supplies no line. Matching
+  evidence MAY satisfy the Sonar portion of local completion and review-ready
+  verification; record the actual invocation, admission line and
+  identity-comparison result, and report overall push success or failure
+  separately. Every later push still scans afresh, and the admission line is
+  not proof of remote Git publication.
 
 ## Sources Of Truth
 

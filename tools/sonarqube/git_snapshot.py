@@ -1,5 +1,7 @@
 """Isolated Git snapshots; never stash, stage or reset the caller's work."""
 
+# ADR: docs/adr/ADR-0017-push-boundary-sonarqube-verification.md
+
 import contextlib
 import json
 import os
@@ -13,11 +15,9 @@ from typing import Iterator
 from urllib.parse import unquote, urlsplit
 
 
-def git(root: Path, *args: str, index: bool = False) -> str:
-    """Run Git with hook-local variables removed except an explicitly used index."""
+def git(root: Path, *args: str) -> str:
+    """Run Git with hook-local variables removed from the environment."""
     env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
-    if index and "GIT_INDEX_FILE" in os.environ:
-        env["GIT_INDEX_FILE"] = os.environ["GIT_INDEX_FILE"]
     result = subprocess.run(
         ["git", "-C", str(root), *args],
         env=env,
@@ -130,35 +130,6 @@ def revision_snapshot(root: Path, revision: str) -> Iterator[Snapshot]:
         git(root, "clone", "--shared", "--no-checkout", str(root), str(path))
         git(path, "-c", "core.hooksPath=/dev/null", "checkout", "--detach", revision)
         yield Snapshot(path, revision, git(path, "rev-parse", "HEAD^{tree}"))
-
-
-@contextlib.contextmanager
-def index_snapshot(root: Path) -> Iterator[Snapshot]:
-    """Materialize the effective index, including Git's partial-commit index."""
-    tree = git(root, "write-tree", index=True)
-    parent = git(root, "rev-parse", "HEAD")
-    with revision_snapshot(root, parent) as checkout:
-        revision = git(
-            checkout.path,
-            "-c",
-            "user.name=Koduck Sonar Snapshot",
-            "-c",
-            "user.email=sonar@koduck.invalid",
-            "commit-tree",
-            tree,
-            "-p",
-            parent,
-            "-m",
-            "Disposable staged analysis snapshot",
-        )
-        git(checkout.path, "checkout", "--detach", revision)
-        yield Snapshot(checkout.path, revision, tree)
-
-
-def require_index(root: Path, expected: str) -> None:
-    """Refuse to attach evidence to an index changed during analysis."""
-    if git(root, "write-tree", index=True) != expected:
-        raise RuntimeError("SONAR_INDEX_CHANGED: scan the new staged content")
 
 
 def push_revisions(root: Path, text: str) -> list[str]:

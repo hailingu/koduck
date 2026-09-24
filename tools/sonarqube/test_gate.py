@@ -1,5 +1,7 @@
 """Behavioral regression checks for immutable Git and Sonar push admission."""
 
+# ADR: docs/adr/ADR-0017-push-boundary-sonarqube-verification.md
+
 import importlib
 import json
 import subprocess
@@ -43,28 +45,29 @@ class SnapshotTests(unittest.TestCase):
         git(self.root, "add", ".")
         git(self.root, "commit", "-m", "baseline")
 
-    def test_snapshot_contains_index_only_and_preserves_worktree(self):
+    def test_revision_snapshot_preserves_caller_state(self):
+        """A committed-revision snapshot leaves HEAD, index and worktree intact."""
         module = implementation("git_snapshot")
+        revision = git(self.root, "rev-parse", "HEAD")
         (self.root / "code.py").write_text("value = 2\n")
         git(self.root, "add", "code.py")
         (self.root / "code.py").write_text("value = 3\n")
         (self.root / "untracked.py").write_text("secret = 'fixture'\n")
         before = git(self.root, "status", "--porcelain")
-        with module.index_snapshot(self.root) as snapshot:
-            self.assertEqual((snapshot.path / "code.py").read_text(), "value = 2\n")
+        index_tree = git(self.root, "write-tree")
+        with module.revision_snapshot(self.root, revision) as snapshot:
+            self.assertEqual((snapshot.path / "code.py").read_text(), "value = 1\n")
             self.assertFalse((snapshot.path / "untracked.py").exists())
             self.assertEqual(git(snapshot.path, "status", "--porcelain"), "")
-            self.assertEqual(snapshot.tree, git(self.root, "write-tree"))
+            self.assertEqual(snapshot.revision, revision)
+            self.assertEqual(
+                snapshot.tree, git(self.root, "rev-parse", revision + "^{tree}")
+            )
+        self.assertEqual(git(self.root, "rev-parse", "HEAD"), revision)
+        self.assertEqual(git(self.root, "write-tree"), index_tree)
         self.assertEqual(git(self.root, "status", "--porcelain"), before)
         self.assertEqual((self.root / "code.py").read_text(), "value = 3\n")
-
-    def test_index_change_invalidates_completed_scan(self):
-        module = implementation("git_snapshot")
-        with module.index_snapshot(self.root) as snapshot:
-            (self.root / "code.py").write_text("value = 9\n")
-            git(self.root, "add", "code.py")
-            with self.assertRaisesRegex(RuntimeError, "INDEX_CHANGED"):
-                module.require_index(self.root, snapshot.tree)
+        self.assertTrue((self.root / "untracked.py").exists())
 
     def test_push_checks_proposed_object_not_current_head(self):
         module = implementation("git_snapshot")
