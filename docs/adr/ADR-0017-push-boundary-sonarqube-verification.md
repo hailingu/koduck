@@ -524,7 +524,7 @@ precondition demonstrably does not apply. AC-7 cannot be satisfied by unit doubl
 | A-2 | Complete task delivered | T-1 Complete and AC-1 through AC-7 Pass with actual evidence | Subtask and acceptance rows | Not Started | Pending |
 | A-3 | Reciprocal ADD link synchronized, when applicable | N/A — repository verification governance, no ADD candidate selected | Architecture Source assessment | N/A — no ADD handoff | No product candidate status changes |
 | A-4 | Requirement levels satisfied | Required proposal content complete and each conditional trigger assessed | Structured document review | Complete | Listed round-4 correction applied; required sections and trigger assessments retained; human approval recorded in A-1; implementation evidence remains pending |
-| A-5 | Acceptance checks are decidable | Each check names T-1, inputs, deterministic method, exact result, and evidence | Structured acceptance review | Complete | Round-4 correction supplies AC-7 metrics in the full admission line and defines combined-output capture; no fifth review pass claimed |
+| A-5 | Acceptance checks are decidable | Each check names T-1, inputs, deterministic method, exact result, and evidence | Structured acceptance review | Complete | Round-4 correction supplies AC-7 metrics in the full admission line and defines combined-output capture; implementation checks remain pending |
 | A-6 | Engineering exceptions governed, when applicable | No unapproved exception or executable-unit hard-limit violation in changed units | Changed-unit measurements and scope review | Not Started | Pending |
 | A-7 | Contracts and risks covered | PV-1 through PV-7 traced; applicable risk rows Pass; N/A rows cite actual scope review | Traceability, risk and acceptance evidence | Not Started | Pending |
 | A-8 | Governance validation passed | Independent validator exits 0 for this ADR and index; after a committed snapshot exists, add its tested SHA through the Supporting Notes evidence-only follow-up | npm test --prefix tools/governance-validator; npm run validate --prefix tools/governance-validator | Complete | Committed-snapshot validation at 2026-09-24T03:42:05.266569+00:00: commit fcfec6bbdffd2c95735bb1d293e1cd36bb7e1cfd, ADR blob 9446b671f327e11dcb1f051d004eb6683acbc862, index blob f9346197517420be537971541548794f9b5f8bc6; npm test --prefix tools/governance-validator: 208/208 passed; npm run validate --prefix tools/governance-validator: Governance validation passed. This subsequent evidence-only update cites the tested commit, not its own revision; approval and implementation status are unchanged |
@@ -535,8 +535,9 @@ The owner is @linhai, self-declared earlier in this task. All reviews below are
 agent reviews, not owner approval. Implementation remains Not Started; no
 lower product test count, shorter CI or elapsed-time saving is claimed.
 
-All four rounds used base `6bf6a225f2c8641d894d1f0d17919bd46d6b064a` and
-index blob `eddff63d1dd640aa959ff51778fc51fc61271745`:
+Draft rounds 1 through 4 used base `6bf6a225f2c8641d894d1f0d17919bd46d6b064a`
+and index blob `eddff63d1dd640aa959ff51778fc51fc61271745`.
+Round 5 reviewed the pushed PR revision:
 
 | Round | Reviewer and request | Reviewed ADR blob | Reported result |
 | --- | --- | --- | --- |
@@ -544,13 +545,15 @@ index blob `eddff63d1dd640aa959ff51778fc51fc61271745`:
 | 2 | GitHub Copilot, at the user's request; report supplied in this task on 2026-09-24 | 275ba911d3e9f91a83e5240a09eca59a376fbd07 | Twelve findings; agent performed no edits or governance validation; corrections produced the round-3 input |
 | 3 | User-requested agent read-only follow-up, as identified in the report supplied on 2026-09-24 | 8fe880c54c1dfde1ab892397eaaa518cc4abd287 | Two approval-sensitive findings plus five suggestions; no file changes by reviewer |
 | 4 | User-authorized bounded read-only agent follow-up, as recorded in the current report supplied on 2026-09-24 | 9db842c3bb6f03a7feb7da1b17df70f8108fb874 | One required metric-evidence correction and two suggestions; prior findings confirmed fixed; reviewer made no file changes |
+| 5 | Codex automatic review of PR #18, submitted 2026-09-24T05:27:21Z; reviewed commit `1b460bb49a16f6709ecc360c216d4bd054fa86c7`; owner supplied the review link in this task for correction | 267ee204f5f6c8dcaa656245d6988ab3c6db3519 | One P2 finding: Supporting Notes still described the committed-snapshot validation as future work after A-8 recorded it; corrected in this evidence-only update |
 
 The earlier owner message authorized the bounded round-3 read-only follow-up.
-The current owner message records the explicit request as one additional,
-bounded authorization for the reported round-4 read-only agent review and
-directs the listed corrections before submission to @linhai. This response is
-that correction pass plus required checks. No fifth or further agent review is
-requested or authorized; send the corrected draft directly for human approval.
+The subsequent owner message authorized round 4 and directed its corrections
+before human approval. After PR #18 was created, Codex automatic review covered
+commit `1b460bb49a16f6709ecc360c216d4bd054fa86c7`. The owner supplied that
+review link in this task for a bounded correction of its P2 finding. This note
+records the observed review and response; it does not request another agent
+review round.
 
 Round-2 corrections supplied the missing policy anchors and markers, direct
 Python CLI scope, non-duplicative counts, push dispatch case, deletion-only cost
@@ -573,19 +576,16 @@ AGENTS.md's tool-prefix allowance. No fetch, commit or push had occurred at
 the time of approval. The owner subsequently requested submission of the PR;
 A-8 now records the first committed snapshot's governance validation.
 The ADR is Accepted / Not Started following @linhai's explicit approval in this
-task, recorded at 2026-09-24T03:23:26Z. This status/evidence update changes no
-approved decision content and starts no additional agent review.
+task, recorded at 2026-09-24T03:23:26Z. That status/evidence update changed no
+approved decision content and did not itself start another agent review.
 
-A-8 records the tested proposal/index blobs until a committed snapshot exists.
-After the first authorized commit containing this corrected proposal, run the
-two governance commands against that committed snapshot. In a subsequent
-**evidence-only** update, record its full commit SHA, the ADR/index blobs at
-that SHA, command results and validation time in A-8. Cite the tested commit,
-not the later evidence-update commit. This creates durable repository evidence
-without a self-referential hash; it is informational verification context, not
-Approval Evidence or an approval-binding revision. Until then, no validated
-commit SHA is claimed. No implementation acceptance check, automatic review or
-pushed-revision coverage is claimed by this draft.
+The committed-snapshot follow-up is complete. A-8 records the tested commit
+`fcfec6bbdffd2c95735bb1d293e1cd36bb7e1cfd`, its ADR/index blobs,
+validation time and command results. The evidence-only update was committed as
+`1b460bb49a16f6709ecc360c216d4bd054fa86c7`; A-8 cites the tested commit
+rather than that later update. This is informational verification context, not
+Approval Evidence or an approval-binding revision. Implementation acceptance
+checks remain Not Started.
 
 ## Archival [Conditionally Required — Decision Status is `Rejected`, or Decision Status is `Deprecated` or `Superseded` and Implementation Status is final]
 
@@ -604,3 +604,4 @@ superseded. Verify no live record or marker cites the pre-archive path.
 | 2026-09-24 | Applied the bounded round-3 corrections: self-contained per-target admission output and identity procedure, corrected agent-review provenance, explicit test doubles and snapshot assertion migration, prefix basis and revision-bound validation; remains Proposed / Not Started | @codex |
 | 2026-09-24 | Applied the bounded round-4 correction and suggestions: report issue/gate/coverage metrics in admission output, capture both Git output streams, record review authorization and specify tested-commit evidence follow-up; remains Proposed / Not Started | @codex |
 | 2026-09-24 | Accepted after @linhai explicitly approved ADR-0017 in this task; approval recorded at 2026-09-24T03:23:26Z; implementation remains Not Started and approved decision content is unchanged | @linhai |
+| 2026-09-24 | Corrected stale committed-snapshot follow-up wording identified by PR #18 Codex review of `1b460bb49a16f6709ecc360c216d4bd054fa86c7`; recorded round-5 review provenance without changing the approved decision | @codex |
