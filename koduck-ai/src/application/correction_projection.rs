@@ -173,7 +173,7 @@ pub enum ProjectionError {
 /// at any other kind.
 pub fn project_corrections<'a>(
     expected_scope: &ProjectionScope,
-    entries: &'a [ScopedProjectionItem<'a>],
+    entries: &[ScopedProjectionItem<'a>],
 ) -> Result<Vec<EffectiveItem<'a>>, ProjectionError> {
     reject_foreign_scope(expected_scope, entries)?;
     validate_raw_replay_refs(entries.iter().map(ScopedProjectionItem::item))

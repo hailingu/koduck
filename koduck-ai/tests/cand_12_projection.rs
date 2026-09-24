@@ -28,6 +28,33 @@ use koduck_ai::domain::{
 fn unchanged_history() {
     empty_input_projects_to_an_empty_deterministic_result();
     uncorrected_history_preserves_identity_order_and_payloads();
+    projection_is_returnable_from_locally_built_wrapper_storage();
+}
+
+/// Returns the projection built over a wrapper slice this helper owns
+/// locally: PR 30 round-1 review — the output must borrow only the
+/// underlying Items, never the temporary wrapper storage.
+fn projection_returned_over_local_wrappers<'a>(
+    scope: &'a ProjectionScope,
+    items: &'a [Item],
+) -> Vec<koduck_ai::application::EffectiveItem<'a>> {
+    let wrappers: Vec<ScopedProjectionItem<'a>> = items
+        .iter()
+        .map(|item| ScopedProjectionItem::new(item, scope))
+        .collect();
+    project_corrections(scope, &wrappers).expect("history projects")
+}
+
+/// The returned projection keeps working after the local wrapper storage is
+/// gone: identity and content still reference the longer-lived Items.
+fn projection_is_returnable_from_locally_built_wrapper_storage() {
+    let scope = scope_fixture("tenant-a", "subject-a");
+    let items = vec![user_item(1, "returned"), delta_item(2, "kept")];
+    let returned = projection_returned_over_local_wrappers(&scope, &items);
+    assert_eq!(returned.len(), items.len());
+    assert_eq!(returned[0].original().item_id, items[0].item_id);
+    assert_eq!(returned[0].effective_content(), Some("returned"));
+    assert_eq!(returned[1].effective_content(), Some("kept"));
 }
 
 /// AC-2: linear corrections select exactly one last value at each original
