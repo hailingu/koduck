@@ -109,15 +109,20 @@ or New Code setting mutation is needed.
 
 `config.json` pins the host, project, analyzer exclusions and time budgets.
 Both scans analyze the repository with the same main/test classification.
-`rust-coverage.sh` runs only `cand_11_correction_admission` and
-`postgres_cand_11` integration targets through cargo-llvm-cov, with three test
-threads and one default build job. The integration-target selection excludes
-inline `#[cfg(test)]` unit-test code from LCOV; a future product change outside
-these targets must update the selection or fail the unchanged 80% gate.
-The report is converted to Sonar generic XML and imported through
-`sonar.coverageReportPaths`. Compiler output and reports live in disposable
-checkouts and are removed after evidence is captured. CI separately runs all
-Rust tests, governance tests, Python gate tests, format, and Clippy checks.
+`rust-coverage.sh` runs only `cand_11_correction_admission`,
+`cand_12_projection`, and `postgres_cand_11` integration targets through
+cargo-llvm-cov, with three test threads and one default build job. The
+integration-target selection excludes inline `#[cfg(test)]` unit-test code
+from LCOV; a future product change outside these targets must update the
+selection or fail the unchanged 80% gate. The report is converted to Sonar
+generic XML and imported through `sonar.coverageReportPaths`. Compiler output
+and reports live in disposable checkouts and are removed after evidence is
+captured. CI separately runs all Rust tests, governance tests, Python gate
+tests, format, and Clippy checks. The repository owner `@linhai`'s direct
+instruction on 2026-09-24, given in the ADR-0005 CAND-12 implementation task,
+authorized adding the `cand_12_projection` target during that ADR's delivery
+together with the affected-paths expansion the update requires; it changes no
+threshold, scope rule, or admission predicate.
 
 Each command has a timeout; scanner submission is bounded to 600 seconds and
 compute settlement to 300 seconds. Cancelled subprocess groups are killed and

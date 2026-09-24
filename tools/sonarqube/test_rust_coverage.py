@@ -55,7 +55,11 @@ class RustCoverageScriptTests(unittest.TestCase):
                     for index, arg in enumerate(args[:-1])
                     if arg == "--test"
                 ],
-                ["cand_11_correction_admission", "postgres_cand_11"],
+                [
+                    "cand_11_correction_admission",
+                    "cand_12_projection",
+                    "postgres_cand_11",
+                ],
             )
             self.assertNotIn("--lib", args)
             self.assertNotIn("--all-targets", args)
