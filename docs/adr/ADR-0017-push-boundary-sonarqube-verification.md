@@ -20,10 +20,10 @@
 - **Retirement Time [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — Decision Status is Accepted
 - **Retirement Evidence [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — Decision Status is Accepted
 - **Retirement Reason [Conditionally Required — Decision Status is `Deprecated` or `Superseded`]**: N/A — Decision Status is Accepted
-- **Blocked From [Conditionally Required — Implementation Status is `Blocked`]**: N/A — Not Started
-- **Blocker And Evidence [Conditionally Required — Implementation Status is `Blocked`]**: N/A — Not Started
-- **Blocker Owner [Conditionally Required — Implementation Status is `Blocked`]**: N/A — Not Started
-- **Blocker Exit Or Recheck Criterion [Conditionally Required — Implementation Status is `Blocked`]**: N/A — Not Started
+- **Blocked From [Conditionally Required — Implementation Status is `Blocked`]**: N/A — Implementation Status is In Progress, not Blocked
+- **Blocker And Evidence [Conditionally Required — Implementation Status is `Blocked`]**: N/A — Implementation Status is In Progress, not Blocked
+- **Blocker Owner [Conditionally Required — Implementation Status is `Blocked`]**: N/A — Implementation Status is In Progress, not Blocked
+- **Blocker Exit Or Recheck Criterion [Conditionally Required — Implementation Status is `Blocked`]**: N/A — Implementation Status is In Progress, not Blocked
 - **Related [Optional]**: `docs/adr/ADR-0015-local-sonarqube-feature-completion-gate.md`; `docs/adr/ADR-0016-adr-rejection-reason.md`; `docs/architecture/ADD-0001-ai-service-codex-alignment.md`; owner workflow instruction recorded in `tools/sonarqube/README.md`; current task's request to create the next ADR to reduce testing burden and complexity
 - **Architecture Source [Conditionally Required — product demand]**: N/A — owner-requested repository verification governance, not product demand
 - **Supersedes [Conditionally Required — this ADR replaces another]**: None
@@ -532,7 +532,8 @@ precondition demonstrably does not apply. AC-7 cannot be satisfied by unit doubl
 ## Supporting Notes [Optional]
 
 The owner is @linhai, self-declared earlier in this task. All reviews below are
-agent reviews, not owner approval. Implementation remains Not Started; no
+agent reviews, not owner approval. Implementation is In Progress on branch
+`zcode/adr-0017-push-boundary-sonar`; no
 lower product test count, shorter CI or elapsed-time saving is claimed.
 
 Draft rounds 1 through 4 used base `6bf6a225f2c8641d894d1f0d17919bd46d6b064a`
@@ -575,9 +576,12 @@ The Codex task environment specifies the `codex/` branch prefix; this uses
 AGENTS.md's tool-prefix allowance. No fetch, commit or push had occurred at
 the time of approval. The owner subsequently requested submission of the PR;
 A-8 now records the first committed snapshot's governance validation.
-The ADR is Accepted / Not Started following @linhai's explicit approval in this
-task, recorded at 2026-09-24T03:23:26Z. That status/evidence update changed no
-approved decision content and did not itself start another agent review.
+The ADR became Accepted with Implementation Status `Not Started` following
+@linhai's explicit approval in this task, recorded at 2026-09-24T03:23:26Z.
+That status/evidence update changed no
+approved decision content and did not itself start another agent review;
+Implementation Status moved to `In Progress` only when T-1 implementation
+began on the task branch.
 
 The committed-snapshot follow-up is complete. A-8 records the tested commit
 `fcfec6bbdffd2c95735bb1d293e1cd36bb7e1cfd`, its ADR/index blobs,
@@ -585,7 +589,8 @@ validation time and command results. The evidence-only update was committed as
 `1b460bb49a16f6709ecc360c216d4bd054fa86c7`; A-8 cites the tested commit
 rather than that later update. This is informational verification context, not
 Approval Evidence or an approval-binding revision. Implementation acceptance
-checks remain Not Started.
+checks were `Not Started` at that time; their current evidence is recorded in
+the acceptance rows above.
 
 ## Archival [Conditionally Required — Decision Status is `Rejected`, or Decision Status is `Deprecated` or `Superseded` and Implementation Status is final]
 
@@ -607,3 +612,4 @@ superseded. Verify no live record or marker cites the pre-archive path.
 | 2026-09-24 | Corrected stale committed-snapshot follow-up wording identified by PR #18 Codex review of `1b460bb49a16f6709ecc360c216d4bd054fa86c7`; recorded round-5 review provenance without changing the approved decision | @codex |
 | 2026-09-24 | Started T-1 implementation on branch `zcode/adr-0017-push-boundary-sonar` from `dev` at `988a920`: push-only activation, removed commit machinery, extended admission line, installer and snapshot migration, policy synchronization with markers; AC-1 through AC-5 Pass, AC-6/AC-7 pending committed-revision evidence; Implementation Status In Progress; approved decision content unchanged | @zcode |
 | 2026-09-24 | Evidence-only follow-up at `bcaeb412850e4ee3ca872691ede46bc358662e09`: AC-6 Pass on the committed-revision diff and routed commands; AC-7 local admission gate passed via the canonical manual check with a matching read-only identity recomputation, after remediating the first attempt's incremental `python:S5778` finding and amending before any push; required CI and exact-revision review remain pending for review-ready status; approved decision content unchanged | @zcode |
+| 2026-09-24 | Applied the P2 finding from Codex automatic review of PR #19 commit `778df7484c8a0f282ba2277d317cd7eb73fbf5ac`: synchronized status-dependent text (blocker metadata N/A reasons and Supporting Notes) with Implementation Status `In Progress`; approved decision content unchanged | @zcode |
