@@ -161,8 +161,13 @@ otherwise write `Unknown — not yet identified`. An analysis baseline is not
 automatically the introducing commit. Do not put vulnerability reproduction,
 proof of concept, or uncontained exposure details in public Evidence.
 
-For a known boundary, Disposition states who accepted or deferred the boundary,
-the supporting evidence, any tracking link, and when to revisit it. For a
+For a known boundary, Disposition states whether acceptance or deferral is
+proposed, identifies the repository owner or a decision owner explicitly
+designated by the repository owner in an authoritative record, and cites that
+decision owner's recorded authorization (actor, date, and stable link or
+record) before claiming that remaining risk is accepted. Include supporting
+evidence, any tracking link, and when to revisit it. A maintainer's
+classification or deferral alone is not risk acceptance. For a
 feature or improvement, Acceptance Criteria states observable outcomes; link
 the relevant Trello demand and ADD/ADR/OCR when they exist. The issue remains
 a proposal until the repository's governing process authorizes the work.
@@ -219,7 +224,10 @@ only after the resolving commit is reachable from the intended delivery branch
 or release, or the resolving PR has merged there, and the observable outcome is
 verified. A linked open PR alone is not a delivered resolution. An issue may
 also close after a reasoned duplicate, invalid, declined, or known-boundary
-disposition is recorded with supporting evidence. State remaining risk and the
-tracking link when work is deferred. Closing an issue does not resolve a GitHub
-review thread or waive an AGENTS.md approval, acceptance, verification, or CI
-gate.
+disposition is recorded with supporting evidence. If a declined or
+known-boundary disposition retains a confirmed defect, closure additionally
+requires the eligible decision owner's explicit acceptance of the remaining
+risk and a citation to that authorization in the issue. State remaining risk
+and the tracking link when work is deferred. Closing an issue
+does not resolve a GitHub review thread or waive an AGENTS.md approval,
+acceptance, verification, or CI gate.
