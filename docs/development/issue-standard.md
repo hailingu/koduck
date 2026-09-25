@@ -77,16 +77,19 @@ amount of work needed to repair the issue:
 - **P1** — realistically reachable data loss, corruption, or exposure, or a
   core workflow that cannot complete under ordinary use.
 - **P2** — a contract or behavior defect with a narrow trigger, intermittent
-  failure, limited impact, or a verified workaround.
+  failure, limited impact, or a verified workaround, when its established
+  impact does not meet P0 or P1.
 - **P3** — defense in depth, documentation and maintainability gaps, or a
   nonurgent improvement without a demonstrated P0–P2 impact.
 
 The body MUST explain the trigger, impact, and evidence supporting the chosen
-severity. If impact is uncertain, choose the highest severity supported by
-available evidence, state any unverified higher-impact concern, and reassess
+severity. When more than one definition applies, choose the highest applicable
+tier supported by evidence (P0 > P1 > P2 > P3); a narrow trigger,
+intermittency, or workaround does not downgrade established P0/P1 impact. If
+impact is uncertain, state any unverified higher-impact concern and reassess
 promptly when triage establishes more facts. Do not present a speculative
-impact as observed. A severity tag is triage metadata;
-the separate AGENTS.md rules determine whether a review finding blocks a PR.
+impact as observed. A severity tag is triage metadata; the separate AGENTS.md
+rules determine whether a review finding blocks a PR.
 P0 or P1 classification does not override the private route for security
 reports.
 
