@@ -152,6 +152,11 @@ configuration, read this catalog and every matching language or platform file
 in full. When work spans multiple languages or platforms, read every applicable
 file.
 
+GitHub issue titles, severity, evidence, templates, and closing criteria follow
+the [Issue Standard](development/issue-standard.md). It records issues without
+changing the Trello, decision-record, or review authority defined in
+[`AGENTS.md`](../AGENTS.md).
+
 | File | Language / platform |
 | --- | --- |
 | [development/software-engineering-standard.md](development/software-engineering-standard.md) | Common software-engineering baseline for all maintained source code |
