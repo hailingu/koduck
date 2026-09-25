@@ -62,17 +62,21 @@ amount of work needed to repair the issue:
   nonurgent improvement without a demonstrated P0–P2 impact.
 
 The body MUST explain the trigger, impact, and evidence supporting the chosen
-severity. If impact is uncertain, choose the highest plausible severity,
-state the uncertainty, and revise it when triage establishes the facts. Do not
-present a speculative impact as observed. A severity tag is triage metadata;
+severity. If impact is uncertain, choose the highest severity supported by
+available evidence, state any unverified higher-impact concern, and reassess
+promptly when triage establishes more facts. Do not present a speculative
+impact as observed. A severity tag is triage metadata;
 the separate AGENTS.md rules determine whether a review finding blocks a PR.
 
-When severity labels are configured, apply exactly one matching `P0`, `P1`,
-`P2`, or `P3` label. Any applied severity label MUST match the title. An area
-label MAY match the scope. Use `known-boundary` when that label is configured
-and the issue records a deliberate boundary or disposition rather than a
-confirmed defect. Do not create or change repository labels as part of filing
-an issue without the applicable governance authorization.
+When severity labels are configured, a maintainer or automation with label
+permission MUST apply exactly one `P0`, `P1`, `P2`, or `P3` label matching the
+title during triage; a reporter MAY apply it when permitted. Filing remains
+valid before that reconciliation. Any applied severity label MUST match the
+title. An area label MAY match the scope. A maintainer or permitted reporter
+SHOULD apply `known-boundary` when that label is configured and the issue
+records a deliberate boundary or disposition rather than a confirmed defect.
+Do not create or change repository labels as part of filing an issue without
+the applicable governance authorization.
 
 ## Body Structure
 
@@ -182,9 +186,12 @@ remove optional details that do not apply.
 
 Triage checks scope, severity, duplicates, evidence, and links to any governing
 Trello card or decision record. A duplicate points to the canonical issue and
-records why the cases share one underlying defect. An issue may close after its
-resolving commit or PR is linked and the observable outcome is verified, or
-after a reasoned duplicate, invalid, declined, or known-boundary disposition is
-recorded with supporting evidence. State remaining risk and the tracking link
-when work is deferred. Closing an issue does not resolve a GitHub review thread
-or waive an AGENTS.md approval, acceptance, verification, or CI gate.
+records why the cases share one underlying defect. For a repaired defect, close
+only after the resolving commit is reachable from the intended delivery branch
+or release, or the resolving PR has merged there, and the observable outcome is
+verified. A linked open PR alone is not a delivered resolution. An issue may
+also close after a reasoned duplicate, invalid, declined, or known-boundary
+disposition is recorded with supporting evidence. State remaining risk and the
+tracking link when work is deferred. Closing an issue does not resolve a GitHub
+review thread or waive an AGENTS.md approval, acceptance, verification, or CI
+gate.
