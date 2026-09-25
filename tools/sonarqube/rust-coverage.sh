@@ -12,6 +12,7 @@ export CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-1}
 
 cargo llvm-cov --locked -p koduck-ai --all-features \
   --test cand_11_correction_admission \
+  --test cand_12_projection \
   --test postgres_cand_11 \
   --lcov --output-path "$report" -- --test-threads=3
 
