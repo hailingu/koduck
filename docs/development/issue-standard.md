@@ -18,6 +18,26 @@ implementation, or replace a review-thread reply. Link an existing Trello card
 or decision record when one governs the reported work; do not create one solely
 to complete an issue form.
 
+## Security Reports
+
+Suspected vulnerabilities, exploit paths, credential leaks, and sensitive-data
+exposure MUST NOT be reported through an ordinary public issue, comment, or
+attachment. Report the technical details privately through GitHub's
+[repository security advisories](https://github.com/hailingu/koduck/security/advisories)
+using **Report a vulnerability** when that private-reporting action is
+available. If it is unavailable, withhold technical details and obtain a
+confidential reporting destination from the repository owner through an
+existing private contact channel before sending the report. A public request
+for a private contact route, if unavoidable, MUST contain no affected identity,
+exploit steps, proof of concept, sensitive logs, or other vulnerability
+details.
+
+The owner coordinates private triage and containment. Only after the owner
+approves a sanitized description MAY a public tracking issue be opened; it
+MUST exclude exploit instructions and sensitive evidence. The title, severity,
+body, and closing rules below apply to that approved tracking issue, not to the
+private report.
+
 ## Title Format
 
 Every issue title MUST have this shape:
@@ -67,6 +87,8 @@ available evidence, state any unverified higher-impact concern, and reassess
 promptly when triage establishes more facts. Do not present a speculative
 impact as observed. A severity tag is triage metadata;
 the separate AGENTS.md rules determine whether a review finding blocks a PR.
+P0 or P1 classification does not override the private route for security
+reports.
 
 When severity labels are configured, a maintainer or automation with label
 permission MUST apply exactly one `P0`, `P1`, `P2`, or `P3` label matching the
@@ -82,7 +104,9 @@ the applicable governance authorization.
 
 One issue reports one independently triageable problem or outcome. Use the
 matching headings below; mark unknown facts as unknown instead of inventing
-reproduction, root cause, or test results.
+reproduction, root cause, or test results. Security reports follow the private
+route above; the headings below apply only to owner-approved sanitized public
+tracking issues.
 
 **Defect or regression** — keep these six headings in order:
 
@@ -131,7 +155,8 @@ sensitive data from all evidence. Focused repair ideas and observable
 acceptance criteria MAY appear in Evidence, but do not authorize a contract
 change. Regression Source names the introducing commit only when established;
 otherwise write `Unknown — not yet identified`. An analysis baseline is not
-automatically the introducing commit.
+automatically the introducing commit. Do not put vulnerability reproduction,
+proof of concept, or uncontained exposure details in public Evidence.
 
 For a known boundary, Disposition states who accepted or deferred the boundary,
 the supporting evidence, any tracking link, and when to revisit it. For a
