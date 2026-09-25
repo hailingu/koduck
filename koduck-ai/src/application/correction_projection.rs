@@ -58,30 +58,32 @@ impl ProjectionScope {
 
 /// One projection input entry (ADR-0005 EP-01): one canonical [`Item`]
 /// borrowed from the caller plus the [`ProjectionScope`] its authenticated
-/// source reported for that row.
+/// source reported for that row. The two borrows are independent, so the
+/// projection output — which references only Items — never extends the
+/// scope borrow.
 #[derive(Clone, Copy, Debug)]
-pub struct ScopedProjectionItem<'a> {
-    item: &'a Item,
-    scope: &'a ProjectionScope,
+pub struct ScopedProjectionItem<'item, 'scope> {
+    item: &'item Item,
+    scope: &'scope ProjectionScope,
 }
 
-impl<'a> ScopedProjectionItem<'a> {
+impl<'item, 'scope> ScopedProjectionItem<'item, 'scope> {
     /// Wraps one canonical Item with the scope its source reported.
     #[must_use]
-    pub const fn new(item: &'a Item, scope: &'a ProjectionScope) -> Self {
+    pub const fn new(item: &'item Item, scope: &'scope ProjectionScope) -> Self {
         Self { item, scope }
     }
 
     /// Returns the borrowed canonical Item with its exact identity, sequence,
     /// and payload.
     #[must_use]
-    pub const fn item(&self) -> &'a Item {
+    pub const fn item(&self) -> &'item Item {
         self.item
     }
 
     /// Returns the borrowed source scope reported for this row.
     #[must_use]
-    pub const fn scope(&self) -> &'a ProjectionScope {
+    pub const fn scope(&self) -> &'scope ProjectionScope {
         self.scope
     }
 }
@@ -173,7 +175,7 @@ pub enum ProjectionError {
 /// at any other kind.
 pub fn project_corrections<'a>(
     expected_scope: &ProjectionScope,
-    entries: &[ScopedProjectionItem<'a>],
+    entries: &[ScopedProjectionItem<'a, '_>],
 ) -> Result<Vec<EffectiveItem<'a>>, ProjectionError> {
     reject_foreign_scope(expected_scope, entries)?;
     validate_raw_replay_refs(entries.iter().map(ScopedProjectionItem::item))
@@ -190,7 +192,7 @@ pub fn project_corrections<'a>(
 /// component-wise (EP-01), before any structural validation.
 fn reject_foreign_scope(
     expected_scope: &ProjectionScope,
-    entries: &[ScopedProjectionItem<'_>],
+    entries: &[ScopedProjectionItem<'_, '_>],
 ) -> Result<(), ProjectionError> {
     for (index, entry) in entries.iter().enumerate() {
         let reported = entry.scope();

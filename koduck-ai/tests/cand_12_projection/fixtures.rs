@@ -121,10 +121,10 @@ pub(crate) fn terminal_item(sequence: u64, outcome: TerminalOutcome) -> Item {
 }
 
 /// Wraps every borrowed Item with one shared expected scope.
-pub(crate) fn scoped_entries<'a>(
-    items: &'a [Item],
-    scope: &'a ProjectionScope,
-) -> Vec<ScopedProjectionItem<'a>> {
+pub(crate) fn scoped_entries<'item, 'scope>(
+    items: &'item [Item],
+    scope: &'scope ProjectionScope,
+) -> Vec<ScopedProjectionItem<'item, 'scope>> {
     items
         .iter()
         .map(|item| ScopedProjectionItem::new(item, scope))

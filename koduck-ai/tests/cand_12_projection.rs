@@ -29,16 +29,41 @@ fn unchanged_history() {
     empty_input_projects_to_an_empty_deterministic_result();
     uncorrected_history_preserves_identity_order_and_payloads();
     projection_is_returnable_from_locally_built_wrapper_storage();
+    projection_is_returnable_over_a_local_scope();
+}
+
+/// Returns the projection for caller-owned Items while the expected scope is
+/// constructed locally: PR 30 round-2 review — the output must bind only to
+/// the Item lifetime, never to the scope borrow.
+fn projection_returned_over_local_scope(
+    items: &[Item],
+) -> Vec<koduck_ai::application::EffectiveItem<'_>> {
+    let scope = scope_fixture("tenant-a", "subject-a");
+    let mut wrappers = Vec::with_capacity(items.len());
+    for item in items {
+        wrappers.push(ScopedProjectionItem::new(item, &scope));
+    }
+    project_corrections(&scope, &wrappers).expect("history projects")
+}
+
+/// The returned projection keeps working when the scope was only a local
+/// construction: identity and content still reference the caller's Items.
+fn projection_is_returnable_over_a_local_scope() {
+    let items = vec![user_item(1, "scoped locally")];
+    let returned = projection_returned_over_local_scope(&items);
+    assert_eq!(returned.len(), items.len());
+    assert_eq!(returned[0].original().item_id, items[0].item_id);
+    assert_eq!(returned[0].effective_content(), Some("scoped locally"));
 }
 
 /// Returns the projection built over a wrapper slice this helper owns
 /// locally: PR 30 round-1 review — the output must borrow only the
 /// underlying Items, never the temporary wrapper storage.
 fn projection_returned_over_local_wrappers<'a>(
-    scope: &'a ProjectionScope,
+    scope: &ProjectionScope,
     items: &'a [Item],
 ) -> Vec<koduck_ai::application::EffectiveItem<'a>> {
-    let wrappers: Vec<ScopedProjectionItem<'a>> = items
+    let wrappers: Vec<ScopedProjectionItem> = items
         .iter()
         .map(|item| ScopedProjectionItem::new(item, scope))
         .collect();
