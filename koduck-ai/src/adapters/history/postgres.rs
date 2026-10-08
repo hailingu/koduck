@@ -1,5 +1,6 @@
 // ADR: docs/adr/ADR-0001-provider-neutral-turn-kernel.md
 // ADR: koduck-ai/docs/adr/ADR-0003-correction-item-schema-and-raw-replay.md
+// ADR: koduck-ai/docs/adr/ADR-0006-effective-provider-context-integration.md
 
 //! `PostgreSQL` history translation and exact foreground-lease policy.
 
@@ -10,7 +11,8 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::application::{
-    AcceptedTurn, HistoryError, NewItem, RecoveryHandoff, TurnCommand, TurnHistory, TurnLiveness,
+    AcceptedTurn, HistoryError, NewItem, PriorTurnHistory, RecoveryHandoff, TurnCommand,
+    TurnHistory, TurnLiveness,
 };
 use crate::domain::{
     Item, LeaseGeneration, TenantId, TerminalOutcome, ThreadId, TrustContext, TurnId,
@@ -244,17 +246,20 @@ pub trait PostgresExecutor: Clone {
     /// Returns [`HistoryError`] when ownership is stale or storage fails.
     fn interruption_requested(&self, turn: &AcceptedTurn) -> Result<bool, HistoryError>;
 
-    /// Reads tenant-scoped canonical Thread history in append order.
+    /// Reads the complete bounded prior source-Turn groups of a subject-owned
+    /// Thread in canonical order with actual per-row provenance
+    /// (ADR-0006 PC-01).
     ///
     /// # Errors
     ///
-    /// Returns [`HistoryError`] when the Thread is not owned, storage fails, or
-    /// the canonical provider context exceeds its aggregate budget.
-    fn prior_thread_items(
+    /// Returns [`HistoryError`] when the Thread is not owned, storage fails,
+    /// a row cannot be decoded, or the canonical provider context exceeds its
+    /// aggregate budget.
+    fn prior_thread_turns(
         &self,
         trust: &TrustContext,
         thread_id: ThreadId,
-    ) -> Result<Vec<Item>, HistoryError>;
+    ) -> Result<Vec<PriorTurnHistory>, HistoryError>;
 
     /// Atomically inserts initial Thread, Turn, input Item, and lease generation.
     ///
@@ -649,12 +654,12 @@ impl<E: PostgresExecutor + Send + 'static> TurnHistory for PostgresTurnHistory<E
         self.executor.interruption_requested(turn)
     }
 
-    fn prior_thread_items(
+    fn prior_thread_turns(
         &self,
         trust: &TrustContext,
         thread_id: ThreadId,
-    ) -> Result<Vec<Item>, HistoryError> {
-        self.executor.prior_thread_items(trust, thread_id)
+    ) -> Result<Vec<PriorTurnHistory>, HistoryError> {
+        self.executor.prior_thread_turns(trust, thread_id)
     }
 
     fn accept_initial(&mut self, command: &TurnCommand) -> Result<AcceptedTurn, HistoryError> {

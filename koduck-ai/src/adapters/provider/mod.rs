@@ -352,8 +352,8 @@ mod tests {
     use std::thread;
     use std::time::Duration;
 
-    use crate::application::ModelInput;
-    use crate::domain::{Item, ItemPayload, TenantId, ThreadId, TurnId};
+    use crate::application::{ModelInput, ProviderHistoryItem, ProviderHistoryKind};
+    use crate::domain::{ItemId, TenantId, ThreadId, TurnId};
 
     use super::{
         OpenAiFrame, OpenAiProtocolTransport, ProviderTiming, ReqwestOpenAiTransport,
@@ -375,6 +375,23 @@ mod tests {
             input: "hello".to_owned(),
             history: Vec::new(),
             tool_rounds: Vec::new(),
+        }
+    }
+
+    /// Builds one uncorrected provider-history view for serialization
+    /// fixtures; corrected roots differ only in `content`/`source_item_id`.
+    fn view(
+        sequence: u64,
+        kind: ProviderHistoryKind,
+        content: Option<&str>,
+    ) -> ProviderHistoryItem {
+        let item_id = ItemId::new();
+        ProviderHistoryItem {
+            item_id,
+            sequence,
+            kind,
+            source_item_id: item_id,
+            content: content.map(str::to_owned),
         }
     }
 
@@ -461,24 +478,9 @@ mod tests {
             turn_id: TurnId::new(),
             input: "second".to_owned(),
             history: vec![
-                Item::new(
-                    1,
-                    ItemPayload::UserMessage {
-                        content: "first".to_owned(),
-                    },
-                ),
-                Item::new(
-                    2,
-                    ItemPayload::AgentMessageDelta {
-                        content: "A".to_owned(),
-                    },
-                ),
-                Item::new(
-                    3,
-                    ItemPayload::AgentMessageDelta {
-                        content: "B".to_owned(),
-                    },
-                ),
+                view(1, ProviderHistoryKind::UserMessage, Some("first")),
+                view(2, ProviderHistoryKind::AgentMessageDelta, Some("A")),
+                view(3, ProviderHistoryKind::AgentMessageDelta, Some("B")),
             ],
             tool_rounds: Vec::new(),
         };
@@ -489,6 +491,39 @@ mod tests {
                 serde_json::json!({ "role": "user", "content": "first" }),
                 serde_json::json!({ "role": "assistant", "content": "AB" }),
                 serde_json::json!({ "role": "user", "content": "second" }),
+            ]
+        );
+    }
+
+    #[test]
+    fn corrected_history_serializes_effective_content_at_original_positions() {
+        // A corrected root keeps its original position and kind while the
+        // selected replacement supplies the exact bytes; the correction
+        // itself never becomes a message, even after a terminal
+        // (ADR-0006 PC-05).
+        let root = view(1, ProviderHistoryKind::UserMessage, Some("draft"));
+        let mut corrected_root = view(1, ProviderHistoryKind::UserMessage, Some("revised"));
+        corrected_root.item_id = root.item_id;
+        corrected_root.source_item_id = ItemId::new();
+        let input = ModelInput {
+            tenant_id: TenantId::new("tenant-a").expect("valid tenant"),
+            thread_id: ThreadId::new(),
+            turn_id: TurnId::new(),
+            input: "next".to_owned(),
+            history: vec![
+                corrected_root,
+                view(2, ProviderHistoryKind::AgentMessageDelta, Some("answer")),
+                view(3, ProviderHistoryKind::Terminal, None),
+            ],
+            tool_rounds: Vec::new(),
+        };
+
+        assert_eq!(
+            provider_messages(&input),
+            vec![
+                serde_json::json!({ "role": "user", "content": "revised" }),
+                serde_json::json!({ "role": "assistant", "content": "answer" }),
+                serde_json::json!({ "role": "user", "content": "next" }),
             ]
         );
     }

@@ -1,5 +1,6 @@
 // ADR: docs/adr/ADR-0001-provider-neutral-turn-kernel.md
 // ADR: docs/adr/ADR-0005-provider-delta-coalescing-and-512-item-turn-budget.md
+// ADR: koduck-ai/docs/adr/ADR-0006-effective-provider-context-integration.md
 
 //! Consumer-owned commands, results, and external I/O ports.
 
@@ -9,6 +10,8 @@ use crate::domain::{
     Item, ItemPayload, LeaseGeneration, TenantId, TerminalOutcome, ThreadId, TrustContext, TurnId,
     TurnStatus, TurnTransitionError, Usage,
 };
+
+use super::provider_context::{PriorTurnHistory, ProviderContextError, ProviderHistoryItem};
 
 /// A validated request to execute one foreground, tool-free turn.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -104,8 +107,10 @@ pub struct ModelInput {
     pub turn_id: TurnId,
     /// Current plain-text user input.
     pub input: String,
-    /// Durable prior Thread history supplied exactly once for resume.
-    pub history: Vec<Item>,
+    /// Owned effective prior-history view prepared once before acceptance
+    /// from the scoped canonical read and reused unchanged by every
+    /// continuation of this Turn (ADR-0006 PC-02/PC-04).
+    pub history: Vec<ProviderHistoryItem>,
     /// Serviced Tool rounds whose committed results a continuation request
     /// carries; empty for the initial request of a Turn.
     ///
@@ -566,16 +571,19 @@ pub trait TurnHistory {
         self.append_provider_terminal(turn, TerminalOutcome::Completed { usage })
     }
 
-    /// Reads prior durable items for a subject-owned Thread in canonical order.
+    /// Reads the complete prior source-Turn groups of a subject-owned Thread
+    /// in canonical order, retaining each row's Item and reported provenance
+    /// (ADR-0006 PC-01).
     ///
     /// # Errors
     ///
-    /// Returns [`HistoryError`] when history is unavailable or ownership is invalid.
-    fn prior_thread_items(
+    /// Returns [`HistoryError`] when history is unavailable, ownership is
+    /// invalid, or the raw history exceeds its aggregate budget.
+    fn prior_thread_turns(
         &self,
         trust: &TrustContext,
         thread_id: ThreadId,
-    ) -> Result<Vec<Item>, HistoryError>;
+    ) -> Result<Vec<PriorTurnHistory>, HistoryError>;
 
     /// Starts conditional failed-terminal recovery after an accepted append outage.
     ///
@@ -696,6 +704,11 @@ pub enum TurnRunError {
     /// Canonical history rejected an operation.
     #[error(transparent)]
     History(#[from] HistoryError),
+    /// The prepared provider context was rejected before acceptance; the
+    /// safe typed cause carries no source payload or identity values
+    /// (ADR-0006 PC-07).
+    #[error(transparent)]
+    Context(#[from] ProviderContextError),
     /// Live C-5 work could not be terminalized for an authenticated interrupt.
     #[error(transparent)]
     Tool(#[from] super::ToolCallError),

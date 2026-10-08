@@ -25,12 +25,12 @@ impl TurnHistory for EmptyProjectionAcknowledgementHistory {
         self.inner.interruption_requested(turn)
     }
 
-    fn prior_thread_items(
+    fn prior_thread_turns(
         &self,
         trust: &TrustContext,
         thread_id: ThreadId,
-    ) -> Result<Vec<Item>, HistoryError> {
-        self.inner.prior_thread_items(trust, thread_id)
+    ) -> Result<Vec<PriorTurnHistory>, HistoryError> {
+        self.inner.prior_thread_turns(trust, thread_id)
     }
 
     fn accept_initial(&mut self, command: &TurnCommand) -> Result<AcceptedTurn, HistoryError> {

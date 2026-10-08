@@ -12,8 +12,9 @@ use koduck_ai::adapters::history::postgres::{
     RecoveryOutcome, TurnTerminalObserver,
 };
 use koduck_ai::application::{
-    AcceptedTurn, HistoryError, ModelInput, ModelProvider, NewItem, ProviderError, ProviderEvent,
-    ProviderStream, TurnCommand, TurnHistory, TurnRunError, TurnRunner,
+    AcceptedTurn, HistoryError, ModelInput, ModelProvider, NewItem, PriorTurnHistory, PriorTurnRow,
+    ProjectionScope, ProviderError, ProviderEvent, ProviderStream, TurnCommand, TurnHistory,
+    TurnRunError, TurnRunner,
 };
 use koduck_ai::domain::{
     Item, ItemPayload, LeaseGeneration, TenantId, TerminalOutcome, ThreadId, TrustContext, TurnId,
@@ -173,14 +174,29 @@ impl PostgresExecutor for SimulatedPostgres {
         Ok(false)
     }
 
-    fn prior_thread_items(
+    fn prior_thread_turns(
         &self,
         trust: &TrustContext,
         thread_id: ThreadId,
-    ) -> Result<Vec<Item>, HistoryError> {
+    ) -> Result<Vec<PriorTurnHistory>, HistoryError> {
         let state = self.state.lock().expect("state lock");
         if state.tenant_id == trust.tenant_id && state.accepted.thread_id == thread_id {
-            Ok(state.items.clone())
+            let scope = ProjectionScope::new(
+                trust.tenant_id.clone(),
+                trust.subject_id.clone(),
+                thread_id,
+                state.accepted.turn_id,
+            )
+            .expect("valid double scope");
+            Ok(vec![PriorTurnHistory::new(
+                state.accepted.turn_id,
+                state
+                    .items
+                    .iter()
+                    .cloned()
+                    .map(|item| PriorTurnRow::new(item, scope.clone()))
+                    .collect(),
+            )])
         } else {
             Err(HistoryError::NotFound)
         }
@@ -717,11 +733,11 @@ impl TurnHistory for InterruptibleHistory {
         Ok(self.interrupt.get())
     }
 
-    fn prior_thread_items(
+    fn prior_thread_turns(
         &self,
         _trust: &TrustContext,
         _thread_id: ThreadId,
-    ) -> Result<Vec<Item>, HistoryError> {
+    ) -> Result<Vec<PriorTurnHistory>, HistoryError> {
         Ok(Vec::new())
     }
 

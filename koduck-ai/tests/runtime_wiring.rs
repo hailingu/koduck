@@ -16,8 +16,9 @@ use koduck_ai::adapters::provider::{
     OpenAiCompatibleProvider, OpenAiProtocolTransport, ReqwestOpenAiTransport,
 };
 use koduck_ai::application::{
-    AcceptedTurn, HistoryError, ModelInput, ModelProvider, NewItem, ProviderError, ProviderEvent,
-    ProviderStream, TurnCommand, TurnHistory, TurnResult, TurnRunner, TurnStreamEvent,
+    AcceptedTurn, HistoryError, ModelInput, ModelProvider, NewItem, PriorTurnHistory,
+    ProviderError, ProviderEvent, ProviderStream, TurnCommand, TurnHistory, TurnResult, TurnRunner,
+    TurnStreamEvent,
 };
 use koduck_ai::domain::{
     Item, ItemPayload, LeaseGeneration, TenantId, TerminalOutcome, ThreadId, TrustContext, TurnId,
@@ -407,11 +408,11 @@ impl TurnHistory for ConcurrentHistory {
             .contains(&turn.turn_id))
     }
 
-    fn prior_thread_items(
+    fn prior_thread_turns(
         &self,
         _trust: &TrustContext,
         _thread_id: ThreadId,
-    ) -> Result<Vec<Item>, HistoryError> {
+    ) -> Result<Vec<PriorTurnHistory>, HistoryError> {
         Ok(Vec::new())
     }
 

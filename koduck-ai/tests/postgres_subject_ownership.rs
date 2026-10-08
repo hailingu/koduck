@@ -238,7 +238,7 @@ fn verify_payload_and_subject_ownership(
         ItemPayload::UserMessage { content } if content == input
     ));
     assert_eq!(
-        executor.prior_thread_items(intruder, accepted.thread_id),
+        executor.prior_thread_turns(intruder, accepted.thread_id),
         Err(HistoryError::NotFound),
         "a different subject must not observe the thread"
     );

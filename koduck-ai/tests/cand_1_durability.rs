@@ -7,8 +7,8 @@ use std::time::{Duration, Instant};
 
 use koduck_ai::application::{
     AcceptedTurn, AppendPolicy, BufferLimitError, DeltaCoalescer, DurabilityFailure, HistoryError,
-    ModelInput, ModelProvider, NewItem, ProviderError, ProviderEvent, ProviderStream, TurnCommand,
-    TurnHistory, TurnLiveness, TurnRunError, TurnRunner,
+    ModelInput, ModelProvider, NewItem, PriorTurnHistory, ProviderError, ProviderEvent,
+    ProviderStream, TurnCommand, TurnHistory, TurnLiveness, TurnRunError, TurnRunner,
 };
 use koduck_ai::domain::{
     Item, ItemPayload, LeaseGeneration, TenantId, TerminalOutcome, ThreadId, TrustContext, TurnId,
@@ -59,11 +59,11 @@ impl TurnHistory for FaultHistory {
         Ok(false)
     }
 
-    fn prior_thread_items(
+    fn prior_thread_turns(
         &self,
         _trust: &TrustContext,
         _thread_id: ThreadId,
-    ) -> Result<Vec<Item>, HistoryError> {
+    ) -> Result<Vec<PriorTurnHistory>, HistoryError> {
         Ok(Vec::new())
     }
 
@@ -419,11 +419,11 @@ impl TurnHistory for RecoverableHistory {
         Ok(false)
     }
 
-    fn prior_thread_items(
+    fn prior_thread_turns(
         &self,
         _trust: &TrustContext,
         _thread_id: ThreadId,
-    ) -> Result<Vec<Item>, HistoryError> {
+    ) -> Result<Vec<PriorTurnHistory>, HistoryError> {
         Ok(Vec::new())
     }
 
@@ -572,11 +572,11 @@ impl TurnHistory for HandoffHistory {
         }
     }
 
-    fn prior_thread_items(
+    fn prior_thread_turns(
         &self,
         _trust: &TrustContext,
         _thread_id: ThreadId,
-    ) -> Result<Vec<Item>, HistoryError> {
+    ) -> Result<Vec<PriorTurnHistory>, HistoryError> {
         Ok(Vec::new())
     }
 

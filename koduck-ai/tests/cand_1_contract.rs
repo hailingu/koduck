@@ -12,9 +12,9 @@ use koduck_ai::adapters::provider::{
     OpenAiTransportError,
 };
 use koduck_ai::application::{
-    AcceptedTurn, HistoryError, ModelInput, ModelProvider, NewItem, ProviderError, ProviderEvent,
-    ProviderStream, TurnCommand, TurnHistory, TurnResult, TurnRunError, TurnRunner,
-    TurnStreamEvent,
+    AcceptedTurn, HistoryError, ModelInput, ModelProvider, NewItem, PriorTurnHistory, PriorTurnRow,
+    ProjectionScope, ProviderError, ProviderEvent, ProviderStream, TurnCommand, TurnHistory,
+    TurnResult, TurnRunError, TurnRunner, TurnStreamEvent,
 };
 use koduck_ai::domain::{
     Item, ItemPayload, LeaseGeneration, TenantId, TerminalOutcome, ThreadId, TrustContext, TurnId,
@@ -431,7 +431,8 @@ fn normalize_correlation_id(body: &str) -> String {
 
 #[derive(Default)]
 struct HistoryState {
-    thread_items: BTreeMap<ThreadId, Vec<Item>>,
+    /// Source Turns in creation order; each entry names its owning Thread.
+    turn_order: Vec<(ThreadId, TurnId)>,
     turn_items: BTreeMap<TurnId, Vec<Item>>,
     interrupt_after_first_delta: bool,
 }
@@ -471,11 +472,7 @@ impl TurnHistory for SharedHistory {
             },
         );
         let mut state = self.state.borrow_mut();
-        state
-            .thread_items
-            .entry(thread_id)
-            .or_default()
-            .push(input.clone());
+        state.turn_order.push((thread_id, turn_id));
         state.turn_items.insert(turn_id, vec![input.clone()]);
         Ok(AcceptedTurn::new(
             command.trust.tenant_id.clone(),
@@ -494,11 +491,6 @@ impl TurnHistory for SharedHistory {
             .ok_or(HistoryError::NotFound)?;
         let durable = Item::new(turn_items.len() as u64 + 1, item.into_payload());
         turn_items.push(durable.clone());
-        state
-            .thread_items
-            .get_mut(&turn.thread_id)
-            .ok_or(HistoryError::NotFound)?
-            .push(durable.clone());
         Ok(durable)
     }
 
@@ -511,18 +503,38 @@ impl TurnHistory for SharedHistory {
             .ok_or(HistoryError::NotFound)
     }
 
-    fn prior_thread_items(
+    fn prior_thread_turns(
         &self,
-        _trust: &TrustContext,
+        trust: &TrustContext,
         thread_id: ThreadId,
-    ) -> Result<Vec<Item>, HistoryError> {
-        Ok(self
-            .state
-            .borrow()
-            .thread_items
-            .get(&thread_id)
-            .cloned()
-            .unwrap_or_default())
+    ) -> Result<Vec<PriorTurnHistory>, HistoryError> {
+        let state = self.state.borrow();
+        let mut groups = Vec::new();
+        for (owned_thread, turn_id) in &state.turn_order {
+            if *owned_thread != thread_id {
+                continue;
+            }
+            let scope = ProjectionScope::new(
+                trust.tenant_id.clone(),
+                trust.subject_id.clone(),
+                thread_id,
+                *turn_id,
+            )
+            .expect("valid double scope");
+            let rows = state
+                .turn_items
+                .get(turn_id)
+                .map(|items| {
+                    items
+                        .iter()
+                        .cloned()
+                        .map(|item| PriorTurnRow::new(item, scope.clone()))
+                        .collect()
+                })
+                .unwrap_or_default();
+            groups.push(PriorTurnHistory::new(*turn_id, rows));
+        }
+        Ok(groups)
     }
 }
 
@@ -576,7 +588,18 @@ fn resume_creates_new_turn() {
     );
     let recorded = inputs.borrow();
     assert!(recorded[0].history.is_empty());
-    assert_eq!(recorded[1].history, immutable_first);
+    assert_eq!(
+        recorded[1]
+            .history
+            .iter()
+            .map(|view| (view.item_id, view.sequence))
+            .collect::<Vec<_>>(),
+        immutable_first
+            .iter()
+            .map(|item| (item.item_id, item.sequence))
+            .collect::<Vec<_>>(),
+        "the resumed request carries the prior Turn's items in order as the prepared view"
+    );
 }
 
 fn assert_kernel_interrupt() {
@@ -804,11 +827,11 @@ impl TurnHistory for ScriptedHistory {
         Ok(false)
     }
 
-    fn prior_thread_items(
+    fn prior_thread_turns(
         &self,
         _trust: &TrustContext,
         _thread_id: ThreadId,
-    ) -> Result<Vec<Item>, HistoryError> {
+    ) -> Result<Vec<PriorTurnHistory>, HistoryError> {
         Ok(Vec::new())
     }
 

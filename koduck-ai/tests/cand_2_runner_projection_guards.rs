@@ -11,9 +11,9 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use koduck_ai::application::{
-    AcceptedTurn, AppendPolicy, HistoryError, ModelToolResult, NewItem, ProviderEvent,
-    ToolCallError, ToolCallExecutor, ToolCallTurnContext, ToolProjection, ToolProjectionSink,
-    TurnCommand, TurnHistory, TurnRunner, TurnStreamEvent, output_digest,
+    AcceptedTurn, AppendPolicy, HistoryError, ModelToolResult, NewItem, PriorTurnHistory,
+    ProviderEvent, ToolCallError, ToolCallExecutor, ToolCallTurnContext, ToolProjection,
+    ToolProjectionSink, TurnCommand, TurnHistory, TurnRunner, TurnStreamEvent, output_digest,
 };
 use koduck_ai::domain::{
     Item, ItemPayload, LeaseGeneration, TenantId, TerminalOutcome, ThreadId, TrustContext, TurnId,
@@ -746,11 +746,11 @@ impl TurnHistory for MemoryHistory {
         Ok(false)
     }
 
-    fn prior_thread_items(
+    fn prior_thread_turns(
         &self,
         _trust: &TrustContext,
         _thread_id: ThreadId,
-    ) -> Result<Vec<Item>, HistoryError> {
+    ) -> Result<Vec<PriorTurnHistory>, HistoryError> {
         Ok(Vec::new())
     }
 
