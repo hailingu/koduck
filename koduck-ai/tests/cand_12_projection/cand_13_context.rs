@@ -343,10 +343,12 @@ fn later_invalid_group_rejects_the_whole_prepared_context() {
 /// fixtures race to apply it on one fresh database.
 static DATABASE_SETUP_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-/// Connects an isolated migrated `PostgreSQL` when the test database is
-/// configured; `None` skips the real-`SQLx` smoke.
-fn migrated_pool() -> Option<(sqlx::postgres::PgPool, tokio::runtime::Runtime)> {
-    let database_url = std::env::var("KODUCK_AI_TEST_DATABASE_URL").ok()?;
+/// Connects an isolated migrated `PostgreSQL`. A missing or malformed test
+/// database configuration fails the check instead of silently passing it
+/// (ADR-0006 Acceptance Checks).
+fn migrated_pool() -> (sqlx::postgres::PgPool, tokio::runtime::Runtime) {
+    let database_url = std::env::var("KODUCK_AI_TEST_DATABASE_URL")
+        .expect("KODUCK_AI_TEST_DATABASE_URL must point at an isolated migrated PostgreSQL");
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
@@ -378,7 +380,7 @@ fn migrated_pool() -> Option<(sqlx::postgres::PgPool, tokio::runtime::Runtime)> 
             .expect("apply production migration");
     }
     drop(setup_guard);
-    Some((pool, runtime))
+    (pool, runtime)
 }
 
 /// One seeded two-Turn Thread: a terminal first Turn with a post-terminal
@@ -485,9 +487,7 @@ fn assert_grouped_provenance(
 /// T-2 AC-1/AC-5 suite; this smoke proves the replaced seam end to end.
 #[test]
 fn production_read_groups_real_turns_for_preparation() {
-    let Some((pool, runtime)) = migrated_pool() else {
-        return;
-    };
+    let (pool, runtime) = migrated_pool();
     let executor = SqlxPostgresExecutor::new(pool.clone(), runtime.handle().clone());
     let seeded = seed_two_turn_thread(&executor);
     let owner =
@@ -1015,9 +1015,7 @@ async fn effective_messages_reach_the_production_transport() {
 /// receives the indistinguishable `NotFound` rejection.
 #[test]
 fn owned_empty_thread_and_foreign_subject_read_outcomes() {
-    let Some((pool, runtime)) = migrated_pool() else {
-        return;
-    };
+    let (pool, runtime) = migrated_pool();
     let owner = TrustContext::new(
         TenantId::new(format!("ci-{}", uuid::Uuid::new_v4())).expect("unique tenant"),
         "owner",
