@@ -19,8 +19,8 @@ use koduck_ai::application::{
     AcceptedTurn, CommittedToolCall, CorrectionCommand, CorrectionStore, HistoryError, ModelInput,
     ModelProvider, ModelToolCall, ModelToolResult, NewItem, PriorTurnHistory, PriorTurnRow,
     ProjectionError, ProjectionScope, ProviderContextError, ProviderError, ProviderEvent,
-    ProviderHistoryItem, ProviderHistoryKind, ToolRound, TurnCommand, TurnHistory, TurnRunner,
-    prepare_provider_history,
+    ProviderHistoryItem, ProviderHistoryKind, ProviderHistoryValue, ToolRound, TurnCommand,
+    TurnHistory, TurnRunner, prepare_provider_history,
 };
 use koduck_ai::domain::item_correction::ItemCorrection;
 use koduck_ai::domain::{
@@ -98,14 +98,14 @@ fn corrected_source_turn_prepares_the_effective_provider_view() {
     assert_eq!(prepared[0].item_id, draft.item_id);
     assert_eq!(prepared[0].sequence, 1);
     assert_eq!(prepared[0].kind, ProviderHistoryKind::UserMessage);
-    assert_eq!(prepared[0].content.as_deref(), Some("revised"));
+    assert_eq!(prepared[0].effective_text(), Some("revised"));
     assert_eq!(prepared[0].source_item_id, correction.item_id);
     assert_eq!(prepared[1].item_id, answer.item_id);
     assert_eq!(prepared[1].kind, ProviderHistoryKind::AgentMessageDelta);
-    assert_eq!(prepared[1].content.as_deref(), Some("answer"));
+    assert_eq!(prepared[1].effective_text(), Some("answer"));
     assert_eq!(prepared[1].source_item_id, answer.item_id);
     assert_eq!(prepared[2].kind, ProviderHistoryKind::Terminal);
-    assert_eq!(prepared[2].content, None);
+    assert_eq!(prepared[2].effective_text(), None);
     assert_eq!(prepared[2].source_item_id, prepared[2].item_id);
 }
 
@@ -249,6 +249,12 @@ fn independent_groups_prepare_in_order_with_unchanged_views() {
     let result = tool_result_item(4);
     let approval = approval_item(5);
     let second_item = delta_item(1, "second");
+    let inert_payloads = vec![
+        usage.payload.clone(),
+        call.payload.clone(),
+        result.payload.clone(),
+        approval.payload.clone(),
+    ];
 
     let prepared = prepare_provider_history(
         &trust,
@@ -274,15 +280,20 @@ fn independent_groups_prepare_in_order_with_unchanged_views() {
 
     assert_eq!(prepared.len(), 6);
     assert_eq!(prepared[0].item_id, first_item.item_id);
-    assert_eq!(prepared[0].content.as_deref(), Some("first"));
+    assert_eq!(prepared[0].effective_text(), Some("first"));
     assert_eq!(prepared[0].source_item_id, first_item.item_id);
     assert_eq!(prepared[1].kind, ProviderHistoryKind::Usage);
     assert_eq!(prepared[2].kind, ProviderHistoryKind::ToolCall);
     assert_eq!(prepared[3].kind, ProviderHistoryKind::ToolResult);
     assert_eq!(prepared[4].kind, ProviderHistoryKind::ApprovalStatus);
-    assert!(prepared[1..=4].iter().all(|view| view.content.is_none()));
+    // Every non-text view retains its unchanged original payload value
+    // alongside the kind semantics (PC-04).
+    for (view, payload) in prepared[1..=4].iter().zip(&inert_payloads) {
+        assert_eq!(view.effective_text(), None);
+        assert_eq!(view.value, ProviderHistoryValue::NonText(payload.clone()));
+    }
     assert_eq!(prepared[5].item_id, second_item.item_id);
-    assert_eq!(prepared[5].content.as_deref(), Some("second"));
+    assert_eq!(prepared[5].effective_text(), Some("second"));
 }
 
 /// PC-02/PC-07: a later malformed group rejects the whole context with its
@@ -495,7 +506,7 @@ fn production_read_groups_real_turns_for_preparation() {
             .iter()
             .map(|view| (
                 view.kind,
-                view.content.as_deref(),
+                view.effective_text(),
                 view.source_item_id == seeded.corrected_item_id,
             ))
             .collect::<Vec<_>>(),
@@ -718,24 +729,37 @@ fn runner_resumes_from_the_prepared_effective_history() {
         recorded[1]
             .history
             .iter()
-            .map(|view| (view.item_id, view.kind, view.content.clone()))
+            .map(|view| (
+                view.item_id,
+                view.kind,
+                view.effective_text(),
+                view.value.clone()
+            ))
             .collect::<Vec<_>>(),
         vec![
             (
                 immutable_first[0].item_id,
                 ProviderHistoryKind::UserMessage,
-                Some("revised".to_owned())
+                Some("revised"),
+                ProviderHistoryValue::Text("revised".to_owned())
             ),
             (
                 immutable_first[1].item_id,
                 ProviderHistoryKind::AgentMessageDelta,
-                Some("A".to_owned())
+                Some("A"),
+                ProviderHistoryValue::Text("A".to_owned())
             ),
-            (immutable_first[2].item_id, ProviderHistoryKind::Usage, None),
+            (
+                immutable_first[2].item_id,
+                ProviderHistoryKind::Usage,
+                None,
+                ProviderHistoryValue::NonText(immutable_first[2].payload.clone())
+            ),
             (
                 immutable_first[3].item_id,
                 ProviderHistoryKind::Terminal,
-                None
+                None,
+                ProviderHistoryValue::NonText(immutable_first[3].payload.clone())
             ),
         ],
         "the resumed request carries the effective view once, with no correction entry"
@@ -843,28 +867,32 @@ fn corrected_transport_input() -> ModelInput {
         sequence: 1,
         kind: ProviderHistoryKind::UserMessage,
         source_item_id: ItemId::new(),
-        content: Some("revised".to_owned()),
+        value: ProviderHistoryValue::Text("revised".to_owned()),
     };
     let delta = ProviderHistoryItem {
         item_id: ItemId::new(),
         sequence: 2,
         kind: ProviderHistoryKind::AgentMessageDelta,
         source_item_id: ItemId::new(),
-        content: Some("answer".to_owned()),
+        value: ProviderHistoryValue::Text("answer".to_owned()),
     };
     let usage = ProviderHistoryItem {
         item_id: ItemId::new(),
         sequence: 3,
         kind: ProviderHistoryKind::Usage,
         source_item_id: ItemId::new(),
-        content: None,
+        value: ProviderHistoryValue::NonText(ItemPayload::Usage(
+            Usage::new(1, 1).expect("valid usage"),
+        )),
     };
     let terminal = ProviderHistoryItem {
         item_id: ItemId::new(),
         sequence: 4,
         kind: ProviderHistoryKind::Terminal,
         source_item_id: ItemId::new(),
-        content: None,
+        value: ProviderHistoryValue::NonText(ItemPayload::Terminal(TerminalOutcome::Completed {
+            usage: Usage::new(1, 1).expect("valid usage"),
+        })),
     };
     ModelInput {
         tenant_id: TenantId::new(TENANT).expect("valid tenant"),

@@ -84,12 +84,27 @@ pub enum ProviderHistoryKind {
     Correction,
 }
 
+/// The owned effective value of one provider-history view (ADR-0006 PC-04):
+/// the effective text copied from the selected source for a textual root,
+/// or the unchanged non-text payload copied from the original Item. The
+/// value is data only — it never carries approval or dispatch authority.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ProviderHistoryValue {
+    /// Effective text of a user or assistant root: the plain content, or the
+    /// exact replacement of its last correction.
+    Text(String),
+    /// The unchanged non-text payload of the original Item: usage counters,
+    /// approval-status, Tool-call/result views, or a terminal outcome.
+    NonText(ItemPayload),
+}
+
 /// One owned effective provider-history view (ADR-0006 PC-04): the original
 /// non-correction Item's identity, sequence, and payload-kind semantics at
 /// its preserved position, the selected effective source's identity, and the
-/// effective content copied once from the CAND-12 accessors. The view is
-/// distinct from a canonical [`Item`]: it is provider input only, never a
-/// persistence append input, REST/SSE document, or execution authority.
+/// effective content or non-text value copied once from the CAND-12
+/// accessors. The view is distinct from a canonical [`Item`]: it is provider
+/// input only, never a persistence append input, REST/SSE document, or
+/// execution authority.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProviderHistoryItem {
     /// Original Item identity at its preserved position.
@@ -101,9 +116,20 @@ pub struct ProviderHistoryItem {
     /// Identity of the selected effective source: the original itself, or
     /// the exact last correction in its chain.
     pub source_item_id: ItemId,
-    /// Effective text copied once from the selected source payload; `None`
-    /// for every non-text kind.
-    pub content: Option<String>,
+    /// The effective value copied once from the selected source: replacement
+    /// text for textual roots, or the unchanged non-text payload.
+    pub value: ProviderHistoryValue,
+}
+
+impl ProviderHistoryItem {
+    /// Returns the effective text when this view is textual.
+    #[must_use]
+    pub const fn effective_text(&self) -> Option<&str> {
+        match &self.value {
+            ProviderHistoryValue::Text(content) => Some(content.as_str()),
+            ProviderHistoryValue::NonText(_) => None,
+        }
+    }
 }
 
 /// A typed pre-acceptance provider-context rejection (ADR-0006 PC-07). No
@@ -194,15 +220,20 @@ fn project_group(
 }
 
 /// Converts one borrowed projection view into its owned provider view,
-/// copying the selected effective content once (PC-04).
+/// copying the selected effective value once (PC-04): text for textual
+/// roots, the unchanged payload for every other kind.
 fn provider_view(view: &EffectiveItem<'_>) -> ProviderHistoryItem {
     let original = view.original();
+    let value = match view.effective_content() {
+        Some(content) => ProviderHistoryValue::Text(content.to_owned()),
+        None => ProviderHistoryValue::NonText(original.payload.clone()),
+    };
     ProviderHistoryItem {
         item_id: original.item_id,
         sequence: original.sequence,
         kind: provider_history_kind(&original.payload),
         source_item_id: view.source().item_id,
-        content: view.effective_content().map(str::to_owned),
+        value,
     }
 }
 

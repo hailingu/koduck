@@ -352,8 +352,10 @@ mod tests {
     use std::thread;
     use std::time::Duration;
 
-    use crate::application::{ModelInput, ProviderHistoryItem, ProviderHistoryKind};
-    use crate::domain::{ItemId, TenantId, ThreadId, TurnId};
+    use crate::application::{
+        ModelInput, ProviderHistoryItem, ProviderHistoryKind, ProviderHistoryValue,
+    };
+    use crate::domain::{ItemId, ItemPayload, TenantId, TerminalOutcome, ThreadId, TurnId, Usage};
 
     use super::{
         OpenAiFrame, OpenAiProtocolTransport, ProviderTiming, ReqwestOpenAiTransport,
@@ -379,11 +381,11 @@ mod tests {
     }
 
     /// Builds one uncorrected provider-history view for serialization
-    /// fixtures; corrected roots differ only in `content`/`source_item_id`.
+    /// fixtures; corrected roots differ only in `value`/`source_item_id`.
     fn view(
         sequence: u64,
         kind: ProviderHistoryKind,
-        content: Option<&str>,
+        value: ProviderHistoryValue,
     ) -> ProviderHistoryItem {
         let item_id = ItemId::new();
         ProviderHistoryItem {
@@ -391,7 +393,7 @@ mod tests {
             sequence,
             kind,
             source_item_id: item_id,
-            content: content.map(str::to_owned),
+            value,
         }
     }
 
@@ -478,9 +480,21 @@ mod tests {
             turn_id: TurnId::new(),
             input: "second".to_owned(),
             history: vec![
-                view(1, ProviderHistoryKind::UserMessage, Some("first")),
-                view(2, ProviderHistoryKind::AgentMessageDelta, Some("A")),
-                view(3, ProviderHistoryKind::AgentMessageDelta, Some("B")),
+                view(
+                    1,
+                    ProviderHistoryKind::UserMessage,
+                    ProviderHistoryValue::Text("first".to_owned()),
+                ),
+                view(
+                    2,
+                    ProviderHistoryKind::AgentMessageDelta,
+                    ProviderHistoryValue::Text("A".to_owned()),
+                ),
+                view(
+                    3,
+                    ProviderHistoryKind::AgentMessageDelta,
+                    ProviderHistoryValue::Text("B".to_owned()),
+                ),
             ],
             tool_rounds: Vec::new(),
         };
@@ -501,8 +515,16 @@ mod tests {
         // selected replacement supplies the exact bytes; the correction
         // itself never becomes a message, even after a terminal
         // (ADR-0006 PC-05).
-        let root = view(1, ProviderHistoryKind::UserMessage, Some("draft"));
-        let mut corrected_root = view(1, ProviderHistoryKind::UserMessage, Some("revised"));
+        let root = view(
+            1,
+            ProviderHistoryKind::UserMessage,
+            ProviderHistoryValue::Text("draft".to_owned()),
+        );
+        let mut corrected_root = view(
+            1,
+            ProviderHistoryKind::UserMessage,
+            ProviderHistoryValue::Text("revised".to_owned()),
+        );
         corrected_root.item_id = root.item_id;
         corrected_root.source_item_id = ItemId::new();
         let input = ModelInput {
@@ -512,8 +534,20 @@ mod tests {
             input: "next".to_owned(),
             history: vec![
                 corrected_root,
-                view(2, ProviderHistoryKind::AgentMessageDelta, Some("answer")),
-                view(3, ProviderHistoryKind::Terminal, None),
+                view(
+                    2,
+                    ProviderHistoryKind::AgentMessageDelta,
+                    ProviderHistoryValue::Text("answer".to_owned()),
+                ),
+                view(
+                    3,
+                    ProviderHistoryKind::Terminal,
+                    ProviderHistoryValue::NonText(ItemPayload::Terminal(
+                        TerminalOutcome::Completed {
+                            usage: Usage::new(1, 1).expect("valid usage"),
+                        },
+                    )),
+                ),
             ],
             tool_rounds: Vec::new(),
         };

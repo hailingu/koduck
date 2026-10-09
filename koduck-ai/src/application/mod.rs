@@ -78,7 +78,7 @@ pub(crate) use preparation::ToolExecutionAuthorityRoot;
 pub use preparation::{ExecutionPreparer, ToolExecutionRuntime};
 pub use provider_context::{
     PriorTurnHistory, PriorTurnRow, ProviderContextError, ProviderHistoryItem, ProviderHistoryKind,
-    prepare_provider_history,
+    ProviderHistoryValue, prepare_provider_history,
 };
 pub use runner::TurnRunner;
 pub(crate) use tool_boundary::ToolExecutionRuntimeRoot;

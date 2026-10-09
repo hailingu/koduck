@@ -22,11 +22,11 @@ pub(super) fn provider_messages(input: &ModelInput) -> Vec<serde_json::Value> {
                 flush_assistant(&mut messages, &mut assistant);
                 messages.push(serde_json::json!({
                     "role": "user",
-                    "content": item.content.as_deref().unwrap_or_default(),
+                    "content": item.effective_text().unwrap_or_default(),
                 }));
             }
             ProviderHistoryKind::AgentMessageDelta => {
-                assistant.push_str(item.content.as_deref().unwrap_or_default());
+                assistant.push_str(item.effective_text().unwrap_or_default());
             }
             ProviderHistoryKind::Terminal => flush_assistant(&mut messages, &mut assistant),
             ProviderHistoryKind::Usage
