@@ -940,8 +940,10 @@ whole-document review or implementation is claimed.
 
 ## Archival [Conditionally Required — Decision Status is `Rejected`, or Decision Status is `Deprecated` or `Superseded` and Implementation Status is final]
 
-Inactive future-lifecycle guidance: this ADR is Accepted and Not Started, so
-the retirement trigger does not apply. If the trigger later applies, archive
+Inactive future-lifecycle guidance: this ADR is Accepted and In Progress —
+T-1 is Complete, T-2's AC-1 through AC-8 are Pass, and only AC-9's
+exact-revision review clause remains open — so the retirement trigger does
+not apply. If the trigger later applies, archive
 under `koduck-ai/docs/adr/archive/` with this
 filename, update all markers and reciprocal/index paths in the same change,
 and preserve replacement paths when superseded, under AGENTS.md.
@@ -974,3 +976,4 @@ and preserve replacement paths when superseded, under AGENTS.md.
 | 2026-10-10 | Recorded the AC-9 delivery evidence for the `6b52aec` push: full Sonar admission line with matching revision/tree/base/policy identity (`new_issues=0`, Quality Gate `OK`, coverage 187/198), required CI run 37884287394 green on the exact SHA, and all routed commands at `d276e0d` exited 0. The final review-coverage clause stays open for the repository owner's explicit automatic-review round trigger after three consumed rounds; no review-ready or completion status is claimed. | @zcode |
 | 2026-10-10 | Closed automatic-review round 4 (review 5465770353, reviewed commit `752540c`, owner-triggered through the shared review link): addressed P1-1 by splitting the 82-line AC-4 `run` wrapper into `run` plus `assert_two_round_requests`/`assert_next_preparation` and correcting the A-6/S-FILES measurement narrative (the initial pass had skipped `pub(crate) fn` declarations; the pre-existing 88-line `non_correction_payload_fixtures` fixture is out of scope and unchanged), and addressed P1-2 by adding this record's path marker to the twelve affected files that lacked it (`commit_reconciliation.rs`, `provider/mod.rs`, and the ten adapted test files). Verification at the fixing revision: `cand_13_context::tool_continuation_snapshot -- --exact` 1 passed / 0 failed, full suite 523 passed / 0 failed, fmt and strict clippy clean. Both thread replies cite the fixing commit; review coverage of that revision awaits the owner's next explicit trigger. | @zcode |
 | 2026-10-10 | Closed automatic-review round 5 (review 5466056664, reviewed commit `245bf46`, owner-triggered): addressed its single P2 by replacing this record's retained Key State And Invariant Matrix "not run" gap cells with the recorded AC-1 through AC-8 results at `d276e0d`, leaving only the AC-9 exact-revision review gap open; governance tests 208 passed / 0 failed and repository validation passed at the fixing revision. The thread reply cites the fixing commit; review coverage of that revision awaits the owner's next explicit trigger. | @zcode |
+| 2026-10-10 | Closed automatic-review round 6 (review 5466108330, reviewed commit `e3c30f8`, owner-triggered): addressed its single P2 by updating the retained Archival future-lifecycle guidance from the drafting-era `Accepted and Not Started` assessment to the current Accepted / In Progress state (T-1 Complete, AC-1 through AC-8 Pass, only AC-9's review clause open) while keeping the archival instructions unchanged; governance tests 208 passed / 0 failed and repository validation passed at the fixing revision. The thread reply cites the fixing commit. | @zcode |
