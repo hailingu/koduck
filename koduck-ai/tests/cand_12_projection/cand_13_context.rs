@@ -20,7 +20,7 @@ use koduck_ai::application::{
     ModelProvider, ModelToolCall, ModelToolResult, NewItem, PriorTurnHistory, PriorTurnRow,
     ProjectionError, ProjectionScope, ProviderContextError, ProviderError, ProviderEvent,
     ProviderHistoryItem, ProviderHistoryKind, ProviderHistoryValue, ToolRound, TurnCommand,
-    TurnHistory, TurnRunner, prepare_provider_history,
+    TurnHistory, TurnRunError, TurnRunner, prepare_provider_history,
 };
 use koduck_ai::domain::item_correction::ItemCorrection;
 use koduck_ai::domain::{
@@ -537,6 +537,7 @@ struct MemoryState {
     turn_order: Vec<(ThreadId, TurnId)>,
     turn_items: BTreeMap<TurnId, Vec<Item>>,
     accepted: usize,
+    prior_read_error: Option<HistoryError>,
 }
 
 impl MemoryHistory {
@@ -566,6 +567,11 @@ impl MemoryHistory {
     fn accepted_count(&self) -> usize {
         self.state.borrow().accepted
     }
+
+    /// Makes the next bounded prior-history read fail with the typed error.
+    fn fail_next_prior_read(&self, error: HistoryError) {
+        self.state.borrow_mut().prior_read_error = Some(error);
+    }
 }
 
 impl TurnHistory for MemoryHistory {
@@ -587,7 +593,10 @@ impl TurnHistory for MemoryHistory {
         trust: &TrustContext,
         thread_id: ThreadId,
     ) -> Result<Vec<PriorTurnHistory>, HistoryError> {
-        let state = self.state.borrow();
+        let mut state = self.state.borrow_mut();
+        if let Some(error) = state.prior_read_error.take() {
+            return Err(error);
+        }
         let mut groups = Vec::new();
         for (owned_thread, turn_id) in &state.turn_order {
             if *owned_thread != thread_id {
@@ -816,6 +825,32 @@ fn context_rejection_maps_to_the_503_problem_before_any_stream() {
     );
     assert_eq!(history.accepted_count(), 0, "no Turn is accepted");
     assert!(inputs.borrow().is_empty(), "no provider request is made");
+}
+
+/// PC-07 typed read failure: a pre-acceptance read `Unavailable` — read
+/// deadline expiry or decode failure — surfaces as the exact History
+/// variant, without the post-acceptance durability conversion.
+#[test]
+fn pre_acceptance_read_failure_retains_the_exact_history_variant() {
+    let history = MemoryHistory::default();
+    history.fail_next_prior_read(HistoryError::Unavailable);
+    let mut runner = TurnRunner::new(
+        RecordingProvider {
+            inputs: Rc::new(RefCell::new(Vec::new())),
+        },
+        history.clone(),
+    );
+
+    let result = runner.execute(
+        TurnCommand::new(command_trust(), Some(ThreadId::new()), "hello")
+            .expect("valid resumed command"),
+    );
+
+    assert!(matches!(
+        result,
+        Err(TurnRunError::History(HistoryError::Unavailable))
+    ));
+    assert_eq!(history.accepted_count(), 0, "no Turn is accepted");
 }
 
 /// Reads exactly one HTTP request (headers plus `Content-Length` body) on a

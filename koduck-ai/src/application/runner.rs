@@ -276,8 +276,10 @@ where
     ///
     /// # Errors
     ///
-    /// Returns [`TurnRunError::History`] for the bounded authenticated read
-    /// and [`TurnRunError::Context`] when preparation rejects the source.
+    /// Returns the exact [`TurnRunError::History`] cause of the bounded
+    /// authenticated read — including `Unavailable` for read deadline expiry
+    /// or decode failure (PC-07) — and [`TurnRunError::Context`] when
+    /// preparation rejects the source.
     fn prepare_prior_history(
         history: &H,
         trust: &TrustContext,
@@ -285,7 +287,7 @@ where
     ) -> Result<Vec<ProviderHistoryItem>, TurnRunError> {
         let groups = history
             .prior_thread_turns(trust, thread_id)
-            .map_err(|error| history_failure(error, false, &[]))?;
+            .map_err(TurnRunError::History)?;
         Ok(prepare_provider_history(trust, thread_id, &groups)?)
     }
 
