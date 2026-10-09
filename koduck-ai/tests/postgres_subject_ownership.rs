@@ -48,6 +48,7 @@ fn production_postgres_contract() {
         include_str!("../migrations/0007_cand_2_tool_audit.sql"),
         include_str!("../migrations/0008_cand_2_interruption_approval_cancellation.sql"),
         include_str!("../migrations/0009_cand_3_correction_items.sql"),
+        include_str!("../migrations/0010_cand_18_chat_submissions.sql"),
     ] {
         runtime
             .block_on(async { sqlx::raw_sql(migration).execute(&pool).await })

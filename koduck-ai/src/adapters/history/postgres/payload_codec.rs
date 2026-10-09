@@ -286,6 +286,23 @@ fn decode_payload(
     }
 }
 
+/// Decodes one stored sequence-1 payload as its exact original user-input
+/// content, failing closed for any other item type or shape so a corrupt
+/// binding can never authorize execution (ADR-0018 SI-08c).
+pub(super) fn decode_original_user_input(
+    item_type: &str,
+    payload: &Value,
+) -> Result<String, HistoryError> {
+    match item_type {
+        "user_message" => payload
+            .get("content")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .ok_or(HistoryError::Unavailable),
+        _ => Err(HistoryError::Unavailable),
+    }
+}
+
 pub(super) fn field(payload: &Value, name: &str) -> Result<String, HistoryError> {
     payload
         .get(name)

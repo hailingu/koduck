@@ -268,6 +268,33 @@ pub trait PostgresExecutor: Clone {
     /// Returns [`HistoryError`] when the transaction cannot commit.
     fn accept_initial(&self, command: &TurnCommand) -> Result<AcceptedTurn, HistoryError>;
 
+    /// Reads one owned submission binding unlocked, validating its joined
+    /// canonical structure against the candidate command (ADR-0018 SI-07a,
+    /// SI-08c).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`HistoryError`] for unavailability, corrupt structure, or the
+    /// typed drift conflict.
+    fn submission_observation(
+        &self,
+        command: &TurnCommand,
+        deadline: Duration,
+    ) -> Result<Option<crate::application::SubmissionObservation>, HistoryError>;
+
+    /// Atomically rechecks and accepts one identified submission with its
+    /// binding and bounded settlement (ADR-0018 SI-03a, SI-06, SI-07c).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`HistoryError`] when the attempt cannot commit or the key
+    /// drifted.
+    fn accept_initial_with_submission(
+        &self,
+        command: &TurnCommand,
+        attempt_budget: Duration,
+    ) -> Result<crate::application::IdentifiedAcceptance, HistoryError>;
+
     /// Conditionally allocates a sequence and appends under the expected generation.
     ///
     /// # Errors
@@ -664,6 +691,23 @@ impl<E: PostgresExecutor + Send + 'static> TurnHistory for PostgresTurnHistory<E
 
     fn accept_initial(&mut self, command: &TurnCommand) -> Result<AcceptedTurn, HistoryError> {
         self.executor.accept_initial(command)
+    }
+
+    fn submission_observation(
+        &self,
+        command: &TurnCommand,
+        deadline: Duration,
+    ) -> Result<Option<crate::application::SubmissionObservation>, HistoryError> {
+        self.executor.submission_observation(command, deadline)
+    }
+
+    fn accept_initial_with_submission(
+        &mut self,
+        command: &TurnCommand,
+        deadline: std::time::Duration,
+    ) -> Result<crate::application::IdentifiedAcceptance, HistoryError> {
+        self.executor
+            .accept_initial_with_submission(command, deadline)
     }
 
     fn append(&mut self, turn: &AcceptedTurn, item: NewItem) -> Result<Item, HistoryError> {

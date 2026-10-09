@@ -18,7 +18,7 @@ use sqlx::Row;
 use sqlx::postgres::{PgConnectOptions, PgPool, PgPoolOptions};
 use uuid::Uuid;
 
-pub(crate) const MIGRATIONS: [&str; 9] = [
+pub(crate) const MIGRATIONS: [&str; 10] = [
     include_str!("../../migrations/0001_cand_1_history.sql"),
     include_str!("../../migrations/0002_cand_2_policy_execution.sql"),
     include_str!("../../migrations/0003_cand_2_requester_ownership.sql"),
@@ -28,9 +28,10 @@ pub(crate) const MIGRATIONS: [&str; 9] = [
     include_str!("../../migrations/0007_cand_2_tool_audit.sql"),
     include_str!("../../migrations/0008_cand_2_interruption_approval_cancellation.sql"),
     include_str!("../../migrations/0009_cand_3_correction_items.sql"),
+    include_str!("../../migrations/0010_cand_18_chat_submissions.sql"),
 ];
 
-static MIGRATIONS_ONCE: Once = Once::new();
+pub(crate) static MIGRATIONS_ONCE: Once = Once::new();
 
 pub(crate) struct Harness {
     pub(crate) runtime: tokio::runtime::Runtime,

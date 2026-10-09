@@ -4,6 +4,8 @@
 
 //! Provider-neutral lifecycle orchestration and durable-before-visible ordering.
 
+use std::sync::Arc;
+
 use crate::domain::{Item, TenantId, TerminalOutcome, ThreadId, TrustContext, Turn, TurnId, Usage};
 
 use super::delta_coalescer::DeltaCoalescer;
@@ -13,6 +15,10 @@ use super::ports::{
     TurnResult, TurnRunError, TurnStreamEvent,
 };
 use super::provider_context::{ProviderHistoryItem, prepare_provider_history};
+use super::submission::{
+    AcceptanceBudget, AcceptanceClock, IdentifiedAcceptance, LOOKUP_BUDGET, TurnOutcome,
+    WRITE_BUDGET, WRITE_GATE_MINIMUM, system_clock,
+};
 
 pub(super) mod failure;
 pub(super) mod runner_stream;
@@ -34,6 +40,7 @@ pub struct TurnRunner<P, H, T = NoToolExecution> {
     provider: P,
     history: H,
     tools: T,
+    acceptance_clock: Arc<dyn AcceptanceClock>,
 }
 
 pub(super) struct ExecutionState {
@@ -84,16 +91,18 @@ where
     P: ModelProvider,
     H: TurnHistory,
 {
-    /// Creates a runner from consumer-owned provider and history ports.
+    /// Creates a runner from consumer-owned provider and history ports with
+    /// the production system acceptance clock.
     ///
     /// Model Tool calls fail closed with a recorded typed unavailability
     /// until [`Self::with_tool_executor`] assembles a C-5 boundary.
     #[must_use]
-    pub const fn new(provider: P, history: H) -> Self {
+    pub fn new(provider: P, history: H) -> Self {
         Self {
             provider,
             history,
             tools: NoToolExecution,
+            acceptance_clock: system_clock(),
         }
     }
 }
@@ -112,7 +121,23 @@ where
             provider: self.provider,
             history: self.history,
             tools,
+            acceptance_clock: self.acceptance_clock,
         }
+    }
+
+    /// Returns a runner whose identified-submission acceptance policy reads
+    /// the supplied monotonic acceptance clock (ADR-0018 SI-07i).
+    ///
+    /// The clock dependency is retained through cloning and Tool
+    /// composition, while every identified request derives its own separate
+    /// start reading and budget. The production runtime supplies the system
+    /// clock explicitly through this builder; tests may substitute a manual
+    /// clock without altering any real database, lease, or fenced-recovery
+    /// timer.
+    #[must_use]
+    pub fn with_acceptance_clock(mut self, acceptance_clock: Arc<dyn AcceptanceClock>) -> Self {
+        self.acceptance_clock = acceptance_clock;
+        self
     }
 }
 
@@ -211,16 +236,218 @@ where
             .history
             .accept_initial(&command)
             .map_err(|error| history_failure(error, false, &[]))?;
-        let liveness = self.start_liveness_or_close(&accepted)?;
+        self.run_created_turn(
+            &command.trust,
+            command.input,
+            &accepted,
+            prepared_history,
+            observer,
+            cancelled,
+        )
+    }
+
+    /// Executes one identified or unidentified chat submission and separates
+    /// the created owner from an observed existing key (ADR-0018 SI-04,
+    /// SI-07).
+    ///
+    /// An unidentified command keeps the exact existing acceptance behavior
+    /// and returns [`TurnOutcome::Owned`]. An identified command performs the
+    /// unlocked owned lookup, fresh prior-history preparation, the
+    /// cancellation-first remaining-4-second write gate, and one atomic
+    /// acceptance with its full reserved settlement; an exact existing key
+    /// returns [`TurnOutcome::Observed`] with no preparation-side execution
+    /// authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TurnRunError`] under the same conditions as
+    /// [`Self::execute_with_observer_and_cancellation`], plus
+    /// [`TurnRunError::Cancelled`] for an observed pre-acceptance
+    /// cancellation (SI-07g) and the typed
+    /// [`HistoryError::SubmissionConflict`] for an owned-key drift (SI-02d).
+    pub fn execute_submission_with_observer_and_cancellation(
+        &mut self,
+        command: TurnCommand,
+        observer: &mut dyn FnMut(TurnStreamEvent),
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<TurnOutcome, TurnRunError> {
+        if command.submission_id.is_none() {
+            // The unidentified path retains the existing acceptance behavior
+            // and never writes a binding (SI-03a, SI-10).
+            return self
+                .execute_with_observer_and_cancellation(command, observer, cancelled)
+                .map(TurnOutcome::Owned);
+        }
+        self.execute_identified_submission(&command, observer, cancelled)
+    }
+
+    /// Runs the identified-submission acceptance flow (SI-07a through
+    /// SI-07i) on a command that already carries a validated submission
+    /// identity.
+    fn execute_identified_submission(
+        &mut self,
+        command: &TurnCommand,
+        observer: &mut dyn FnMut(TurnStreamEvent),
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<TurnOutcome, TurnRunError> {
+        // SI-07d: the monotonic acceptance deadline starts at fully validated
+        // input/trust entry immediately before the preliminary lookup. Each
+        // identified request owns this separate budget (SI-07i).
+        let budget = AcceptanceBudget::start(self.acceptance_clock.now());
+        // SI-07a: the preliminary lookup is read-only and unlocked, bounded
+        // by the remaining acceptance time (SI-07c). An unavailable lookup
+        // fails closed before any preparation or write.
+        let Some(lookup_deadline) = budget.clamp(LOOKUP_BUDGET, self.acceptance_clock.now()) else {
+            return Err(TurnRunError::History(HistoryError::Unavailable));
+        };
+        match self
+            .history
+            .submission_observation(command, lookup_deadline)
+        {
+            Ok(Some(receipt)) => return Ok(TurnOutcome::Observed(receipt)),
+            Ok(None) => {}
+            Err(HistoryError::SubmissionConflict) => {
+                return Err(TurnRunError::History(HistoryError::SubmissionConflict));
+            }
+            Err(error) => return Err(TurnRunError::History(error)),
+        }
+        // Fresh key: prepare the CAND-13 effective context unchanged before
+        // atomic acceptance (SI-07a).
+        let prepared_history = match command.thread_id {
+            Some(thread_id) => {
+                match Self::prepare_prior_history(&self.history, &command.trust, thread_id) {
+                    Ok(history) => history,
+                    Err(rejection) => {
+                        return self.resolve_rejected_preparation(command, &budget, rejection);
+                    }
+                }
+            }
+            None => Vec::new(),
+        };
+        // SI-07g and SI-07d: cancellation is checked first, then time. An
+        // observed pre-acceptance cancellation wins over simultaneous time
+        // shortage, and less than four remaining seconds starts no write.
+        if cancelled() {
+            return Err(TurnRunError::Cancelled);
+        }
+        let Some(remaining) = budget.remaining(self.acceptance_clock.now()) else {
+            return Err(TurnRunError::History(HistoryError::Unavailable));
+        };
+        if remaining < WRITE_GATE_MINIMUM {
+            return Err(TurnRunError::History(HistoryError::Unavailable));
+        }
+        // SI-03a, SI-06, SI-07c: one atomic acceptance whose write attempt
+        // and permitted reconciliation each retain their full reserved
+        // budgets inside the port.
+        match self
+            .history
+            .accept_initial_with_submission(command, WRITE_BUDGET)
+        {
+            Ok(IdentifiedAcceptance::Created(accepted)) => {
+                // SI-07h: a cancellation racing the acceptance settles under
+                // the proven Created outcome and enters the existing durable
+                // cancellation path instead of provider execution.
+                if cancelled() {
+                    return self
+                        .cancel_created_turn_without_execution(&command.trust, &accepted, observer)
+                        .map(TurnOutcome::Owned);
+                }
+                // SI-07d: proven Created is handed to the existing execution
+                // flow even if the acceptance deadline has since passed.
+                self.run_created_turn(
+                    &command.trust,
+                    command.input.clone(),
+                    &accepted,
+                    prepared_history,
+                    observer,
+                    cancelled,
+                )
+                .map(TurnOutcome::Owned)
+            }
+            Ok(IdentifiedAcceptance::Existing(receipt)) => Ok(TurnOutcome::Observed(receipt)),
+            Err(HistoryError::SubmissionConflict) => {
+                Err(TurnRunError::History(HistoryError::SubmissionConflict))
+            }
+            Err(error) => Err(history_failure(error, false, &[])),
+        }
+    }
+
+    /// SI-07b: preparation rejected, so one further bounded unlocked key
+    /// lookup decides between a concurrently committed exact receipt, the
+    /// typed drift conflict, the preserved original rejection, and a
+    /// fail-closed unavailability. This branch starts no acceptance write.
+    fn resolve_rejected_preparation(
+        &mut self,
+        command: &TurnCommand,
+        budget: &AcceptanceBudget,
+        rejection: TurnRunError,
+    ) -> Result<TurnOutcome, TurnRunError> {
+        let Some(final_deadline) = budget.clamp(LOOKUP_BUDGET, self.acceptance_clock.now()) else {
+            return Err(TurnRunError::History(HistoryError::Unavailable));
+        };
+        match self.history.submission_observation(command, final_deadline) {
+            Ok(Some(receipt)) => Ok(TurnOutcome::Observed(receipt)),
+            Ok(None) => Err(rejection),
+            Err(HistoryError::SubmissionConflict) => {
+                Err(TurnRunError::History(HistoryError::SubmissionConflict))
+            }
+            Err(_) => Err(TurnRunError::History(HistoryError::Unavailable)),
+        }
+    }
+
+    /// SI-07h: a proven Created owner whose cancellation already fired
+    /// durably closes the Turn as `cancelled` without provider execution,
+    /// keeping its binding and exactly one canonical terminal.
+    fn cancel_created_turn_without_execution(
+        &mut self,
+        trust: &TrustContext,
+        accepted: &AcceptedTurn,
+        observer: &mut dyn FnMut(TurnStreamEvent),
+    ) -> Result<TurnResult, TurnRunError> {
+        observer(TurnStreamEvent::Started {
+            thread_id: accepted.thread_id,
+            turn_id: accepted.turn_id,
+        });
+        let mut state = ExecutionState::started();
+        append_terminal_or_replay_fenced(
+            &mut self.history,
+            accepted,
+            &mut state,
+            TerminalOutcome::Cancelled,
+            observer,
+        )?;
+        self.notify_terminal(trust, accepted.thread_id, accepted.turn_id);
+        Self::finish(
+            &self.history,
+            &trust.tenant_id,
+            accepted,
+            state.lifecycle,
+            state.published,
+        )
+    }
+
+    /// Runs one already accepted Turn through liveness, execution, and
+    /// terminal finishing — the shared created-owner path of the
+    /// unidentified and identified flows.
+    fn run_created_turn(
+        &mut self,
+        trust: &TrustContext,
+        input: String,
+        accepted: &AcceptedTurn,
+        prepared_history: Vec<ProviderHistoryItem>,
+        observer: &mut dyn FnMut(TurnStreamEvent),
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<TurnResult, TurnRunError> {
+        let liveness = self.start_liveness_or_close(accepted)?;
         observer(TurnStreamEvent::Started {
             thread_id: accepted.thread_id,
             turn_id: accepted.turn_id,
         });
         let input = ModelInput {
-            tenant_id: command.trust.tenant_id.clone(),
+            tenant_id: trust.tenant_id.clone(),
             thread_id: accepted.thread_id,
             turn_id: accepted.turn_id,
-            input: command.input,
+            input,
             history: prepared_history,
             tool_rounds: Vec::new(),
         };
@@ -229,8 +456,8 @@ where
             &mut self.provider,
             &mut self.history,
             &mut self.tools,
-            &accepted,
-            &command.trust,
+            accepted,
+            trust,
             &mut state,
             input,
             observer,
@@ -239,16 +466,11 @@ where
         match result {
             // The durable Turn terminal may release the boundary's Turn authority (ADR-0003 T-3).
             Ok(()) => {
-                self.notify_terminal(&command.trust, accepted.thread_id, accepted.turn_id);
+                self.notify_terminal(trust, accepted.thread_id, accepted.turn_id);
             }
             Err(TurnRunError::Durability(failure)) => {
                 return self.settle_durability_failure(
-                    &command.trust,
-                    &accepted,
-                    liveness,
-                    &mut state,
-                    observer,
-                    failure,
+                    trust, accepted, liveness, &mut state, observer, failure,
                 );
             }
             Err(TurnRunError::ResourceLimit(failure)) => {
@@ -256,15 +478,15 @@ where
                 // before this failure surfaced, so the boundary's fail-closed
                 // probe can reclaim its process-local authority (ADR-0003
                 // T-3, ADR-0005 PLB-7).
-                self.notify_terminal(&command.trust, accepted.thread_id, accepted.turn_id);
+                self.notify_terminal(trust, accepted.thread_id, accepted.turn_id);
                 return Err(TurnRunError::ResourceLimit(failure));
             }
             Err(error) => return Err(error),
         }
         Self::finish(
             &self.history,
-            &command.trust.tenant_id,
-            &accepted,
+            &trust.tenant_id,
+            accepted,
             state.lifecycle,
             state.published,
         )

@@ -1,13 +1,15 @@
 // ADR: docs/adr/ADR-0001-provider-neutral-turn-kernel.md
 // ADR: koduck-ai/docs/adr/ADR-0002-typed-http-wire-serialization.md
 // ADR: koduck-ai/docs/adr/ADR-0003-correction-item-schema-and-raw-replay.md
+// ADR: docs/adr/ADR-0018-chat-submission-identity-and-atomic-acceptance.md
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::application::{TurnCommand, TurnResult, TurnStreamEvent};
 use crate::domain::{
-    Item, ItemPayload, TerminalOutcome, ThreadId, TrustContext, TurnId, TurnStatus, Usage,
+    Item, ItemPayload, SubmissionId, TerminalOutcome, ThreadId, TrustContext, TurnId, TurnStatus,
+    Usage,
 };
 
 pub(super) fn parse_turn_request(body: &str, trust: TrustContext) -> Result<TurnCommand, ()> {
@@ -17,7 +19,110 @@ pub(super) fn parse_turn_request(body: &str, trust: TrustContext) -> Result<Turn
         .map(|value| Uuid::parse_str(&value).map(crate::domain::ThreadId::from_uuid))
         .transpose()
         .map_err(|_| ())?;
-    TurnCommand::new(trust, thread_id, document.input).map_err(|_| ())
+    let command = TurnCommand::new(trust, thread_id, document.input).map_err(|_| ())?;
+    match document.submission_id {
+        // Absent: the legacy no-identity request keeps its existing behavior.
+        SubmissionIdentityField::Absent => Ok(command),
+        // Explicit null is rejected, never treated as absence (SI-01a).
+        SubmissionIdentityField::ExplicitNull => Err(()),
+        SubmissionIdentityField::Value(raw) => {
+            let submission_id = parse_hyphenated_submission_uuid(&raw).ok_or(())?;
+            command.with_submission_id(submission_id).map_err(|_| ())
+        }
+    }
+}
+
+/// Parses the strict 36-ASCII-character hyphenated UUID form with
+/// case-insensitive hexadecimal digits (SI-01a).
+///
+/// Other UUID presentations (simple, braced, URN) and the nil UUID are
+/// rejected; the parsed value's text case is not semantic (SI-02c).
+fn parse_hyphenated_submission_uuid(raw: &str) -> Option<SubmissionId> {
+    let bytes = raw.as_bytes();
+    if bytes.len() != 36 {
+        return None;
+    }
+    for position in [8, 13, 18, 23] {
+        if bytes[position] != b'-' {
+            return None;
+        }
+    }
+    for (position, byte) in bytes.iter().enumerate() {
+        if matches!(position, 8 | 13 | 18 | 23) {
+            continue;
+        }
+        if !byte.is_ascii_hexdigit() {
+            return None;
+        }
+    }
+    Uuid::parse_str(raw)
+        .ok()
+        .and_then(|value| SubmissionId::from_uuid(value).ok())
+}
+
+/// The three wire states of the optional submission identity member (SI-01a).
+///
+/// A plain `Option` collapses an explicit JSON null into absence, so the
+/// strict contract needs this field shape: an absent member deserializes
+/// through the field default, a present null selects the explicit-null state
+/// through the option visitor, and a string selects the value state.
+#[derive(Default)]
+enum SubmissionIdentityField {
+    /// The member is absent: legacy no-identity behavior.
+    #[default]
+    Absent,
+    /// The member is explicitly null: rejected without history operations.
+    ExplicitNull,
+    /// The member carries the client's UUID text.
+    Value(String),
+}
+
+/// Deserializes one optional member while keeping null distinct from absence.
+fn deserialize_submission_identity<'de, D>(
+    deserializer: D,
+) -> Result<SubmissionIdentityField, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    deserializer.deserialize_option(SubmissionIdentityVisitor)
+}
+
+/// The option visitor keeping null distinct from an absent member (SI-01a).
+struct SubmissionIdentityVisitor;
+
+impl<'de> serde::de::Visitor<'de> for SubmissionIdentityVisitor {
+    type Value = SubmissionIdentityField;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("null or a hyphenated UUID string")
+    }
+
+    fn visit_none<E>(self) -> Result<Self::Value, E> {
+        Ok(SubmissionIdentityField::ExplicitNull)
+    }
+
+    fn visit_unit<E>(self) -> Result<Self::Value, E> {
+        Ok(SubmissionIdentityField::ExplicitNull)
+    }
+
+    fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct ValueVisitor;
+        impl serde::de::Visitor<'_> for ValueVisitor {
+            type Value = SubmissionIdentityField;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a hyphenated UUID string")
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E> {
+                Ok(SubmissionIdentityField::Value(value.to_owned()))
+            }
+        }
+        deserializer.deserialize_string(ValueVisitor)
+    }
 }
 
 #[derive(Deserialize)]
@@ -25,6 +130,33 @@ pub(super) fn parse_turn_request(body: &str, trust: TrustContext) -> Result<Turn
 struct TurnRequestDocument {
     input: String,
     thread_id: Option<String>,
+    // The custom visitor distinguishes an absent member from a present null
+    // (SI-01a).
+    #[serde(default, deserialize_with = "deserialize_submission_identity")]
+    submission_id: SubmissionIdentityField,
+}
+
+/// The exact 202 acceptance receipt body for one identified retry (SI-05):
+/// exactly `submission_id`, `thread_id`, `turn_id`, and `status: accepted`,
+/// with canonical lowercase hyphenated UUID text.
+pub(super) fn submission_receipt_body(
+    observation: &crate::application::SubmissionObservation,
+) -> String {
+    wire_json(&SubmissionReceiptDocument {
+        submission_id: observation.submission_id.as_uuid().to_string(),
+        thread_id: observation.thread_id.as_uuid().to_string(),
+        turn_id: observation.turn_id.as_uuid().to_string(),
+        status: "accepted",
+    })
+}
+
+/// 202 submission-acceptance response body (SI-05).
+#[derive(Serialize)]
+struct SubmissionReceiptDocument {
+    submission_id: String,
+    thread_id: String,
+    turn_id: String,
+    status: &'static str,
 }
 
 pub(super) fn sync_body(result: &TurnResult) -> String {

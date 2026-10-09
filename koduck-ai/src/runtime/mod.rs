@@ -39,7 +39,7 @@ use crate::adapters::http::{
     approvals::ApprovalDecisionTransport, invalid_request_response,
 };
 use crate::adapters::provider::{OpenAiCompatibleProvider, ReqwestOpenAiTransport};
-use crate::application::{AppendPolicy, ApprovalDecisionRoute, TurnRunner};
+use crate::application::{AppendPolicy, ApprovalDecisionRoute, TurnRunner, system_clock};
 use crate::domain::{TenantId, ThreadId, TrustContext};
 
 const BIND_ADDR: &str = "KODUCK_AI_BIND_ADDR";
@@ -227,11 +227,16 @@ pub async fn run(config: RuntimeConfig) -> Result<(), RuntimeError> {
         config.provider_api_key(),
     );
     let provider = OpenAiCompatibleProvider::new(transport);
-    let runner = TurnRunner::new(provider, history).with_tool_executor(
-        runtime_state
-            .tool_call_executor(attempts.clone(), lease, audit_trail, attempts)
-            .with_pending_approval_canceller(approval_store),
-    );
+    // The identified-submission acceptance clock is the production system
+    // clock, composed explicitly here; each identified request derives its
+    // own budget from one start reading (ADR-0018 SI-07i).
+    let runner = TurnRunner::new(provider, history)
+        .with_acceptance_clock(system_clock())
+        .with_tool_executor(
+            runtime_state
+                .tool_call_executor(attempts.clone(), lease, audit_trail, attempts)
+                .with_pending_approval_canceller(approval_store),
+        );
     let listener = tokio::net::TcpListener::bind(config.bind_addr())
         .await
         .map_err(RuntimeError::Bind)?;
@@ -282,6 +287,7 @@ pub(crate) async fn apply_startup_migrations(
             include_str!("../../migrations/0007_cand_2_tool_audit.sql"),
             include_str!("../../migrations/0008_cand_2_interruption_approval_cancellation.sql"),
             include_str!("../../migrations/0009_cand_3_correction_items.sql"),
+            include_str!("../../migrations/0010_cand_18_chat_submissions.sql"),
         ] {
             sqlx::raw_sql(migration)
                 .execute(&mut *transaction)

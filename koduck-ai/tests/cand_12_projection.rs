@@ -15,6 +15,9 @@ mod cand_13_context;
 #[path = "cand_12_projection/fixtures.rs"]
 mod fixtures;
 
+#[path = "cand_12_projection/submission.rs"]
+mod submission;
+
 use fixtures::*;
 use koduck_ai::application::{
     ProjectionError, ProjectionScope, ScopedProjectionItem, project_corrections,

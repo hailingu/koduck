@@ -157,6 +157,22 @@ impl SimulatedPostgres {
 }
 
 impl PostgresExecutor for SimulatedPostgres {
+    fn submission_observation(
+        &self,
+        _command: &TurnCommand,
+        _deadline: std::time::Duration,
+    ) -> Result<Option<koduck_ai::application::SubmissionObservation>, HistoryError> {
+        Ok(None)
+    }
+
+    fn accept_initial_with_submission(
+        &self,
+        _command: &TurnCommand,
+        _attempt_budget: std::time::Duration,
+    ) -> Result<koduck_ai::application::IdentifiedAcceptance, HistoryError> {
+        Err(HistoryError::Unavailable)
+    }
+
     fn request_interrupt(
         &self,
         _trust: &TrustContext,

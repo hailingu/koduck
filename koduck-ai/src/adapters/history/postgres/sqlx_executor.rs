@@ -31,6 +31,7 @@ mod interruption_ownership;
 mod prior_turn_history;
 mod projection_batch;
 mod recovery_budget;
+mod submission_child;
 /// Production `PostgreSQL` executor using one `SQLx` pool and its owning Tokio runtime.
 #[derive(Clone)]
 pub struct SqlxPostgresExecutor {
@@ -94,69 +95,9 @@ impl SqlxPostgresExecutor {
     ) -> Result<AcceptedTurn, HistoryError> {
         let tenant_id = command.trust.tenant_id.clone();
         let generation = LeaseGeneration::initial();
-        let (_, payload, _, _, _) = encode_payload(&input.payload);
         let mut transaction = self.pool.begin().await.map_err(unavailable)?;
-        commit_reconciliation::lock_operation(&mut transaction, input.item_id.as_uuid()).await?;
-        sqlx::query(
-            "INSERT INTO threads (tenant_id, subject_id, thread_id) VALUES ($1, $2, $3) \
-             ON CONFLICT (tenant_id, thread_id) DO NOTHING",
-        )
-        .bind(tenant_id.as_str())
-        .bind(command.trust.subject_id.as_str())
-        .bind(thread_id.as_uuid())
-        .execute(&mut *transaction)
-        .await
-        .map_err(unavailable)?;
-        let owns_thread = sqlx::query_scalar::<_, bool>(
-            "SELECT EXISTS(SELECT 1 FROM threads WHERE tenant_id = $1 \
-             AND subject_id = $2 AND thread_id = $3)",
-        )
-        .bind(tenant_id.as_str())
-        .bind(command.trust.subject_id.as_str())
-        .bind(thread_id.as_uuid())
-        .fetch_one(&mut *transaction)
-        .await
-        .map_err(unavailable)?;
-        if !owns_thread {
-            return Err(HistoryError::NotFound);
-        }
-        sqlx::query(
-            "INSERT INTO turns \
-             (tenant_id, thread_id, turn_id, status, next_sequence) \
-             VALUES ($1, $2, $3, 'started', 2)",
-        )
-        .bind(tenant_id.as_str())
-        .bind(thread_id.as_uuid())
-        .bind(turn_id.as_uuid())
-        .execute(&mut *transaction)
-        .await
-        .map_err(unavailable)?;
-        sqlx::query(
-            "INSERT INTO turn_items \
-             (tenant_id, thread_id, turn_id, sequence, item_id, item_type, payload, is_terminal) \
-             VALUES ($1, $2, $3, 1, $4, 'user_message', $5, FALSE)",
-        )
-        .bind(tenant_id.as_str())
-        .bind(thread_id.as_uuid())
-        .bind(turn_id.as_uuid())
-        .bind(input.item_id.as_uuid())
-        .bind(payload)
-        .execute(&mut *transaction)
-        .await
-        .map_err(unavailable)?;
-        sqlx::query(
-            "INSERT INTO turn_leases \
-             (tenant_id, thread_id, turn_id, generation, renewed_at, expires_at) \
-             VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP, \
-                     CURRENT_TIMESTAMP + INTERVAL '20 seconds')",
-        )
-        .bind(tenant_id.as_str())
-        .bind(thread_id.as_uuid())
-        .bind(turn_id.as_uuid())
-        .bind(generation_i64(generation)?)
-        .execute(&mut *transaction)
-        .await
-        .map_err(unavailable)?;
+        write_initial_canonical_state(&mut transaction, command, thread_id, turn_id, &input)
+            .await?;
         transaction.commit().await.map_err(unavailable)?;
         Ok(AcceptedTurn::new(
             tenant_id, thread_id, turn_id, generation, input,
@@ -445,6 +386,84 @@ impl SqlxPostgresExecutor {
     }
 }
 
+/// Writes the initial Thread, Turn, sequence-1 input Item, and generation-1
+/// lease inside one caller-owned transaction, taking the single-bigint Item
+/// operation lock first (ADR-0001). Identified acceptance reuses this exact
+/// logic inside its own transaction after the separate two-`int4` submission
+/// lock (ADR-0018 SI-03a/SI-03b).
+pub(super) async fn write_initial_canonical_state(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    command: &TurnCommand,
+    thread_id: ThreadId,
+    turn_id: TurnId,
+    input: &Item,
+) -> Result<(), HistoryError> {
+    let tenant_id = &command.trust.tenant_id;
+    let (_, payload, _, _, _) = encode_payload(&input.payload);
+    commit_reconciliation::lock_operation(transaction, input.item_id.as_uuid()).await?;
+    sqlx::query(
+        "INSERT INTO threads (tenant_id, subject_id, thread_id) VALUES ($1, $2, $3) \
+         ON CONFLICT (tenant_id, thread_id) DO NOTHING",
+    )
+    .bind(tenant_id.as_str())
+    .bind(command.trust.subject_id.as_str())
+    .bind(thread_id.as_uuid())
+    .execute(&mut **transaction)
+    .await
+    .map_err(unavailable)?;
+    let owns_thread = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM threads WHERE tenant_id = $1 \
+         AND subject_id = $2 AND thread_id = $3)",
+    )
+    .bind(tenant_id.as_str())
+    .bind(command.trust.subject_id.as_str())
+    .bind(thread_id.as_uuid())
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(unavailable)?;
+    if !owns_thread {
+        return Err(HistoryError::NotFound);
+    }
+    sqlx::query(
+        "INSERT INTO turns \
+         (tenant_id, thread_id, turn_id, status, next_sequence) \
+         VALUES ($1, $2, $3, 'started', 2)",
+    )
+    .bind(tenant_id.as_str())
+    .bind(thread_id.as_uuid())
+    .bind(turn_id.as_uuid())
+    .execute(&mut **transaction)
+    .await
+    .map_err(unavailable)?;
+    sqlx::query(
+        "INSERT INTO turn_items \
+         (tenant_id, thread_id, turn_id, sequence, item_id, item_type, payload, is_terminal) \
+         VALUES ($1, $2, $3, 1, $4, 'user_message', $5, FALSE)",
+    )
+    .bind(tenant_id.as_str())
+    .bind(thread_id.as_uuid())
+    .bind(turn_id.as_uuid())
+    .bind(input.item_id.as_uuid())
+    .bind(payload)
+    .execute(&mut **transaction)
+    .await
+    .map_err(unavailable)?;
+    sqlx::query(
+        "INSERT INTO turn_leases \
+         (tenant_id, thread_id, turn_id, generation, renewed_at, expires_at) \
+         VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP, \
+                 CURRENT_TIMESTAMP + INTERVAL '20 seconds')",
+    )
+    .bind(tenant_id.as_str())
+    .bind(thread_id.as_uuid())
+    .bind(turn_id.as_uuid())
+    .bind(generation_i64(LeaseGeneration::initial())?)
+    .execute(&mut **transaction)
+    .await
+    .map_err(unavailable)?;
+    Ok(())
+}
+
 /// Appends recovered D-3 projections, terminalizes the Turn, and fences its lease.
 async fn append_expiry_terminal(
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
@@ -575,6 +594,32 @@ impl PostgresExecutor for SqlxPostgresExecutor {
             self.accept_initial_with_identity_async(&command, thread_id, turn_id, input.clone()),
             commit_reconciliation::accepted_turn(&self.pool, &command, thread_id, turn_id, input),
         ))
+    }
+
+    fn submission_observation(
+        &self,
+        command: &TurnCommand,
+        deadline: Duration,
+    ) -> Result<Option<crate::application::SubmissionObservation>, HistoryError> {
+        let command = command.clone();
+        self.wait_with_deadline(
+            deadline,
+            submission_child::observation_async(&self.pool, &command),
+        )
+    }
+
+    fn accept_initial_with_submission(
+        &self,
+        command: &TurnCommand,
+        attempt_budget: Duration,
+    ) -> Result<crate::application::IdentifiedAcceptance, HistoryError> {
+        let command = command.clone();
+        self.runtime
+            .block_on(submission_child::settle_identified_acceptance(
+                &self.pool,
+                &command,
+                attempt_budget,
+            ))
     }
 
     fn append(&self, turn: &AcceptedTurn, item: NewItem) -> Result<Item, HistoryError> {

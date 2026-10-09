@@ -120,6 +120,7 @@ pub(crate) fn migrated_pool() -> (sqlx::postgres::PgPool, tokio::runtime::Runtim
         include_str!("../../../migrations/0007_cand_2_tool_audit.sql"),
         include_str!("../../../migrations/0008_cand_2_interruption_approval_cancellation.sql"),
         include_str!("../../../migrations/0009_cand_3_correction_items.sql"),
+        include_str!("../../../migrations/0010_cand_18_chat_submissions.sql"),
     ] {
         runtime
             .block_on(async { sqlx::raw_sql(migration).execute(&pool).await })
@@ -480,6 +481,27 @@ impl TurnHistory for MemoryHistory {
             groups.push(PriorTurnHistory::new(*turn_id, rows));
         }
         Ok(groups)
+    }
+
+    fn submission_observation(
+        &self,
+        _command: &TurnCommand,
+        _deadline: std::time::Duration,
+    ) -> Result<Option<koduck_ai::application::SubmissionObservation>, HistoryError> {
+        // The in-memory double hosts no submission bindings; the identified
+        // flow is exercised against the production PostgreSQL adapter.
+        Ok(None)
+    }
+
+    fn accept_initial_with_submission(
+        &mut self,
+        command: &TurnCommand,
+        _deadline: std::time::Duration,
+    ) -> Result<koduck_ai::application::IdentifiedAcceptance, HistoryError> {
+        // Fail closed: an identified command must never be silently
+        // processed as an unidentified fresh submission (SI-01d).
+        let _ = command;
+        Err(HistoryError::Unavailable)
     }
 
     fn accept_initial(&mut self, command: &TurnCommand) -> Result<AcceptedTurn, HistoryError> {

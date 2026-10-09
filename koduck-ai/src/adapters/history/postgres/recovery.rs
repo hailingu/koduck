@@ -103,7 +103,11 @@ fn recover<E: PostgresExecutor>(executor: &E, accepted: &AcceptedTurn, timing: L
                 HistoryError::Fenced
                 | HistoryError::AlreadyTerminal
                 | HistoryError::NotFound
-                | HistoryError::ContextLimit,
+                | HistoryError::ContextLimit
+                // Recovery never carries a submission identity, so the typed
+                // drift conflict cannot arise here; treat it as a terminal
+                // boundary like every other non-retryable rejection.
+                | HistoryError::SubmissionConflict,
             ) => {
                 return;
             }

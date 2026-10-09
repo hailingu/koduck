@@ -4,6 +4,7 @@
 // ADR: koduck-ai/docs/adr/ADR-0004-authenticated-correction-admission.md
 // ADR: koduck-ai/docs/adr/ADR-0005-effective-correction-projection.md
 // ADR: koduck-ai/docs/adr/ADR-0006-effective-provider-context-integration.md
+// ADR: docs/adr/ADR-0018-chat-submission-identity-and-atomic-acceptance.md
 
 //! Provider-neutral application orchestration and consumer-owned ports.
 
@@ -27,6 +28,7 @@ mod preparation;
 mod provider_context;
 mod runner;
 mod runner_terminals;
+pub(crate) mod submission;
 mod terminal;
 pub(crate) mod tool_boundary;
 mod tool_execution;
@@ -81,6 +83,13 @@ pub use provider_context::{
     ProviderHistoryValue, prepare_provider_history,
 };
 pub use runner::TurnRunner;
+pub use submission::{
+    ACCEPTANCE_DEADLINE, AcceptanceBudget, AcceptanceClock, AcceptanceInstant,
+    IdentifiedAcceptance, LOOKUP_BUDGET, RECONCILIATION_BUDGET, SubmissionObservation,
+    SystemAcceptanceClock, TurnOutcome, WRITE_BUDGET, WRITE_GATE_MINIMUM, submission_lock_keys,
+    system_clock, validate_identified_command,
+};
+
 pub(crate) use tool_boundary::ToolExecutionRuntimeRoot;
 #[cfg(test)]
 pub(crate) use tool_boundary::{ToolExecutionAssembly, ToolExecutionBoundary};

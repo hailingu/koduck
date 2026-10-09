@@ -6,9 +6,16 @@
 
 use thiserror::Error;
 
+mod tool_calls;
+
+pub use tool_calls::{
+    CommittedToolCall, ModelToolCall, ModelToolResult, NoToolExecution, ToolCallExecutor,
+    ToolCallTurnContext, ToolRound,
+};
+
 use crate::domain::{
-    Item, ItemPayload, LeaseGeneration, TenantId, TerminalOutcome, ThreadId, TrustContext, TurnId,
-    TurnStatus, TurnTransitionError, Usage,
+    Item, ItemPayload, LeaseGeneration, SubmissionId, TenantId, TerminalOutcome, ThreadId,
+    TrustContext, TurnId, TurnStatus, TurnTransitionError, Usage,
 };
 
 use super::provider_context::{PriorTurnHistory, ProviderContextError, ProviderHistoryItem};
@@ -22,6 +29,13 @@ pub struct TurnCommand {
     pub thread_id: Option<ThreadId>,
     /// Non-empty plain-text input.
     pub input: String,
+    /// Optional durable client submission identity (ADR-0018 SI-01a).
+    ///
+    /// A present value opts this request into subject-scoped deduplication:
+    /// the exact repeated submission returns its acceptance receipt instead
+    /// of creating another Turn. Omission retains the existing fresh-submission
+    /// behavior and writes no binding.
+    pub submission_id: Option<SubmissionId>,
 }
 
 impl TurnCommand {
@@ -46,7 +60,25 @@ impl TurnCommand {
             trust,
             thread_id,
             input,
+            submission_id: None,
         })
+    }
+
+    /// Attaches an already validated non-nil submission identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TurnCommandError`] when the supplied value is nil, so a nil
+    /// identity cannot ride into the acceptance boundary (SI-01a).
+    pub fn with_submission_id(
+        mut self,
+        submission_id: SubmissionId,
+    ) -> Result<Self, TurnCommandError> {
+        if submission_id.as_uuid().is_nil() {
+            return Err(TurnCommandError::NilSubmission);
+        }
+        self.submission_id = Some(submission_id);
+        Ok(self)
     }
 }
 
@@ -59,6 +91,12 @@ pub enum TurnCommandError {
     /// Input exceeded the owned v1 byte limit.
     #[error("turn input exceeds 65536 bytes")]
     InputTooLarge,
+    /// A nil UUID was supplied as the submission identity (SI-01a).
+    #[error("submission id must not be nil")]
+    NilSubmission,
+    /// The identified acceptance port received no submission identity.
+    #[error("identified acceptance requires a submission id")]
+    MissingSubmission,
 }
 
 /// Durable identity allocated by the initial history transaction.
@@ -265,172 +303,6 @@ impl NewItem {
     }
 }
 
-use super::tool_projection::{ToolProjection, ToolProjectionSink};
-
-/// One model-originated Tool call exactly as the provider delivered it.
-///
-/// `name` and `arguments` are untrusted provider content; they never carry
-/// authority and are only resolved against configured descriptors by the
-/// tool-execution boundary (ADR-0003 TC-02).
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ModelToolCall {
-    /// Declared tool name as delivered.
-    pub name: String,
-    /// Serialized arguments as delivered.
-    pub arguments: String,
-}
-
-/// The model-bound view of one committed Tool-call result.
-///
-/// `content` is the bounded committed executor output, a stable
-/// denial/failure summary when the call did not produce output, or the stable
-/// non-UTF-8 summary bound by the projection sink to an opaque committed
-/// success. It is delivered to the model only inside a continuation request
-/// started after the current-generation durable result commit the C-5 boundary
-/// proved, and it remains untrusted content there (ADR-0003 TC-11).
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ModelToolResult {
-    /// Bounded committed result content for the continuation request.
-    pub content: String,
-    /// Whether the call failed, was denied, or was unavailable.
-    pub is_error: bool,
-}
-
-/// One serviced Tool call paired with its committed result.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct CommittedToolCall {
-    /// The model-originated call exactly as delivered (untrusted).
-    pub call: ModelToolCall,
-    /// The committed result carried into the continuation request.
-    pub result: ModelToolResult,
-}
-
-/// One provider Tool-call round: every call the model raised in one stream,
-/// each paired with its committed result.
-///
-/// Continuation requests carry rounds in order and the provider adapter
-/// serializes them as alternating assistant-call/result groups, so a later
-/// round raised on an earlier result is never rewritten as concurrent with
-/// it (ADR-0003 TC-11).
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ToolRound {
-    /// Assistant text emitted in this stream before or alongside the Tool
-    /// calls. It is retained with the call batch so the continuation can
-    /// reconstruct the model's causal assistant message.
-    pub assistant_content: String,
-    /// The round's serviced calls in the order the model raised them.
-    pub calls: Vec<CommittedToolCall>,
-}
-
-/// Turn-scoped identity context for one serviced Tool call.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ToolCallTurnContext {
-    /// Tenant that owns the Turn.
-    pub tenant_id: TenantId,
-    /// Thread that owns the Turn.
-    pub thread_id: ThreadId,
-    /// Turn whose D-7 budget the call consumes.
-    pub turn_id: TurnId,
-    /// Foreground lease generation that must remain current.
-    pub lease_generation: LeaseGeneration,
-}
-
-/// Consumer-owned boundary that services one model Tool call through C-5 and
-/// returns the ordered append-only D-3 items to record for it plus the bounded
-/// committed result the runner's continuation request carries.
-///
-/// The runner owns the durable append-before-publish ordering; the port owns
-/// C-5 policy, approval, execution, and the D-3 projection contents. A typed
-/// denial or unavailability is returned as recorded items, never as an error.
-pub trait ToolCallExecutor {
-    /// Services one Tool call and returns its D-3 items and committed result.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ToolCallError`] only for turn-level failures that own the
-    /// turn terminal, such as canonical reconciliation or durability.
-    fn execute_tool_call(
-        &mut self,
-        call: ModelToolCall,
-        context: &ToolCallTurnContext,
-        trust: &TrustContext,
-        projections: &mut dyn ToolProjectionSink,
-    ) -> Result<ModelToolResult, super::ToolCallError>;
-
-    /// Cancels live C-5 work and returns its canonical D-7 terminal items.
-    ///
-    /// The default is deliberately a no-op because configurations without a
-    /// live C-5 boundary have no process-owned execution work to cancel. The
-    /// production boundary overrides it to close catalogued D-7 attempts.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ToolCallError`] when live execution work cannot reach a
-    /// canonical terminal and requires reconciliation. Returned items must be
-    /// persisted before the Turn interruption terminal.
-    fn request_interrupt(
-        &mut self,
-        _trust: &TrustContext,
-        _thread_id: ThreadId,
-        _turn_id: TurnId,
-    ) -> Result<Vec<NewItem>, super::ToolCallError> {
-        Ok(Vec::new())
-    }
-
-    /// Notifies the boundary that one Turn's durable terminal committed.
-    ///
-    /// The default is deliberately a no-op because configurations without a
-    /// live C-5 boundary retain no process-owned authority. The production
-    /// boundary overrides it to reclaim its process-local Turn authority
-    /// against the proven canonical terminal; reclamation is hygiene, so an
-    /// unproven probe retains the authority instead of surfacing an error.
-    fn turn_terminal_committed(
-        &mut self,
-        _tenant_id: &TenantId,
-        _thread_id: ThreadId,
-        _turn_id: TurnId,
-    ) {
-    }
-}
-
-/// Explicit unconfigured tool-execution boundary.
-///
-/// Every call is recorded as a typed unavailability without any execution,
-/// caching, or fallback path (ADR-0003 TC-13).
-#[derive(Clone, Copy, Debug, Default)]
-pub struct NoToolExecution;
-
-impl ToolCallExecutor for NoToolExecution {
-    fn execute_tool_call(
-        &mut self,
-        call: ModelToolCall,
-        _context: &ToolCallTurnContext,
-        _trust: &TrustContext,
-        projections: &mut dyn ToolProjectionSink,
-    ) -> Result<ModelToolResult, super::ToolCallError> {
-        let descriptor_id = if crate::domain::tool::validate_descriptor_id(&call.name).is_ok() {
-            call.name
-        } else {
-            String::new()
-        };
-        // The unconfigured boundary is recorded through the same durable
-        // projection sink as every other outcome (ADR-0003 TC-13).
-        crate::application::tool_projection::emit(
-            projections,
-            ToolProjection::Denied {
-                descriptor_id,
-                descriptor_version: String::new(),
-                target: String::new(),
-                code: "tool_execution_unavailable".to_owned(),
-            },
-        );
-        Ok(ModelToolResult {
-            content: "tool_execution_unavailable".to_owned(),
-            is_error: true,
-        })
-    }
-}
-
 /// A typed canonical-history failure.
 #[derive(Clone, Debug, Error, Eq, PartialEq)]
 pub enum HistoryError {
@@ -449,6 +321,10 @@ pub enum HistoryError {
     /// Prior durable history exceeds the owned provider-context budget.
     #[error("thread history exceeds provider context budget")]
     ContextLimit,
+    /// An owned submission key arrived with changed semantic input or a
+    /// changed requested selector (ADR-0018 SI-02d).
+    #[error("submission identity conflict")]
+    SubmissionConflict,
 }
 
 /// Result of transferring active-turn liveness ownership into recovery.
@@ -611,6 +487,68 @@ pub trait TurnHistory {
     /// Returns [`HistoryError`] when initial durable acceptance fails.
     fn accept_initial(&mut self, command: &TurnCommand) -> Result<AcceptedTurn, HistoryError>;
 
+    /// Reads one owned submission binding without taking any lock, observing
+    /// only committed state (ADR-0018 SI-07a).
+    ///
+    /// The identified command carries the owned key and the candidate input:
+    /// the lookup validates the joined Thread owner, Turn, and original
+    /// sequence-1 user input against them. A genuinely absent key returns
+    /// `Ok(None)`; a present binding whose joined canonical data is missing or
+    /// inconsistent fails unavailable instead of establishing absence
+    /// (SI-08c), and a present binding with changed original input or
+    /// selector is the typed [`HistoryError::SubmissionConflict`] (SI-02b,
+    /// SI-02d).
+    ///
+    /// `deadline` bounds the whole read including pool and lock waits, already
+    /// clamped by the caller to its remaining acceptance time (SI-07c).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`HistoryError`] for unavailability, corrupt structure, or the
+    /// typed drift conflict.
+    fn submission_observation(
+        &self,
+        _command: &TurnCommand,
+        _deadline: std::time::Duration,
+    ) -> Result<Option<super::submission::SubmissionObservation>, HistoryError> {
+        // A history adapter without submission bindings reports genuine
+        // absence; the identified acceptance below still fails closed, so a
+        // supplied key can never be silently processed as a fresh
+        // unidentified submission (SI-01d).
+        Ok(None)
+    }
+
+    /// Atomically rechecks and accepts one identified submission: the binding
+    /// key, original selector, accepted Thread/Turn, and a server-private
+    /// creator-operation identity commit in the same transaction as the
+    /// initial Turn, sequence-1 input, and generation-1 lease (ADR-0018
+    /// SI-03a).
+    ///
+    /// The full owned key is rechecked under the submission lock before any
+    /// canonical state is allocated: an exact existing binding returns
+    /// [`super::submission::IdentifiedAcceptance::Existing`] with no canonical
+    /// mutation, a drifted key returns [`HistoryError::SubmissionConflict`],
+    /// and only the winning invocation receives `Created`.
+    ///
+    /// `deadline` bounds this single write attempt at its full reserved
+    /// budget; the implementation owes the one permitted read-only
+    /// reconciliation its own identical full budget (SI-06b, SI-07c).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`HistoryError`] when the attempt cannot commit or the key
+    /// drifted.
+    fn accept_initial_with_submission(
+        &mut self,
+        _command: &TurnCommand,
+        _deadline: std::time::Duration,
+    ) -> Result<super::submission::IdentifiedAcceptance, HistoryError> {
+        // Fail closed: an adapter without an identified-acceptance
+        // implementation returns unavailability instead of silently ignoring
+        // the supplied key (SI-01d).
+        Err(HistoryError::Unavailable)
+    }
+
     /// Appends exactly one item under the accepted lease generation.
     ///
     /// # Errors
@@ -715,6 +653,10 @@ pub enum TurnRunError {
     /// Internal lifecycle code attempted an invalid state transition.
     #[error(transparent)]
     Transition(#[from] TurnTransitionError),
+    /// An identified creator's cancellation was observed before its
+    /// acceptance write began (ADR-0018 SI-07g); no binding or Turn exists.
+    #[error("turn cancelled before acceptance")]
+    Cancelled,
 }
 
 /// Context retained when the Turn's exact durable output budget was exceeded.
