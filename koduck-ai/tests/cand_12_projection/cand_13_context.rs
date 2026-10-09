@@ -4,10 +4,28 @@
 //! (ADR-0006 PC-02 through PC-04): complete per-Turn groups with explicit
 //! source provenance are validated atomically, projected through the
 //! unchanged CAND-12 owner, and converted into one owned effective provider
-//! view. Additional fixtures drive the runner, the production `PostgreSQL`
-//! read, the OpenAI-compatible serializer through a real `Reqwest` request,
-//! and the HTTP problem boundary; the full AC-1 through AC-9 matrix remains
-//! the T-2 deliverable.
+//! view. The AC-1 through AC-7 acceptance checks live in focused child
+//! modules of this module inside the coverage-selected integration target;
+//! each named test below is the single executable ADR acceptance entry.
+
+#[path = "cand_13_context/atomic_rejection.rs"]
+mod atomic_rejection;
+#[path = "cand_13_context/bounds_deadline.rs"]
+mod bounds_deadline;
+#[path = "cand_13_context/controls_failures.rs"]
+mod controls_failures;
+#[path = "cand_13_context/effective_messages.rs"]
+mod effective_messages;
+#[path = "cand_13_context/scoped_read.rs"]
+mod scoped_read;
+#[path = "cand_13_context/support.rs"]
+mod support;
+#[path = "cand_13_context/tool_snapshot.rs"]
+mod tool_snapshot;
+#[path = "cand_13_context/trust_problems.rs"]
+mod trust_problems;
+
+use std::time::Duration;
 
 use super::fixtures::*;
 use koduck_ai::adapters::history::postgres::{
@@ -16,49 +34,61 @@ use koduck_ai::adapters::history::postgres::{
 use koduck_ai::adapters::http::{HttpAdapter, HttpMethod, HttpRequest};
 use koduck_ai::adapters::provider::{OpenAiProtocolTransport, ReqwestOpenAiTransport};
 use koduck_ai::application::{
-    AcceptedTurn, CommittedToolCall, CorrectionCommand, CorrectionStore, HistoryError, ModelInput,
-    ModelProvider, ModelToolCall, ModelToolResult, NewItem, PriorTurnHistory, PriorTurnRow,
-    ProjectionError, ProjectionScope, ProviderContextError, ProviderError, ProviderEvent,
-    ProviderHistoryItem, ProviderHistoryKind, ProviderHistoryValue, ToolRound, TurnCommand,
-    TurnHistory, TurnRunError, TurnRunner, prepare_provider_history,
+    HistoryError, PriorTurnHistory, ProjectionError, ProviderContextError, ProviderHistoryItem,
+    ProviderHistoryKind, ProviderHistoryValue, TurnCommand, TurnHistory, TurnRunError, TurnRunner,
+    prepare_provider_history,
 };
-use koduck_ai::domain::item_correction::ItemCorrection;
-use koduck_ai::domain::{
-    Item, ItemId, ItemPayload, TenantId, TerminalOutcome, ThreadId, TrustContext, TurnId, Usage,
-};
-use std::cell::RefCell;
-use std::collections::BTreeMap;
-use std::io::{Read, Write};
-use std::net::TcpListener;
-use std::rc::Rc;
-use std::thread;
-use std::time::Duration;
+use koduck_ai::domain::{TerminalOutcome, ThreadId, TrustContext, TurnId};
+use support::*;
 
-const TENANT: &str = "tenant-a";
-const SUBJECT: &str = "subject-a";
-
-fn command_trust() -> TrustContext {
-    TrustContext::new(TenantId::new(TENANT).expect("valid tenant"), SUBJECT)
-        .expect("valid command trust")
+/// AC-1 (ADR-0006): the production read preserves actual per-Turn provenance
+/// and canonical order without modifying source history.
+#[test]
+fn scoped_thread_read() {
+    scoped_read::run();
 }
 
-fn owned_scope(thread: ThreadId, turn: TurnId) -> ProjectionScope {
-    ProjectionScope::new(
-        TenantId::new(TENANT).expect("valid tenant"),
-        SUBJECT,
-        thread,
-        turn,
-    )
-    .expect("valid row scope")
+/// AC-2 (ADR-0006): actual provider requests contain the ordered effective
+/// messages with no correction duplicates.
+#[test]
+fn effective_provider_messages() {
+    effective_messages::run();
 }
 
-/// Wraps one canonical Item as a row reporting the given owned scope.
-fn owned_row(thread: ThreadId, turn: TurnId, item: Item) -> PriorTurnRow {
-    PriorTurnRow::new(item, owned_scope(thread, turn))
+/// AC-3 (ADR-0006): invalid source anywhere rejects the whole prepared
+/// context before acceptance or dispatch without contaminating later
+/// independent requests.
+#[test]
+fn atomic_context_rejection() {
+    atomic_rejection::run();
 }
 
-fn completed_usage() -> Usage {
-    Usage::new(1, 1).expect("valid usage")
+/// AC-4 (ADR-0006): two current Tool rounds preserve causality and reuse the
+/// same corrected history snapshot.
+#[test]
+fn tool_continuation_snapshot() {
+    tool_snapshot::run();
+}
+
+/// AC-5 (ADR-0006): raw admission boundaries remain exact, derived history
+/// cannot expand, and the database deadline rejects without acceptance.
+#[test]
+fn context_bounds_and_deadline() {
+    bounds_deadline::run();
+}
+
+/// AC-6 (ADR-0006): corrected input preserves existing provider timeout,
+/// interruption, cancellation, and backpressure outcomes.
+#[test]
+fn controls_and_transport_failures() {
+    controls_failures::run();
+}
+
+/// AC-7 (ADR-0006): trust rejection and context errors retain exact v1
+/// problems without leaking source values.
+#[test]
+fn trust_and_problem_contract() {
+    trust_problems::run();
 }
 
 /// PC-02/PC-04: one complete source Turn prepares the ordered effective view;
@@ -338,160 +368,17 @@ fn later_invalid_group_rejects_the_whole_prepared_context() {
     );
 }
 
-/// Serializes disposable-database migration across this target's parallel
-/// tests: the production migration list is not concurrency-safe when two
-/// fixtures race to apply it on one fresh database.
-static DATABASE_SETUP_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-/// Connects an isolated migrated `PostgreSQL`. A missing or malformed test
-/// database configuration fails the check instead of silently passing it
-/// (ADR-0006 Acceptance Checks).
-fn migrated_pool() -> (sqlx::postgres::PgPool, tokio::runtime::Runtime) {
-    let database_url = std::env::var("KODUCK_AI_TEST_DATABASE_URL")
-        .expect("KODUCK_AI_TEST_DATABASE_URL must point at an isolated migrated PostgreSQL");
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(2)
-        .enable_all()
-        .build()
-        .expect("PostgreSQL smoke runtime");
-    let pool = runtime
-        .block_on(
-            sqlx::postgres::PgPoolOptions::new()
-                .max_connections(4)
-                .connect(&database_url),
-        )
-        .expect("connect to disposable PostgreSQL");
-    let setup_guard = DATABASE_SETUP_LOCK
-        .lock()
-        .expect("setup lock is unpoisoned");
-    for migration in [
-        include_str!("../../migrations/0001_cand_1_history.sql"),
-        include_str!("../../migrations/0002_cand_2_policy_execution.sql"),
-        include_str!("../../migrations/0003_cand_2_requester_ownership.sql"),
-        include_str!("../../migrations/0004_cand_2_tool_projections.sql"),
-        include_str!("../../migrations/0005_cand_2_execution_attempts.sql"),
-        include_str!("../../migrations/0006_cand_2_interrupt_barrier.sql"),
-        include_str!("../../migrations/0007_cand_2_tool_audit.sql"),
-        include_str!("../../migrations/0008_cand_2_interruption_approval_cancellation.sql"),
-        include_str!("../../migrations/0009_cand_3_correction_items.sql"),
-    ] {
-        runtime
-            .block_on(async { sqlx::raw_sql(migration).execute(&pool).await })
-            .expect("apply production migration");
-    }
-    drop(setup_guard);
-    (pool, runtime)
-}
-
-/// One seeded two-Turn Thread: a terminal first Turn with a post-terminal
-/// correction of its user root, followed by a resumed second Turn.
-struct SeededThread {
-    first: AcceptedTurn,
-    second: AcceptedTurn,
-    corrected_item_id: ItemId,
-}
-
-/// Seeds the two-Turn Thread fixture through the production executor.
-fn seed_two_turn_thread(executor: &SqlxPostgresExecutor) -> SeededThread {
-    let owner = TrustContext::new(
-        TenantId::new(format!("ci-{}", uuid::Uuid::new_v4())).expect("unique tenant"),
-        "owner",
-    )
-    .expect("owner trust context");
-    let first = executor
-        .accept_initial(&TurnCommand::new(owner.clone(), None, "draft").expect("valid command"))
-        .expect("accept first Turn");
-    executor
-        .append(
-            &first,
-            NewItem::AgentMessageDelta {
-                content: "answer".to_owned(),
-            },
-        )
-        .expect("append assistant delta");
-    executor
-        .append(
-            &first,
-            NewItem::Terminal(TerminalOutcome::Completed {
-                usage: Usage::new(1, 1).expect("valid usage"),
-            }),
-        )
-        .expect("append terminal");
-    let correction = executor
-        .correct(
-            CorrectionCommand::new(
-                owner.clone(),
-                first.thread_id,
-                first.turn_id,
-                ItemId::new(),
-                first.input.item_id,
-                "revised",
-            )
-            .expect("valid correction command"),
-        )
-        .expect("admit post-terminal correction");
-    let second = executor
-        .accept_initial(
-            &TurnCommand::new(owner.clone(), Some(first.thread_id), "second")
-                .expect("valid resumed command"),
-        )
-        .expect("accept second Turn");
-    SeededThread {
-        first,
-        second,
-        corrected_item_id: correction.item_id,
-    }
-}
-
-/// Asserts the complete provenance of every returned group against replay.
-fn assert_grouped_provenance(
-    executor: &SqlxPostgresExecutor,
-    seeded: &SeededThread,
-    groups: &[PriorTurnHistory],
-    tenant: &TenantId,
-) {
-    assert_eq!(groups.len(), 2, "one group per source Turn");
-    assert_eq!(groups[0].source_turn, seeded.first.turn_id);
-    assert_eq!(groups[1].source_turn, seeded.second.turn_id);
-    let replay = executor
-        .replay(tenant, seeded.first.turn_id)
-        .expect("first Turn replay");
-    assert_eq!(
-        groups[0]
-            .rows
-            .iter()
-            .map(|row| row.item.item_id)
-            .collect::<Vec<_>>(),
-        replay.iter().map(|item| item.item_id).collect::<Vec<_>>(),
-        "the complete first Turn — including the post-terminal correction — matches replay order"
-    );
-    for group in groups {
-        assert!(!group.rows.is_empty());
-        let expected = ProjectionScope::new(
-            tenant.clone(),
-            "owner",
-            seeded.first.thread_id,
-            group.source_turn,
-        )
-        .expect("valid expected scope");
-        for row in &group.rows {
-            assert_eq!(row.scope, expected);
-        }
-    }
-}
-
 /// PC-01/PC-02 through real `SQLx`: the bounded read returns complete
 /// Turn-scoped groups with actual per-row provenance — including a
 /// correction committed after a terminal — and preparation turns them into
 /// the ordered effective view. The full order/limit/deadline matrix is the
-/// T-2 AC-1/AC-5 suite; this smoke proves the replaced seam end to end.
+/// AC-1/AC-5 child modules; this smoke proves the replaced seam end to end.
 #[test]
 fn production_read_groups_real_turns_for_preparation() {
     let (pool, runtime) = migrated_pool();
     let executor = SqlxPostgresExecutor::new(pool.clone(), runtime.handle().clone());
     let seeded = seed_two_turn_thread(&executor);
-    let owner =
-        TrustContext::new(seeded.first.tenant_id.clone(), "owner").expect("owner trust context");
+    let owner = owner_trust(&seeded.first.tenant_id, "owner");
 
     let groups = executor
         .prior_thread_turns(&owner, seeded.first.thread_id)
@@ -526,189 +413,20 @@ fn production_read_groups_real_turns_for_preparation() {
     runtime.block_on(pool.close());
 }
 
-/// In-memory canonical history double for runner-level fixtures.
-#[derive(Default, Clone)]
-struct MemoryHistory {
-    state: Rc<RefCell<MemoryState>>,
-}
-
-#[derive(Default)]
-struct MemoryState {
-    turn_order: Vec<(ThreadId, TurnId)>,
-    turn_items: BTreeMap<TurnId, Vec<Item>>,
-    accepted: usize,
-    prior_read_error: Option<HistoryError>,
-}
-
-impl MemoryHistory {
-    /// Appends one correction Item directly, standing in for CAND-11
-    /// admission after a terminal.
-    fn inject_correction(&self, turn_id: TurnId, target: ItemId, content: &str) -> Item {
-        let mut state = self.state.borrow_mut();
-        let items = state.turn_items.get_mut(&turn_id).expect("seeded Turn");
-        let correction = Item::new(
-            items.len() as u64 + 1,
-            ItemPayload::Correction(
-                ItemCorrection::new(content, target).expect("valid correction content"),
-            ),
-        );
-        items.push(correction.clone());
-        correction
-    }
-
-    /// Seeds a Turn whose stored rows already violate the raw replay or
-    /// ancestry contract, standing in for corrupt canonical history.
-    fn seed_corrupt_turn(&self, thread_id: ThreadId, turn_id: TurnId, rows: Vec<Item>) {
-        let mut state = self.state.borrow_mut();
-        state.turn_order.push((thread_id, turn_id));
-        state.turn_items.insert(turn_id, rows);
-    }
-
-    fn accepted_count(&self) -> usize {
-        self.state.borrow().accepted
-    }
-
-    /// Makes the next bounded prior-history read fail with the typed error.
-    fn fail_next_prior_read(&self, error: HistoryError) {
-        self.state.borrow_mut().prior_read_error = Some(error);
-    }
-}
-
-impl TurnHistory for MemoryHistory {
-    fn request_interrupt(
-        &mut self,
-        _trust: &TrustContext,
-        _turn_id: TurnId,
-        _tool_terminals: Vec<NewItem>,
-    ) -> Result<(), HistoryError> {
-        Err(HistoryError::NotFound)
-    }
-
-    fn interruption_requested(&self, _turn: &AcceptedTurn) -> Result<bool, HistoryError> {
-        Ok(false)
-    }
-
-    fn prior_thread_turns(
-        &self,
-        trust: &TrustContext,
-        thread_id: ThreadId,
-    ) -> Result<Vec<PriorTurnHistory>, HistoryError> {
-        let mut state = self.state.borrow_mut();
-        if let Some(error) = state.prior_read_error.take() {
-            return Err(error);
-        }
-        let mut groups = Vec::new();
-        for (owned_thread, turn_id) in &state.turn_order {
-            if *owned_thread != thread_id {
-                continue;
-            }
-            let scope = ProjectionScope::new(
-                trust.tenant_id.clone(),
-                &trust.subject_id,
-                thread_id,
-                *turn_id,
-            )
-            .expect("valid double scope");
-            let rows = state
-                .turn_items
-                .get(turn_id)
-                .map(|items| {
-                    items
-                        .iter()
-                        .cloned()
-                        .map(|item| PriorTurnRow::new(item, scope.clone()))
-                        .collect()
-                })
-                .unwrap_or_default();
-            groups.push(PriorTurnHistory::new(*turn_id, rows));
-        }
-        Ok(groups)
-    }
-
-    fn accept_initial(&mut self, command: &TurnCommand) -> Result<AcceptedTurn, HistoryError> {
-        let thread_id = command.thread_id.unwrap_or_default();
-        let turn_id = TurnId::new();
-        let input = Item::new(
-            1,
-            ItemPayload::UserMessage {
-                content: command.input.clone(),
-            },
-        );
-        let mut state = self.state.borrow_mut();
-        state.turn_order.push((thread_id, turn_id));
-        state.turn_items.insert(turn_id, vec![input.clone()]);
-        state.accepted += 1;
-        Ok(AcceptedTurn::new(
-            command.trust.tenant_id.clone(),
-            thread_id,
-            turn_id,
-            koduck_ai::domain::LeaseGeneration::initial(),
-            input,
-        ))
-    }
-
-    fn append(&mut self, turn: &AcceptedTurn, item: NewItem) -> Result<Item, HistoryError> {
-        let mut state = self.state.borrow_mut();
-        let items = state
-            .turn_items
-            .get_mut(&turn.turn_id)
-            .ok_or(HistoryError::NotFound)?;
-        let durable = Item::new(items.len() as u64 + 1, item.into_payload());
-        items.push(durable.clone());
-        Ok(durable)
-    }
-
-    fn replay(&self, _tenant_id: &TenantId, turn_id: TurnId) -> Result<Vec<Item>, HistoryError> {
-        self.state
-            .borrow()
-            .turn_items
-            .get(&turn_id)
-            .cloned()
-            .ok_or(HistoryError::NotFound)
-    }
-}
-
-/// Provider double capturing every `ModelInput` and completing each stream.
-struct RecordingProvider {
-    inputs: Rc<RefCell<Vec<ModelInput>>>,
-}
-
-impl ModelProvider for RecordingProvider {
-    fn stream(
-        &mut self,
-        input: ModelInput,
-    ) -> Result<koduck_ai::application::ProviderStream<'_>, ProviderError> {
-        self.inputs.borrow_mut().push(input);
-        Ok(Box::new(
-            vec![
-                ProviderEvent::Delta("A".to_owned()),
-                ProviderEvent::Usage(Usage::new(1, 1).expect("valid usage")),
-                ProviderEvent::Completed,
-            ]
-            .into_iter(),
-        ))
-    }
-}
-
 /// PC-02/PC-04 through the runner: a resumed Turn prepares the effective
 /// view before acceptance, sends it as `ModelInput.history`, and leaves the
 /// canonical raw rows unchanged.
 #[test]
 fn runner_resumes_from_the_prepared_effective_history() {
-    let inputs = Rc::new(RefCell::new(Vec::new()));
+    let provider = RecordingProvider::new();
     let history = MemoryHistory::default();
-    let mut runner = TurnRunner::new(
-        RecordingProvider {
-            inputs: Rc::clone(&inputs),
-        },
-        history.clone(),
-    );
+    let mut runner = TurnRunner::new(provider.clone(), history.clone());
     let first = runner
         .execute(TurnCommand::new(command_trust(), None, "draft").expect("valid command"))
         .expect("first Turn completes");
     let immutable_first = first.replay.clone();
     let correction =
-        history.inject_correction(first.turn_id, immutable_first[0].item_id, "revised");
+        history.inject_correction(first.turn_id, immutable_first[0].item_id, "revised", None);
 
     let second = runner
         .execute(
@@ -729,7 +447,7 @@ fn runner_resumes_from_the_prepared_effective_history() {
         },
         "canonical raw history keeps every original row plus the correction"
     );
-    let recorded = inputs.borrow();
+    let recorded = provider.recorded();
     assert!(
         recorded[0].history.is_empty(),
         "a new Thread carries no prior context"
@@ -779,14 +497,14 @@ fn runner_resumes_from_the_prepared_effective_history() {
 /// the existing 503 problem before any acceptance, stream, or provider call.
 #[test]
 fn context_rejection_maps_to_the_503_problem_before_any_stream() {
-    let inputs = Rc::new(RefCell::new(Vec::new()));
+    let provider = RecordingProvider::new();
     let history = MemoryHistory::default();
     let thread_id = ThreadId::new();
     let turn_id = TurnId::new();
     // A correction strictly precedes its target: the raw structure pass
     // accepts the reference, so ancestry reports the forward reference.
     let later_root = user_item(2, "later root");
-    history.seed_corrupt_turn(
+    history.seed_turn(
         thread_id,
         turn_id,
         vec![
@@ -794,12 +512,7 @@ fn context_rejection_maps_to_the_503_problem_before_any_stream() {
             later_root,
         ],
     );
-    let mut adapter = HttpAdapter::new(TurnRunner::new(
-        RecordingProvider {
-            inputs: Rc::clone(&inputs),
-        },
-        history.clone(),
-    ));
+    let mut adapter = HttpAdapter::new(TurnRunner::new(provider.clone(), history.clone()));
     let request = HttpRequest {
         method: HttpMethod::Post,
         path: "/api/v1/ai/chat".to_owned(),
@@ -824,7 +537,10 @@ fn context_rejection_maps_to_the_503_problem_before_any_stream() {
             .contains("\"code\":\"durability-unavailable\"")
     );
     assert_eq!(history.accepted_count(), 0, "no Turn is accepted");
-    assert!(inputs.borrow().is_empty(), "no provider request is made");
+    assert!(
+        provider.recorded().is_empty(),
+        "no provider request is made"
+    );
 }
 
 /// PC-07 typed read failure: a pre-acceptance read `Unavailable` — read
@@ -834,12 +550,7 @@ fn context_rejection_maps_to_the_503_problem_before_any_stream() {
 fn pre_acceptance_read_failure_retains_the_exact_history_variant() {
     let history = MemoryHistory::default();
     history.fail_next_prior_read(HistoryError::Unavailable);
-    let mut runner = TurnRunner::new(
-        RecordingProvider {
-            inputs: Rc::new(RefCell::new(Vec::new())),
-        },
-        history.clone(),
-    );
+    let mut runner = TurnRunner::new(RecordingProvider::new(), history.clone());
 
     let result = runner.execute(
         TurnCommand::new(command_trust(), Some(ThreadId::new()), "hello")
@@ -851,104 +562,6 @@ fn pre_acceptance_read_failure_retains_the_exact_history_variant() {
         Err(TurnRunError::History(HistoryError::Unavailable))
     ));
     assert_eq!(history.accepted_count(), 0, "no Turn is accepted");
-}
-
-/// Reads exactly one HTTP request (headers plus `Content-Length` body) on a
-/// loopback connection and replies with the scripted raw response bytes.
-fn sse_upstream(response: &'static [u8]) -> (String, std::sync::mpsc::Receiver<String>) {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback upstream");
-    let address = listener.local_addr().expect("loopback address");
-    let (sender, receiver) = std::sync::mpsc::channel();
-    thread::spawn(move || {
-        let (mut stream, _) = listener.accept().expect("accept provider request");
-        let mut captured: Vec<u8> = Vec::new();
-        let mut chunk = [0_u8; 4096];
-        loop {
-            let read = stream.read(&mut chunk).expect("read provider request");
-            captured.extend_from_slice(&chunk[..read]);
-            if request_complete(&captured) {
-                break;
-            }
-        }
-        sender
-            .send(String::from_utf8(captured).expect("request is UTF-8"))
-            .expect("request receiver lives");
-        stream.write_all(response).expect("write scripted response");
-    });
-    (format!("http://{address}"), receiver)
-}
-
-/// Reports whether the captured bytes hold a complete HTTP/1.1 request.
-fn request_complete(received: &[u8]) -> bool {
-    let Some(headers_end) = received.windows(4).position(|w| w == b"\r\n\r\n") else {
-        return false;
-    };
-    let headers = String::from_utf8_lossy(&received[..headers_end]);
-    let length = headers
-        .lines()
-        .find_map(|line| {
-            line.split_once(':')
-                .filter(|(name, _)| name.eq_ignore_ascii_case("content-length"))
-                .and_then(|(_, value)| value.trim().parse::<usize>().ok())
-        })
-        .unwrap_or(0);
-    received.len() >= headers_end + 4 + length
-}
-
-/// Builds the prepared-view input whose wire translation is asserted.
-fn corrected_transport_input() -> ModelInput {
-    let user = ProviderHistoryItem {
-        item_id: ItemId::new(),
-        sequence: 1,
-        kind: ProviderHistoryKind::UserMessage,
-        source_item_id: ItemId::new(),
-        value: ProviderHistoryValue::Text("revised".to_owned()),
-    };
-    let delta = ProviderHistoryItem {
-        item_id: ItemId::new(),
-        sequence: 2,
-        kind: ProviderHistoryKind::AgentMessageDelta,
-        source_item_id: ItemId::new(),
-        value: ProviderHistoryValue::Text("answer".to_owned()),
-    };
-    let usage = ProviderHistoryItem {
-        item_id: ItemId::new(),
-        sequence: 3,
-        kind: ProviderHistoryKind::Usage,
-        source_item_id: ItemId::new(),
-        value: ProviderHistoryValue::NonText(ItemPayload::Usage(
-            Usage::new(1, 1).expect("valid usage"),
-        )),
-    };
-    let terminal = ProviderHistoryItem {
-        item_id: ItemId::new(),
-        sequence: 4,
-        kind: ProviderHistoryKind::Terminal,
-        source_item_id: ItemId::new(),
-        value: ProviderHistoryValue::NonText(ItemPayload::Terminal(TerminalOutcome::Completed {
-            usage: Usage::new(1, 1).expect("valid usage"),
-        })),
-    };
-    ModelInput {
-        tenant_id: TenantId::new(TENANT).expect("valid tenant"),
-        thread_id: ThreadId::new(),
-        turn_id: TurnId::new(),
-        input: "next".to_owned(),
-        history: vec![user, delta, usage, terminal],
-        tool_rounds: vec![ToolRound {
-            assistant_content: String::new(),
-            calls: vec![CommittedToolCall {
-                call: ModelToolCall {
-                    name: "fixture.tool".to_owned(),
-                    arguments: "{}".to_owned(),
-                },
-                result: ModelToolResult {
-                    content: "ok".to_owned(),
-                    is_error: false,
-                },
-            }],
-        }],
-    }
 }
 
 /// PC-05 through the production transport: the real `Reqwest` request body
@@ -982,11 +595,7 @@ async fn effective_messages_reach_the_production_transport() {
     let request = request_receiver
         .recv_timeout(Duration::from_secs(5))
         .expect("upstream captured the request");
-    let body = request
-        .split_once("\r\n\r\n")
-        .expect("captured request has a body")
-        .1;
-    let document: serde_json::Value = serde_json::from_str(body).expect("request body is JSON");
+    let document = parse_request(&request);
     assert_eq!(
         document["messages"],
         serde_json::json!([
@@ -1016,19 +625,16 @@ async fn effective_messages_reach_the_production_transport() {
 #[test]
 fn owned_empty_thread_and_foreign_subject_read_outcomes() {
     let (pool, runtime) = migrated_pool();
-    let owner = TrustContext::new(
-        TenantId::new(format!("ci-{}", uuid::Uuid::new_v4())).expect("unique tenant"),
-        "owner",
-    )
-    .expect("owner trust context");
+    let (tenant, subject) = unique_owner();
+    let owner = owner_trust(&tenant, &subject);
     let thread_id = ThreadId::new();
     runtime
         .block_on(
             sqlx::query(
                 "INSERT INTO threads (tenant_id, subject_id, thread_id) VALUES ($1, $2, $3)",
             )
-            .bind(owner.tenant_id.as_str())
-            .bind("owner")
+            .bind(tenant.as_str())
+            .bind(subject.as_str())
             .bind(thread_id.as_uuid())
             .execute(&pool),
         )
@@ -1042,8 +648,7 @@ fn owned_empty_thread_and_foreign_subject_read_outcomes() {
         .expect("an owned empty Thread returns empty history");
     assert!(groups.is_empty());
 
-    let intruder =
-        TrustContext::new(owner.tenant_id.clone(), "intruder").expect("intruder trust context");
+    let intruder = TrustContext::new(tenant.clone(), "intruder").expect("intruder trust context");
     assert_eq!(
         TurnHistory::prior_thread_turns(&history, &intruder, thread_id),
         Err(HistoryError::NotFound),
