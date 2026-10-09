@@ -1,5 +1,6 @@
 // ADR: docs/adr/ADR-0002-required-ai-ci-postgres-verification.md
 // ADR: koduck-ai/docs/adr/ADR-0003-correction-item-schema-and-raw-replay.md
+// ADR: koduck-ai/docs/adr/ADR-0006-effective-provider-context-integration.md
 
 use std::thread;
 

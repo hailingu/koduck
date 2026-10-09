@@ -162,19 +162,57 @@ pub(crate) fn run() {
         )
         .expect("the two-round Tool Turn completes");
 
-    let bodies = captured_bodies(&receiver, 3);
+    assert_two_round_requests(
+        &receiver,
+        &executor,
+        &history,
+        result.turn_id,
+        &log,
+        source_turn,
+        &source_before,
+    );
+    assert_next_preparation(&mut runner, &trust, thread_id, &receiver);
+    drop(runtime);
+}
+
+/// Captures the two-round Turn's three requests and asserts the frozen
+/// snapshot, causal rounds, dispatch scope, commit order, and raw source.
+fn assert_two_round_requests(
+    receiver: &std::sync::mpsc::Receiver<String>,
+    executor: &SnapshotToolExecutor,
+    history: &MemoryHistory,
+    turn_id: TurnId,
+    log: &EventLog,
+    source_turn: TurnId,
+    source_before: &[Item],
+) {
+    let bodies = captured_bodies(receiver, 3);
     assert_prior_context_is_frozen_and_current_input_once(&bodies);
     assert_round_causality(&bodies);
-    assert_no_historical_dispatch_and_one_terminal(&executor, &history, result.turn_id);
-    assert_commit_order(&log);
-    assert_source_snapshot(&history, source_turn, &source_before);
+    assert_no_historical_dispatch_and_one_terminal(executor, history, turn_id);
+    assert_commit_order(log);
+    assert_source_snapshot(history, source_turn, source_before);
+}
 
+/// Runs the follow-up resume and asserts the next independent preparation
+/// sees the second correction.
+fn assert_next_preparation(
+    runner: &mut TurnRunner<
+        OpenAiCompatibleProvider<ReqwestOpenAiTransport>,
+        MemoryHistory,
+        SnapshotToolExecutor,
+    >,
+    trust: &TrustContext,
+    thread_id: ThreadId,
+    receiver: &std::sync::mpsc::Receiver<String>,
+) {
     let after = runner
         .execute(
-            TurnCommand::new(trust, Some(thread_id), "after").expect("valid follow-up command"),
+            TurnCommand::new(trust.clone(), Some(thread_id), "after")
+                .expect("valid follow-up command"),
         )
         .expect("the next independent preparation completes");
-    let bodies = captured_bodies(&receiver, 1);
+    let bodies = captured_bodies(receiver, 1);
     assert_eq!(
         messages_of(&bodies[0]),
         vec![
@@ -187,7 +225,6 @@ pub(crate) fn run() {
         "the next independent preparation sees the second correction and the settled Tool Turn (turn {})",
         after.turn_id.as_uuid()
     );
-    drop(runtime);
 }
 
 /// Seeds the terminal source Turn with inert historical Tool views and one

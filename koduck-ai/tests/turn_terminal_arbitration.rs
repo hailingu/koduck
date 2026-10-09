@@ -1,4 +1,5 @@
 // ADR: docs/adr/ADR-0001-provider-neutral-turn-kernel.md
+// ADR: koduck-ai/docs/adr/ADR-0006-effective-provider-context-integration.md
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};

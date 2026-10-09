@@ -1,6 +1,7 @@
 // ADR: docs/adr/ADR-0003-default-deny-tool-approval-execution-boundary.md
 // ADR: docs/adr/ADR-0005-provider-delta-coalescing-and-512-item-turn-budget.md
 // ADR: koduck-ai/docs/adr/ADR-0003-correction-item-schema-and-raw-replay.md
+// ADR: koduck-ai/docs/adr/ADR-0006-effective-provider-context-integration.md
 
 //! Black-box runner integration harness for the durable projection sink's
 //! guard contract: canonical tuple and lifecycle-identity validation,

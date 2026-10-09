@@ -1,5 +1,6 @@
 // ADR: docs/adr/ADR-0001-provider-neutral-turn-kernel.md
 // ADR: docs/adr/ADR-0005-provider-delta-coalescing-and-512-item-turn-budget.md
+// ADR: koduck-ai/docs/adr/ADR-0006-effective-provider-context-integration.md
 
 use koduck_ai::application::{
     AcceptedTurn, HistoryError, ModelInput, ModelProvider, NewItem, PriorTurnHistory,

@@ -1,5 +1,6 @@
 // ADR: docs/adr/ADR-0001-provider-neutral-turn-kernel.md
 // ADR: docs/adr/ADR-0004-provider-stream-completion-normalization.md
+// ADR: koduck-ai/docs/adr/ADR-0006-effective-provider-context-integration.md
 
 //! OpenAI-compatible protocol translation into provider-neutral application events.
 

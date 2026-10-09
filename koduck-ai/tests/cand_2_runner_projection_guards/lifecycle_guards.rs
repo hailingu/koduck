@@ -1,5 +1,6 @@
 // ADR: docs/adr/ADR-0003-default-deny-tool-approval-execution-boundary.md
 // ADR: docs/adr/ADR-0005-provider-delta-coalescing-and-512-item-turn-budget.md
+// ADR: koduck-ai/docs/adr/ADR-0006-effective-provider-context-integration.md
 
 //! Identity, lifecycle-completion, and retry guards split from the shared harness.
 
