@@ -1,5 +1,6 @@
 // ADR: docs/adr/ADR-0001-provider-neutral-turn-kernel.md
 // ADR: docs/adr/ADR-0005-provider-delta-coalescing-and-512-item-turn-budget.md
+// ADR: koduck-ai/docs/adr/ADR-0006-effective-provider-context-integration.md
 
 //! Provider-neutral lifecycle orchestration and durable-before-visible ordering.
 
@@ -11,6 +12,7 @@ use super::ports::{
     NoToolExecution, ToolCallExecutor, ToolRound, TurnCommand, TurnHistory, TurnLiveness,
     TurnResult, TurnRunError, TurnStreamEvent,
 };
+use super::provider_context::{ProviderHistoryItem, prepare_provider_history};
 
 pub(super) mod failure;
 pub(super) mod runner_stream;
@@ -196,31 +198,20 @@ where
         observer: &mut dyn FnMut(TurnStreamEvent),
         cancelled: &dyn Fn() -> bool,
     ) -> Result<TurnResult, TurnRunError> {
-        let prior_history = command
-            .thread_id
-            .map(|thread_id| self.history.prior_thread_items(&command.trust, thread_id))
-            .transpose()
-            .map_err(|error| history_failure(error, false, &[]))?
-            .unwrap_or_default();
+        // Prepare the effective provider view from one ordered read snapshot
+        // before any acceptance, and reuse it unchanged for this Turn's
+        // continuations (ADR-0006 PC-02).
+        let prepared_history = match command.thread_id {
+            Some(thread_id) => {
+                Self::prepare_prior_history(&self.history, &command.trust, thread_id)?
+            }
+            None => Vec::new(),
+        };
         let accepted = self
             .history
             .accept_initial(&command)
             .map_err(|error| history_failure(error, false, &[]))?;
-        let liveness = match self.history.start_turn_liveness(&accepted) {
-            Ok(liveness) => liveness,
-            Err(error) => {
-                let close = self.history.append_provider_terminal(
-                    &accepted,
-                    TerminalOutcome::Failed {
-                        code: "DURABILITY_UNAVAILABLE".to_owned(),
-                    },
-                );
-                if close == Err(HistoryError::Unavailable) {
-                    let _ = self.history.schedule_failed_recovery(&accepted);
-                }
-                return Err(history_failure(error, true, &[]));
-            }
-        };
+        let liveness = self.start_liveness_or_close(&accepted)?;
         observer(TurnStreamEvent::Started {
             thread_id: accepted.thread_id,
             turn_id: accepted.turn_id,
@@ -230,7 +221,7 @@ where
             thread_id: accepted.thread_id,
             turn_id: accepted.turn_id,
             input: command.input,
-            history: prior_history,
+            history: prepared_history,
             tool_rounds: Vec::new(),
         };
         let mut state = ExecutionState::started();
@@ -277,6 +268,55 @@ where
             state.lifecycle,
             state.published,
         )
+    }
+
+    /// Reads and prepares the effective prior-history view for one resume
+    /// from a single ordered read snapshot, before any acceptance
+    /// (ADR-0006 PC-02).
+    ///
+    /// # Errors
+    ///
+    /// Returns the exact [`TurnRunError::History`] cause of the bounded
+    /// authenticated read — including `Unavailable` for read deadline expiry
+    /// or decode failure (PC-07) — and [`TurnRunError::Context`] when
+    /// preparation rejects the source.
+    fn prepare_prior_history(
+        history: &H,
+        trust: &TrustContext,
+        thread_id: ThreadId,
+    ) -> Result<Vec<ProviderHistoryItem>, TurnRunError> {
+        let groups = history
+            .prior_thread_turns(trust, thread_id)
+            .map_err(TurnRunError::History)?;
+        Ok(prepare_provider_history(trust, thread_id, &groups)?)
+    }
+
+    /// Starts accepted-Turn liveness, closing the Turn as a durable failure
+    /// when liveness maintenance cannot start.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TurnRunError`] when liveness start fails; the close attempt
+    /// itself schedules failed recovery when the terminal append is unavailable.
+    fn start_liveness_or_close(
+        &mut self,
+        accepted: &AcceptedTurn,
+    ) -> Result<Box<dyn TurnLiveness>, TurnRunError> {
+        match self.history.start_turn_liveness(accepted) {
+            Ok(liveness) => Ok(liveness),
+            Err(error) => {
+                let close = self.history.append_provider_terminal(
+                    accepted,
+                    TerminalOutcome::Failed {
+                        code: "DURABILITY_UNAVAILABLE".to_owned(),
+                    },
+                );
+                if close == Err(HistoryError::Unavailable) {
+                    let _ = self.history.schedule_failed_recovery(accepted);
+                }
+                Err(history_failure(error, true, &[]))
+            }
+        }
     }
 
     /// Runs the bounded recovery handoff after a durability failure and

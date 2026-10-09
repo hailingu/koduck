@@ -1,9 +1,10 @@
 // ADR: docs/adr/ADR-0001-provider-neutral-turn-kernel.md
 // ADR: docs/adr/ADR-0005-provider-delta-coalescing-and-512-item-turn-budget.md
+// ADR: koduck-ai/docs/adr/ADR-0006-effective-provider-context-integration.md
 
 use koduck_ai::application::{
-    AcceptedTurn, HistoryError, ModelInput, ModelProvider, NewItem, ProviderError, ProviderEvent,
-    ProviderStream, TurnCommand, TurnHistory, TurnRunner,
+    AcceptedTurn, HistoryError, ModelInput, ModelProvider, NewItem, PriorTurnHistory,
+    ProviderError, ProviderEvent, ProviderStream, TurnCommand, TurnHistory, TurnRunner,
 };
 use koduck_ai::domain::{
     Item, ItemPayload, LeaseGeneration, TenantId, TerminalOutcome, TrustContext, TurnId,
@@ -52,11 +53,11 @@ impl TurnHistory for RecordingHistory {
         Ok(false)
     }
 
-    fn prior_thread_items(
+    fn prior_thread_turns(
         &self,
         _trust: &TrustContext,
         _thread_id: koduck_ai::domain::ThreadId,
-    ) -> Result<Vec<Item>, HistoryError> {
+    ) -> Result<Vec<PriorTurnHistory>, HistoryError> {
         Ok(Vec::new())
     }
 

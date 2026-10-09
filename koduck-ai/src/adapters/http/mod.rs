@@ -1,5 +1,6 @@
 // ADR: docs/adr/ADR-0001-provider-neutral-turn-kernel.md
 // ADR: docs/adr/ADR-0005-provider-delta-coalescing-and-512-item-turn-budget.md
+// ADR: koduck-ai/docs/adr/ADR-0006-effective-provider-context-integration.md
 
 //! Owned HTTP/SSE v1 presentation contract around the application turn kernel.
 
@@ -349,6 +350,7 @@ fn map_turn_run_error(error: &TurnRunError) -> ServiceError {
     match error {
         TurnRunError::Durability(_)
         | TurnRunError::History(HistoryError::Unavailable)
+        | TurnRunError::Context(_)
         | TurnRunError::Tool(_) => ServiceError::DurabilityUnavailable,
         TurnRunError::ResourceLimit(_) => ServiceError::ResourceLimitExceeded,
         TurnRunError::History(HistoryError::NotFound | HistoryError::Fenced) => {
@@ -386,7 +388,7 @@ fn problem(status: u16, code: &str, authenticate: bool) -> HttpResponse {
 
 #[cfg(test)]
 mod tests {
-    use crate::application::{HistoryError, TurnRunError};
+    use crate::application::{HistoryError, ProjectionError, ProviderContextError, TurnRunError};
 
     use super::{ServiceError, map_turn_run_error};
 
@@ -395,6 +397,24 @@ mod tests {
         assert_eq!(
             map_turn_run_error(&TurnRunError::History(HistoryError::ContextLimit)),
             ServiceError::InvalidRequest
+        );
+    }
+
+    #[test]
+    fn provider_context_rejections_map_to_durability_unavailable() {
+        // Every typed preparation cause keeps the same safe 503 problem;
+        // none reaches a caller before the SSE boundary (ADR-0006 PC-07).
+        assert_eq!(
+            map_turn_run_error(&TurnRunError::Context(
+                ProviderContextError::InvalidProvenance
+            )),
+            ServiceError::DurabilityUnavailable
+        );
+        assert_eq!(
+            map_turn_run_error(&TurnRunError::Context(ProviderContextError::Projection(
+                ProjectionError::UnsupportedRoot
+            ))),
+            ServiceError::DurabilityUnavailable
         );
     }
 }

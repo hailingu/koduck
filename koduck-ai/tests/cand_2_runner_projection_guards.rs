@@ -1,6 +1,7 @@
 // ADR: docs/adr/ADR-0003-default-deny-tool-approval-execution-boundary.md
 // ADR: docs/adr/ADR-0005-provider-delta-coalescing-and-512-item-turn-budget.md
 // ADR: koduck-ai/docs/adr/ADR-0003-correction-item-schema-and-raw-replay.md
+// ADR: koduck-ai/docs/adr/ADR-0006-effective-provider-context-integration.md
 
 //! Black-box runner integration harness for the durable projection sink's
 //! guard contract: canonical tuple and lifecycle-identity validation,
@@ -11,9 +12,9 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use koduck_ai::application::{
-    AcceptedTurn, AppendPolicy, HistoryError, ModelToolResult, NewItem, ProviderEvent,
-    ToolCallError, ToolCallExecutor, ToolCallTurnContext, ToolProjection, ToolProjectionSink,
-    TurnCommand, TurnHistory, TurnRunner, TurnStreamEvent, output_digest,
+    AcceptedTurn, AppendPolicy, HistoryError, ModelToolResult, NewItem, PriorTurnHistory,
+    ProviderEvent, ToolCallError, ToolCallExecutor, ToolCallTurnContext, ToolProjection,
+    ToolProjectionSink, TurnCommand, TurnHistory, TurnRunner, TurnStreamEvent, output_digest,
 };
 use koduck_ai::domain::{
     Item, ItemPayload, LeaseGeneration, TenantId, TerminalOutcome, ThreadId, TrustContext, TurnId,
@@ -746,11 +747,11 @@ impl TurnHistory for MemoryHistory {
         Ok(false)
     }
 
-    fn prior_thread_items(
+    fn prior_thread_turns(
         &self,
         _trust: &TrustContext,
         _thread_id: ThreadId,
-    ) -> Result<Vec<Item>, HistoryError> {
+    ) -> Result<Vec<PriorTurnHistory>, HistoryError> {
         Ok(Vec::new())
     }
 

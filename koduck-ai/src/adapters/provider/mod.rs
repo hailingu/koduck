@@ -1,5 +1,6 @@
 // ADR: docs/adr/ADR-0001-provider-neutral-turn-kernel.md
 // ADR: docs/adr/ADR-0004-provider-stream-completion-normalization.md
+// ADR: koduck-ai/docs/adr/ADR-0006-effective-provider-context-integration.md
 
 //! OpenAI-compatible protocol translation into provider-neutral application events.
 
@@ -352,8 +353,10 @@ mod tests {
     use std::thread;
     use std::time::Duration;
 
-    use crate::application::ModelInput;
-    use crate::domain::{Item, ItemPayload, TenantId, ThreadId, TurnId};
+    use crate::application::{
+        ModelInput, ProviderHistoryItem, ProviderHistoryKind, ProviderHistoryValue,
+    };
+    use crate::domain::{ItemId, ItemPayload, TenantId, TerminalOutcome, ThreadId, TurnId, Usage};
 
     use super::{
         OpenAiFrame, OpenAiProtocolTransport, ProviderTiming, ReqwestOpenAiTransport,
@@ -375,6 +378,23 @@ mod tests {
             input: "hello".to_owned(),
             history: Vec::new(),
             tool_rounds: Vec::new(),
+        }
+    }
+
+    /// Builds one uncorrected provider-history view for serialization
+    /// fixtures; corrected roots differ only in `value`/`source_item_id`.
+    fn view(
+        sequence: u64,
+        kind: ProviderHistoryKind,
+        value: ProviderHistoryValue,
+    ) -> ProviderHistoryItem {
+        let item_id = ItemId::new();
+        ProviderHistoryItem {
+            item_id,
+            sequence,
+            kind,
+            source_item_id: item_id,
+            value,
         }
     }
 
@@ -461,23 +481,20 @@ mod tests {
             turn_id: TurnId::new(),
             input: "second".to_owned(),
             history: vec![
-                Item::new(
+                view(
                     1,
-                    ItemPayload::UserMessage {
-                        content: "first".to_owned(),
-                    },
+                    ProviderHistoryKind::UserMessage,
+                    ProviderHistoryValue::Text("first".to_owned()),
                 ),
-                Item::new(
+                view(
                     2,
-                    ItemPayload::AgentMessageDelta {
-                        content: "A".to_owned(),
-                    },
+                    ProviderHistoryKind::AgentMessageDelta,
+                    ProviderHistoryValue::Text("A".to_owned()),
                 ),
-                Item::new(
+                view(
                     3,
-                    ItemPayload::AgentMessageDelta {
-                        content: "B".to_owned(),
-                    },
+                    ProviderHistoryKind::AgentMessageDelta,
+                    ProviderHistoryValue::Text("B".to_owned()),
                 ),
             ],
             tool_rounds: Vec::new(),
@@ -489,6 +506,59 @@ mod tests {
                 serde_json::json!({ "role": "user", "content": "first" }),
                 serde_json::json!({ "role": "assistant", "content": "AB" }),
                 serde_json::json!({ "role": "user", "content": "second" }),
+            ]
+        );
+    }
+
+    #[test]
+    fn corrected_history_serializes_effective_content_at_original_positions() {
+        // A corrected root keeps its original position and kind while the
+        // selected replacement supplies the exact bytes; the correction
+        // itself never becomes a message, even after a terminal
+        // (ADR-0006 PC-05).
+        let root = view(
+            1,
+            ProviderHistoryKind::UserMessage,
+            ProviderHistoryValue::Text("draft".to_owned()),
+        );
+        let mut corrected_root = view(
+            1,
+            ProviderHistoryKind::UserMessage,
+            ProviderHistoryValue::Text("revised".to_owned()),
+        );
+        corrected_root.item_id = root.item_id;
+        corrected_root.source_item_id = ItemId::new();
+        let input = ModelInput {
+            tenant_id: TenantId::new("tenant-a").expect("valid tenant"),
+            thread_id: ThreadId::new(),
+            turn_id: TurnId::new(),
+            input: "next".to_owned(),
+            history: vec![
+                corrected_root,
+                view(
+                    2,
+                    ProviderHistoryKind::AgentMessageDelta,
+                    ProviderHistoryValue::Text("answer".to_owned()),
+                ),
+                view(
+                    3,
+                    ProviderHistoryKind::Terminal,
+                    ProviderHistoryValue::NonText(ItemPayload::Terminal(
+                        TerminalOutcome::Completed {
+                            usage: Usage::new(1, 1).expect("valid usage"),
+                        },
+                    )),
+                ),
+            ],
+            tool_rounds: Vec::new(),
+        };
+
+        assert_eq!(
+            provider_messages(&input),
+            vec![
+                serde_json::json!({ "role": "user", "content": "revised" }),
+                serde_json::json!({ "role": "assistant", "content": "answer" }),
+                serde_json::json!({ "role": "user", "content": "next" }),
             ]
         );
     }

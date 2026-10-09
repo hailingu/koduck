@@ -1,4 +1,5 @@
 // ADR: koduck-ai/docs/adr/ADR-0005-effective-correction-projection.md
+// ADR: koduck-ai/docs/adr/ADR-0006-effective-provider-context-integration.md
 
 //! CAND-12 focused semantic tests for the scoped effective correction
 //! projection (ADR-0005 AC-1 through AC-6). Every fixture calls the real pure
@@ -7,6 +8,9 @@
 //! positive Turn-local sequences unless that dimension is under test.
 
 use std::sync::Barrier;
+
+#[path = "cand_12_projection/cand_13_context.rs"]
+mod cand_13_context;
 
 #[path = "cand_12_projection/fixtures.rs"]
 mod fixtures;

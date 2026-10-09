@@ -1,6 +1,7 @@
 // ADR: docs/adr/ADR-0003-default-deny-tool-approval-execution-boundary.md
 // ADR: docs/adr/ADR-0004-provider-stream-completion-normalization.md
 // ADR: koduck-ai/docs/adr/ADR-0003-correction-item-schema-and-raw-replay.md
+// ADR: koduck-ai/docs/adr/ADR-0006-effective-provider-context-integration.md
 
 //! Black-box runner integration harness for C-5 tool-call servicing.
 
@@ -12,10 +13,10 @@ use koduck_ai::adapters::provider::{
     OpenAiTransportError,
 };
 use koduck_ai::application::{
-    AcceptedTurn, HistoryError, ModelInput, ModelProvider, ModelToolResult, NewItem, ProviderError,
-    ProviderEvent, ProviderStream, ToolCallError, ToolCallExecutor, ToolCallTurnContext,
-    ToolProjection, ToolProjectionSink, TurnCommand, TurnHistory, TurnLiveness, TurnRunError,
-    TurnRunner, output_digest,
+    AcceptedTurn, HistoryError, ModelInput, ModelProvider, ModelToolResult, NewItem,
+    PriorTurnHistory, ProviderError, ProviderEvent, ProviderStream, ToolCallError,
+    ToolCallExecutor, ToolCallTurnContext, ToolProjection, ToolProjectionSink, TurnCommand,
+    TurnHistory, TurnLiveness, TurnRunError, TurnRunner, output_digest,
 };
 use koduck_ai::domain::{
     Item, ItemPayload, LeaseGeneration, TenantId, TerminalOutcome, ThreadId, TrustContext, TurnId,
@@ -526,11 +527,11 @@ impl TurnHistory for MemoryHistory {
         Ok(false)
     }
 
-    fn prior_thread_items(
+    fn prior_thread_turns(
         &self,
         _trust: &TrustContext,
         _thread_id: ThreadId,
-    ) -> Result<Vec<Item>, HistoryError> {
+    ) -> Result<Vec<PriorTurnHistory>, HistoryError> {
         Ok(Vec::new())
     }
 

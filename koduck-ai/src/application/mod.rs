@@ -3,6 +3,7 @@
 // ADR: docs/adr/ADR-0005-provider-delta-coalescing-and-512-item-turn-budget.md
 // ADR: koduck-ai/docs/adr/ADR-0004-authenticated-correction-admission.md
 // ADR: koduck-ai/docs/adr/ADR-0005-effective-correction-projection.md
+// ADR: koduck-ai/docs/adr/ADR-0006-effective-provider-context-integration.md
 
 //! Provider-neutral application orchestration and consumer-owned ports.
 
@@ -23,6 +24,7 @@ mod executor_envelope;
 mod policy;
 mod ports;
 mod preparation;
+mod provider_context;
 mod runner;
 mod runner_terminals;
 mod terminal;
@@ -74,6 +76,10 @@ pub use ports::*;
 #[cfg(test)]
 pub(crate) use preparation::ToolExecutionAuthorityRoot;
 pub use preparation::{ExecutionPreparer, ToolExecutionRuntime};
+pub use provider_context::{
+    PriorTurnHistory, PriorTurnRow, ProviderContextError, ProviderHistoryItem, ProviderHistoryKind,
+    ProviderHistoryValue, prepare_provider_history,
+};
 pub use runner::TurnRunner;
 pub(crate) use tool_boundary::ToolExecutionRuntimeRoot;
 #[cfg(test)]

@@ -1,12 +1,13 @@
 // ADR: docs/adr/ADR-0001-provider-neutral-turn-kernel.md
+// ADR: koduck-ai/docs/adr/ADR-0006-effective-provider-context-integration.md
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use koduck_ai::application::{
-    AcceptedTurn, HistoryError, ModelInput, ModelProvider, NewItem, ProviderError, ProviderEvent,
-    ProviderStream, TurnCommand, TurnHistory, TurnLiveness, TurnRunError, TurnRunner,
-    TurnStreamEvent,
+    AcceptedTurn, HistoryError, ModelInput, ModelProvider, NewItem, PriorTurnHistory,
+    ProviderError, ProviderEvent, ProviderStream, TurnCommand, TurnHistory, TurnLiveness,
+    TurnRunError, TurnRunner, TurnStreamEvent,
 };
 use koduck_ai::domain::{
     Item, ItemPayload, LeaseGeneration, TenantId, TerminalOutcome, ThreadId, TrustContext, TurnId,
@@ -81,11 +82,11 @@ impl TurnHistory for InterruptedHistory {
         Ok(true)
     }
 
-    fn prior_thread_items(
+    fn prior_thread_turns(
         &self,
         _trust: &TrustContext,
         _thread_id: ThreadId,
-    ) -> Result<Vec<Item>, HistoryError> {
+    ) -> Result<Vec<PriorTurnHistory>, HistoryError> {
         Ok(Vec::new())
     }
 
@@ -190,11 +191,11 @@ impl TurnHistory for LimitRaceHistory {
         Ok(false)
     }
 
-    fn prior_thread_items(
+    fn prior_thread_turns(
         &self,
         _trust: &TrustContext,
         _thread_id: ThreadId,
-    ) -> Result<Vec<Item>, HistoryError> {
+    ) -> Result<Vec<PriorTurnHistory>, HistoryError> {
         Ok(Vec::new())
     }
 
@@ -292,11 +293,11 @@ impl TurnHistory for InterruptArbitratingHistory {
         Ok(true)
     }
 
-    fn prior_thread_items(
+    fn prior_thread_turns(
         &self,
         _trust: &TrustContext,
         _thread_id: ThreadId,
-    ) -> Result<Vec<Item>, HistoryError> {
+    ) -> Result<Vec<PriorTurnHistory>, HistoryError> {
         Ok(Vec::new())
     }
 
@@ -405,11 +406,11 @@ impl TurnHistory for CountingPollHistory {
         Ok(false)
     }
 
-    fn prior_thread_items(
+    fn prior_thread_turns(
         &self,
         _trust: &TrustContext,
         _thread_id: ThreadId,
-    ) -> Result<Vec<Item>, HistoryError> {
+    ) -> Result<Vec<PriorTurnHistory>, HistoryError> {
         Ok(Vec::new())
     }
 
@@ -491,11 +492,11 @@ impl TurnHistory for ReconciledHistory {
         Err(HistoryError::Fenced)
     }
 
-    fn prior_thread_items(
+    fn prior_thread_turns(
         &self,
         _trust: &TrustContext,
         _thread_id: ThreadId,
-    ) -> Result<Vec<Item>, HistoryError> {
+    ) -> Result<Vec<PriorTurnHistory>, HistoryError> {
         Ok(Vec::new())
     }
 
@@ -588,11 +589,11 @@ impl TurnHistory for AppendFencedHistory {
         Ok(false)
     }
 
-    fn prior_thread_items(
+    fn prior_thread_turns(
         &self,
         _trust: &TrustContext,
         _thread_id: ThreadId,
-    ) -> Result<Vec<Item>, HistoryError> {
+    ) -> Result<Vec<PriorTurnHistory>, HistoryError> {
         Ok(Vec::new())
     }
 
@@ -707,11 +708,11 @@ impl TurnHistory for ProviderTerminalFencedHistory {
         Ok(self.interruption_requested)
     }
 
-    fn prior_thread_items(
+    fn prior_thread_turns(
         &self,
         _trust: &TrustContext,
         _thread_id: ThreadId,
-    ) -> Result<Vec<Item>, HistoryError> {
+    ) -> Result<Vec<PriorTurnHistory>, HistoryError> {
         Ok(Vec::new())
     }
 
@@ -913,11 +914,11 @@ impl TurnHistory for LivenessStartFailingHistory {
         Ok(false)
     }
 
-    fn prior_thread_items(
+    fn prior_thread_turns(
         &self,
         _trust: &TrustContext,
         _thread_id: ThreadId,
-    ) -> Result<Vec<Item>, HistoryError> {
+    ) -> Result<Vec<PriorTurnHistory>, HistoryError> {
         Ok(Vec::new())
     }
 

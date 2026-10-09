@@ -1,6 +1,7 @@
 // ADR: docs/adr/ADR-0001-provider-neutral-turn-kernel.md
 // ADR: koduck-ai/docs/adr/ADR-0003-correction-item-schema-and-raw-replay.md
 // ADR: koduck-ai/docs/adr/ADR-0004-authenticated-correction-admission.md
+// ADR: koduck-ai/docs/adr/ADR-0006-effective-provider-context-integration.md
 
 //! `SQLx`-backed implementation of the canonical `PostgreSQL` transaction boundary.
 
@@ -8,10 +9,11 @@ use std::time::Duration;
 
 use sqlx::{PgPool, Row};
 use tokio::runtime::Handle;
-use tokio_stream::StreamExt;
 use uuid::Uuid;
 
-use crate::application::{AcceptedTurn, AppendPolicy, HistoryError, NewItem, TurnCommand};
+use crate::application::{
+    AcceptedTurn, AppendPolicy, HistoryError, NewItem, PriorTurnHistory, TurnCommand,
+};
 use crate::domain::{
     Item, ItemPayload, LeaseGeneration, TenantId, TerminalOutcome, ThreadId, TrustContext, TurnId,
 };
@@ -26,6 +28,7 @@ mod failure_recovery;
 mod interruption_approval;
 mod interruption_commit;
 mod interruption_ownership;
+mod prior_turn_history;
 mod projection_batch;
 mod recovery_budget;
 /// Production `PostgreSQL` executor using one `SQLx` pool and its owning Tokio runtime.
@@ -80,56 +83,6 @@ impl SqlxPostgresExecutor {
         .await
         .map_err(unavailable)?
         .ok_or(HistoryError::Fenced)
-    }
-
-    async fn prior_thread_items_async(
-        &self,
-        trust: &TrustContext,
-        thread_id: ThreadId,
-    ) -> Result<Vec<Item>, HistoryError> {
-        let rows = sqlx::query(
-            "SELECT turn_items.item_id, turn_items.sequence, turn_items.item_type, \
-             turn_items.payload, turn_items.corrects_item_id FROM turn_items JOIN turns \
-             ON turns.tenant_id = turn_items.tenant_id \
-             AND turns.thread_id = turn_items.thread_id \
-             AND turns.turn_id = turn_items.turn_id JOIN threads \
-             ON threads.tenant_id = turn_items.tenant_id \
-             AND threads.thread_id = turn_items.thread_id \
-             WHERE turn_items.tenant_id = $1 AND turn_items.thread_id = $2 \
-             AND threads.subject_id = $3 ORDER BY turns.created_at, \
-             turn_items.turn_id, turn_items.sequence LIMIT $4",
-        )
-        .bind(trust.tenant_id.as_str())
-        .bind(thread_id.as_uuid())
-        .bind(trust.subject_id.as_str())
-        .bind(commit_reconciliation::MAX_PROVIDER_HISTORY_QUERY_ROWS)
-        .fetch(&self.pool);
-        tokio::pin!(rows);
-        let mut history = Vec::new();
-        let mut payload_bytes = 0_usize;
-        while let Some(row) = rows.next().await {
-            commit_reconciliation::push_bounded_history(
-                &mut history,
-                &mut payload_bytes,
-                row_to_item(&row.map_err(unavailable)?)?,
-            )?;
-        }
-        if history.is_empty() {
-            let exists = sqlx::query_scalar::<_, bool>(
-                "SELECT EXISTS(SELECT 1 FROM threads WHERE tenant_id = $1 \
-                 AND thread_id = $2 AND threads.subject_id = $3)",
-            )
-            .bind(trust.tenant_id.as_str())
-            .bind(thread_id.as_uuid())
-            .bind(trust.subject_id.as_str())
-            .fetch_one(&self.pool)
-            .await
-            .map_err(unavailable)?;
-            if !exists {
-                return Err(HistoryError::NotFound);
-            }
-        }
-        Ok(history)
     }
 
     async fn accept_initial_with_identity_async(
@@ -599,12 +552,12 @@ impl PostgresExecutor for SqlxPostgresExecutor {
         self.wait(self.interruption_requested_async(turn))
     }
 
-    fn prior_thread_items(
+    fn prior_thread_turns(
         &self,
         trust: &TrustContext,
         thread_id: ThreadId,
-    ) -> Result<Vec<Item>, HistoryError> {
-        self.wait(self.prior_thread_items_async(trust, thread_id))
+    ) -> Result<Vec<PriorTurnHistory>, HistoryError> {
+        self.wait(prior_turn_history::read(&self.pool, trust, thread_id))
     }
 
     fn accept_initial(&self, command: &TurnCommand) -> Result<AcceptedTurn, HistoryError> {

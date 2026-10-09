@@ -1,5 +1,6 @@
 // ADR: docs/adr/ADR-0003-default-deny-tool-approval-execution-boundary.md
 // ADR: docs/adr/ADR-0005-provider-delta-coalescing-and-512-item-turn-budget.md
+// ADR: koduck-ai/docs/adr/ADR-0006-effective-provider-context-integration.md
 
 //! Identity, lifecycle-completion, and retry guards split from the shared harness.
 
@@ -25,12 +26,12 @@ impl TurnHistory for EmptyProjectionAcknowledgementHistory {
         self.inner.interruption_requested(turn)
     }
 
-    fn prior_thread_items(
+    fn prior_thread_turns(
         &self,
         trust: &TrustContext,
         thread_id: ThreadId,
-    ) -> Result<Vec<Item>, HistoryError> {
-        self.inner.prior_thread_items(trust, thread_id)
+    ) -> Result<Vec<PriorTurnHistory>, HistoryError> {
+        self.inner.prior_thread_turns(trust, thread_id)
     }
 
     fn accept_initial(&mut self, command: &TurnCommand) -> Result<AcceptedTurn, HistoryError> {
