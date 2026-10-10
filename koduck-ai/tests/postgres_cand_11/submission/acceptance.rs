@@ -294,3 +294,63 @@ fn cand_18_explicit_thread_must_exist() {
     };
     assert_eq!(accepted.thread_id, owned_thread);
 }
+
+/// SI-03a (review round 7, finding 2): the owned explicit Thread row stays
+/// locked through final acceptance — a concurrent writer holding the row
+/// blocks the acceptance until its budget expires instead of letting the
+/// upsert recreate the Thread beneath the unlocked precheck.
+#[test]
+fn cand_18_explicit_thread_row_locks_through_acceptance() {
+    let _database_guard = super::serialize_database_tests();
+    let (harness, mut history, tenant) = connected_history();
+    let thread = ThreadId::new();
+    harness.runtime.block_on(async {
+        sqlx::query("INSERT INTO threads (tenant_id, subject_id, thread_id) VALUES ($1, $2, $3)")
+            .bind(&tenant)
+            .bind("subject-a")
+            .bind(thread.as_uuid())
+            .execute(&harness.pool)
+            .await
+            .expect("seed the owned thread");
+    });
+
+    // A concurrent writer holds the Thread row until released.
+    let lock = harness.runtime.block_on(async {
+        let mut guard = harness.pool.begin().await.expect("lock transaction starts");
+        sqlx::query("SELECT 1 FROM threads WHERE tenant_id = $1 AND thread_id = $2 FOR UPDATE")
+            .bind(&tenant)
+            .bind(thread.as_uuid())
+            .fetch_one(&mut *guard)
+            .await
+            .expect("hold the thread row");
+        guard
+    });
+
+    let submission = Uuid::new_v4();
+    let command = identified_command(
+        &tenant,
+        "subject-a",
+        submission,
+        Some(thread),
+        "locked input",
+    );
+    let started = std::time::Instant::now();
+    assert_eq!(
+        TurnHistory::accept_initial_with_submission(&mut history, &command, Duration::from_secs(2))
+            .expect_err("the locked owned row blocks the acceptance"),
+        HistoryError::Unavailable
+    );
+    assert!(
+        started.elapsed() >= Duration::from_secs(2),
+        "the acceptance waited on the row lock for its full write budget"
+    );
+
+    // Releasing the lock lets the same key accept on the existing row.
+    harness.runtime.block_on(async move {
+        drop(lock);
+    });
+    let outcome =
+        TurnHistory::accept_initial_with_submission(&mut history, &command, Duration::from_secs(2))
+            .expect("the released row accepts");
+    assert!(matches!(outcome, IdentifiedAcceptance::Created(_)));
+}

@@ -256,17 +256,20 @@ async fn require_owned_explicit_thread(
         return Ok(());
     }
     let trust = &command.trust;
-    let owned = sqlx::query_scalar::<_, bool>(
-        "SELECT EXISTS(SELECT 1 FROM threads WHERE tenant_id = $1 \
-         AND subject_id = $2 AND thread_id = $3)",
+    // FOR SHARE holds the owned row until this transaction commits, so the
+    // Thread cannot be deleted or re-owned between the check and the final
+    // acceptance (SI-03a); a missing or foreign row selects nothing.
+    let owned = sqlx::query_scalar::<_, i32>(
+        "SELECT 1 FROM threads WHERE tenant_id = $1 \
+         AND subject_id = $2 AND thread_id = $3 FOR SHARE",
     )
     .bind(trust.tenant_id.as_str())
     .bind(trust.subject_id.as_str())
     .bind(thread_id.as_uuid())
-    .fetch_one(&mut **transaction)
+    .fetch_optional(&mut **transaction)
     .await
     .map_err(unavailable)?;
-    if !owned {
+    if owned.is_none() {
         return Err(HistoryError::NotFound);
     }
     Ok(())

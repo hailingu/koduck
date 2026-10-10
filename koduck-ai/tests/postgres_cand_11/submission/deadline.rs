@@ -13,7 +13,7 @@ use koduck_ai::application::{
     AcceptanceClock, AcceptanceInstant, HistoryError, NewItem, PriorTurnHistory, TurnCommand,
     TurnHistory, TurnRunError,
 };
-use koduck_ai::domain::{TenantId, ThreadId, TrustContext, TurnId};
+use koduck_ai::domain::{SubmissionId, TenantId, ThreadId, TrustContext, TurnId};
 
 use super::runner::{completed_events, scripted_provider};
 use super::{connected_history, count_rows, identified_command};
@@ -339,4 +339,27 @@ fn cand_18_bounded_read_default_fails_closed() {
         TurnRunError::History(HistoryError::Unavailable)
     ));
     assert!(observed.lock().expect("inputs").is_empty());
+}
+
+/// SI-01d (review round 7, finding 1): the default observation entry fails
+/// closed for an invalid identified command instead of reporting absence.
+#[test]
+fn cand_18_default_observation_entry_guards_commands() {
+    let history = BareHistory;
+    let command = TurnCommand {
+        trust: TrustContext::new(
+            TenantId::new("tenant-default-observation".to_owned()).expect("valid tenant"),
+            "subject-a",
+        )
+        .expect("valid trust"),
+        thread_id: None,
+        input: String::new(),
+        submission_id: Some(SubmissionId::from_uuid(Uuid::new_v4()).expect("non-nil")),
+    };
+    assert_eq!(
+        history
+            .submission_observation(&command, Duration::from_secs(1))
+            .expect_err("the default entry rejects the invalid command"),
+        HistoryError::Unavailable
+    );
 }

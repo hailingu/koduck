@@ -534,13 +534,15 @@ pub trait TurnHistory {
     /// typed drift conflict.
     fn submission_observation(
         &self,
-        _command: &TurnCommand,
+        command: &TurnCommand,
         _deadline: std::time::Duration,
     ) -> Result<Option<super::submission::SubmissionObservation>, HistoryError> {
-        // A history adapter without submission bindings reports genuine
-        // absence; the identified acceptance below still fails closed, so a
-        // supplied key can never be silently processed as a fresh
-        // unidentified submission (SI-01d).
+        // SI-01d: every direct observation entry independently rejects an
+        // invalid identified command before reporting absence; a history
+        // adapter without submission bindings then reports genuine absence,
+        // and the identified acceptance below still fails closed.
+        super::submission::validate_identified_command(command)
+            .map_err(|_| HistoryError::Unavailable)?;
         Ok(None)
     }
 
