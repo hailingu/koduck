@@ -261,6 +261,18 @@ pub trait PostgresExecutor: Clone {
         thread_id: ThreadId,
     ) -> Result<Vec<PriorTurnHistory>, HistoryError>;
 
+    /// Reads the bounded prior history within the caller-owned deadline.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`HistoryError`] when the bounded read fails.
+    fn prior_thread_turns_bounded(
+        &self,
+        trust: &TrustContext,
+        thread_id: ThreadId,
+        deadline: Duration,
+    ) -> Result<Vec<PriorTurnHistory>, HistoryError>;
+
     /// Atomically inserts initial Thread, Turn, input Item, and lease generation.
     ///
     /// # Errors
@@ -687,6 +699,16 @@ impl<E: PostgresExecutor + Send + 'static> TurnHistory for PostgresTurnHistory<E
         thread_id: ThreadId,
     ) -> Result<Vec<PriorTurnHistory>, HistoryError> {
         self.executor.prior_thread_turns(trust, thread_id)
+    }
+
+    fn prior_thread_turns_bounded(
+        &self,
+        trust: &TrustContext,
+        thread_id: ThreadId,
+        deadline: Duration,
+    ) -> Result<Vec<PriorTurnHistory>, HistoryError> {
+        self.executor
+            .prior_thread_turns_bounded(trust, thread_id, deadline)
     }
 
     fn accept_initial(&mut self, command: &TurnCommand) -> Result<AcceptedTurn, HistoryError> {

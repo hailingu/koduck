@@ -176,6 +176,21 @@ impl koduck_ai::adapters::http::approvals::ApprovalDecisionTransport for Unconfi
 /// AC-1/SI-01a: only an omitted identity or a valid 36-character hyphenated
 /// non-nil UUID reaches the application; every other form returns the exact
 /// 400 problem without any history operation.
+/// Posts one chat case and asserts the exact expected status.
+async fn assert_chat_case(body: String, expected_status: StatusCode) {
+    let (status, body_out, _content_type) = post("/api/v1/ai/chat", body.clone(), true).await;
+    assert_eq!(status, expected_status, "case body: {body:?}");
+    if expected_status == StatusCode::BAD_REQUEST {
+        assert!(
+            body_out.contains(r#""code":"invalid-request""#),
+            "rejections use the existing invalid-request problem: {body_out}"
+        );
+    }
+}
+
+/// SI-01a: only an omitted identity or a valid 36-character hyphenated
+/// non-nil UUID reaches the application; every other identity form returns
+/// the exact 400 problem without any history operation.
 #[test]
 fn cand_18_request_validation() {
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -183,87 +198,91 @@ fn cand_18_request_validation() {
         .build()
         .expect("validation runtime");
     runtime.block_on(async {
-        for (body, expected_status) in [
-            // Omitted identity: legacy success.
-            (r#"{"input":"hello"}"#.to_owned(), StatusCode::OK),
-            // Lowercase and uppercase hyphenated forms parse.
-            (
-                format!(r#"{{"input":"hello","submission_id":"{}"}}"#, Uuid::nil()),
-                StatusCode::BAD_REQUEST,
-            ),
-            (
-                format!(
-                    r#"{{"input":"hello","submission_id":"{}"}}"#,
-                    Uuid::from_u128(0x1234_5678_9abc_def0_1112_2334_4556_6778)
-                ),
-                StatusCode::OK,
-            ),
-            (
-                r#"{"input":"hello","submission_id":"12345678-9ABC-DEF0-1112-23344556 6778"}"#
-                    .to_owned(),
-                StatusCode::BAD_REQUEST,
-            ),
-            // Simple, braced, and URN forms are not the hyphenated contract.
-            (
-                r#"{"input":"hello","submission_id":"123456789abcdef011122334455667 78"}"#
-                    .to_owned(),
-                StatusCode::BAD_REQUEST,
-            ),
-            (
-                format!(
-                    r#"{{"input":"hello","submission_id":"{{{}}}}}"#,
-                    Uuid::from_u128(1)
-                ),
-                StatusCode::BAD_REQUEST,
-            ),
-            // Explicit null, empty string, wrong type, nil.
-            (
-                r#"{"input":"hello","submission_id":null}"#.to_owned(),
-                StatusCode::BAD_REQUEST,
-            ),
-            (
-                r#"{"input":"hello","submission_id":""}"#.to_owned(),
-                StatusCode::BAD_REQUEST,
-            ),
-            (
-                r#"{"input":"hello","submission_id":42}"#.to_owned(),
-                StatusCode::BAD_REQUEST,
-            ),
-            (
-                r#"{"input":"hello","submission_id":{}}"#.to_owned(),
-                StatusCode::BAD_REQUEST,
-            ),
-            // Strict body rules (SI-01b).
-            (
-                r#"{"input":"one","input":"two"}"#.to_owned(),
-                StatusCode::BAD_REQUEST,
-            ),
-            (
-                r#"{"input":"one","unknown":"two"}"#.to_owned(),
-                StatusCode::BAD_REQUEST,
-            ),
-            (r#"{"input":"one""#.to_owned(), StatusCode::BAD_REQUEST),
-            (String::new(), StatusCode::BAD_REQUEST),
-            // Input byte boundaries: exactly 65,536 passes, one more fails.
-            (
-                format!(r#"{{"input":"{}"}}"#, "a".repeat(65_536)),
-                StatusCode::OK,
-            ),
-            (
-                format!(r#"{{"input":"{}"}}"#, "a".repeat(65_537)),
-                StatusCode::BAD_REQUEST,
-            ),
-        ] {
-            let (status, body, content_type) = post("/api/v1/ai/chat", body.clone(), true).await;
-            assert_eq!(status, expected_status, "case body: {body:?}");
-            if expected_status == StatusCode::BAD_REQUEST {
-                assert!(
-                    body.contains(r#""code":"invalid-request""#),
-                    "rejections use the existing invalid-request problem: {body}"
-                );
-            }
-            let _ = content_type;
+        for (body, expected) in identity_form_cases() {
+            assert_chat_case(body, expected).await;
         }
+    });
+}
+
+/// SI-01a identity-form boundary table.
+fn identity_form_cases() -> Vec<(String, StatusCode)> {
+    vec![
+        (r#"{"input":"hello"}"#.to_owned(), StatusCode::OK),
+        (
+            format!(r#"{{"input":"hello","submission_id":"{}"}}"#, Uuid::nil()),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            format!(
+                r#"{{"input":"hello","submission_id":"{}"}}"#,
+                Uuid::from_u128(0x1234_5678_9abc_def0_1112_2334_4556_6778)
+            ),
+            StatusCode::OK,
+        ),
+        (
+            r#"{"input":"hello","submission_id":"12345678-9ABC-DEF0-1112-23344556 6778"}"#
+                .to_owned(),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            r#"{"input":"hello","submission_id":"123456789abcdef011122334455667 78"}"#.to_owned(),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            format!(
+                r#"{{"input":"hello","submission_id":"{{{}}}}}"#,
+                Uuid::from_u128(1)
+            ),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            r#"{"input":"hello","submission_id":null}"#.to_owned(),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            r#"{"input":"hello","submission_id":""}"#.to_owned(),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            r#"{"input":"hello","submission_id":42}"#.to_owned(),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            r#"{"input":"hello","submission_id":{}}"#.to_owned(),
+            StatusCode::BAD_REQUEST,
+        ),
+    ]
+}
+
+/// SI-01b: strict body rules — duplicates, unknown members, malformed JSON,
+/// and the input byte boundaries.
+#[test]
+fn cand_18_request_body_strictness() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("body strictness runtime");
+    runtime.block_on(async {
+        let cases = [
+            r#"{"input":"one","input":"two"}"#.to_owned(),
+            r#"{"input":"one","unknown":"two"}"#.to_owned(),
+            r#"{"input":"one""#.to_owned(),
+            String::new(),
+        ];
+        for body in cases {
+            assert_chat_case(body, StatusCode::BAD_REQUEST).await;
+        }
+        // Exactly 65,536 input bytes pass; one more fails.
+        assert_chat_case(
+            format!(r#"{{"input":"{}"}}"#, "a".repeat(65_536)),
+            StatusCode::OK,
+        )
+        .await;
+        assert_chat_case(
+            format!(r#"{{"input":"{}"}}"#, "a".repeat(65_537)),
+            StatusCode::BAD_REQUEST,
+        )
+        .await;
     });
 }
 
@@ -315,85 +334,95 @@ fn cand_18_runtime_receipt() {
     runtime.block_on(async {
         let receipt = SubmissionService::receipt();
         for path in ["/api/v1/ai/chat", "/api/v1/ai/chat/stream"] {
-            let (service, _commands) = SubmissionService::new(Outcome::Observed(receipt.clone()));
-            let mut request = Request::builder().method("POST").uri(path);
-            for (name, value) in trust_header() {
-                request = request.header(name, value);
-            }
-            let request = request
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    r#"{"input":"hello","submission_id":"0f0e0d0c-0b0a-4987-8654-321098765432"}"#,
-                ))
-                .expect("request builds");
-            let response = build_router(service, UnconfiguredApprovals)
-                .oneshot(request)
-                .await
-                .expect("router responds");
-            assert_eq!(response.status(), StatusCode::ACCEPTED, "{path}");
-            assert_eq!(
-                response
-                    .headers()
-                    .get("content-type")
-                    .map(|value| value.to_str().expect("ascii")),
-                Some("application/json"),
-                "an observed key is decided before any SSE header: {path}"
-            );
-            let body = to_bytes(response.into_body(), 1_048_576)
-                .await
-                .expect("body reads");
-            let document: serde_json::Value =
-                serde_json::from_slice(&body).expect("the receipt parses as JSON");
-            let members = document.as_object().expect("receipt is one JSON object");
-            let mut names = members.keys().map(String::as_str).collect::<Vec<_>>();
-            names.sort_unstable();
-            assert_eq!(
-                names,
-                vec!["status", "submission_id", "thread_id", "turn_id"],
-                "the receipt carries exactly the four contract members"
-            );
-            assert_eq!(
-                members["status"], "accepted",
-                "accepted describes the immutable acceptance outcome"
-            );
-            assert_eq!(
-                members["submission_id"], "0f0e0d0c-0b0a-4987-8654-321098765432",
-                "UUID text is canonical lowercase hyphenated"
-            );
+            assert_observed_receipt(path, receipt.clone()).await;
         }
-
-        // The drifted key returns the exact 409 problem with no identity.
-        let (service, _commands) = SubmissionService::new(Outcome::Conflict);
-        let mut request = Request::builder()
-            .method("POST")
-            .uri("/api/v1/ai/chat")
-            .header("content-type", "application/json");
-        for (name, value) in trust_header() {
-            request = request.header(name, value);
-        }
-        let request = request
-            .body(Body::from(
-                r#"{"input":"changed","submission_id":"0f0e0d0c-0b0a-4987-8654-321098765432"}"#,
-            ))
-            .expect("request builds");
-        let response = build_router(service, UnconfiguredApprovals)
-            .oneshot(request)
-            .await
-            .expect("router responds");
-        assert_eq!(response.status(), StatusCode::CONFLICT);
-        let body = to_bytes(response.into_body(), 1_048_576)
-            .await
-            .expect("body reads");
-        let body = String::from_utf8(body.to_vec()).expect("utf-8");
-        assert!(
-            body.contains(r#""code":"submission-identity-conflict""#),
-            "the conflict exposes the exact problem code: {body}"
-        );
-        assert!(
-            !body.contains("thread_id") && !body.contains("turn_id"),
-            "conflicts expose no accepted identities: {body}"
-        );
+        assert_drifted_key_conflicts().await;
     });
+}
+
+/// SI-05: one observed route returns the constant 202 JSON receipt before
+/// any SSE header.
+async fn assert_observed_receipt(path: &str, receipt: SubmissionObservation) {
+    let (service, _commands) = SubmissionService::new(Outcome::Observed(receipt.clone()));
+    let mut request = Request::builder().method("POST").uri(path);
+    for (name, value) in trust_header() {
+        request = request.header(name, value);
+    }
+    let request = request
+        .header("content-type", "application/json")
+        .body(Body::from(
+            r#"{"input":"hello","submission_id":"0f0e0d0c-0b0a-4987-8654-321098765432"}"#,
+        ))
+        .expect("request builds");
+    let response = build_router(service, UnconfiguredApprovals)
+        .oneshot(request)
+        .await
+        .expect("router responds");
+    assert_eq!(response.status(), StatusCode::ACCEPTED, "{path}");
+    assert_eq!(
+        response
+            .headers()
+            .get("content-type")
+            .map(|value| value.to_str().expect("ascii")),
+        Some("application/json"),
+        "an observed key is decided before any SSE header: {path}"
+    );
+    let body = to_bytes(response.into_body(), 1_048_576)
+        .await
+        .expect("body reads");
+    let document: serde_json::Value =
+        serde_json::from_slice(&body).expect("the receipt parses as JSON");
+    let members = document.as_object().expect("receipt is one JSON object");
+    let mut names = members.keys().map(String::as_str).collect::<Vec<_>>();
+    names.sort_unstable();
+    assert_eq!(
+        names,
+        vec!["status", "submission_id", "thread_id", "turn_id"],
+        "the receipt carries exactly the four contract members"
+    );
+    assert_eq!(
+        members["status"], "accepted",
+        "accepted describes the immutable acceptance outcome"
+    );
+    assert_eq!(
+        members["submission_id"], "0f0e0d0c-0b0a-4987-8654-321098765432",
+        "UUID text is canonical lowercase hyphenated"
+    );
+}
+
+/// SI-02d/SI-05: the drifted key returns the exact 409 problem with no
+/// identity.
+async fn assert_drifted_key_conflicts() {
+    let (service, _commands) = SubmissionService::new(Outcome::Conflict);
+    let mut request = Request::builder()
+        .method("POST")
+        .uri("/api/v1/ai/chat")
+        .header("content-type", "application/json");
+    for (name, value) in trust_header() {
+        request = request.header(name, value);
+    }
+    let request = request
+        .body(Body::from(
+            r#"{"input":"changed","submission_id":"0f0e0d0c-0b0a-4987-8654-321098765432"}"#,
+        ))
+        .expect("request builds");
+    let response = build_router(service, UnconfiguredApprovals)
+        .oneshot(request)
+        .await
+        .expect("router responds");
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    let body = to_bytes(response.into_body(), 1_048_576)
+        .await
+        .expect("body reads");
+    let body = String::from_utf8(body.to_vec()).expect("utf-8");
+    assert!(
+        body.contains(r#""code":"submission-identity-conflict""#),
+        "the conflict exposes the exact problem code: {body}"
+    );
+    assert!(
+        !body.contains("thread_id") && !body.contains("turn_id"),
+        "conflicts expose no accepted identities: {body}"
+    );
 }
 
 /// A service double that implements only the streaming-controlled trait

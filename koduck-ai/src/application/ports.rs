@@ -461,6 +461,26 @@ pub trait TurnHistory {
         thread_id: ThreadId,
     ) -> Result<Vec<PriorTurnHistory>, HistoryError>;
 
+    /// Reads the bounded prior history within one caller-owned deadline that
+    /// the identified acceptance flow clamps to its remaining acceptance
+    /// time (ADR-0018 SI-07c).
+    ///
+    /// The default delegates to [`Self::prior_thread_turns`] for adapters
+    /// without deadline-aware reads; the production adapter overrides it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`HistoryError`] when the bounded read fails.
+    fn prior_thread_turns_bounded(
+        &self,
+        trust: &TrustContext,
+        thread_id: ThreadId,
+        deadline: std::time::Duration,
+    ) -> Result<Vec<PriorTurnHistory>, HistoryError> {
+        let _ = deadline;
+        self.prior_thread_turns(trust, thread_id)
+    }
+
     /// Starts conditional failed-terminal recovery after an accepted append outage.
     ///
     /// The production adapter retains ownership asynchronously until it either

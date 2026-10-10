@@ -579,6 +579,18 @@ impl PostgresExecutor for SqlxPostgresExecutor {
         self.wait(prior_turn_history::read(&self.pool, trust, thread_id))
     }
 
+    fn prior_thread_turns_bounded(
+        &self,
+        trust: &TrustContext,
+        thread_id: ThreadId,
+        deadline: Duration,
+    ) -> Result<Vec<PriorTurnHistory>, HistoryError> {
+        self.wait_with_deadline(
+            deadline,
+            prior_turn_history::read(&self.pool, trust, thread_id),
+        )
+    }
+
     fn accept_initial(&self, command: &TurnCommand) -> Result<AcceptedTurn, HistoryError> {
         let command = command.clone();
         let thread_id = command.thread_id.unwrap_or_default();

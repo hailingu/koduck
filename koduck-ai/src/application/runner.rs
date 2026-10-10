@@ -316,18 +316,24 @@ where
             }
             Err(error) => return Err(TurnRunError::History(error)),
         }
-        // Fresh key: prepare the CAND-13 effective context unchanged before
-        // atomic acceptance (SI-07a).
-        let prepared_history = match command.thread_id {
-            Some(thread_id) => {
-                match Self::prepare_prior_history(&self.history, &command.trust, thread_id) {
-                    Ok(history) => history,
-                    Err(rejection) => {
-                        return self.resolve_rejected_preparation(command, &budget, rejection);
-                    }
-                }
+        self.accept_identified_fresh(command, &budget, observer, cancelled)
+    }
+
+    /// Prepares the fresh prior context and runs the cancellation-first
+    /// write gate and the atomic acceptance for one absent key (SI-07a
+    /// through SI-07d).
+    fn accept_identified_fresh(
+        &mut self,
+        command: &TurnCommand,
+        budget: &AcceptanceBudget,
+        observer: &mut dyn FnMut(TurnStreamEvent),
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<TurnOutcome, TurnRunError> {
+        let prepared_history = match self.identified_prepared_history(command, budget) {
+            Ok(history) => history,
+            Err(rejection) => {
+                return self.resolve_rejected_preparation(command, budget, rejection);
             }
-            None => Vec::new(),
         };
         // SI-07g and SI-07d: cancellation is checked first, then time. An
         // observed pre-acceptance cancellation wins over simultaneous time
@@ -348,33 +354,72 @@ where
             .history
             .accept_initial_with_submission(command, WRITE_BUDGET)
         {
-            Ok(IdentifiedAcceptance::Created(accepted)) => {
-                // SI-07h: a cancellation racing the acceptance settles under
-                // the proven Created outcome and enters the existing durable
-                // cancellation path instead of provider execution.
-                if cancelled() {
-                    return self
-                        .cancel_created_turn_without_execution(&command.trust, &accepted, observer)
-                        .map(TurnOutcome::Owned);
-                }
-                // SI-07d: proven Created is handed to the existing execution
-                // flow even if the acceptance deadline has since passed.
-                self.run_created_turn(
-                    &command.trust,
-                    command.input.clone(),
-                    &accepted,
-                    prepared_history,
-                    observer,
-                    cancelled,
-                )
-                .map(TurnOutcome::Owned)
-            }
+            Ok(IdentifiedAcceptance::Created(accepted)) => self.finish_created_identified(
+                command,
+                &accepted,
+                prepared_history,
+                observer,
+                cancelled,
+            ),
             Ok(IdentifiedAcceptance::Existing(receipt)) => Ok(TurnOutcome::Observed(receipt)),
             Err(HistoryError::SubmissionConflict) => {
                 Err(TurnRunError::History(HistoryError::SubmissionConflict))
             }
             Err(error) => Err(history_failure(error, false, &[])),
         }
+    }
+
+    /// Prepares the effective prior view for a fresh identified key with the
+    /// history read clamped to the remaining acceptance time (SI-07a,
+    /// SI-07c).
+    fn identified_prepared_history(
+        &self,
+        command: &TurnCommand,
+        budget: &AcceptanceBudget,
+    ) -> Result<Vec<ProviderHistoryItem>, TurnRunError> {
+        let Some(thread_id) = command.thread_id else {
+            return Ok(Vec::new());
+        };
+        let Some(deadline) = budget.clamp(LOOKUP_BUDGET, self.acceptance_clock.now()) else {
+            return Err(TurnRunError::History(HistoryError::Unavailable));
+        };
+        let groups = self
+            .history
+            .prior_thread_turns_bounded(&command.trust, thread_id, deadline)
+            .map_err(TurnRunError::History)?;
+        Ok(prepare_provider_history(
+            &command.trust,
+            thread_id,
+            &groups,
+        )?)
+    }
+
+    /// SI-07h/SI-07d: a proven Created owner hands off to the existing
+    /// execution flow — or, when its cancellation already fired, to the
+    /// durable cancellation path — regardless of later acceptance-clock
+    /// expiry.
+    fn finish_created_identified(
+        &mut self,
+        command: &TurnCommand,
+        accepted: &crate::application::AcceptedTurn,
+        prepared_history: Vec<ProviderHistoryItem>,
+        observer: &mut dyn FnMut(TurnStreamEvent),
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<TurnOutcome, TurnRunError> {
+        if cancelled() {
+            return self
+                .cancel_created_turn_without_execution(&command.trust, accepted, observer)
+                .map(TurnOutcome::Owned);
+        }
+        self.run_created_turn(
+            &command.trust,
+            command.input.clone(),
+            accepted,
+            prepared_history,
+            observer,
+            cancelled,
+        )
+        .map(TurnOutcome::Owned)
     }
 
     /// SI-07b: preparation rejected, so one further bounded unlocked key

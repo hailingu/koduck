@@ -104,6 +104,13 @@ fn cand_18_runner_cancellation() {
     submission::cand_18_runner_cancellation();
 }
 
+/// SI-07g (ADR-0018): the observed pre-acceptance cancellation wins before
+/// any write with zero durable state.
+#[test]
+fn cand_18_runner_pre_acceptance_cancellation() {
+    submission::cand_18_runner_pre_acceptance_cancellation();
+}
+
 /// SI-07i (ADR-0018): an earlier-than-start acceptance reading fails closed.
 #[test]
 fn cand_18_invalid_clock_fails_closed() {

@@ -10,7 +10,9 @@ use std::sync::Arc;
 use std::time::Duration;
 use uuid::Uuid;
 
-use koduck_ai::adapters::history::postgres::{PostgresTurnHistory, SqlxPostgresExecutor};
+use koduck_ai::adapters::history::postgres::{
+    PostgresExecutor, PostgresTurnHistory, SqlxPostgresExecutor,
+};
 use koduck_ai::application::{
     AcceptanceClock, AcceptanceInstant, HistoryError, IdentifiedAcceptance, ModelInput,
     ModelProvider, NewItem, PriorTurnHistory, ProviderError, ProviderEvent, ProviderStream,
@@ -454,8 +456,6 @@ pub(crate) fn cand_18_runner_flows() {
 /// enters the durable cancellation path without provider execution, and an
 /// observed pre-acceptance cancellation wins before any write.
 pub(crate) fn cand_18_runner_cancellation() {
-    use koduck_ai::application::TurnOutcome;
-
     let _database_guard = super::serialize_database_tests();
     let (harness, _history, tenant) = connected_history();
     let events = completed_events();
@@ -486,12 +486,12 @@ pub(crate) fn cand_18_runner_cancellation() {
     let outcome = racing_runner
         .execute_submission_with_observer_and_cancellation(racing_command, &mut |_| {}, &cancelled)
         .expect("the racing cancellation still owns its durable result");
-    let TurnOutcome::Owned(raced) = &outcome else {
+    let koduck_ai::application::TurnOutcome::Owned(raced) = &outcome else {
         panic!("the racing cancellation keeps ownership, got {outcome:?}");
     };
     assert_eq!(
         raced.status,
-        koduck_ai::domain::TurnStatus::Cancelled,
+        TurnStatus::Cancelled,
         "SI-07h: the accepted Turn closes as exactly one durable cancellation"
     );
     assert!(
@@ -509,10 +509,14 @@ pub(crate) fn cand_18_runner_cancellation() {
         (1, 1, 1, 1),
         "the binding and canonical state remain"
     );
+}
 
-    // Pre-acceptance cancellation (SI-07g): the very first check fires, so
-    // no binding, Turn, or provider work may exist.
-    let (provider, cancel_observed) = scripted_provider(events);
+/// SI-07g: an observed pre-acceptance cancellation wins before any write, so
+/// no binding, Turn, or provider work may exist.
+pub(crate) fn cand_18_runner_pre_acceptance_cancellation() {
+    let _database_guard = super::serialize_database_tests();
+    let (harness, _history, tenant) = connected_history();
+    let (provider, cancel_observed) = scripted_provider(completed_events());
     let mut cancelled_runner = koduck_ai::runtime::compose_production_runner(
         provider,
         PostgresTurnHistory::new(harness.executor()),
@@ -534,7 +538,7 @@ pub(crate) fn cand_18_runner_cancellation() {
                 &|| true,
             )
             .expect_err("pre-acceptance cancellation surfaces"),
-        koduck_ai::application::TurnRunError::Cancelled
+        TurnRunError::Cancelled
     ));
     assert!(cancel_observed.lock().expect("inputs").is_empty());
     let cancelled_rows = harness.runtime.block_on(count_rows(
@@ -550,9 +554,6 @@ pub(crate) fn cand_18_runner_cancellation() {
     );
 }
 
-/// AC-8 (ADR-0018): the exact production startup sequence applies twice on an
-/// isolated populated fixture with no duplicate relation, changed legacy row,
-/// or backfill, and one binding survives reapplication.
 /// The manual acceptance clock replaying staged readings so the exact SI-07
 /// gate boundaries are deterministic without sleeps or paused Tokio time.
 struct ManualClock(std::sync::Mutex<std::collections::VecDeque<Duration>>);
@@ -958,29 +959,68 @@ fn migration_fixture() -> (
 /// AC-8 (ADR-0018): the exact production startup sequence applies twice on an
 /// isolated populated fixture with no duplicate relation, changed legacy row,
 /// or backfill, and one binding survives reapplication.
+/// Seeds one legacy unidentified Turn on the pre-0010 fixture and returns
+/// its identity plus its durable item count.
+fn seed_legacy_turn(
+    harness: &Harness,
+    pool: &sqlx::PgPool,
+    history: &mut PostgresTurnHistory<SqlxPostgresExecutor>,
+    tenant: &str,
+) -> (TurnId, i64) {
+    // The production port drives its own runtime; only the raw count rides
+    // the harness handle, so the two never nest.
+    let command = TurnCommand::new(
+        trust(tenant, "subject-a"),
+        None,
+        "legacy before migration".to_owned(),
+    )
+    .expect("valid legacy command");
+    let seeded = TurnHistory::accept_initial(history, &command)
+        .expect("the pre-0010 legacy acceptance creates");
+    let rows: i64 = harness.runtime.block_on(async {
+        sqlx::query_scalar("SELECT count(*) FROM turn_items WHERE turn_id = $1")
+            .bind(seeded.turn_id.as_uuid())
+            .fetch_one(pool)
+            .await
+            .expect("count the seeded legacy items")
+    });
+    (seeded.turn_id, rows)
+}
+
+/// Counts the seeded legacy Turn's durable items.
+async fn legacy_item_count(pool: &sqlx::PgPool, turn_id: TurnId) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM turn_items WHERE turn_id = $1")
+        .bind(turn_id.as_uuid())
+        .fetch_one(pool)
+        .await
+        .expect("count the legacy items")
+}
+
+/// Drops the isolated fixture schema after closing its pool.
+async fn drop_migration_fixture(database_url: &str, schema: &str, pool: sqlx::PgPool) {
+    pool.close().await;
+    let admin = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect(database_url)
+        .await
+        .expect("reconnect for fixture teardown");
+    sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+        "DROP SCHEMA IF EXISTS {schema} CASCADE"
+    )))
+    .execute(&admin)
+    .await
+    .expect("drop the migration fixture schema");
+    admin.close().await;
+}
+
 pub(crate) fn cand_18_migration_and_integrity() {
     let _database_guard = super::serialize_database_tests();
     let (harness, pool, mut history, tenant, schema, database_url) = migration_fixture();
     let submission = Uuid::new_v4();
 
-    // Seed legacy state through the production port while the fixture is
-    // still pre-0010: unidentified acceptance needs only 0001..0009 and must
-    // stay untouched by the new migration.
-    let legacy_command = TurnCommand::new(
-        trust(&tenant, "subject-a"),
-        None,
-        "legacy before migration".to_owned(),
-    )
-    .expect("valid legacy command");
-    let seeded = TurnHistory::accept_initial(&mut history, &legacy_command)
-        .expect("the pre-0010 legacy acceptance creates");
-    let legacy_rows: i64 = harness.runtime.block_on(async {
-        sqlx::query_scalar("SELECT count(*) FROM turn_items WHERE turn_id = $1")
-            .bind(seeded.turn_id.as_uuid())
-            .fetch_one(&pool)
-            .await
-            .expect("count the seeded legacy items")
-    });
+    // Seed legacy state while the fixture is still pre-0010: unidentified
+    // acceptance needs only 0001..0009 and must stay untouched by 0010.
+    let (seeded_turn, legacy_rows) = seed_legacy_turn(&harness, &pool, &mut history, &tenant);
     assert_eq!(
         legacy_rows, 1,
         "the legacy Turn carries its sequence-1 input"
@@ -996,14 +1036,9 @@ pub(crate) fn cand_18_migration_and_integrity() {
             ))
             .expect("the startup sequence is idempotent");
     }
-
-    let legacy_after: i64 = harness.runtime.block_on(async {
-        sqlx::query_scalar("SELECT count(*) FROM turn_items WHERE turn_id = $1")
-            .bind(seeded.turn_id.as_uuid())
-            .fetch_one(&pool)
-            .await
-            .expect("count the legacy items after reapplication")
-    });
+    let legacy_after = harness
+        .runtime
+        .block_on(legacy_item_count(&pool, seeded_turn));
     assert_eq!(
         legacy_rows, legacy_after,
         "reapplication changes no legacy rows and backfills nothing"
@@ -1040,22 +1075,9 @@ pub(crate) fn cand_18_migration_and_integrity() {
         "reapplication creates no duplicate binding"
     );
 
-    // Fixture teardown: close the fixture pool and drop only the schema.
-    harness.runtime.block_on(async move {
-        pool.close().await;
-        let admin = sqlx::postgres::PgPoolOptions::new()
-            .max_connections(1)
-            .connect(&database_url)
-            .await
-            .expect("reconnect for fixture teardown");
-        sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
-            "DROP SCHEMA IF EXISTS {schema} CASCADE"
-        )))
-        .execute(&admin)
-        .await
-        .expect("drop the migration fixture schema");
-        admin.close().await;
-    });
+    harness
+        .runtime
+        .block_on(drop_migration_fixture(&database_url, &schema, pool));
 }
 
 /// The isolated AC-5 fixture: a private schema holding the complete canonical
@@ -1568,4 +1590,122 @@ fn cand_18_observation_entry_guard_precedes_query() {
     harness.runtime.block_on(async move {
         drop(lock);
     });
+}
+
+/// SI-07c (review round 3, finding 1): the bounded prior-history read honors
+/// its caller-owned deadline — proven under an exclusive lock on the tables
+/// it reads, where the fixed two-second budget and a 100 ms clamped budget
+/// are separated by their elapsed times.
+#[test]
+fn cand_18_bounded_history_read_honors_deadline() {
+    let _database_guard = super::serialize_database_tests();
+    let (harness, _history, tenant) = connected_history();
+    let thread = ThreadId::new();
+    harness.runtime.block_on(async {
+        sqlx::query("INSERT INTO threads (tenant_id, subject_id, thread_id) VALUES ($1, $2, $3)")
+            .bind(&tenant)
+            .bind("subject-a")
+            .bind(thread.as_uuid())
+            .execute(&harness.pool)
+            .await
+            .expect("seed thread");
+    });
+    let executor = SqlxPostgresExecutor::new(harness.pool.clone(), harness.handle());
+
+    let lock_pool = harness.pool.clone();
+    let mut lock = harness
+        .runtime
+        .block_on(lock_pool.begin())
+        .expect("lock transaction starts");
+    harness.runtime.block_on(async {
+        sqlx::query("LOCK TABLE turn_items IN ACCESS EXCLUSIVE MODE")
+            .execute(&mut *lock)
+            .await
+            .expect("hold the item relation exclusively");
+    });
+
+    // The clamped 100 ms budget rejects after ~100 ms, far inside the fixed
+    // two-second budget an unclamped read would consume.
+    let started = std::time::Instant::now();
+    assert_eq!(
+        executor
+            .prior_thread_turns_bounded(
+                &trust(&tenant, "subject-a"),
+                thread,
+                Duration::from_millis(100),
+            )
+            .expect_err("the clamped read times out"),
+        HistoryError::Unavailable
+    );
+    let clamped_elapsed = started.elapsed();
+    assert!(
+        clamped_elapsed < Duration::from_millis(1_500),
+        "the clamped read rejected in {clamped_elapsed:?}"
+    );
+    harness.runtime.block_on(async move {
+        drop(lock);
+    });
+}
+
+/// SI-09 (review round 3, finding 2): a stored sequence-1 payload that is
+/// noncanonical (extra JSON members) or beyond the transport envelope fails
+/// unavailable before comparison, never producing a receipt.
+#[test]
+fn cand_18_noncanonical_and_oversized_payloads_fail_unavailable() {
+    let _database_guard = super::serialize_database_tests();
+    let (harness, mut history, tenant) = connected_history();
+    let submission = Uuid::new_v4();
+    let command = identified_command(&tenant, "subject-a", submission, None, "bounded input");
+    let IdentifiedAcceptance::Created(accepted) =
+        TurnHistory::accept_initial_with_submission(&mut history, &command, Duration::from_secs(2))
+            .expect("the bounded acceptance creates")
+    else {
+        panic!("the bounded acceptance must create");
+    };
+
+    // Noncanonical structure: an extra member beside `content`.
+    harness.runtime.block_on(async {
+        sqlx::query(
+            "UPDATE turn_items SET payload = $4 WHERE tenant_id = $1 \
+             AND thread_id = $2 AND turn_id = $3 AND sequence = 1",
+        )
+        .bind(&tenant)
+        .bind(accepted.thread_id.as_uuid())
+        .bind(accepted.turn_id.as_uuid())
+        .bind(r#"{"content":"bounded input","junk":"unexpected"}"#)
+        .execute(&harness.pool)
+        .await
+        .expect("corrupt the stored structure");
+    });
+    assert_eq!(
+        history
+            .submission_observation(&command, Duration::from_secs(2))
+            .expect_err("noncanonical stored structure fails unavailable"),
+        HistoryError::Unavailable
+    );
+
+    // Beyond the transport envelope: the payload is never compared.
+    harness.runtime.block_on(async {
+        let oversized = format!(
+            r#"{{"content":"bounded input","junk":"{}"}}"#,
+            "b".repeat(500_000)
+        );
+        sqlx::query(
+            "UPDATE turn_items SET payload = $4 WHERE tenant_id = $1 \
+             AND thread_id = $2 AND turn_id = $3 AND sequence = 1",
+        )
+        .bind(&tenant)
+        .bind(accepted.thread_id.as_uuid())
+        .bind(accepted.turn_id.as_uuid())
+        .bind(oversized)
+        .execute(&harness.pool)
+        .await
+        .expect("push the stored payload past the envelope");
+    });
+    assert_eq!(
+        history
+            .submission_observation(&command, Duration::from_secs(2))
+            .expect_err("the oversized envelope fails unavailable"),
+        HistoryError::Unavailable
+    );
 }
