@@ -185,16 +185,16 @@ pub(crate) fn cand_18_migration_and_integrity() {
 
 /// The isolated AC-5 fixture: a private schema holding the complete canonical
 /// migrations, one production-shaped pool bound to it through `search_path`,
-struct SubmissionFixture {
+pub(super) struct SubmissionFixture {
     database_url: String,
     schema: String,
-    tenant: String,
-    pool: sqlx::PgPool,
-    harness: Harness,
+    pub(super) tenant: String,
+    pub(super) pool: sqlx::PgPool,
+    pub(super) harness: Harness,
 }
 
 impl SubmissionFixture {
-    fn create(label: &str, trigger_body: &str) -> SubmissionFixture {
+    pub(super) fn create(label: &str, trigger_body: &str) -> SubmissionFixture {
         let harness = Harness::connect(4);
         let database_url =
             std::env::var("KODUCK_AI_TEST_DATABASE_URL").expect("isolated test database URL");
@@ -246,7 +246,7 @@ impl SubmissionFixture {
         }
     }
 
-    fn history(
+    pub(super) fn history(
         &self,
     ) -> PostgresTurnHistory<koduck_ai::adapters::history::postgres::SqlxPostgresExecutor> {
         PostgresTurnHistory::new(
@@ -257,7 +257,7 @@ impl SubmissionFixture {
         )
     }
 
-    fn teardown(self) {
+    pub(super) fn teardown(self) {
         let SubmissionFixture {
             database_url,
             schema,

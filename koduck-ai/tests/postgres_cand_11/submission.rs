@@ -99,6 +99,17 @@ async fn count_rows(
 #[path = "submission/acceptance.rs"]
 pub(crate) mod acceptance;
 
+/// Equality-remainder cases: normalization drift, foreign-Thread rejection,
+/// lifecycle-constant receipts, and the post-correction retry (AC-4).
+#[path = "submission/equality.rs"]
+pub(crate) mod equality;
+
+/// Live lock-protocol cases: advisory-lock namespace isolation, waiter lock
+/// ownership, the unlocked preliminary read, and the provider-held retry
+/// (AC-3, SI-04, SI-07a, SI-07e).
+#[path = "submission/locks.rs"]
+pub(crate) mod locks;
+
 /// Runner-flow cases: the production runner's identified execution,
 /// cancellation branches, and legacy-entry guards.
 #[path = "submission/runner.rs"]
@@ -109,6 +120,21 @@ pub(crate) mod runner;
 #[path = "submission/deadline.rs"]
 pub(crate) mod deadline;
 
+/// Settlement-remainder cases: the dead-creator proof branches and the
+/// recreated-runner restart rule (AC-5, SI-04, SI-06).
+#[path = "submission/settlement.rs"]
+pub(crate) mod settlement;
+
+/// Binding-integrity-remainder cases: individual constraint rejections and
+/// the binding's lifetime preservation (AC-8, SI-08).
+#[path = "submission/constraints.rs"]
+pub(crate) mod constraints;
+
+/// Delivery cases on the real Axum router over the migrated database: the
+/// retry disconnect and the creator's dropped stream (AC-7, SI-07f).
+#[path = "submission/delivery.rs"]
+pub(crate) mod delivery;
+
 /// Integrity cases: migration idempotence, commit reconciliation, stored
 /// payload bounding, and the runtime assembly (AC-5, AC-8, AC-9).
 #[path = "submission/integrity.rs"]
@@ -117,15 +143,31 @@ pub(crate) mod integrity;
 pub(crate) use acceptance::{
     cand_18_atomic_acceptance, cand_18_concurrent_identity, cand_18_equality_and_scope,
 };
+pub(crate) use constraints::{
+    cand_18_binding_constraints_reject_invalid_rows,
+    cand_18_binding_lifetime_preserved_across_transitions,
+};
 pub(crate) use deadline::{
     cand_18_deadline_gate, cand_18_default_port_fails_closed, cand_18_invalid_clock_fails_closed,
     cand_18_preparation_rejection,
 };
+pub(crate) use delivery::cand_18_stream_body_drop_isolates_owner;
+pub(crate) use equality::{
+    cand_18_foreign_thread_not_found_indistinguishable, cand_18_normalization_and_whitespace_drift,
+    cand_18_receipt_constant_across_lifecycle, cand_18_retry_after_correction,
+};
 pub(crate) use integrity::{
     cand_18_commit_reconciliation, cand_18_migration_and_integrity, cand_18_runtime_assembly,
+};
+pub(crate) use locks::{
+    cand_18_locks_namespace_is_isolated, cand_18_preliminary_read_unblocked_by_submission_lock,
+    cand_18_retry_completes_while_provider_blocks, cand_18_submission_waiter_holds_no_item_lock,
 };
 pub(crate) use runner::{
     cand_18_runner_cancellation, cand_18_runner_flows, cand_18_runner_pre_acceptance_cancellation,
     cand_18_runner_stream_ended_without_terminal, cand_18_runner_tool_call_is_recorded_as_denial,
     cand_18_runner_tool_round_continuation,
+};
+pub(crate) use settlement::{
+    cand_18_dead_creator_settlement_branches, cand_18_restart_cannot_regain_authority,
 };

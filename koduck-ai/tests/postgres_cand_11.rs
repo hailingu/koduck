@@ -173,6 +173,96 @@ fn cand_18_runtime_assembly() {
     submission::cand_18_runtime_assembly();
 }
 
+/// AC-3/SI-03b (ADR-0018): the int4-pair submission lock namespace never
+/// overlaps the bigint Item namespace, proven through live `pg_locks`.
+#[test]
+fn cand_18_locks_namespace_is_isolated() {
+    submission::cand_18_locks_namespace_is_isolated();
+}
+
+/// AC-3/SI-03b (ADR-0018): a submission-lock waiter owns no Item lock.
+#[test]
+fn cand_18_submission_waiter_holds_no_item_lock() {
+    submission::cand_18_submission_waiter_holds_no_item_lock();
+}
+
+/// AC-3/AC-7/SI-07a (ADR-0018): the unlocked preliminary read is not
+/// serialized behind a held submission lock.
+#[test]
+fn cand_18_preliminary_read_unblocked_by_submission_lock() {
+    submission::cand_18_preliminary_read_unblocked_by_submission_lock();
+}
+
+/// AC-3/SI-04/SI-07e (ADR-0018): an exact retry completes while the original
+/// provider stream blocks, and a different key proceeds independently.
+#[test]
+fn cand_18_retry_completes_while_provider_blocks() {
+    submission::cand_18_retry_completes_while_provider_blocks();
+}
+
+/// AC-4/SI-02b (ADR-0018): Unicode-composition and whitespace drift are the
+/// typed conflict with zero mutation.
+#[test]
+fn cand_18_normalization_and_whitespace_drift() {
+    submission::cand_18_normalization_and_whitespace_drift();
+}
+
+/// AC-4/SI-02e (ADR-0018): a fresh foreign or unknown explicit Thread is the
+/// indistinguishable typed `NotFound`.
+#[test]
+fn cand_18_foreign_thread_not_found_indistinguishable() {
+    submission::cand_18_foreign_thread_not_found_indistinguishable();
+}
+
+/// AC-4/SI-05 (ADR-0018): the receipt is constant across every lifecycle
+/// status and lease expiry.
+#[test]
+fn cand_18_receipt_constant_across_lifecycle() {
+    submission::cand_18_receipt_constant_across_lifecycle();
+}
+
+/// AC-4/SI-10 (ADR-0018): an exact retry after a post-terminal correction
+/// still observes the original acceptance.
+#[test]
+fn cand_18_retry_after_correction() {
+    submission::cand_18_retry_after_correction();
+}
+
+/// AC-5/SI-06c/SI-06d (ADR-0018): every dead-creator proof branch reconciles
+/// to the observation receipt without authority.
+#[test]
+fn cand_18_dead_creator_settlement_branches() {
+    submission::cand_18_dead_creator_settlement_branches();
+}
+
+/// AC-5/SI-04 (ADR-0018): a recreated runner handle never regains execution
+/// authority for an existing key.
+#[test]
+fn cand_18_restart_cannot_regain_authority() {
+    submission::cand_18_restart_cannot_regain_authority();
+}
+
+/// AC-8/SI-08b (ADR-0018): each migration constraint independently rejects
+/// its invalid row.
+#[test]
+fn cand_18_binding_constraints_reject_invalid_rows() {
+    submission::cand_18_binding_constraints_reject_invalid_rows();
+}
+
+/// AC-8/SI-08d (ADR-0018): the binding survives the retained-canonical
+/// lifetime transitions with the identical receipt.
+#[test]
+fn cand_18_binding_lifetime_preserved_across_transitions() {
+    submission::cand_18_binding_lifetime_preserved_across_transitions();
+}
+
+/// AC-7/SI-07f (ADR-0018): on the real router over the migrated database, a
+/// disconnected retry and the creator's dropped stream isolate the owner.
+#[test]
+fn cand_18_stream_body_drop_isolates_owner() {
+    submission::cand_18_stream_body_drop_isolates_owner();
+}
+
 /// AC-2: CA-02/CA-03 admission and CA-05/CA-09 preservation hold for every
 /// Turn state, ownership dimension, Item kind, corrupt ancestor shape, and
 /// stored-identity case.

@@ -363,3 +363,294 @@ fn cand_18_default_observation_entry_guards_commands() {
         HistoryError::Unavailable
     );
 }
+
+/// A history double recording every identified-port deadline so the staged
+/// acceptance clock's clamp and reservation arithmetic is observable at the
+/// consuming port (AC-6/SI-07c, SI-07i).
+#[derive(Clone, Default)]
+struct RecordingHistory {
+    lookups: std::sync::Arc<std::sync::Mutex<Vec<Duration>>>,
+    writes: std::sync::Arc<std::sync::Mutex<Vec<Duration>>>,
+}
+
+impl RecordingHistory {
+    fn lookups(&self) -> Vec<Duration> {
+        self.lookups.lock().expect("lookup log").clone()
+    }
+
+    fn writes(&self) -> Vec<Duration> {
+        self.writes.lock().expect("write log").clone()
+    }
+}
+
+impl TurnHistory for RecordingHistory {
+    fn request_interrupt(
+        &mut self,
+        _trust: &TrustContext,
+        _turn_id: TurnId,
+        _tool_terminals: Vec<NewItem>,
+    ) -> Result<(), HistoryError> {
+        Ok(())
+    }
+
+    fn interruption_requested(
+        &self,
+        _turn: &koduck_ai::application::AcceptedTurn,
+    ) -> Result<bool, HistoryError> {
+        Ok(false)
+    }
+
+    fn prior_thread_turns(
+        &self,
+        _trust: &TrustContext,
+        _thread_id: ThreadId,
+    ) -> Result<Vec<PriorTurnHistory>, HistoryError> {
+        Ok(Vec::new())
+    }
+
+    fn accept_initial(
+        &mut self,
+        _command: &TurnCommand,
+    ) -> Result<koduck_ai::application::AcceptedTurn, HistoryError> {
+        panic!("an identified command must never reach the unidentified port");
+    }
+
+    fn append(
+        &mut self,
+        _turn: &koduck_ai::application::AcceptedTurn,
+        _item: NewItem,
+    ) -> Result<koduck_ai::domain::Item, HistoryError> {
+        Err(HistoryError::Unavailable)
+    }
+
+    fn replay(
+        &self,
+        _tenant_id: &TenantId,
+        _turn_id: TurnId,
+    ) -> Result<Vec<koduck_ai::domain::Item>, HistoryError> {
+        Err(HistoryError::Unavailable)
+    }
+
+    fn submission_observation(
+        &self,
+        _command: &TurnCommand,
+        deadline: Duration,
+    ) -> Result<Option<koduck_ai::application::SubmissionObservation>, HistoryError> {
+        self.lookups.lock().expect("lookup log").push(deadline);
+        Ok(None)
+    }
+
+    fn accept_initial_with_submission(
+        &mut self,
+        command: &TurnCommand,
+        deadline: Duration,
+    ) -> Result<koduck_ai::application::IdentifiedAcceptance, HistoryError> {
+        self.writes.lock().expect("write log").push(deadline);
+        let receipt = koduck_ai::application::SubmissionObservation {
+            submission_id: command
+                .submission_id
+                .expect("the runner validated the identity"),
+            thread_id: ThreadId::new(),
+            turn_id: TurnId::new(),
+        };
+        Ok(koduck_ai::application::IdentifiedAcceptance::Existing(
+            receipt,
+        ))
+    }
+}
+
+/// AC-6/SI-07c (ADR-0018): pre-write reads clamp to the remaining acceptance
+/// time while a permitted acceptance write receives its full reserved
+/// two-second budget — proven through the staged manual clock and a recording
+/// history double at the consuming port.
+#[test]
+fn cand_18_pre_write_read_clamp() {
+    let (provider, observed) = scripted_provider(vec![]);
+
+    // Clamped lookup: 9.5 s elapsed of the 10 s deadline leaves 500 ms, so
+    // the preliminary read receives 500 ms, and the 500 ms remaining at the
+    // write gate starts no write.
+    let clamped_history = RecordingHistory::default();
+    let mut clamped_runner = koduck_ai::runtime::compose_production_runner(
+        provider,
+        clamped_history.clone(),
+        koduck_ai::application::NoToolExecution,
+    )
+    .with_acceptance_clock(ManualClock::staged(&[
+        Duration::from_secs(0),
+        Duration::from_millis(9_500),
+        Duration::from_millis(9_500),
+    ]));
+    let clamped_command = identified_command(
+        "tenant-clamp",
+        "subject-a",
+        Uuid::new_v4(),
+        None,
+        "clamped input",
+    );
+    assert!(matches!(
+        clamped_runner
+            .execute_submission_with_observer_and_cancellation(
+                clamped_command,
+                &mut |_| {},
+                &|| false
+            )
+            .expect_err("the clamped budget starts no write"),
+        TurnRunError::History(HistoryError::Unavailable)
+    ));
+    assert_eq!(
+        clamped_history.lookups(),
+        vec![Duration::from_millis(500)],
+        "the preliminary read is clamped to the remaining 500 ms"
+    );
+    assert!(
+        clamped_history.writes().is_empty(),
+        "less than four remaining seconds starts no write"
+    );
+
+    // Full budgets: 1 s elapsed clamps nothing, and the permitted write at
+    // exactly four remaining seconds receives the full reserved 2 s attempt.
+    let (full_provider, _full_observed) = scripted_provider(vec![]);
+    let full_history = RecordingHistory::default();
+    let mut full_runner = koduck_ai::runtime::compose_production_runner(
+        full_provider,
+        full_history.clone(),
+        koduck_ai::application::NoToolExecution,
+    )
+    .with_acceptance_clock(ManualClock::staged(&[
+        Duration::from_secs(0),
+        Duration::from_secs(1),
+        Duration::from_secs(6),
+    ]));
+    let full_command = identified_command(
+        "tenant-clamp",
+        "subject-a",
+        Uuid::new_v4(),
+        None,
+        "full input",
+    );
+    let outcome = full_runner
+        .execute_submission_with_observer_and_cancellation(full_command, &mut |_| {}, &|| false)
+        .expect("the full budget admits the write");
+    assert!(matches!(
+        outcome,
+        koduck_ai::application::TurnOutcome::Observed(_)
+    ));
+    assert_eq!(
+        full_history.lookups(),
+        vec![Duration::from_secs(2)],
+        "the unclamped preliminary read keeps its full two-second budget"
+    );
+    assert_eq!(
+        full_history.writes(),
+        vec![koduck_ai::application::WRITE_BUDGET],
+        "a permitted write receives its full reserved budget, never compressed by the deadline"
+    );
+    assert_eq!(full_history.writes().len(), 1);
+    assert!(
+        observed.lock().expect("inputs").is_empty(),
+        "no observation outcome starts provider work"
+    );
+}
+
+/// AC-6/SI-07i (ADR-0018): runner cloning and Tool composition retain the
+/// clock dependency while each identified request owns its separate
+/// start/budget value — a clone's reading earlier than its own request start
+/// fails closed, proving no budget is shared or reset.
+/// A cloneable no-op provider so the runner's `Clone` composition — the
+/// SI-07i clone/Tool retention case — is exercisable with a shared clock.
+#[derive(Clone)]
+struct CloneableProvider;
+
+impl koduck_ai::application::ModelProvider for CloneableProvider {
+    fn stream(
+        &mut self,
+        _input: koduck_ai::application::ModelInput,
+    ) -> Result<koduck_ai::application::ProviderStream<'_>, koduck_ai::application::ProviderError>
+    {
+        panic!("observation outcomes never invoke the provider")
+    }
+}
+
+#[test]
+fn cand_18_clock_composition_separate_budgets() {
+    let history = RecordingHistory::default();
+    let composed = koduck_ai::runtime::compose_production_runner(
+        CloneableProvider,
+        history.clone(),
+        koduck_ai::application::NoToolExecution,
+    )
+    .with_acceptance_clock(ManualClock::staged(&[
+        // Request A on the Tool-composed runner: its own fresh budget.
+        Duration::from_secs(0),
+        Duration::from_millis(500),
+        Duration::from_millis(600),
+        // Request B on the clone: a start of 5 s and an earlier 3 s reading
+        // fail closed before any lookup.
+        Duration::from_secs(5),
+        Duration::from_secs(3),
+        // Request C on the clone: its own fresh budget from 5.5 s.
+        Duration::from_millis(5_500),
+        Duration::from_millis(5_700),
+        Duration::from_millis(5_800),
+    ]));
+
+    // The Tool-composed runner retains the injected clock (request A works).
+    let mut composed_runner = composed.clone();
+    let outcome = composed_runner
+        .execute_submission_with_observer_and_cancellation(
+            identified_command("tenant-compose", "subject-a", Uuid::new_v4(), None, "first"),
+            &mut |_| {},
+            &|| false,
+        )
+        .expect("the composed runner executes its own budget");
+    assert!(matches!(
+        outcome,
+        koduck_ai::application::TurnOutcome::Observed(_)
+    ));
+
+    // The clone's separate budget: 3 s precedes its own 5 s start, so the
+    // request fails closed without any lookup.
+    let mut cloned = composed_runner.clone();
+    assert!(matches!(
+        cloned
+            .execute_submission_with_observer_and_cancellation(
+                identified_command(
+                    "tenant-compose",
+                    "subject-a",
+                    Uuid::new_v4(),
+                    None,
+                    "backward"
+                ),
+                &mut |_| {},
+                &|| false
+            )
+            .expect_err("the clone's earlier reading fails closed"),
+        TurnRunError::History(HistoryError::Unavailable)
+    ));
+    assert_eq!(
+        history.lookups().len(),
+        1,
+        "the fail-closed clone request performed no lookup"
+    );
+
+    // A later request on the same clone derives a fresh budget from its own
+    // start and proceeds normally.
+    let outcome = cloned
+        .execute_submission_with_observer_and_cancellation(
+            identified_command("tenant-compose", "subject-a", Uuid::new_v4(), None, "third"),
+            &mut |_| {},
+            &|| false,
+        )
+        .expect("the clone's later request uses its own budget");
+    assert!(matches!(
+        outcome,
+        koduck_ai::application::TurnOutcome::Observed(_)
+    ));
+    assert_eq!(
+        history.lookups(),
+        vec![Duration::from_secs(2), Duration::from_secs(2)],
+        "every request's lookup keeps the full clamped budget"
+    );
+    assert_eq!(history.writes().len(), 2);
+}
