@@ -395,3 +395,46 @@ fn cand_18_runtime_receipt() {
         );
     });
 }
+
+/// A service double that implements only the streaming-controlled trait
+/// method, so the default `execute_submission_controlled` delegation runs.
+#[derive(Clone)]
+struct DefaultOnlyService;
+
+impl TurnService for DefaultOnlyService {
+    fn execute(&mut self, _command: TurnCommand) -> Result<TurnResult, ServiceError> {
+        Ok(completed())
+    }
+
+    fn interrupt(&mut self, _trust: &TrustContext, _turn_id: TurnId) -> Result<(), ServiceError> {
+        Ok(())
+    }
+}
+
+/// The trait's default identified entry keeps delegating to the streaming
+/// method and wraps its result as the owned outcome (SI-04).
+#[test]
+fn cand_18_default_service_delegation() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("default delegation runtime");
+    runtime.block_on(async {
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/v1/ai/chat")
+            .header("content-type", "application/json");
+        let mut request = request;
+        for (name, value) in trust_header() {
+            request = request.header(name, value);
+        }
+        let request = request
+            .body(Body::from(r#"{"input":"hello"}"#))
+            .expect("request builds");
+        let response = build_router(DefaultOnlyService, UnconfiguredApprovals)
+            .oneshot(request)
+            .await
+            .expect("router responds");
+        assert_eq!(response.status(), StatusCode::OK);
+    });
+}

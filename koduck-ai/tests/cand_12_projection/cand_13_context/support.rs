@@ -483,27 +483,6 @@ impl TurnHistory for MemoryHistory {
         Ok(groups)
     }
 
-    fn submission_observation(
-        &self,
-        _command: &TurnCommand,
-        _deadline: std::time::Duration,
-    ) -> Result<Option<koduck_ai::application::SubmissionObservation>, HistoryError> {
-        // The in-memory double hosts no submission bindings; the identified
-        // flow is exercised against the production PostgreSQL adapter.
-        Ok(None)
-    }
-
-    fn accept_initial_with_submission(
-        &mut self,
-        command: &TurnCommand,
-        _deadline: std::time::Duration,
-    ) -> Result<koduck_ai::application::IdentifiedAcceptance, HistoryError> {
-        // Fail closed: an identified command must never be silently
-        // processed as an unidentified fresh submission (SI-01d).
-        let _ = command;
-        Err(HistoryError::Unavailable)
-    }
-
     fn accept_initial(&mut self, command: &TurnCommand) -> Result<AcceptedTurn, HistoryError> {
         let thread_id = command.thread_id.unwrap_or_default();
         let turn_id = TurnId::new();

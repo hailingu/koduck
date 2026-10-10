@@ -5,10 +5,18 @@
 //! binding, exact-retry receipts with zero mutation, typed drift conflicts,
 //! independent owner scopes, and concurrent creator selection.
 
-use koduck_ai::adapters::history::postgres::PostgresTurnHistory;
-use koduck_ai::application::{HistoryError, IdentifiedAcceptance, TurnCommand, TurnHistory};
-use koduck_ai::domain::{SubmissionId, TenantId, TrustContext};
+use std::str::FromStr;
+use std::sync::Arc;
+use std::time::Duration;
 use uuid::Uuid;
+
+use koduck_ai::adapters::history::postgres::{PostgresTurnHistory, SqlxPostgresExecutor};
+use koduck_ai::application::{
+    AcceptanceClock, AcceptanceInstant, HistoryError, IdentifiedAcceptance, ModelInput,
+    ModelProvider, NewItem, PriorTurnHistory, ProviderError, ProviderEvent, ProviderStream,
+    TurnCommand, TurnHistory, TurnOutcome, TurnRunError,
+};
+use koduck_ai::domain::{SubmissionId, TenantId, ThreadId, TrustContext, TurnId, TurnStatus};
 
 use super::harness::{Harness, MIGRATIONS, MIGRATIONS_ONCE};
 
@@ -100,15 +108,13 @@ async fn count_rows(
 /// calls keep the existing behavior and write no binding.
 #[test]
 pub(crate) fn cand_18_atomic_acceptance() {
+    let _database_guard = super::serialize_database_tests();
     let (harness, mut history, tenant) = connected_history();
     let submission = Uuid::new_v4();
     let command = identified_command(&tenant, "subject-a", submission, None, "first input");
-    let created = TurnHistory::accept_initial_with_submission(
-        &mut history,
-        &command,
-        std::time::Duration::from_secs(2),
-    )
-    .expect("the first invocation creates");
+    let created =
+        TurnHistory::accept_initial_with_submission(&mut history, &command, Duration::from_secs(2))
+            .expect("the first invocation creates");
     let IdentifiedAcceptance::Created(accepted) = &created else {
         panic!("the fresh key must return the created owner, got {created:?}");
     };
@@ -128,12 +134,9 @@ pub(crate) fn cand_18_atomic_acceptance() {
     );
 
     // Exact retry: observation receipt, zero mutation.
-    let retry = TurnHistory::accept_initial_with_submission(
-        &mut history,
-        &command,
-        std::time::Duration::from_secs(2),
-    )
-    .expect("the exact retry resolves");
+    let retry =
+        TurnHistory::accept_initial_with_submission(&mut history, &command, Duration::from_secs(2))
+            .expect("the exact retry resolves");
     let IdentifiedAcceptance::Existing(receipt) = &retry else {
         panic!("the exact retry must observe, got {retry:?}");
     };
@@ -182,15 +185,13 @@ pub(crate) fn cand_18_atomic_acceptance() {
 /// under another subject owns an independent key.
 #[test]
 pub(crate) fn cand_18_equality_and_scope() {
+    let _database_guard = super::serialize_database_tests();
     let (harness, mut history, tenant) = connected_history();
     let submission = Uuid::new_v4();
     let command = identified_command(&tenant, "subject-a", submission, None, "first input");
-    let created = TurnHistory::accept_initial_with_submission(
-        &mut history,
-        &command,
-        std::time::Duration::from_secs(2),
-    )
-    .expect("the first invocation creates");
+    let created =
+        TurnHistory::accept_initial_with_submission(&mut history, &command, Duration::from_secs(2))
+            .expect("the first invocation creates");
     let IdentifiedAcceptance::Created(accepted) = &created else {
         panic!("the fresh key must return the created owner, got {created:?}");
     };
@@ -206,7 +207,7 @@ pub(crate) fn cand_18_equality_and_scope() {
         TurnHistory::accept_initial_with_submission(
             &mut history,
             &drifted,
-            std::time::Duration::from_secs(2),
+            Duration::from_secs(2),
         )
         .expect_err("drift conflicts"),
         HistoryError::SubmissionConflict,
@@ -226,7 +227,7 @@ pub(crate) fn cand_18_equality_and_scope() {
         TurnHistory::accept_initial_with_submission(
             &mut history,
             &selector_drift,
-            std::time::Duration::from_secs(2),
+            Duration::from_secs(2),
         )
         .expect_err("selector drift conflicts"),
         HistoryError::SubmissionConflict
@@ -244,7 +245,7 @@ pub(crate) fn cand_18_equality_and_scope() {
     let independent = TurnHistory::accept_initial_with_submission(
         &mut history,
         &other_subject,
-        std::time::Duration::from_secs(2),
+        Duration::from_secs(2),
     )
     .expect("the other subject's key is independent");
     assert!(
@@ -258,6 +259,7 @@ pub(crate) fn cand_18_equality_and_scope() {
 /// receipts, one binding, one Turn, one input, and one lease.
 #[test]
 pub(crate) fn cand_18_concurrent_identity() {
+    let _database_guard = super::serialize_database_tests();
     let harness = Harness::connect(8);
     MIGRATIONS_ONCE.call_once(|| {
         harness.runtime.block_on(async {
@@ -286,7 +288,7 @@ pub(crate) fn cand_18_concurrent_identity() {
             let outcome = TurnHistory::accept_initial_with_submission(
                 &mut history,
                 &command,
-                std::time::Duration::from_secs(2),
+                Duration::from_secs(2),
             )
             .expect("every contender resolves to a typed outcome");
             (contender, outcome)
@@ -323,4 +325,959 @@ pub(crate) fn cand_18_concurrent_identity() {
         (1, 1, 1, 1),
         "the contended key commits exactly one canonical acceptance"
     );
+}
+
+/// A deterministic provider that replays one scripted event sequence and then
+/// completes, recording the observed model input.
+struct ScriptedProvider {
+    events: Vec<ProviderEvent>,
+    observed_inputs: Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+impl ModelProvider for ScriptedProvider {
+    fn stream(&mut self, input: ModelInput) -> Result<ProviderStream<'_>, ProviderError> {
+        self.observed_inputs
+            .lock()
+            .expect("input lock")
+            .push(input.input);
+        let events = std::mem::take(&mut self.events);
+        Ok(Box::new(events.into_iter()))
+    }
+}
+
+fn scripted_provider(
+    events: Vec<ProviderEvent>,
+) -> (ScriptedProvider, Arc<std::sync::Mutex<Vec<String>>>) {
+    let observed_inputs = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    (
+        ScriptedProvider {
+            events,
+            observed_inputs: std::sync::Arc::clone(&observed_inputs),
+        },
+        observed_inputs,
+    )
+}
+
+fn completed_events() -> Vec<koduck_ai::application::ProviderEvent> {
+    use koduck_ai::application::ProviderEvent;
+    vec![
+        ProviderEvent::Delta("answer".to_owned()),
+        ProviderEvent::Usage(koduck_ai::domain::Usage {
+            input_tokens: 1,
+            output_tokens: 1,
+            total_tokens: 2,
+        }),
+        ProviderEvent::Completed,
+    ]
+}
+
+/// AC-2/AC-6/SI-04/SI-07 (ADR-0018): the production runner identified flow —
+/// fresh acceptance executes the created owner, the exact retry observes
+/// without execution, drift conflicts, the expired acceptance budget starts
+/// no write, pre-acceptance cancellation wins, and a cancellation racing the
+/// proven Created outcome durably cancels without provider execution.
+#[test]
+pub(crate) fn cand_18_runner_flows() {
+    let _database_guard = super::serialize_database_tests();
+    let (harness, _history, tenant) = connected_history();
+    let events = completed_events();
+    let submission = Uuid::new_v4();
+
+    // Fresh identified acceptance: the created owner executes through the
+    // provider and completes durably (SI-07d handoff).
+    let (provider, observed) = scripted_provider(events.clone());
+    let mut runner = koduck_ai::runtime::compose_production_runner(
+        provider,
+        PostgresTurnHistory::new(harness.executor()),
+        koduck_ai::application::NoToolExecution,
+    );
+    let command = identified_command(&tenant, "subject-a", submission, None, "runner input");
+    let outcome = runner
+        .execute_submission_with_observer_and_cancellation(command.clone(), &mut |_| {}, &|| false)
+        .expect("the fresh identified run creates and executes");
+    let TurnOutcome::Owned(result) = &outcome else {
+        panic!("the fresh key must own its execution, got {outcome:?}");
+    };
+    assert_eq!(result.status, koduck_ai::domain::TurnStatus::Completed);
+    assert_eq!(
+        observed.lock().expect("inputs").as_slice(),
+        ["runner input"],
+        "exactly one provider invocation runs for the created owner"
+    );
+    let (bindings, turns, inputs, leases) =
+        harness
+            .runtime
+            .block_on(count_rows(&harness.pool, &tenant, "subject-a", submission));
+    assert_eq!((bindings, turns, inputs, leases), (1, 1, 1, 1));
+
+    // Exact retry through the same runner: observation receipt, no new
+    // provider invocation, no new Turn (SI-04/SI-05).
+    let outcome = runner
+        .execute_submission_with_observer_and_cancellation(command.clone(), &mut |_| {}, &|| false)
+        .expect("the exact retry observes");
+    let TurnOutcome::Observed(receipt) = &outcome else {
+        panic!("the exact retry must observe, got {outcome:?}");
+    };
+    assert_eq!(receipt.turn_id, result.turn_id);
+    assert_eq!(
+        observed.lock().expect("inputs").len(),
+        1,
+        "a retry starts no provider work"
+    );
+    let after =
+        harness
+            .runtime
+            .block_on(count_rows(&harness.pool, &tenant, "subject-a", submission));
+    assert_eq!(
+        (bindings, turns, inputs, leases),
+        after,
+        "a retry mutates nothing"
+    );
+
+    // Drift under the owned key: the typed conflict surfaces from the runner.
+    let drifted = identified_command(
+        &tenant,
+        "subject-a",
+        submission,
+        None,
+        "changed runner input",
+    );
+    assert!(matches!(
+        runner
+            .execute_submission_with_observer_and_cancellation(drifted, &mut |_| {}, &|| false)
+            .expect_err("drift conflicts"),
+        TurnRunError::History(HistoryError::SubmissionConflict)
+    ));
+}
+
+/// AC-6/SI-07g/SI-07h: a cancellation racing the proven Created outcome
+/// enters the durable cancellation path without provider execution, and an
+/// observed pre-acceptance cancellation wins before any write.
+pub(crate) fn cand_18_runner_cancellation() {
+    use koduck_ai::application::TurnOutcome;
+
+    let _database_guard = super::serialize_database_tests();
+    let (harness, _history, tenant) = connected_history();
+    let events = completed_events();
+
+    // Cancellation racing the proven Created outcome (SI-07h): the stateful
+    // flag answers false at the pre-write check and true at the post-Created
+    // check.
+    let racing_submission = Uuid::new_v4();
+    let (provider, racing_observed) = scripted_provider(events.clone());
+    let mut racing_runner = koduck_ai::runtime::compose_production_runner(
+        provider,
+        PostgresTurnHistory::new(harness.executor()),
+        koduck_ai::application::NoToolExecution,
+    );
+    let checked = std::cell::Cell::new(0_usize);
+    let cancelled = || {
+        let call = checked.get();
+        checked.set(call + 1);
+        call > 0
+    };
+    let racing_command = identified_command(
+        &tenant,
+        "subject-a",
+        racing_submission,
+        None,
+        "racing input",
+    );
+    let outcome = racing_runner
+        .execute_submission_with_observer_and_cancellation(racing_command, &mut |_| {}, &cancelled)
+        .expect("the racing cancellation still owns its durable result");
+    let TurnOutcome::Owned(raced) = &outcome else {
+        panic!("the racing cancellation keeps ownership, got {outcome:?}");
+    };
+    assert_eq!(
+        raced.status,
+        koduck_ai::domain::TurnStatus::Cancelled,
+        "SI-07h: the accepted Turn closes as exactly one durable cancellation"
+    );
+    assert!(
+        racing_observed.lock().expect("inputs").is_empty(),
+        "the racing cancellation starts no provider execution"
+    );
+    let racing_rows = harness.runtime.block_on(count_rows(
+        &harness.pool,
+        &tenant,
+        "subject-a",
+        racing_submission,
+    ));
+    assert_eq!(
+        racing_rows,
+        (1, 1, 1, 1),
+        "the binding and canonical state remain"
+    );
+
+    // Pre-acceptance cancellation (SI-07g): the very first check fires, so
+    // no binding, Turn, or provider work may exist.
+    let (provider, cancel_observed) = scripted_provider(events);
+    let mut cancelled_runner = koduck_ai::runtime::compose_production_runner(
+        provider,
+        PostgresTurnHistory::new(harness.executor()),
+        koduck_ai::application::NoToolExecution,
+    );
+    let cancelled_submission = Uuid::new_v4();
+    let cancelled_command = identified_command(
+        &tenant,
+        "subject-a",
+        cancelled_submission,
+        None,
+        "cancelled input",
+    );
+    assert!(matches!(
+        cancelled_runner
+            .execute_submission_with_observer_and_cancellation(
+                cancelled_command,
+                &mut |_| {},
+                &|| true,
+            )
+            .expect_err("pre-acceptance cancellation surfaces"),
+        koduck_ai::application::TurnRunError::Cancelled
+    ));
+    assert!(cancel_observed.lock().expect("inputs").is_empty());
+    let cancelled_rows = harness.runtime.block_on(count_rows(
+        &harness.pool,
+        &tenant,
+        "subject-a",
+        cancelled_submission,
+    ));
+    assert_eq!(
+        cancelled_rows,
+        (0, 0, 0, 0),
+        "no binding or canonical state exists for the cancelled creator"
+    );
+}
+
+/// AC-8 (ADR-0018): the exact production startup sequence applies twice on an
+/// isolated populated fixture with no duplicate relation, changed legacy row,
+/// or backfill, and one binding survives reapplication.
+/// The manual acceptance clock replaying staged readings so the exact SI-07
+/// gate boundaries are deterministic without sleeps or paused Tokio time.
+struct ManualClock(std::sync::Mutex<std::collections::VecDeque<Duration>>);
+
+impl ManualClock {
+    fn staged(readings: &[Duration]) -> Arc<Self> {
+        Arc::new(Self(std::sync::Mutex::new(
+            readings.iter().copied().collect(),
+        )))
+    }
+}
+
+impl AcceptanceClock for ManualClock {
+    fn now(&self) -> AcceptanceInstant {
+        let mut readings = self.0.lock().expect("manual clock lock");
+        let next = readings
+            .pop_front()
+            .unwrap_or_else(|| *readings.back().unwrap_or(&Duration::ZERO));
+        AcceptanceInstant::from_elapsed(next)
+    }
+}
+
+/// AC-6/SI-07d (ADR-0018): the exact remaining-time write gate and the
+/// sufficient four-second boundary with real database timers.
+pub(crate) fn cand_18_deadline_gate() {
+    let _database_guard = super::serialize_database_tests();
+    let (harness, _history, tenant) = connected_history();
+    let events = vec![];
+
+    // Less than four seconds remaining at the write gate: no write starts.
+    // Readings: start (0 s), lookup clamp (0.5 s), gate (6.5 s elapsed).
+    let (provider, gate_observed) = scripted_provider(events.clone());
+    let mut short_runner = koduck_ai::runtime::compose_production_runner(
+        provider,
+        PostgresTurnHistory::new(harness.executor()),
+        koduck_ai::application::NoToolExecution,
+    )
+    .with_acceptance_clock(ManualClock::staged(&[
+        Duration::from_secs(0),
+        Duration::from_millis(500),
+        Duration::from_millis(6_500),
+    ]));
+    let short_submission = Uuid::new_v4();
+    let short_command =
+        identified_command(&tenant, "subject-a", short_submission, None, "short input");
+    assert!(matches!(
+        short_runner
+            .execute_submission_with_observer_and_cancellation(short_command, &mut |_| {}, &|| {
+                false
+            })
+            .expect_err("the short budget starts no write"),
+        TurnRunError::History(HistoryError::Unavailable)
+    ));
+    assert!(gate_observed.lock().expect("inputs").is_empty());
+    let short_rows = harness.runtime.block_on(count_rows(
+        &harness.pool,
+        &tenant,
+        "subject-a",
+        short_submission,
+    ));
+    assert_eq!(
+        short_rows,
+        (0, 0, 0, 0),
+        "no binding or canonical state exists for the expired budget"
+    );
+
+    // Exactly four seconds is sufficient: the write starts and the created
+    // owner executes (SI-07d).
+    let (provider, exact_observed) = scripted_provider(completed_events());
+    let mut exact_runner = koduck_ai::runtime::compose_production_runner(
+        provider,
+        PostgresTurnHistory::new(harness.executor()),
+        koduck_ai::application::NoToolExecution,
+    )
+    .with_acceptance_clock(ManualClock::staged(&[
+        Duration::from_secs(0),
+        Duration::from_millis(500),
+        Duration::from_secs(6),
+    ]));
+    let exact_submission = Uuid::new_v4();
+    let exact_command =
+        identified_command(&tenant, "subject-a", exact_submission, None, "exact input");
+    let outcome = exact_runner
+        .execute_submission_with_observer_and_cancellation(exact_command, &mut |_| {}, &|| false)
+        .expect("exactly four remaining seconds admits the write");
+    assert!(matches!(
+        outcome,
+        koduck_ai::application::TurnOutcome::Owned(_)
+    ));
+    assert_eq!(exact_observed.lock().expect("inputs").len(), 1);
+}
+
+/// SI-07i (ADR-0018): a reading earlier than its request start fails closed
+/// before fresh acceptance, without resetting or extending the budget.
+pub(crate) fn cand_18_invalid_clock_fails_closed() {
+    let _database_guard = super::serialize_database_tests();
+    let (harness, _history, tenant) = connected_history();
+    let (provider, backward_observed) = scripted_provider(vec![]);
+    let mut backward_runner = koduck_ai::runtime::compose_production_runner(
+        provider,
+        PostgresTurnHistory::new(harness.executor()),
+        koduck_ai::application::NoToolExecution,
+    )
+    .with_acceptance_clock(ManualClock::staged(&[
+        Duration::from_secs(5),
+        Duration::from_secs(4),
+    ]));
+    let backward_submission = Uuid::new_v4();
+    let backward_command = identified_command(
+        &tenant,
+        "subject-a",
+        backward_submission,
+        None,
+        "backward input",
+    );
+    assert!(matches!(
+        backward_runner
+            .execute_submission_with_observer_and_cancellation(
+                backward_command,
+                &mut |_| {},
+                &|| false
+            )
+            .expect_err("the earlier reading fails closed"),
+        TurnRunError::History(HistoryError::Unavailable)
+    ));
+    assert!(backward_observed.lock().expect("inputs").is_empty());
+}
+
+/// AC-7/SI-07b (ADR-0018): a rejected fresh preparation resolves the final
+/// unlocked key lookup; with no binding committed the original rejection is
+/// preserved.
+pub(crate) fn cand_18_preparation_rejection() {
+    let _database_guard = super::serialize_database_tests();
+    let (harness, _history, tenant) = connected_history();
+    let (provider, observed) = scripted_provider(completed_events());
+    let mut runner = koduck_ai::runtime::compose_production_runner(
+        provider,
+        PostgresTurnHistory::new(harness.executor()),
+        koduck_ai::application::NoToolExecution,
+    );
+    let submission = Uuid::new_v4();
+    // The explicit Thread does not exist, so the bounded prior-history read
+    // rejects; no concurrent commit wins the final lookup.
+    let command = identified_command(
+        &tenant,
+        "subject-a",
+        submission,
+        Some(ThreadId::new()),
+        "rejected input",
+    );
+    let rejection = runner
+        .execute_submission_with_observer_and_cancellation(command, &mut |_| {}, &|| false)
+        .expect_err("the nonexistent thread rejects");
+    assert!(matches!(
+        rejection,
+        TurnRunError::History(HistoryError::NotFound)
+    ));
+    assert!(
+        observed.lock().expect("inputs").is_empty(),
+        "a rejected preparation starts no provider work"
+    );
+    let rows =
+        harness
+            .runtime
+            .block_on(count_rows(&harness.pool, &tenant, "subject-a", submission));
+    assert_eq!(rows, (0, 0, 0, 0), "the rejection writes no binding");
+}
+
+/// A history double that relies entirely on the `TurnHistory` trait defaults
+/// for the identified ports, proving SI-01d's fail-closed default.
+#[derive(Default)]
+struct BareHistory;
+
+impl TurnHistory for BareHistory {
+    fn request_interrupt(
+        &mut self,
+        _trust: &TrustContext,
+        _turn_id: TurnId,
+        _tool_terminals: Vec<NewItem>,
+    ) -> Result<(), HistoryError> {
+        Ok(())
+    }
+
+    fn interruption_requested(
+        &self,
+        _turn: &koduck_ai::application::AcceptedTurn,
+    ) -> Result<bool, HistoryError> {
+        Ok(false)
+    }
+
+    fn prior_thread_turns(
+        &self,
+        _trust: &TrustContext,
+        _thread_id: ThreadId,
+    ) -> Result<Vec<PriorTurnHistory>, HistoryError> {
+        Ok(Vec::new())
+    }
+
+    fn accept_initial(
+        &mut self,
+        _command: &TurnCommand,
+    ) -> Result<koduck_ai::application::AcceptedTurn, HistoryError> {
+        panic!("an identified command must never reach the unidentified port");
+    }
+
+    fn append(
+        &mut self,
+        _turn: &koduck_ai::application::AcceptedTurn,
+        _item: NewItem,
+    ) -> Result<koduck_ai::domain::Item, HistoryError> {
+        Err(HistoryError::Unavailable)
+    }
+
+    fn replay(
+        &self,
+        _tenant_id: &koduck_ai::domain::TenantId,
+        _turn_id: TurnId,
+    ) -> Result<Vec<koduck_ai::domain::Item>, HistoryError> {
+        Err(HistoryError::Unavailable)
+    }
+}
+
+/// AC-1/SI-01d (ADR-0018): a history adapter relying on the port defaults
+/// reports absence for the preliminary lookup and fails the acceptance
+/// closed.
+pub(crate) fn cand_18_default_port_fails_closed() {
+    let _database_guard = super::serialize_database_tests();
+    let (provider, observed) = scripted_provider(completed_events());
+    let mut runner = koduck_ai::runtime::compose_production_runner(
+        provider,
+        BareHistory,
+        koduck_ai::application::NoToolExecution,
+    );
+    let submission = Uuid::new_v4();
+    let command = identified_command("tenant-defaults", "subject-a", submission, None, "input");
+    // The typed unavailability surfaces as the runner's durability failure
+    // with no accepted identities (SI-01d).
+    assert!(matches!(
+        runner
+            .execute_submission_with_observer_and_cancellation(command, &mut |_| {}, &|| false)
+            .expect_err("the default port fails closed"),
+        TurnRunError::Durability(_)
+    ));
+    assert!(observed.lock().expect("inputs").is_empty());
+}
+
+/// AC-2 (ADR-0018): the unconfigured Tool boundary records the model Tool
+/// call as the typed durable denial.
+pub(crate) fn cand_18_runner_tool_call_is_recorded_as_denial() {
+    let (harness, _history, _unused_tenant) = connected_history();
+    let tenant = harness.runtime.block_on(async {
+        let tenant = format!("cand18-tool-{}", Uuid::new_v4());
+        sqlx::query("INSERT INTO threads (tenant_id, subject_id, thread_id) VALUES ($1, $2, $3)")
+            .bind(&tenant)
+            .bind("subject-a")
+            .bind(ThreadId::new().as_uuid())
+            .execute(&harness.pool)
+            .await
+            .expect("seed thread");
+        tenant
+    });
+    let (provider, observed) = scripted_provider(vec![
+        ProviderEvent::ToolCall {
+            name: "unknown_tool".to_owned(),
+            arguments: "{}".to_owned(),
+        },
+        ProviderEvent::Completed,
+    ]);
+    let mut runner = koduck_ai::runtime::compose_production_runner(
+        provider,
+        PostgresTurnHistory::new(harness.executor()),
+        koduck_ai::application::NoToolExecution,
+    );
+    let command = TurnCommand::new(trust(&tenant, "subject-a"), None, "tool input".to_owned())
+        .expect("valid command");
+    let outcome = runner
+        .execute_submission_with_observer_and_cancellation(command, &mut |_| {}, &|| false)
+        .expect("the denied tool round completes the turn");
+    assert!(matches!(
+        outcome,
+        koduck_ai::application::TurnOutcome::Owned(_)
+    ));
+    assert_eq!(
+        observed.lock().expect("inputs").len(),
+        1,
+        "exactly one provider stream serviced the denied call"
+    );
+}
+
+/// ADR-0003 TC-11 (ADR-0018 preservation): a Tool-call round that ends its
+/// stream without a terminal starts the continuation request carrying the
+/// committed denial.
+pub(crate) fn cand_18_runner_tool_round_continuation() {
+    let (harness, _history, _unused_tenant) = connected_history();
+    let tenant = harness.runtime.block_on(async {
+        let tenant = format!("cand18-toolround-{}", Uuid::new_v4());
+        sqlx::query("INSERT INTO threads (tenant_id, subject_id, thread_id) VALUES ($1, $2, $3)")
+            .bind(&tenant)
+            .bind("subject-a")
+            .bind(ThreadId::new().as_uuid())
+            .execute(&harness.pool)
+            .await
+            .expect("seed thread");
+        tenant
+    });
+    // The first stream raises the call and ends; the second (continuation)
+    // stream ends without a terminal, so the Turn closes as the bounded
+    // provider-stream failure after exactly two provider invocations.
+    let (provider, observed) = scripted_provider(vec![ProviderEvent::ToolCall {
+        name: "unknown_tool".to_owned(),
+        arguments: "{}".to_owned(),
+    }]);
+    let mut runner = koduck_ai::runtime::compose_production_runner(
+        provider,
+        PostgresTurnHistory::new(harness.executor()),
+        koduck_ai::application::NoToolExecution,
+    );
+    let command = TurnCommand::new(trust(&tenant, "subject-a"), None, "round input".to_owned())
+        .expect("valid command");
+    let outcome = runner
+        .execute_submission_with_observer_and_cancellation(command, &mut |_| {}, &|| false)
+        .expect("the tool round still produces an owned result");
+    let koduck_ai::application::TurnOutcome::Owned(result) = outcome else {
+        panic!("the tool round owns its result");
+    };
+    assert_eq!(result.status, TurnStatus::Failed);
+    assert_eq!(
+        observed.lock().expect("inputs").len(),
+        2,
+        "the continuation request carries the committed denial"
+    );
+}
+
+/// ADR-0005 PLB-7 (ADR-0018 preservation): a provider stream that ends
+/// without a terminal durably closes the Turn as the bounded
+/// `PROVIDER_STREAM_ENDED` failure.
+pub(crate) fn cand_18_runner_stream_ended_without_terminal() {
+    let (harness, _history, tenant) = connected_history();
+    let (provider, _observed) = scripted_provider(vec![ProviderEvent::Delta("partial".to_owned())]);
+    let mut runner = koduck_ai::runtime::compose_production_runner(
+        provider,
+        PostgresTurnHistory::new(harness.executor()),
+        koduck_ai::application::NoToolExecution,
+    );
+    let command = TurnCommand::new(
+        trust(&tenant, "subject-a"),
+        None,
+        "dangling input".to_owned(),
+    )
+    .expect("valid command");
+    let outcome = runner
+        .execute_submission_with_observer_and_cancellation(command, &mut |_| {}, &|| false)
+        .expect("the dangling stream still produces an owned result");
+    let koduck_ai::application::TurnOutcome::Owned(result) = outcome else {
+        panic!("the unidentified run owns its result");
+    };
+    assert_eq!(result.status, TurnStatus::Failed);
+}
+
+fn migration_fixture() -> (
+    Harness,
+    sqlx::PgPool,
+    PostgresTurnHistory<koduck_ai::adapters::history::postgres::SqlxPostgresExecutor>,
+    String,
+    String,
+    String,
+) {
+    let harness = Harness::connect(4);
+    let database_url =
+        std::env::var("KODUCK_AI_TEST_DATABASE_URL").expect("isolated test database URL");
+    let schema = format!("cand18_mig_{}", Uuid::new_v4().simple());
+    harness.runtime.block_on(async {
+        sqlx::raw_sql(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")))
+            .execute(&harness.pool)
+            .await
+            .expect("create the migration fixture schema");
+    });
+    // The fixture pool keeps the production PgPoolOptions::new() defaults and
+    // adds only the fixture search_path, so the unqualified startup DDL
+    // resolves inside the isolated schema.
+    let options = sqlx::postgres::PgConnectOptions::from_str(&database_url)
+        .expect("valid test database URL")
+        .options([("search_path", schema.clone())]);
+    let pool = harness
+        .runtime
+        .block_on(sqlx::postgres::PgPoolOptions::new().connect_with(options))
+        .expect("connect the migration fixture pool");
+    // Populate migrations 0001..0009 first: the fixture starts pre-0010.
+    harness.runtime.block_on(async {
+        for migration in &MIGRATIONS[..9] {
+            sqlx::raw_sql(sqlx::AssertSqlSafe((*migration).to_owned()))
+                .execute(&pool)
+                .await
+                .expect("apply the pre-0010 migration sequence");
+        }
+    });
+    let executor = SqlxPostgresExecutor::new(pool.clone(), harness.handle());
+    let history = PostgresTurnHistory::new(executor);
+    let tenant = format!("cand18-migration-{}", Uuid::new_v4());
+    (harness, pool, history, tenant, schema, database_url)
+}
+
+/// AC-8 (ADR-0018): the exact production startup sequence applies twice on an
+/// isolated populated fixture with no duplicate relation, changed legacy row,
+/// or backfill, and one binding survives reapplication.
+pub(crate) fn cand_18_migration_and_integrity() {
+    let _database_guard = super::serialize_database_tests();
+    let (harness, pool, mut history, tenant, schema, database_url) = migration_fixture();
+    let submission = Uuid::new_v4();
+
+    // Seed legacy state through the production port while the fixture is
+    // still pre-0010: unidentified acceptance needs only 0001..0009 and must
+    // stay untouched by the new migration.
+    let legacy_command = TurnCommand::new(
+        trust(&tenant, "subject-a"),
+        None,
+        "legacy before migration".to_owned(),
+    )
+    .expect("valid legacy command");
+    let seeded = TurnHistory::accept_initial(&mut history, &legacy_command)
+        .expect("the pre-0010 legacy acceptance creates");
+    let legacy_rows: i64 = harness.runtime.block_on(async {
+        sqlx::query_scalar("SELECT count(*) FROM turn_items WHERE turn_id = $1")
+            .bind(seeded.turn_id.as_uuid())
+            .fetch_one(&pool)
+            .await
+            .expect("count the seeded legacy items")
+    });
+    assert_eq!(
+        legacy_rows, 1,
+        "the legacy Turn carries its sequence-1 input"
+    );
+
+    // The exact startup sequence, applied twice through the production entry.
+    for _ in 0..2 {
+        harness
+            .runtime
+            .block_on(koduck_ai::runtime::apply_startup_migrations(
+                &pool,
+                Duration::from_secs(10),
+            ))
+            .expect("the startup sequence is idempotent");
+    }
+
+    let legacy_after: i64 = harness.runtime.block_on(async {
+        sqlx::query_scalar("SELECT count(*) FROM turn_items WHERE turn_id = $1")
+            .bind(seeded.turn_id.as_uuid())
+            .fetch_one(&pool)
+            .await
+            .expect("count the legacy items after reapplication")
+    });
+    assert_eq!(
+        legacy_rows, legacy_after,
+        "reapplication changes no legacy rows and backfills nothing"
+    );
+
+    // With 0010 present, the identified acceptance works on the migrated
+    // fixture and its binding survives a further full reapplication.
+    let command = identified_command(&tenant, "subject-a", submission, None, "after migration");
+    let IdentifiedAcceptance::Created(_) =
+        TurnHistory::accept_initial_with_submission(&mut history, &command, Duration::from_secs(2))
+            .expect("the identified acceptance creates on the migrated fixture")
+    else {
+        panic!("the identified acceptance must create");
+    };
+    harness
+        .runtime
+        .block_on(koduck_ai::runtime::apply_startup_migrations(
+            &pool,
+            Duration::from_secs(10),
+        ))
+        .expect("a third full reapplication stays idempotent");
+    let binding_count: i64 = harness.runtime.block_on(async {
+        sqlx::query_scalar(
+            "SELECT count(*) FROM chat_submissions WHERE tenant_id = $1 AND submission_id = $2",
+        )
+        .bind(&tenant)
+        .bind(submission)
+        .fetch_one(&pool)
+        .await
+        .expect("count bindings after reapplication")
+    });
+    assert_eq!(
+        binding_count, 1,
+        "reapplication creates no duplicate binding"
+    );
+
+    // Fixture teardown: close the fixture pool and drop only the schema.
+    harness.runtime.block_on(async move {
+        pool.close().await;
+        let admin = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&database_url)
+            .await
+            .expect("reconnect for fixture teardown");
+        sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+            "DROP SCHEMA IF EXISTS {schema} CASCADE"
+        )))
+        .execute(&admin)
+        .await
+        .expect("drop the migration fixture schema");
+        admin.close().await;
+    });
+}
+
+/// The isolated AC-5 fixture: a private schema holding the complete canonical
+/// migrations, one production-shaped pool bound to it through `search_path`,
+/// and a tenant-scoped deferred commit trigger on its `chat_submissions`.
+struct SubmissionFixture {
+    database_url: String,
+    schema: String,
+    tenant: String,
+    pool: sqlx::PgPool,
+    harness: Harness,
+}
+
+impl SubmissionFixture {
+    fn create(label: &str, trigger_body: &str) -> SubmissionFixture {
+        let harness = Harness::connect(4);
+        let database_url =
+            std::env::var("KODUCK_AI_TEST_DATABASE_URL").expect("isolated test database URL");
+        let schema = format!("cand18_submission_{}", Uuid::new_v4().simple());
+        let tenant = format!("cand18-reconcile-{label}-{}", Uuid::new_v4());
+        harness.runtime.block_on(async {
+            sqlx::raw_sql(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")))
+                .execute(&harness.pool)
+                .await
+                .expect("create the reconciliation fixture schema");
+        });
+        let options = sqlx::postgres::PgConnectOptions::from_str(&database_url)
+            .expect("valid test database URL")
+            .options([("search_path", schema.clone())]);
+        let pool = harness
+            .runtime
+            .block_on(sqlx::postgres::PgPoolOptions::new().connect_with(options))
+            .expect("connect the fixture pool");
+        // The fixture carries the complete canonical schema, 0010 included,
+        // through the exact production startup sequence; the trigger installs
+        // afterwards, once its relation exists.
+        harness
+            .runtime
+            .block_on(koduck_ai::runtime::apply_startup_migrations(
+                &pool,
+                Duration::from_secs(20),
+            ))
+            .expect("apply the canonical migrations into the fixture schema");
+        harness.runtime.block_on(async {
+            sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+                "CREATE FUNCTION {schema}.cand18_commit_trigger() RETURNS trigger AS \
+                 $body$ BEGIN IF NEW.tenant_id = $tenant${tenant}$tenant$ THEN \
+                 {trigger_body} END IF; RETURN NEW; END; $body$ LANGUAGE plpgsql; \
+                 CREATE CONSTRAINT TRIGGER cand18_commit_deferred \
+                 AFTER INSERT ON {schema}.chat_submissions \
+                 DEFERRABLE INITIALLY DEFERRED FOR EACH ROW \
+                 EXECUTE FUNCTION {schema}.cand18_commit_trigger()"
+            )))
+            .execute(&pool)
+            .await
+            .expect("install the deferred commit trigger");
+        });
+        SubmissionFixture {
+            database_url,
+            schema,
+            tenant,
+            pool,
+            harness,
+        }
+    }
+
+    fn history(
+        &self,
+    ) -> PostgresTurnHistory<koduck_ai::adapters::history::postgres::SqlxPostgresExecutor> {
+        PostgresTurnHistory::new(
+            koduck_ai::adapters::history::postgres::SqlxPostgresExecutor::new(
+                self.pool.clone(),
+                self.harness.handle(),
+            ),
+        )
+    }
+
+    fn teardown(self) {
+        let SubmissionFixture {
+            database_url,
+            schema,
+            tenant: _tenant,
+            pool,
+            harness,
+        } = self;
+        harness.runtime.block_on(async move {
+            pool.close().await;
+            let admin = sqlx::postgres::PgPoolOptions::new()
+                .max_connections(1)
+                .connect(&database_url)
+                .await
+                .expect("reconnect for fixture teardown");
+            sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+                "DROP SCHEMA IF EXISTS {schema} CASCADE"
+            )))
+            .execute(&admin)
+            .await
+            .expect("drop the reconciliation fixture schema");
+            admin.close().await;
+        });
+    }
+}
+
+/// AC-5/SI-06 (ADR-0018): a delayed deferred-trigger commit whose write
+/// acknowledgement times out is reconciled by the same invocation's read-only
+/// proof, which observes the live creator and still returns the created
+/// owner; the deferred-exception variant commits nothing and stays
+/// unavailable.
+pub(crate) fn cand_18_commit_reconciliation() {
+    let _database_guard = super::serialize_database_tests();
+    // Variant one: the commit survives the dropped acknowledgement.
+    {
+        let fixture = SubmissionFixture::create("delay", "PERFORM pg_sleep(2.5);");
+        let mut history = fixture.history();
+        let submission = Uuid::new_v4();
+        let command = identified_command(
+            &fixture.tenant,
+            "subject-a",
+            submission,
+            None,
+            "reconciled input",
+        );
+        let started = std::time::Instant::now();
+        let outcome = TurnHistory::accept_initial_with_submission(
+            &mut history,
+            &command,
+            Duration::from_secs(2),
+        )
+        .expect("the delayed commit reconciles to the created owner");
+        let elapsed = started.elapsed();
+        let IdentifiedAcceptance::Created(accepted) = outcome else {
+            panic!("the same invocation must prove its live creator");
+        };
+        assert_eq!(accepted.generation.get(), 1);
+        assert!(
+            elapsed >= Duration::from_secs(2),
+            "the write attempt consumed its full budget before the proof"
+        );
+        let rows = fixture.harness.runtime.block_on(count_rows(
+            &fixture.pool,
+            &fixture.tenant,
+            "subject-a",
+            submission,
+        ));
+        assert_eq!(rows, (1, 1, 1, 1), "exactly one durable acceptance exists");
+        fixture.teardown();
+    }
+
+    // Variant two: the deferred trigger aborts the commit, so no binding and
+    // no canonical state exists and the outcome stays unavailable.
+    {
+        let fixture =
+            SubmissionFixture::create("abort", "RAISE EXCEPTION 'cand18 controlled commit fault';");
+        let mut history = fixture.history();
+        let submission = Uuid::new_v4();
+        let command = identified_command(
+            &fixture.tenant,
+            "subject-a",
+            submission,
+            None,
+            "aborted input",
+        );
+        assert_eq!(
+            TurnHistory::accept_initial_with_submission(
+                &mut history,
+                &command,
+                Duration::from_secs(2),
+            )
+            .expect_err("the aborted commit stays unavailable"),
+            HistoryError::Unavailable
+        );
+        let rows = fixture.harness.runtime.block_on(count_rows(
+            &fixture.pool,
+            &fixture.tenant,
+            "subject-a",
+            submission,
+        ));
+        assert_eq!(
+            rows,
+            (0, 0, 0, 0),
+            "the aborted commit leaves zero partial rows"
+        );
+        fixture.teardown();
+    }
+}
+
+/// The production `run` assembly — pool construction, migration application,
+/// adapter wiring, and the explicit system acceptance clock — executes up to
+/// the listener bind, which a pre-bound port deterministically rejects.
+pub(crate) fn cand_18_runtime_assembly() {
+    let _database_guard = super::serialize_database_tests();
+    let harness = Harness::connect(4);
+    let database_url =
+        std::env::var("KODUCK_AI_TEST_DATABASE_URL").expect("isolated test database URL");
+    // A bound listener makes the assembly's bind step fail immediately, so
+    // every preceding assembly line runs inside the test.
+    let probe_listener = std::net::TcpListener::bind("127.0.0.1:0").expect("probe port");
+    let bind_addr = probe_listener.local_addr().expect("probe address");
+    let environment = std::collections::BTreeMap::from([
+        ("KODUCK_AI_BIND_ADDR".to_owned(), bind_addr.to_string()),
+        ("KODUCK_AI_DATABASE_URL".to_owned(), database_url),
+        (
+            "KODUCK_AI_OPENAI_BASE_URL".to_owned(),
+            "https://provider.example/v1".to_owned(),
+        ),
+        (
+            "KODUCK_AI_OPENAI_MODEL".to_owned(),
+            "provider-model".to_owned(),
+        ),
+        (
+            "KODUCK_AI_OPENAI_API_KEY".to_owned(),
+            "not-a-real-secret".to_owned(),
+        ),
+    ]);
+    let config = koduck_ai::runtime::RuntimeConfig::from_environment(&environment)
+        .expect("the assembly environment validates");
+    let outcome = harness
+        .runtime
+        .block_on(async move { koduck_ai::runtime::run(config).await });
+    assert!(
+        matches!(outcome, Err(koduck_ai::runtime::RuntimeError::Bind(_))),
+        "the assembly reaches the listener bind and fails on the occupied port"
+    );
+    drop(probe_listener);
 }

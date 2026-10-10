@@ -367,6 +367,7 @@ async fn assert_no_leaked_sessions(fixture: &ProbeFixture) {
 /// AC-0 same-backend path: with every other session held, the proof reuses
 /// the writer's own backend after its `COMMIT` and queued rollback cleanup.
 pub(crate) fn run_same_backend() {
+    let _database_guard = crate::serialize_database_tests();
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(4)
         .enable_all()
@@ -404,6 +405,7 @@ pub(crate) fn run_same_backend() {
 /// proof while the writer commit is still blocked, so the proof waits for the
 /// advisory key on a different backend and reads the same committed marker.
 pub(crate) fn run_other_backend() {
+    let _database_guard = crate::serialize_database_tests();
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(4)
         .enable_all()
@@ -448,6 +450,7 @@ pub(crate) fn run_other_backend() {
 /// AC-0 aborted variant: a deferred `RAISE EXCEPTION` leaves zero marker rows
 /// and no leaked primary session.
 pub(crate) fn run_aborted_commit() {
+    let _database_guard = crate::serialize_database_tests();
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(4)
         .enable_all()
