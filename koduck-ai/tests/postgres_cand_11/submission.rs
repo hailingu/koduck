@@ -1786,3 +1786,90 @@ fn cand_18_duplicate_member_payload_fails_unavailable() {
         HistoryError::Unavailable
     );
 }
+
+/// SI-07c (review round 5, finding 1): a `TurnHistory` adapter that does not
+/// implement the bounded prior-history read fails closed instead of silently
+/// delegating to its unbounded read — proven by an unbounded read that
+/// panics if ever reached.
+#[derive(Default)]
+struct UnboundedReadPanicsHistory(BareHistory);
+
+impl TurnHistory for UnboundedReadPanicsHistory {
+    fn request_interrupt(
+        &mut self,
+        _trust: &TrustContext,
+        _turn_id: TurnId,
+        _tool_terminals: Vec<NewItem>,
+    ) -> Result<(), HistoryError> {
+        Ok(())
+    }
+
+    fn interruption_requested(
+        &self,
+        _turn: &koduck_ai::application::AcceptedTurn,
+    ) -> Result<bool, HistoryError> {
+        Ok(false)
+    }
+
+    fn prior_thread_turns(
+        &self,
+        _trust: &TrustContext,
+        _thread_id: ThreadId,
+    ) -> Result<Vec<PriorTurnHistory>, HistoryError> {
+        panic!("the default bounded read must not delegate to the unbounded read");
+    }
+
+    fn accept_initial(
+        &mut self,
+        _command: &TurnCommand,
+    ) -> Result<koduck_ai::application::AcceptedTurn, HistoryError> {
+        Err(HistoryError::Unavailable)
+    }
+
+    fn append(
+        &mut self,
+        _turn: &koduck_ai::application::AcceptedTurn,
+        _item: NewItem,
+    ) -> Result<koduck_ai::domain::Item, HistoryError> {
+        Err(HistoryError::Unavailable)
+    }
+
+    fn replay(
+        &self,
+        _tenant_id: &TenantId,
+        _turn_id: TurnId,
+    ) -> Result<Vec<koduck_ai::domain::Item>, HistoryError> {
+        Err(HistoryError::Unavailable)
+    }
+}
+
+/// SI-07c: the identified flow against a deadline-unaware adapter fails
+/// closed with the typed unavailability before its unbounded read runs.
+#[test]
+fn cand_18_bounded_read_default_fails_closed() {
+    let (provider, observed) = scripted_provider(vec![]);
+    let mut runner = koduck_ai::runtime::compose_production_runner(
+        provider,
+        UnboundedReadPanicsHistory::default(),
+        koduck_ai::application::NoToolExecution,
+    );
+    let submission = Uuid::new_v4();
+    // The explicit selector drives the bounded preparation read; the double's
+    // unbounded read panics, so reaching it fails the test.
+    let command = identified_command(
+        "tenant-bounded-default",
+        "subject-a",
+        submission,
+        Some(ThreadId::new()),
+        "bounded default input",
+    );
+    let result =
+        runner.execute_submission_with_observer_and_cancellation(command, &mut |_| {}, &|| false);
+    // The rejected preparation resolves the final unlocked lookup, whose
+    // default reports absence, so the original rejection surfaces.
+    assert!(matches!(
+        result.expect_err("the unaware adapter fails closed"),
+        TurnRunError::History(HistoryError::Unavailable)
+    ));
+    assert!(observed.lock().expect("inputs").is_empty());
+}

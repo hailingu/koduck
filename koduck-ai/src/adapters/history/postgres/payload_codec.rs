@@ -286,30 +286,6 @@ fn decode_payload(
     }
 }
 
-/// Decodes one stored sequence-1 payload as its exact original user-input
-/// content, failing closed for any other item type or shape so a corrupt
-/// binding can never authorize execution (ADR-0018 SI-08c).
-pub(super) fn decode_original_user_input(
-    item_type: &str,
-    payload: &Value,
-) -> Result<String, HistoryError> {
-    match item_type {
-        "user_message" => {
-            let content = payload
-                .get("content")
-                .and_then(Value::as_str)
-                .ok_or(HistoryError::Unavailable)?;
-            if content.len() > 65_536 {
-                // Oversized stored input is corrupt structure, never a
-                // semantic-conflict comparison basis (ADR-0018 SI-08c/SI-09).
-                return Err(HistoryError::Unavailable);
-            }
-            Ok(content.to_owned())
-        }
-        _ => Err(HistoryError::Unavailable),
-    }
-}
-
 pub(super) fn field(payload: &Value, name: &str) -> Result<String, HistoryError> {
     payload
         .get(name)
