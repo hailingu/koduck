@@ -223,6 +223,14 @@ where
         observer: &mut dyn FnMut(TurnStreamEvent),
         cancelled: &dyn Fn() -> bool,
     ) -> Result<TurnResult, TurnRunError> {
+        // SI-01d: the legacy entries return one owned TurnResult and cannot
+        // carry submission semantics; an identified command is rejected here
+        // instead of silently executing through the unidentified path.
+        if command.submission_id.is_some() {
+            return Err(TurnRunError::InvalidCommand(
+                super::ports::TurnCommandError::SubmissionOnLegacyEntry,
+            ));
+        }
         // Prepare the effective provider view from one ordered read snapshot
         // before any acceptance, and reuse it unchanged for this Turn's
         // continuations (ADR-0006 PC-02).

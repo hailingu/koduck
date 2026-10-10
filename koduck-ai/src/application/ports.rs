@@ -97,6 +97,10 @@ pub enum TurnCommandError {
     /// The identified acceptance port received no submission identity.
     #[error("identified acceptance requires a submission id")]
     MissingSubmission,
+    /// An identified command reached a legacy execution entry point that
+    /// cannot carry submission semantics (ADR-0018 SI-01d).
+    #[error("submission id requires the submission execution entry")]
+    SubmissionOnLegacyEntry,
 }
 
 /// Durable identity allocated by the initial history transaction.

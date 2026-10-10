@@ -115,6 +115,10 @@ fn binding_from_row(row: &sqlx::postgres::PgRow) -> Result<Option<BindingRow>, H
     let Some(payload) = payload else {
         return Err(HistoryError::Unavailable);
     };
+    // Duplicate JSON members collapse in plain deserialization, so the
+    // strict-JSON rejection runs before parsing (ADR-0001, SI-08c/SI-09).
+    crate::adapters::strict_json::ensure_unique_members(&payload)
+        .map_err(|_| HistoryError::Unavailable)?;
     let payload: serde_json::Value =
         serde_json::from_str(&payload).map_err(|_| HistoryError::Unavailable)?;
     // Noncanonical structure — members beside `content` — is corrupt, never

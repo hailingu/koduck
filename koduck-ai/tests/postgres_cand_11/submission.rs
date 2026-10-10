@@ -1709,3 +1709,80 @@ fn cand_18_noncanonical_and_oversized_payloads_fail_unavailable() {
         HistoryError::Unavailable
     );
 }
+
+/// SI-01d (review round 4, finding 1): the legacy runner entry points reject
+/// an identified command with the typed invalid-command result instead of
+/// silently executing it through the unidentified path.
+#[test]
+fn cand_18_legacy_entries_reject_identified_commands() {
+    let (harness, _history, _tenant) = connected_history();
+    let (provider, observed) = scripted_provider(completed_events());
+    let mut runner = koduck_ai::runtime::compose_production_runner(
+        provider,
+        PostgresTurnHistory::new(harness.executor()),
+        koduck_ai::application::NoToolExecution,
+    );
+    let submission = Uuid::new_v4();
+    let command = identified_command(
+        "tenant-legacy",
+        "subject-a",
+        submission,
+        None,
+        "legacy entry",
+    );
+    assert!(
+        matches!(
+            runner.execute(command),
+            Err(TurnRunError::InvalidCommand(_))
+        ),
+        "the legacy entry must reject the identified command before any acceptance"
+    );
+    assert!(observed.lock().expect("inputs").is_empty());
+    let bindings: i64 = harness.runtime.block_on(async {
+        sqlx::query_scalar("SELECT count(*) FROM chat_submissions WHERE tenant_id = $1")
+            .bind("tenant-legacy")
+            .fetch_one(&harness.pool)
+            .await
+            .expect("count bindings")
+    });
+    assert_eq!(bindings, 0, "the rejected command writes no binding");
+}
+
+/// SI-08c/SI-09 (review round 4, finding 2): a stored sequence-1 payload
+/// with duplicate JSON members is inconsistent structure and fails
+/// unavailable, even when the surviving member matches the request.
+#[test]
+fn cand_18_duplicate_member_payload_fails_unavailable() {
+    let _database_guard = super::serialize_database_tests();
+    let (harness, mut history, tenant) = connected_history();
+    let submission = Uuid::new_v4();
+    let command = identified_command(&tenant, "subject-a", submission, None, "bounded input");
+    let IdentifiedAcceptance::Created(accepted) =
+        TurnHistory::accept_initial_with_submission(&mut history, &command, Duration::from_secs(2))
+            .expect("the bounded acceptance creates")
+    else {
+        panic!("the bounded acceptance must create");
+    };
+
+    // Duplicate members collapse to the last value in plain serde_json; the
+    // lookup must reject the inconsistent structure outright.
+    harness.runtime.block_on(async {
+        sqlx::query(
+            "UPDATE turn_items SET payload = $4 WHERE tenant_id = $1 \
+             AND thread_id = $2 AND turn_id = $3 AND sequence = 1",
+        )
+        .bind(&tenant)
+        .bind(accepted.thread_id.as_uuid())
+        .bind(accepted.turn_id.as_uuid())
+        .bind(r#"{"content":"other","content":"bounded input"}"#)
+        .execute(&harness.pool)
+        .await
+        .expect("corrupt the stored structure with duplicate members");
+    });
+    assert_eq!(
+        history
+            .submission_observation(&command, Duration::from_secs(2))
+            .expect_err("duplicate members are inconsistent stored structure"),
+        HistoryError::Unavailable
+    );
+}
