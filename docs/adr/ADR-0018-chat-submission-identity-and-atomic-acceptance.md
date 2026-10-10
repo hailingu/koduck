@@ -1067,9 +1067,10 @@ revision-specific results, not coverage for a later push. AC-9 remains In
 Progress pending exact-revision review coverage and the latest pushed
 revision's green required CI and matching Sonar admission.
 
-For this evidence-only documentation correction, run the two governance
-commands, a whitespace check, and a focused semantic check against the existing
-acceptance evidence. The canonical pre-push hook still runs Sonar on a push.
+Evidence-only documentation corrections run the two governance commands, a
+whitespace check, and a focused semantic check against existing acceptance
+evidence. Source repairs run the full implementation command set above. The
+canonical pre-push hook still runs Sonar on every push.
 Retain the implemented SI evidence; a document validator does not substitute
 for behavior checks, formal approval, or the remaining delivery gates.
 
@@ -1095,14 +1096,14 @@ Allowed final check statuses are `Pass`, `Fail`, or `N/A — <specific reason>`.
 
 | Review context | Current record |
 | --- | --- |
-| Conversation and supplied report | PR #37; the earlier supplied P2 documentation-state finding on `d470281` was repaired ([original thread](https://github.com/hailingu/koduck/pull/37#discussion_r4237909115)). The owner then requested, in the PR #37 task conversation of 2026-10-10, that this record's next task be developed and pushed — the open [test-length finding](https://github.com/hailingu/koduck/pull/37#discussion_r4237926797) on `dba52e4df8e223a3a55174ae6f7854ce9ad32eb2` |
+| Conversation and supplied report | PR #37; the documentation-state and test-length findings were repaired and their original threads resolved. The owner requested repair of two supplied P2 findings on 2026-10-11: [legacy acceptance discards an identified key](https://github.com/hailingu/koduck/pull/37#discussion_r4238142839), reviewed revision `e7b922fd080fd00b1e38bcb10074d5d6d8a5160b`, and [live non-initial reconciliation lease publishes a receipt](https://github.com/hailingu/koduck/pull/37#discussion_r4238158280), reviewed revision `fd3ecf62618e8a26256cf7b9fa3dc088b51d05ec` |
 | Historical passes | Seven local drafting rounds and twelve recorded implementation automatic-review rounds remain in Change Log with their identities, results, and owner extensions; they do not cover a later pushed revision |
-| Owner extension | Recorded twelve-round implementation review budget consumed; remaining automatic review rounds: zero without a new bounded owner extension. The 2026-10-10 task instruction authorizes the structural repair, its focused verification, the push to PR #37, and the original-thread reply; it does not reset or grant the automatic-review budget |
-| Authorization boundary | Test-only structural decomposition of the six review-flagged functions plus this record's evidence/status synchronization; no change to the accepted scope, SI contract, acceptance criteria, or approval, and no production or configuration behavior change |
+| Owner extension | Recorded twelve-round implementation review budget consumed; remaining agent-driven automatic review rounds: zero without a new bounded owner extension. The 2026-10-11 task instruction authorizes the two supplied repairs, verification, push, and original-thread replies; no new automatic review pass is initiated and the budget is not reset |
+| Authorization boundary | Source/test remediation within accepted SI-01d and SI-06c through SI-06e, plus evidence synchronization. The accepted scope, SI contract, acceptance criteria, approval, dependencies, and schema are unchanged |
 | Historical round 7 result | Drafting pass completed by @codex at 2026-10-09T10:19:48Z on ADR blob `911501ab73a7768e803412bc9cae2b467f888a87`; subsequent formal approval and implementation evidence supersede its drafting-only lifecycle snapshot |
 | Approval/lifecycle gates | Approval closed — Q-2/Q-3/Q-4 determinations and explicit `Approve` from @linhai recorded at 2026-10-09T14:26:36Z. Decision Status is `Accepted`, Implementation Status is `In Progress`; AC-0 through AC-8, all baseline risk rows, and A-6 Pass, AC-9 In Progress; CAND-18 remains Selected |
 | Formal approval audit | Satisfied — the distinct approval Change Log entry cites the owner's 2026-10-09T14:26:36Z response and back-references the owner clarification at 2026-10-09T08:22:13Z. The historical round-3 reply remains non-approval history |
-| Latest delivery gates | Required CI green on `dba52e4df8e223a3a55174ae6f7854ce9ad32eb2`; Sonar admissions for `d470281831c65249b1a85e9e9d7b9364e4d9f9a1` and the structural repair `e7b922fd080fd00b1e38bcb10074d5d6d8a5160b` recorded in AC-9, each with identity-verified admission lines. The test-length thread is replied to and resolved citing `e7b922f`. A later push still requires its own CI/Sonar evidence and authorized exact-revision review before review-ready status |
+| Latest delivery gates | Historical required CI and identity-verified Sonar admissions remain recorded in AC-9. This source-repair revision requires its own push-time Sonar admission, green required CI, and authorized exact-revision review coverage; record the fixing SHA and checks in each original thread after push and before resolution. PR #37 remains Draft while those delivery gates are pending |
 
 | Historical drafting finding | Disposition | Evidence or remaining gate |
 | --- | --- | --- |
@@ -1129,6 +1130,39 @@ full line-span audit of every unit in the four touched test files now finds
 none above 80, and A-6 records Pass. No size-limit waiver is recorded.
 
 ### Current Verification
+
+The 2026-10-11 supplied source repairs were test-first: both direct legacy
+entries returned an unbound `AcceptedTurn`, the lock-held guard test waited
+for database timeouts, and the live generation-2 reconciliation returned an
+`Existing` receipt before the fixes. All four regressions then passed in the
+57-case `postgres_cand_11` suite on this task's isolated migrated PostgreSQL
+18 fixture. The full routed suite subsequently passed 589 tests across 26
+targets with zero failures or skips; fmt and clippy `-D warnings` passed.
+This supplements AC-2/SI-01d and AC-5/SI-06c through SI-06e; the
+contract traceability and five baseline risk dimensions remain applicable.
+The pre-change risk matrix was recorded in the PR #37 repair task plan;
+its selected cases and results are retained here:
+
+| State/precondition | Action/ordering | Observable result and invariant | Owner/entry points | Verification result |
+| --- | --- | --- | --- | --- |
+| Identified command at either legacy acceptance port | Invoke directly twice | Unavailable; zero Thread/Turn/input/lease/binding rows; a supplied key is never discarded | C-6: `PostgresTurnHistory::accept_initial`, `SqlxPostgresExecutor::accept_initial` | Pass — `cand_18_legacy_history_rejects_identified`, `cand_18_legacy_executor_rejects_identified` |
+| Same command with canonical relation exclusively locked | Enter either legacy port before any database I/O | Unavailable in less than 1 s; no durable rows; rejection cannot wait for canonical I/O | Same C-6 entries | Pass — `cand_18_legacy_acceptance_guard_precedes_io` |
+| No submission ID | Existing acceptance and recovery | Distinct legacy Turns with no binding; existing lifecycle remains valid | C-6 legacy acceptance | Pass — `cand_18_atomic_acceptance` and routed preservation cases |
+| Matching creator and retained identities; started, unfenced, unexpired lease rewritten to generation 2 during delayed COMMIT | Write acknowledgement times out, then one read-only reconciliation | Unavailable with no receipt or Created authority; exactly one acceptance remains committed | C-6: `reconciled_acceptance_async` | Pass — `cand_18_live_non_initial_lease_is_unprovable` |
+| Matching live generation-1 creator, another creator, or this creator's terminal/fenced/expired Turn | Read-only reconciliation after delayed COMMIT | Created only for the initial live creator; valid observation states still return Existing; no second write | Same C-6 proof classifier | Pass — `cand_18_commit_reconciliation`, `cand_18_dead_creator_settlement_branches` |
+
+Concurrency/order and real deadline behavior are exercised by the lock-held
+and delayed-COMMIT cases. Cancellation, resource limits, and trust behavior
+are unchanged and retain their routed preservation checks; no new migration,
+dependency, public error, takeover, or deletion path is introduced.
+Structural assessment: the proof classifier is one cohesive 70-line
+operation whose row reading, equality comparison, and liveness predicate
+already have dedicated helpers; further extraction of this single guard
+would obscure the ordered proof classification. The three touched parent
+production files remain below 800 lines (722/785/778); they retain their
+port/executor responsibilities and add only the small guards or port docs.
+Every added test/helper is below 80 lines, and executable nesting remains
+below the decomposition threshold. No engineering exception is invoked.
 
 | Verification check | Result | Recorded evidence and revision limits |
 | --- | --- | --- |
@@ -1157,10 +1191,12 @@ Gate `OK`, 862/909), recorded with its identity comparison in AC-9, and the
 three required CI checks passed on the final evidence revision `fd3ecf6`
 ([run 38063753228](https://github.com/hailingu/koduck/actions/runs/38063753228)).
 Those results do not establish later-revision coverage.
-AC-9 remains In Progress pending authorized exact-revision review coverage
-for the final pushed revision.
+AC-9 remains In Progress pending matching Sonar admission, green required
+CI, and authorized exact-revision review coverage for the source-repair
+revision. Its fixing SHA, admission, CI results, and individual thread
+dispositions are recorded in PR #37's verification section after push.
 The ADD stays Current and CAND-18 stays Selected until the ADR reaches
-Complete or Verified. This correction preserves the approval and existing
+Complete or Verified. This repair preserves the approval and existing
 behavior evidence without declaring the implementation complete or review-ready.
 
 ## Archival [Conditionally Required — Decision Status is `Rejected`, or Decision Status is `Deprecated` or `Superseded` and Implementation Status is final]
@@ -1176,6 +1212,7 @@ future-lifecycle instructions do not establish present approval or completion.
 
 | Date | Change | Author |
 | --- | --- | --- |
+| 2026-10-11 | Repaired the two owner-supplied P2 findings on PR #37 within Accepted SI-01d/SI-06e. Both `PostgresTurnHistory::accept_initial` and `SqlxPostgresExecutor::accept_initial` reject identified commands with `Unavailable` before delegation, allocation, or database I/O; port docs route callers to identified acceptance. Reconciliation rejects a matching creator's started, unfenced, unexpired non-initial lease instead of publishing an `Existing` receipt. Four regressions were observed red first, then passed; the scoped canonical counts, exclusive relation lock, and isolated delayed-COMMIT generation rewrite prove the actual boundaries. Verification: 57/0 focused PostgreSQL cases; 589/0 full routed Rust tests across 26 targets, zero skipped; clean fmt/clippy and whitespace check. The Current Verification matrix maps the selected states to passing checks and records decomposition assessment (70-line proof classifier, all touched production files below 800, new tests/helpers below 80). No contract, acceptance criterion, dependency, schema, or approval change; Implementation Status remains In Progress. The supplied repair does not initiate or reset automatic review; new-revision delivery coverage remains required. | @codex |
 | 2026-10-10 | The owner directed, in the PR #37 task conversation, that this record's next task be developed and pushed to PR #37: the open structural test-length finding ([thread](https://github.com/hailingu/koduck/pull/37#discussion_r4237926797)) reporting six newly added test functions above the non-waivable 80-line limit on `dba52e4`. Repaired as a test-only structural decomposition with identical test names, scenarios, and assertions and no production, configuration, or contract change: `foreign_key_and_rollback_preserve_structure` (92 lines) split into `blocked_turn_deletion_rolls_back` plus `rolled_back_input_deletion_stays_invisible`; `cand_18_pre_write_read_clamp` (88) into `clamped_lookup_starts_no_write` plus `permitted_write_keeps_full_budgets`; `cand_18_clock_composition_separate_budgets` (81) slimmed through `execute_clone_request`; `cand_18_retry_after_correction` (81) through `close_and_correct_sequence_one_input`; `cand_18_submission_waiter_holds_no_item_lock` (95) through the shared `hold_submission_lock`, `wait_for_submission_waiter`, and `waiter_granted_advisory_locks` (the lock-hold helper also deduplicates `cand_18_preliminary_read_unblocked_by_submission_lock`); `cand_18_retry_completes_while_provider_blocks` (102) through `start_paced_original`, `retry_observes_while_paced`, and `independent_key_proceeds_in_parallel`. Measured spans after the split: 13/4/54/48/47/24 with every helper at or below 48; full line-span audit of the four touched test files finds no unit above 80 and unchanged nesting. Verification: fmt clean, clippy `-D warnings` zero findings, 585 tests across all targets with 0 failures (identical count to the prior wave), governance validator re-run with this change. A-6 moved to Pass; AC-9 still requires the fixing push's CI, Sonar admission, and authorized exact-revision review. The original thread received its reply citing the fixing revision; the twelve-round automatic-review budget is not reset by this instruction. | @codex |
 | 2026-10-10 | The owner requested repair of PR #37's supplied documentation-state finding in conversation `01a12633-d883-7ee0-b083-2dd71f9c311e`; scope is this finding's evidence/status correction, not another automatic review round. Synchronized the required verification snapshot, A-2, current disposition/verification, and related stale lifecycle/preflight fields to Accepted / In Progress, retaining AC-0 through AC-8 Pass, 585-test and 94.8% coverage evidence, and the revision-specific Sonar/CI results. A-6/AC-9 remain In Progress for the separately reported structural finding and latest-revision delivery gates. Governance tests 208/0, validation and whitespace checks passed; accepted decisions/check criteria and reciprocal Selected state remain unchanged. | @codex |
 | 2026-10-09 | Drafted one project Full ADR from Current ADD-0001 CAND-18 on `codex/cand-18-submission-identity-adr`, based on local dev `a0f81b54ca13eb8133c364caf1edb3dfa1c6c96d`. Added proposed SI-01 through SI-10, two coupled subtasks, contract traceability, five baseline risks, invariant matrix, binary acceptance checks and migration/rollback boundaries. Created reciprocal candidate/index links together. Remains Proposed/Not Started; no source/configuration implementation or formal approval occurs in this change. | @codex |

@@ -508,10 +508,13 @@ pub trait TurnHistory {
     }
 
     /// Atomically persists initial Thread, Turn, input Item, and lease state.
+    /// Rejects commands carrying a submission ID before database I/O; use
+    /// [`Self::accept_initial_with_submission`] for identified acceptance.
     ///
     /// # Errors
     ///
-    /// Returns [`HistoryError`] when initial durable acceptance fails.
+    /// Returns [`HistoryError::Unavailable`] for an identified command, or
+    /// [`HistoryError`] when initial durable acceptance fails.
     fn accept_initial(&mut self, command: &TurnCommand) -> Result<AcceptedTurn, HistoryError>;
 
     /// Reads one owned submission binding without taking any lock, observing

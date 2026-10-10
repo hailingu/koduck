@@ -593,6 +593,9 @@ impl PostgresExecutor for SqlxPostgresExecutor {
     }
 
     fn accept_initial(&self, command: &TurnCommand) -> Result<AcceptedTurn, HistoryError> {
+        if command.submission_id.is_some() {
+            return Err(HistoryError::Unavailable);
+        }
         let command = command.clone();
         let thread_id = command.thread_id.unwrap_or_default();
         let turn_id = TurnId::new();

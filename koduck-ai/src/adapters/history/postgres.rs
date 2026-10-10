@@ -275,10 +275,13 @@ pub trait PostgresExecutor: Clone {
     ) -> Result<Vec<PriorTurnHistory>, HistoryError>;
 
     /// Atomically inserts initial Thread, Turn, input Item, and lease generation.
+    /// Rejects commands carrying a submission ID before database I/O; use
+    /// [`Self::accept_initial_with_submission`] for identified acceptance.
     ///
     /// # Errors
     ///
-    /// Returns [`HistoryError`] when the transaction cannot commit.
+    /// Returns [`HistoryError::Unavailable`] for an identified command, or
+    /// [`HistoryError`] when the transaction cannot commit.
     fn accept_initial(&self, command: &TurnCommand) -> Result<AcceptedTurn, HistoryError>;
 
     /// Reads one owned submission binding unlocked, validating its joined
@@ -713,6 +716,9 @@ impl<E: PostgresExecutor + Send + 'static> TurnHistory for PostgresTurnHistory<E
     }
 
     fn accept_initial(&mut self, command: &TurnCommand) -> Result<AcceptedTurn, HistoryError> {
+        if command.submission_id.is_some() {
+            return Err(HistoryError::Unavailable);
+        }
         self.executor.accept_initial(command)
     }
 

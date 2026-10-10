@@ -10,12 +10,64 @@ use std::time::Duration;
 use uuid::Uuid;
 
 use koduck_ai::adapters::history::postgres::PostgresTurnHistory;
-use koduck_ai::application::{IdentifiedAcceptance, NewItem, TurnHistory, TurnOutcome};
+use koduck_ai::application::{
+    HistoryError, IdentifiedAcceptance, NewItem, TurnHistory, TurnOutcome,
+};
 
 use super::super::harness::Harness;
 use super::integrity::SubmissionFixture;
 use super::runner::{completed_events, scripted_provider};
 use super::{connected_history, count_rows, identified_command};
+
+/// SI-06c/SI-06e: a live same-invocation lease rewritten to generation 2 inside
+/// the delayed COMMIT is unprovable, so settlement cannot publish a receipt or
+/// grant Created. The committed canonical acceptance remains exactly once.
+#[test]
+fn cand_18_live_non_initial_lease_is_unprovable() {
+    let _database_guard = super::serialize_database_tests();
+    let fixture = SubmissionFixture::create(
+        "live-non-initial",
+        "PERFORM pg_sleep(2.5); \
+         UPDATE turn_leases SET generation = 2 WHERE tenant_id = NEW.tenant_id \
+         AND thread_id = NEW.thread_id AND turn_id = NEW.turn_id;",
+    );
+    let mut history = fixture.history();
+    let submission = Uuid::new_v4();
+    let command = identified_command(
+        &fixture.tenant,
+        "subject-a",
+        submission,
+        None,
+        "lease proof",
+    );
+    let outcome =
+        TurnHistory::accept_initial_with_submission(&mut history, &command, Duration::from_secs(2));
+    let rows = fixture.harness.runtime.block_on(count_rows(
+        &fixture.pool,
+        &fixture.tenant,
+        "subject-a",
+        submission,
+    ));
+    let lease: (i64, bool, bool, String) = fixture.harness.runtime.block_on(async {
+        sqlx::query_as(
+            "SELECT l.generation, l.fenced, l.expires_at > CURRENT_TIMESTAMP, t.status \
+             FROM turn_leases l JOIN turns t USING (tenant_id, thread_id, turn_id) \
+             WHERE l.tenant_id = $1",
+        )
+        .bind(&fixture.tenant)
+        .fetch_one(&fixture.pool)
+        .await
+        .expect("read the rewritten live lease")
+    });
+    fixture.teardown();
+    assert_eq!(outcome, Err(HistoryError::Unavailable));
+    assert_eq!(
+        rows,
+        (1, 1, 1, 0),
+        "one acceptance with no generation-1 lease"
+    );
+    assert_eq!(lease, (2, false, true, "started".to_owned()));
+}
 
 /// AC-5/SI-06c/SI-06d (ADR-0018): when this invocation's write acknowledgement
 /// is lost and the delayed commit lands the binding in a dead-creator state,

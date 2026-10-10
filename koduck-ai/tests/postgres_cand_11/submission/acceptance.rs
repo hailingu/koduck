@@ -7,12 +7,108 @@
 use std::time::Duration;
 use uuid::Uuid;
 
-use koduck_ai::adapters::history::postgres::PostgresTurnHistory;
+use koduck_ai::adapters::history::postgres::{PostgresExecutor, PostgresTurnHistory};
 use koduck_ai::application::{HistoryError, IdentifiedAcceptance, TurnCommand, TurnHistory};
 use koduck_ai::domain::ThreadId;
 
 use super::super::harness::{Harness, MIGRATIONS, MIGRATIONS_ONCE};
 use super::{connected_history, count_rows, identified_command, trust};
+
+/// SI-01d: the public history's legacy acceptance must reject a supplied key
+/// on every retry instead of creating unbound canonical state.
+#[test]
+fn cand_18_legacy_history_rejects_identified() {
+    let _database_guard = super::serialize_database_tests();
+    let (harness, mut history, tenant) = connected_history();
+    let command = identified_command(&tenant, "subject-a", Uuid::new_v4(), None, "legacy entry");
+    for _ in 0..2 {
+        assert_legacy_acceptance_rejected(
+            &harness,
+            &tenant,
+            &TurnHistory::accept_initial(&mut history, &command),
+        );
+    }
+}
+
+/// SI-01d: calling the production executor directly cannot bypass the legacy
+/// entry's submission guard or create unbound canonical state on a retry.
+#[test]
+fn cand_18_legacy_executor_rejects_identified() {
+    let _database_guard = super::serialize_database_tests();
+    let (harness, _history, tenant) = connected_history();
+    let command = identified_command(&tenant, "subject-a", Uuid::new_v4(), None, "legacy entry");
+    for _ in 0..2 {
+        assert_legacy_acceptance_rejected(
+            &harness,
+            &tenant,
+            &PostgresExecutor::accept_initial(&harness.executor(), &command),
+        );
+    }
+}
+
+/// Checks the typed rejection and every canonical table independently of a
+/// binding, so an incorrectly accepted unbound Turn cannot hide from the test.
+fn assert_legacy_acceptance_rejected(
+    harness: &Harness,
+    tenant: &str,
+    result: &Result<koduck_ai::application::AcceptedTurn, HistoryError>,
+) {
+    assert_eq!(result, &Err(HistoryError::Unavailable));
+    let rows: (i64, i64, i64, i64, i64) = harness.runtime.block_on(async {
+        sqlx::query_as(
+            "SELECT (SELECT count(*) FROM threads WHERE tenant_id = $1), \
+             (SELECT count(*) FROM turns WHERE tenant_id = $1), \
+             (SELECT count(*) FROM turn_items WHERE tenant_id = $1), \
+             (SELECT count(*) FROM turn_leases WHERE tenant_id = $1), \
+             (SELECT count(*) FROM chat_submissions WHERE tenant_id = $1)",
+        )
+        .bind(tenant)
+        .fetch_one(&harness.pool)
+        .await
+        .expect("count all canonical rows")
+    });
+    assert_eq!(rows, (0, 0, 0, 0, 0), "rejection leaves no durable rows");
+}
+
+/// SI-01d: both legacy entries reject before I/O, even when the canonical
+/// relation is exclusively locked and an attempted write would time out.
+#[test]
+fn cand_18_legacy_acceptance_guard_precedes_io() {
+    let _database_guard = super::serialize_database_tests();
+    let (harness, mut history, tenant) = connected_history();
+    let command = identified_command(&tenant, "subject-a", Uuid::new_v4(), None, "locked entry");
+    let mut lock = harness
+        .runtime
+        .block_on(harness.pool.begin())
+        .expect("lock transaction");
+    harness.runtime.block_on(async {
+        sqlx::query("LOCK TABLE threads IN ACCESS EXCLUSIVE MODE")
+            .execute(&mut *lock)
+            .await
+            .expect("exclude canonical I/O");
+    });
+    let results = [false, true].map(|executor_entry| {
+        let started = std::time::Instant::now();
+        let result = if executor_entry {
+            PostgresExecutor::accept_initial(&harness.executor(), &command)
+        } else {
+            TurnHistory::accept_initial(&mut history, &command)
+        };
+        (result, started.elapsed())
+    });
+    harness
+        .runtime
+        .block_on(lock.rollback())
+        .expect("release table lock");
+    for (result, elapsed) in results {
+        assert_eq!(result, Err(HistoryError::Unavailable));
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "reject before database wait"
+        );
+    }
+    assert_legacy_acceptance_rejected(&harness, &tenant, &Err(HistoryError::Unavailable));
+}
 
 pub(crate) fn cand_18_atomic_acceptance() {
     let _database_guard = super::serialize_database_tests();

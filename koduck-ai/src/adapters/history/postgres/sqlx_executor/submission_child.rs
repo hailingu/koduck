@@ -432,6 +432,16 @@ async fn reconciled_acceptance_async(
             proof.fenced,
             proof.lease_live,
         );
+    if creator_matches
+        && proof.status == "started"
+        && proof.fenced == Some(false)
+        && proof.lease_live == Some(true)
+        && !creator_is_live
+    {
+        // SI-06e: a live same-invocation lease with a non-initial generation
+        // cannot prove acceptance or publish identities as an observation.
+        return Err(HistoryError::Unavailable);
+    }
     if creator_is_live {
         // SI-06c: the complete matching live proof grants this invocation the
         // created owner result, including inside its own settlement.
