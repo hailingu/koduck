@@ -696,3 +696,49 @@ fn cand_18_terminal_marked_input_fails_unavailable() {
         HistoryError::Unavailable
     );
 }
+
+/// SI-06a/SI-06e (review round 10): when the deferred commit corrupts the
+/// sequence-1 row's item identity while keeping its content, the
+/// reconciliation cannot prove this invocation's proposed input identity and
+/// stays unavailable instead of granting `Created` or a receipt. The
+/// corruption runs inside the writer's own COMMIT transaction, so the proof
+/// deterministically observes the mismatched committed identity.
+#[test]
+fn cand_18_reconciliation_verifies_input_identity() {
+    let _database_guard = super::serialize_database_tests();
+    let fixture = SubmissionFixture::create(
+        "identity",
+        "PERFORM pg_sleep(2.5); \
+         UPDATE turn_items i SET item_id = gen_random_uuid() \
+         FROM chat_submissions s WHERE s.tenant_id = NEW.tenant_id \
+         AND s.submission_id = NEW.submission_id \
+         AND i.tenant_id = s.tenant_id AND i.thread_id = s.thread_id \
+         AND i.turn_id = s.turn_id AND i.sequence = 1;",
+    );
+    let mut history = fixture.history();
+    let submission = Uuid::new_v4();
+    let command = identified_command(
+        &fixture.tenant,
+        "subject-a",
+        submission,
+        None,
+        "identity-corrupted input",
+    );
+    assert_eq!(
+        TurnHistory::accept_initial_with_submission(&mut history, &command, Duration::from_secs(2))
+            .expect_err("the unproven input identity stays unavailable"),
+        HistoryError::Unavailable
+    );
+    let rows = fixture.harness.runtime.block_on(count_rows(
+        &fixture.pool,
+        &fixture.tenant,
+        "subject-a",
+        submission,
+    ));
+    assert_eq!(
+        rows,
+        (1, 1, 1, 1),
+        "the delayed commit still produced exactly one durable acceptance"
+    );
+    fixture.teardown();
+}

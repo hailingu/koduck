@@ -54,6 +54,7 @@ struct BindingRow {
     turn_id: TurnId,
     original_thread_id: Option<Uuid>,
     original_input: String,
+    input_item_id: Uuid,
 }
 
 /// The selector equality contract (SI-02b): an omitted or null original
@@ -102,7 +103,8 @@ fn binding_read_sql() -> String {
     format!(
         "SELECT s.thread_id, s.turn_id, s.original_thread_id, \
          i.item_type, CASE WHEN octet_length(i.payload) <= {MAX_BINDING_PAYLOAD_BYTES} \
-         THEN i.payload ELSE NULL END AS payload, i.is_terminal, h.subject_id = $2 AS owned, \
+         THEN i.payload ELSE NULL END AS payload, i.is_terminal, i.item_id, \
+         h.subject_id = $2 AS owned, \
          (t.turn_id IS NOT NULL AND l.generation IS NOT NULL \
           AND i.item_id IS NOT NULL) AS joined \
          FROM chat_submissions s \
@@ -132,6 +134,7 @@ fn binding_from_row(row: &sqlx::postgres::PgRow) -> Result<Option<BindingRow>, H
     let original_thread_id: Option<Uuid> =
         row.try_get("original_thread_id").map_err(unavailable)?;
     let item_type: String = row.try_get("item_type").map_err(unavailable)?;
+    let item_id: Uuid = row.try_get("item_id").map_err(unavailable)?;
     let terminal_marked: bool = row.try_get("is_terminal").map_err(unavailable)?;
     if terminal_marked {
         // A terminal-marked sequence-1 user row is inconsistent canonical
@@ -161,6 +164,7 @@ fn binding_from_row(row: &sqlx::postgres::PgRow) -> Result<Option<BindingRow>, H
         turn_id: TurnId::from_uuid(turn_id),
         original_thread_id,
         original_input: decode_original_user_input(&item_type, &payload)?,
+        input_item_id: item_id,
     }))
 }
 
@@ -341,7 +345,8 @@ async fn read_proof_row(
     let row = sqlx::query(sqlx::AssertSqlSafe(format!(
         "SELECT s.thread_id, s.turn_id, s.original_thread_id, s.creator_operation_id, \
          i.item_type, CASE WHEN octet_length(i.payload) <= {MAX_BINDING_PAYLOAD_BYTES} \
-         THEN i.payload ELSE NULL END AS payload, i.is_terminal, h.subject_id = $2 AS owned, \
+         THEN i.payload ELSE NULL END AS payload, i.is_terminal, i.item_id, \
+         h.subject_id = $2 AS owned, \
          (t.turn_id IS NOT NULL AND l.generation IS NOT NULL \
           AND i.item_id IS NOT NULL) AS joined, \
          t.status, l.generation, l.fenced, \
@@ -406,9 +411,17 @@ async fn reconciled_acceptance_async(
     };
     // Proven drift conflicts even during reconciliation (SI-06e).
     let receipt = compare_binding(&proof.binding, command)?;
-    let creator_is_live = proof.committed_creator == creator_operation_id
+    let same_invocation = proof.committed_creator == creator_operation_id
         && proof.committed_thread == thread_id.as_uuid()
-        && proof.committed_turn == turn_id.as_uuid()
+        && proof.committed_turn == turn_id.as_uuid();
+    if same_invocation && proof.binding.input_item_id != input.item_id.as_uuid() {
+        // SI-06a/SI-06e: this invocation's binding committed, but its
+        // sequence-1 item identity is not the retained proposed identity —
+        // corrupt, unprovable state stays unavailable instead of granting
+        // authority or a receipt.
+        return Err(HistoryError::Unavailable);
+    }
+    let creator_is_live = same_invocation
         && started_with_live_initial_lease(
             &proof.status,
             proof.generation,
