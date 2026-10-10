@@ -1,4 +1,5 @@
 // ADR: koduck-ai/docs/adr/ADR-0004-authenticated-correction-admission.md
+// ADR: docs/adr/ADR-0018-chat-submission-identity-and-atomic-acceptance.md
 
 //! AC-2 through AC-5: admission, concurrency, settlement, and bounds of the
 //! production `SqlxPostgresExecutor` correction port against a disposable

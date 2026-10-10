@@ -1,5 +1,6 @@
 // ADR: koduck-ai/docs/adr/ADR-0005-effective-correction-projection.md
 // ADR: koduck-ai/docs/adr/ADR-0006-effective-provider-context-integration.md
+// ADR: docs/adr/ADR-0018-chat-submission-identity-and-atomic-acceptance.md
 
 //! CAND-12 focused semantic tests for the scoped effective correction
 //! projection (ADR-0005 AC-1 through AC-6). Every fixture calls the real pure
