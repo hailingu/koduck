@@ -294,11 +294,18 @@ pub(super) fn decode_original_user_input(
     payload: &Value,
 ) -> Result<String, HistoryError> {
     match item_type {
-        "user_message" => payload
-            .get("content")
-            .and_then(Value::as_str)
-            .map(str::to_owned)
-            .ok_or(HistoryError::Unavailable),
+        "user_message" => {
+            let content = payload
+                .get("content")
+                .and_then(Value::as_str)
+                .ok_or(HistoryError::Unavailable)?;
+            if content.len() > 65_536 {
+                // Oversized stored input is corrupt structure, never a
+                // semantic-conflict comparison basis (ADR-0018 SI-08c/SI-09).
+                return Err(HistoryError::Unavailable);
+            }
+            Ok(content.to_owned())
+        }
         _ => Err(HistoryError::Unavailable),
     }
 }

@@ -424,7 +424,12 @@ fn map_turn_run_error(error: &TurnRunError) -> ServiceError {
         }
         TurnRunError::History(HistoryError::SubmissionConflict) => ServiceError::SubmissionConflict,
         TurnRunError::History(HistoryError::AlreadyTerminal) => ServiceError::AlreadyTerminal,
-        TurnRunError::History(HistoryError::ContextLimit) => ServiceError::InvalidRequest,
+        // Both invalid-input causes map to the existing 400 problem: the
+        // context limit from the wire path and the SI-01d direct-command
+        // guard share the invalid-request presentation.
+        TurnRunError::History(HistoryError::ContextLimit) | TurnRunError::InvalidCommand(_) => {
+            ServiceError::InvalidRequest
+        }
         TurnRunError::Provider(_) | TurnRunError::Transition(_) => {
             ServiceError::ProviderUnavailable
         }

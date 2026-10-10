@@ -17,7 +17,7 @@ use super::ports::{
 use super::provider_context::{ProviderHistoryItem, prepare_provider_history};
 use super::submission::{
     AcceptanceBudget, AcceptanceClock, IdentifiedAcceptance, LOOKUP_BUDGET, TurnOutcome,
-    WRITE_BUDGET, WRITE_GATE_MINIMUM, system_clock,
+    WRITE_BUDGET, WRITE_GATE_MINIMUM, system_clock, validate_identified_command,
 };
 
 pub(super) mod failure;
@@ -290,6 +290,11 @@ where
         observer: &mut dyn FnMut(TurnStreamEvent),
         cancelled: &dyn Fn() -> bool,
     ) -> Result<TurnOutcome, TurnRunError> {
+        // SI-01d: the direct-command guard revalidates the owned input byte
+        // bound and the non-nil submission identity before any history I/O,
+        // so a directly constructed invalid command can never reach the
+        // preliminary lookup or the acceptance write.
+        validate_identified_command(command)?;
         // SI-07d: the monotonic acceptance deadline starts at fully validated
         // input/trust entry immediately before the preliminary lookup. Each
         // identified request owns this separate budget (SI-07i).

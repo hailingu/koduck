@@ -1281,3 +1281,241 @@ pub(crate) fn cand_18_runtime_assembly() {
     );
     drop(probe_listener);
 }
+
+/// A history double that panics on every identified-port call, proving the
+/// SI-01d direct-command guard fires before any history I/O.
+#[derive(Default)]
+struct PanickingLookupHistory(BareHistory);
+
+impl TurnHistory for PanickingLookupHistory {
+    fn request_interrupt(
+        &mut self,
+        _trust: &TrustContext,
+        _turn_id: TurnId,
+        _tool_terminals: Vec<NewItem>,
+    ) -> Result<(), HistoryError> {
+        Ok(())
+    }
+
+    fn interruption_requested(
+        &self,
+        _turn: &koduck_ai::application::AcceptedTurn,
+    ) -> Result<bool, HistoryError> {
+        Ok(false)
+    }
+
+    fn prior_thread_turns(
+        &self,
+        _trust: &TrustContext,
+        _thread_id: ThreadId,
+    ) -> Result<Vec<PriorTurnHistory>, HistoryError> {
+        Ok(Vec::new())
+    }
+
+    fn accept_initial(
+        &mut self,
+        _command: &TurnCommand,
+    ) -> Result<koduck_ai::application::AcceptedTurn, HistoryError> {
+        panic!("an identified command must never reach the unidentified port");
+    }
+
+    fn append(
+        &mut self,
+        _turn: &koduck_ai::application::AcceptedTurn,
+        _item: NewItem,
+    ) -> Result<koduck_ai::domain::Item, HistoryError> {
+        Err(HistoryError::Unavailable)
+    }
+
+    fn replay(
+        &self,
+        _tenant_id: &TenantId,
+        _turn_id: TurnId,
+    ) -> Result<Vec<koduck_ai::domain::Item>, HistoryError> {
+        Err(HistoryError::Unavailable)
+    }
+
+    fn submission_observation(
+        &self,
+        _command: &TurnCommand,
+        _deadline: Duration,
+    ) -> Result<Option<koduck_ai::application::SubmissionObservation>, HistoryError> {
+        panic!("an invalid direct command must not reach the preliminary lookup");
+    }
+
+    fn accept_initial_with_submission(
+        &mut self,
+        _command: &TurnCommand,
+        _deadline: Duration,
+    ) -> Result<IdentifiedAcceptance, HistoryError> {
+        panic!("an invalid direct command must not reach the acceptance write");
+    }
+}
+
+/// SI-01d (review round 1, finding 1): a directly constructed invalid
+/// identified command — empty input, oversized input, or a nil submission
+/// identity — is rejected by the runner before any history operation.
+#[test]
+fn cand_18_runner_guard_precedes_lookup() {
+    let (provider, observed) = scripted_provider(vec![]);
+    let mut runner = koduck_ai::runtime::compose_production_runner(
+        provider,
+        PanickingLookupHistory::default(),
+        koduck_ai::application::NoToolExecution,
+    );
+    let submission = Uuid::new_v4();
+    let trust_context = trust("tenant-guards", "subject-a");
+    let invalid_commands = [
+        // Empty input with a valid identity.
+        TurnCommand {
+            trust: trust_context.clone(),
+            thread_id: None,
+            input: String::new(),
+            submission_id: Some(SubmissionId::from_uuid(submission).expect("non-nil submission")),
+        },
+        // Oversized input with a valid identity.
+        TurnCommand {
+            trust: trust_context.clone(),
+            thread_id: None,
+            input: "a".repeat(65_537),
+            submission_id: Some(SubmissionId::from_uuid(submission).expect("non-nil submission")),
+        },
+        // The input bound is the remaining bypass surface: the submission
+        // identity itself is non-nil by construction, so the typed field
+        // cannot carry the nil UUID.
+    ];
+    for command in invalid_commands {
+        assert!(
+            matches!(
+                runner
+                    .execute_submission_with_observer_and_cancellation(
+                        command,
+                        &mut |_| {},
+                        &|| false
+                    )
+                    .expect_err("the guard rejects the invalid command"),
+                koduck_ai::application::TurnRunError::InvalidCommand(_)
+            ),
+            "the rejection must be the typed invalid-command result, before any history I/O"
+        );
+    }
+    assert!(
+        observed.lock().expect("inputs").is_empty(),
+        "no provider work accompanies the rejection"
+    );
+}
+
+/// SI-02e/SI-03a (review round 1, finding 2): a fresh identified acceptance
+/// with an explicit unknown Thread returns `NotFound` without creating the
+/// Thread or claiming the key, while an explicit existing owned Thread is
+/// accepted.
+#[test]
+fn cand_18_explicit_thread_must_exist() {
+    let _database_guard = super::serialize_database_tests();
+    let (harness, mut history, tenant) = connected_history();
+    let submission = Uuid::new_v4();
+
+    // Unknown explicit Thread: the typed rejection without any write.
+    let unknown_thread = ThreadId::new();
+    let command = identified_command(
+        &tenant,
+        "subject-a",
+        submission,
+        Some(unknown_thread),
+        "explicit input",
+    );
+    assert_eq!(
+        TurnHistory::accept_initial_with_submission(&mut history, &command, Duration::from_secs(2))
+            .expect_err("an unknown explicit thread is rejected"),
+        HistoryError::NotFound
+    );
+    let created_thread: i64 = harness.runtime.block_on(async {
+        sqlx::query_scalar("SELECT count(*) FROM threads WHERE thread_id = $1")
+            .bind(unknown_thread.as_uuid())
+            .fetch_one(&harness.pool)
+            .await
+            .expect("count the unknown thread row")
+    });
+    assert_eq!(
+        created_thread, 0,
+        "the caller-selected Thread must not be created by the identified path"
+    );
+    let rows =
+        harness
+            .runtime
+            .block_on(count_rows(&harness.pool, &tenant, "subject-a", submission));
+    assert_eq!(rows, (0, 0, 0, 0), "the rejected key claims no binding");
+
+    // Existing owned explicit Thread: the acceptance proceeds.
+    let owned_thread = ThreadId::new();
+    harness.runtime.block_on(async {
+        sqlx::query("INSERT INTO threads (tenant_id, subject_id, thread_id) VALUES ($1, $2, $3)")
+            .bind(&tenant)
+            .bind("subject-a")
+            .bind(owned_thread.as_uuid())
+            .execute(&harness.pool)
+            .await
+            .expect("seed the owned thread");
+    });
+    let command = identified_command(
+        &tenant,
+        "subject-a",
+        submission,
+        Some(owned_thread),
+        "explicit input",
+    );
+    let outcome =
+        TurnHistory::accept_initial_with_submission(&mut history, &command, Duration::from_secs(2))
+            .expect("the existing owned explicit thread is accepted");
+    let IdentifiedAcceptance::Created(accepted) = &outcome else {
+        panic!("the owned explicit thread must create, got {outcome:?}");
+    };
+    assert_eq!(accepted.thread_id, owned_thread);
+}
+
+/// SI-08c/SI-09 (review round 1, finding 3): a stored sequence-1 payload
+/// above the 65,536-byte input bound is corrupt structure, so every binding
+/// lookup fails unavailable instead of reporting a semantic conflict.
+#[test]
+fn cand_18_oversized_stored_input_fails_unavailable() {
+    let _database_guard = super::serialize_database_tests();
+    let (harness, mut history, tenant) = connected_history();
+    let submission = Uuid::new_v4();
+    let command = identified_command(&tenant, "subject-a", submission, None, "bounded input");
+    let IdentifiedAcceptance::Created(accepted) =
+        TurnHistory::accept_initial_with_submission(&mut history, &command, Duration::from_secs(2))
+            .expect("the bounded acceptance creates")
+    else {
+        panic!("the bounded acceptance must create");
+    };
+
+    // Corrupt the stored sequence-1 payload beyond the input bound.
+    harness.runtime.block_on(async {
+        let oversized = format!(r#"{{"content":"{}"}}"#, "a".repeat(70_000));
+        sqlx::query(
+            "UPDATE turn_items SET payload = $4 WHERE tenant_id = $1 \
+             AND thread_id = $2 AND turn_id = $3 AND sequence = 1",
+        )
+        .bind(&tenant)
+        .bind(accepted.thread_id.as_uuid())
+        .bind(accepted.turn_id.as_uuid())
+        .bind(oversized)
+        .execute(&harness.pool)
+        .await
+        .expect("corrupt the stored input");
+    });
+
+    // The exact same request now fails unavailable, never a conflict.
+    assert_eq!(
+        history
+            .submission_observation(&command, Duration::from_secs(2))
+            .expect_err("the oversized stored input is corrupt structure"),
+        HistoryError::Unavailable
+    );
+    // The transaction recheck keeps the same classification.
+    assert_eq!(
+        TurnHistory::accept_initial_with_submission(&mut history, &command, Duration::from_secs(2))
+            .expect_err("the acceptance recheck stays unavailable"),
+        HistoryError::Unavailable
+    );
+}

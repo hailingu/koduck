@@ -657,6 +657,10 @@ pub enum TurnRunError {
     /// acceptance write began (ADR-0018 SI-07g); no binding or Turn exists.
     #[error("turn cancelled before acceptance")]
     Cancelled,
+    /// A directly constructed identified command violated the owned input or
+    /// identity guard before any history operation (ADR-0018 SI-01d).
+    #[error(transparent)]
+    InvalidCommand(#[from] TurnCommandError),
 }
 
 /// Context retained when the Turn's exact durable output budget was exceeded.

@@ -168,6 +168,26 @@ async fn accept_with_submission_async(
             return compare_binding(&binding, command).map(IdentifiedAcceptance::Existing);
         }
     }
+    if command.thread_id.is_some() {
+        // SI-02e/SI-03a: an explicit Thread must already exist and remain
+        // owned at final acceptance. Only the selectorless case allocates a
+        // new Thread; the identified path never creates a caller-selected
+        // one, so an unknown or foreign selector is the indistinguishable
+        // typed `NotFound` without claiming the key.
+        let owned = sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS(SELECT 1 FROM threads WHERE tenant_id = $1 \
+             AND subject_id = $2 AND thread_id = $3)",
+        )
+        .bind(trust.tenant_id.as_str())
+        .bind(trust.subject_id.as_str())
+        .bind(thread_id.as_uuid())
+        .fetch_one(&mut *transaction)
+        .await
+        .map_err(unavailable)?;
+        if !owned {
+            return Err(HistoryError::NotFound);
+        }
+    }
     write_initial_canonical_state(&mut transaction, command, thread_id, turn_id, &input).await?;
     sqlx::query(
         "INSERT INTO chat_submissions \
