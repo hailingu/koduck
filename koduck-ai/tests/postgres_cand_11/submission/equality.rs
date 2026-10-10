@@ -10,8 +10,10 @@
 use std::time::Duration;
 use uuid::Uuid;
 
+use koduck_ai::adapters::history::postgres::{PostgresTurnHistory, SqlxPostgresExecutor};
 use koduck_ai::application::{
-    CorrectionCommand, CorrectionStore, HistoryError, IdentifiedAcceptance, NewItem, TurnHistory,
+    AcceptedTurn, CorrectionCommand, CorrectionStore, HistoryError, IdentifiedAcceptance, NewItem,
+    TurnHistory,
 };
 use koduck_ai::domain::ThreadId;
 
@@ -273,40 +275,7 @@ pub(crate) fn cand_18_retry_after_correction() {
     else {
         panic!("the correction key must create");
     };
-
-    // Close the Turn, then admit one correction of the sequence-1 input.
-    TurnHistory::append(
-        &mut history,
-        &accepted,
-        NewItem::Terminal(koduck_ai::domain::TerminalOutcome::Cancelled),
-    )
-    .expect("close the accepted turn");
-    let input_item_id: Uuid = harness.runtime.block_on(async {
-        sqlx::query_scalar(
-            "SELECT item_id FROM turn_items WHERE tenant_id = $1 AND thread_id = $2 \
-             AND turn_id = $3 AND sequence = 1",
-        )
-        .bind(&tenant)
-        .bind(accepted.thread_id.as_uuid())
-        .bind(accepted.turn_id.as_uuid())
-        .fetch_one(&harness.pool)
-        .await
-        .expect("read the sequence-1 item identity")
-    });
-    let executor = harness.executor();
-    let correction = CorrectionCommand::new(
-        trust(&tenant, "subject-a"),
-        accepted.thread_id,
-        accepted.turn_id,
-        koduck_ai::domain::ItemId::new(),
-        koduck_ai::domain::ItemId::from_uuid(input_item_id),
-        "the corrected reading",
-    )
-    .expect("valid correction command");
-    let correction_item = CorrectionStore::correct(&executor, correction)
-        .expect("the post-terminal correction admits");
-    // The terminal append took sequence 2, so the correction lands at 3.
-    assert_eq!(correction_item.sequence, 3);
+    close_and_correct_sequence_one_input(&harness, &mut history, &tenant, &accepted);
 
     let items_on_turn = |harness: &Harness| {
         harness.runtime.block_on(async {
@@ -342,4 +311,46 @@ pub(crate) fn cand_18_retry_after_correction() {
         .expect("count bindings")
     });
     assert_eq!(binding_rows, 1, "the correction leaves one binding");
+}
+
+/// Closes the accepted Turn and admits one post-terminal correction of its
+/// sequence-1 input; the terminal append took sequence 2, so the correction
+/// lands at sequence 3.
+fn close_and_correct_sequence_one_input(
+    harness: &Harness,
+    history: &mut PostgresTurnHistory<SqlxPostgresExecutor>,
+    tenant: &str,
+    accepted: &AcceptedTurn,
+) {
+    TurnHistory::append(
+        history,
+        accepted,
+        NewItem::Terminal(koduck_ai::domain::TerminalOutcome::Cancelled),
+    )
+    .expect("close the accepted turn");
+    let input_item_id: Uuid = harness.runtime.block_on(async {
+        sqlx::query_scalar(
+            "SELECT item_id FROM turn_items WHERE tenant_id = $1 AND thread_id = $2 \
+             AND turn_id = $3 AND sequence = 1",
+        )
+        .bind(tenant)
+        .bind(accepted.thread_id.as_uuid())
+        .bind(accepted.turn_id.as_uuid())
+        .fetch_one(&harness.pool)
+        .await
+        .expect("read the sequence-1 item identity")
+    });
+    let executor = harness.executor();
+    let correction = CorrectionCommand::new(
+        trust(tenant, "subject-a"),
+        accepted.thread_id,
+        accepted.turn_id,
+        koduck_ai::domain::ItemId::new(),
+        koduck_ai::domain::ItemId::from_uuid(input_item_id),
+        "the corrected reading",
+    )
+    .expect("valid correction command");
+    let correction_item = CorrectionStore::correct(&executor, correction)
+        .expect("the post-terminal correction admits");
+    assert_eq!(correction_item.sequence, 3);
 }

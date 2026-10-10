@@ -9,9 +9,10 @@
 use std::time::Duration;
 use uuid::Uuid;
 
-use koduck_ai::adapters::history::postgres::PostgresTurnHistory;
+use koduck_ai::adapters::history::postgres::{PostgresTurnHistory, SqlxPostgresExecutor};
 use koduck_ai::application::{
-    AcceptedTurn, HistoryError, IdentifiedAcceptance, NewItem, TurnCommand, TurnHistory,
+    AcceptedTurn, HistoryError, IdentifiedAcceptance, NewItem, SubmissionObservation, TurnCommand,
+    TurnHistory,
 };
 use koduck_ai::domain::{ThreadId, TurnId};
 
@@ -195,10 +196,10 @@ pub(crate) fn cand_18_binding_lifetime_preserved_across_transitions() {
 /// baseline receipt for the caller's final assertions.
 fn lifetime_receipts_stay_constant(
     harness: &Harness,
-    history: &mut PostgresTurnHistory<koduck_ai::adapters::history::postgres::SqlxPostgresExecutor>,
+    history: &mut PostgresTurnHistory<SqlxPostgresExecutor>,
     command: &TurnCommand,
     accepted: &AcceptedTurn,
-) -> koduck_ai::application::SubmissionObservation {
+) -> SubmissionObservation {
     let tenant = command.trust.tenant_id.as_str();
     let baseline = history
         .submission_observation(command, Duration::from_secs(2))
@@ -258,19 +259,29 @@ fn lifetime_receipts_stay_constant(
 /// rolls back leaves the sequence-1 input and the provable binding intact.
 fn foreign_key_and_rollback_preserve_structure(
     harness: &Harness,
-    history: &mut PostgresTurnHistory<koduck_ai::adapters::history::postgres::SqlxPostgresExecutor>,
+    history: &mut PostgresTurnHistory<SqlxPostgresExecutor>,
     command: &TurnCommand,
     accepted: &AcceptedTurn,
 ) {
-    let tenant = command.trust.tenant_id.as_str();
     let baseline = history
         .submission_observation(command, Duration::from_secs(2))
         .expect("the pre-deletion receipt resolves")
         .expect("the lifetime binding is observed");
+    blocked_turn_deletion_rolls_back(harness, history, command, accepted, &baseline);
+    rolled_back_input_deletion_stays_invisible(harness, history, command, accepted, &baseline);
+}
 
-    // Clearing the Turn's items and leases first leaves the binding's
-    // foreign key as the sole named blocker; the aborted transaction rolls
-    // everything back.
+/// Clearing the Turn's items and leases first leaves the binding's foreign
+/// key as the sole named deletion blocker, and aborting the transaction rolls
+/// every deletion back so the provable binding survives intact.
+fn blocked_turn_deletion_rolls_back(
+    harness: &Harness,
+    history: &mut PostgresTurnHistory<SqlxPostgresExecutor>,
+    command: &TurnCommand,
+    accepted: &AcceptedTurn,
+    baseline: &SubmissionObservation,
+) {
+    let tenant = command.trust.tenant_id.as_str();
     let delete_pool = harness.pool.clone();
     let mut deletion = harness
         .runtime
@@ -307,13 +318,22 @@ fn foreign_key_and_rollback_preserve_structure(
             .submission_observation(command, Duration::from_secs(2))
             .expect("the rolled-back deletion resolves")
             .expect("the binding and its canonical rows survive"),
-        baseline,
+        baseline.clone(),
         "the aborted deletion leaves the structure intact"
     );
+}
 
-    // A canonical input deletion attempted inside a transaction that rolls
-    // back stays invisible to the unlocked committed read and restores the
-    // provable binding afterwards.
+/// A canonical input deletion attempted inside a transaction that rolls back
+/// stays invisible to the unlocked committed read and restores the provable
+/// binding afterwards.
+fn rolled_back_input_deletion_stays_invisible(
+    harness: &Harness,
+    history: &mut PostgresTurnHistory<SqlxPostgresExecutor>,
+    command: &TurnCommand,
+    accepted: &AcceptedTurn,
+    baseline: &SubmissionObservation,
+) {
+    let tenant = command.trust.tenant_id.as_str();
     let rollback_pool = harness.pool.clone();
     let mut rollback = harness
         .runtime
@@ -334,7 +354,7 @@ fn foreign_key_and_rollback_preserve_structure(
             .submission_observation(command, Duration::from_secs(2))
             .expect("the mid-rollback receipt resolves")
             .expect("uncommitted deletion is invisible"),
-        baseline
+        baseline.clone()
     );
     harness.runtime.block_on(async move {
         drop(rollback);
@@ -344,7 +364,7 @@ fn foreign_key_and_rollback_preserve_structure(
             .submission_observation(command, Duration::from_secs(2))
             .expect("the post-rollback receipt resolves")
             .expect("the rolled-back deletion restores the input"),
-        baseline,
+        baseline.clone(),
         "the rolled-back deletion preserves FK integrity"
     );
 }

@@ -15,12 +15,80 @@ use uuid::Uuid;
 use koduck_ai::adapters::history::postgres::PostgresTurnHistory;
 use koduck_ai::application::{
     IdentifiedAcceptance, ModelInput, ModelProvider, ProviderError, ProviderEvent, ProviderStream,
-    TurnHistory, TurnOutcome, submission_lock_keys,
+    TurnCommand, TurnHistory, TurnOutcome, submission_lock_keys,
 };
 use koduck_ai::domain::{SubmissionId, ThreadId};
 
-use super::runner::completed_events;
+use super::super::harness::Harness;
+use super::runner::{completed_events, scripted_provider};
 use super::{connected_history, count_rows, identified_command, trust};
+
+/// Holds the int4-pair submission advisory lock in an open transaction until
+/// the returned transaction is dropped.
+fn hold_submission_lock(
+    harness: &Harness,
+    keys: (i32, i32),
+) -> sqlx::Transaction<'static, sqlx::Postgres> {
+    let lock_pool = harness.pool.clone();
+    let mut holder = harness
+        .runtime
+        .block_on(lock_pool.begin())
+        .expect("holder transaction starts");
+    harness.runtime.block_on(async {
+        sqlx::query("SELECT pg_advisory_xact_lock($1, $2)")
+            .bind(keys.0)
+            .bind(keys.1)
+            .execute(&mut *holder)
+            .await
+            .expect("hold the submission lock");
+    });
+    holder
+}
+
+/// Polls live `pg_locks` until the contender's waiting submission tag appears.
+fn wait_for_submission_waiter(harness: &Harness, keys: (i32, i32)) {
+    harness.runtime.block_on(async {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            let waiting = sqlx::query_scalar::<_, i64>(
+                "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' \
+                 AND classid = $1 AND objid = $2 AND objsubid = 2 AND NOT granted",
+            )
+            .bind(i64::from(keys.0.cast_unsigned()))
+            .bind(i64::from(keys.1.cast_unsigned()))
+            .fetch_one(&harness.pool)
+            .await
+            .expect("poll the waiting submission tag");
+            if waiting > 0 {
+                return;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the contender never waited on the submission lock"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    });
+}
+
+/// Counts the submission-lock waiter's granted advisory locks; the waiter
+/// must own none while it waits on the submission tag.
+fn waiter_granted_advisory_locks(harness: &Harness, keys: (i32, i32)) -> i64 {
+    harness.runtime.block_on(async {
+        sqlx::query_scalar(
+            "SELECT count(*) FROM pg_locks l WHERE l.locktype = 'advisory' \
+             AND l.granted AND EXISTS ( \
+               SELECT 1 FROM pg_locks w WHERE w.locktype = 'advisory' \
+               AND w.classid = $1 AND w.objid = $2 AND w.objsubid = 2 \
+               AND NOT w.granted AND w.pid = l.pid)",
+        )
+        .bind(i64::from(keys.0.cast_unsigned()))
+        .bind(i64::from(keys.1.cast_unsigned()))
+        .fetch_one(&harness.pool)
+        .await
+        .expect("count the waiter's granted advisory locks")
+    })
+}
 
 /// AC-3/SI-03b: the two-int4 submission lock namespace is separate from the
 /// single-bigint Item namespace. A session-level bigint advisory lock whose
@@ -107,19 +175,7 @@ pub(crate) fn cand_18_submission_waiter_holds_no_item_lock() {
     );
 
     // Hold the int4-pair submission lock in an open transaction.
-    let lock_pool = harness.pool.clone();
-    let mut holder = harness
-        .runtime
-        .block_on(lock_pool.begin())
-        .expect("holder transaction starts");
-    harness.runtime.block_on(async {
-        sqlx::query("SELECT pg_advisory_xact_lock($1, $2)")
-            .bind(keys.0)
-            .bind(keys.1)
-            .execute(&mut *holder)
-            .await
-            .expect("hold the submission lock");
-    });
+    let holder = hold_submission_lock(&harness, keys);
 
     // The contender blocks on the submission lock inside its own connection.
     let executor = harness.executor();
@@ -136,47 +192,11 @@ pub(crate) fn cand_18_submission_waiter_holds_no_item_lock() {
         TurnHistory::accept_initial_with_submission(&mut history, &command, Duration::from_secs(4))
             .expect("the contender accepts once the lock releases")
     });
-
-    // Poll live pg_locks until the contender's waiting submission tag appears.
-    harness.runtime.block_on(async {
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
-        loop {
-            let waiting = sqlx::query_scalar::<_, i64>(
-                "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' \
-                 AND classid = $1 AND objid = $2 AND objsubid = 2 AND NOT granted",
-            )
-            .bind(i64::from(keys.0.cast_unsigned()))
-            .bind(i64::from(keys.1.cast_unsigned()))
-            .fetch_one(&harness.pool)
-            .await
-            .expect("poll the waiting submission tag");
-            if waiting > 0 {
-                return;
-            }
-            assert!(
-                tokio::time::Instant::now() < deadline,
-                "the contender never waited on the submission lock"
-            );
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    });
+    wait_for_submission_waiter(&harness, keys);
 
     // The waiter's granted advisory locks must be empty: it has taken no Item
     // bigint lock while waiting on the submission tag.
-    let granted: i64 = harness.runtime.block_on(async {
-        sqlx::query_scalar(
-            "SELECT count(*) FROM pg_locks l WHERE l.locktype = 'advisory' \
-             AND l.granted AND EXISTS ( \
-               SELECT 1 FROM pg_locks w WHERE w.locktype = 'advisory' \
-               AND w.classid = $1 AND w.objid = $2 AND w.objsubid = 2 \
-               AND NOT w.granted AND w.pid = l.pid)",
-        )
-        .bind(i64::from(keys.0.cast_unsigned()))
-        .bind(i64::from(keys.1.cast_unsigned()))
-        .fetch_one(&harness.pool)
-        .await
-        .expect("count the waiter's granted advisory locks")
-    });
+    let granted = waiter_granted_advisory_locks(&harness, keys);
     assert_eq!(
         granted, 0,
         "a submission-lock waiter owns no advisory lock, in particular no Item lock"
@@ -212,19 +232,7 @@ pub(crate) fn cand_18_preliminary_read_unblocked_by_submission_lock() {
         &trust_context,
         SubmissionId::from_uuid(submission).expect("non-nil submission"),
     );
-    let lock_pool = harness.pool.clone();
-    let mut holder = harness
-        .runtime
-        .block_on(lock_pool.begin())
-        .expect("lock transaction starts");
-    harness.runtime.block_on(async {
-        sqlx::query("SELECT pg_advisory_xact_lock($1, $2)")
-            .bind(keys.0)
-            .bind(keys.1)
-            .execute(&mut *holder)
-            .await
-            .expect("hold the submission lock");
-    });
+    let holder = hold_submission_lock(&harness, keys);
 
     // The committed read resolves well inside the budget the locked query
     // would consume.
@@ -350,27 +358,55 @@ pub(crate) fn cand_18_retry_completes_while_provider_blocks() {
     let submission = Uuid::new_v4();
     let command = identified_command(&tenant, "subject-a", submission, None, "paced input");
 
+    let (original, release, original_inputs) = start_paced_original(&harness, command.clone());
+    retry_observes_while_paced(&harness, command);
+    independent_key_proceeds_in_parallel(&harness, &tenant);
+
+    // Releasing the original completes it with exactly one invocation.
+    release.store(true, Ordering::Release);
+    let original_outcome = original.join().expect("the original finishes");
+    assert!(matches!(original_outcome, TurnOutcome::Owned(_)));
+    assert_eq!(
+        original_inputs.lock().expect("inputs").as_slice(),
+        ["paced input"]
+    );
+    let rows =
+        harness
+            .runtime
+            .block_on(count_rows(&harness.pool, &tenant, "subject-a", submission));
+    assert_eq!(rows, (1, 1, 1, 1), "exactly one acceptance exists");
+}
+
+/// Starts the original creator's execution on its own thread with the pacing
+/// provider and waits until the provider has entered its stream. Returns the
+/// join handle, the release signal, and the original's recorded inputs.
+fn start_paced_original(
+    harness: &Harness,
+    command: TurnCommand,
+) -> (
+    std::thread::JoinHandle<TurnOutcome>,
+    Arc<AtomicBool>,
+    Arc<std::sync::Mutex<Vec<String>>>,
+) {
     let (provider, release, entered, original_inputs) = pacing_provider();
     let mut original_runner = koduck_ai::runtime::compose_production_runner(
         provider,
         PostgresTurnHistory::new(harness.executor()),
         koduck_ai::application::NoToolExecution,
     );
-    let original_command = command.clone();
     let original = std::thread::spawn(move || {
         original_runner
-            .execute_submission_with_observer_and_cancellation(
-                original_command,
-                &mut |_| {},
-                &|| false,
-            )
+            .execute_submission_with_observer_and_cancellation(command, &mut |_| {}, &|| false)
             .expect("the original creator owns its execution")
     });
     wait_until_entered(&entered);
+    (original, release, original_inputs)
+}
 
-    // The exact retry observes the committed key immediately while the
-    // original provider stream is still pacing.
-    let (retry_provider, retry_inputs) = super::runner::scripted_provider(completed_events());
+/// The exact retry observes the committed key immediately while the original
+/// provider stream is still pacing, starting no provider work of its own.
+fn retry_observes_while_paced(harness: &Harness, command: TurnCommand) {
+    let (retry_provider, retry_inputs) = scripted_provider(completed_events());
     let mut retry_runner = koduck_ai::runtime::compose_production_runner(
         retry_provider,
         PostgresTurnHistory::new(harness.executor()),
@@ -378,7 +414,7 @@ pub(crate) fn cand_18_retry_completes_while_provider_blocks() {
     );
     let retry_started = std::time::Instant::now();
     let outcome = retry_runner
-        .execute_submission_with_observer_and_cancellation(command.clone(), &mut |_| {}, &|| false)
+        .execute_submission_with_observer_and_cancellation(command, &mut |_| {}, &|| false)
         .expect("the retry resolves while the provider blocks");
     assert!(
         matches!(outcome, TurnOutcome::Observed(_)),
@@ -393,27 +429,29 @@ pub(crate) fn cand_18_retry_completes_while_provider_blocks() {
         retry_inputs.lock().expect("inputs").is_empty(),
         "the retry starts no provider work"
     );
+}
 
-    // A different key on an independent Thread proceeds in parallel.
+/// A different key on an independent Thread proceeds in parallel while the
+/// original provider stream is still pacing.
+fn independent_key_proceeds_in_parallel(harness: &Harness, tenant: &str) {
     let independent_thread = ThreadId::new();
     harness.runtime.block_on(async {
         sqlx::query("INSERT INTO threads (tenant_id, subject_id, thread_id) VALUES ($1, $2, $3)")
-            .bind(&tenant)
+            .bind(tenant)
             .bind("subject-a")
             .bind(independent_thread.as_uuid())
             .execute(&harness.pool)
             .await
             .expect("seed the independent thread");
     });
-    let (independent_provider, independent_inputs) =
-        super::runner::scripted_provider(completed_events());
+    let (independent_provider, independent_inputs) = scripted_provider(completed_events());
     let mut independent_runner = koduck_ai::runtime::compose_production_runner(
         independent_provider,
         PostgresTurnHistory::new(harness.executor()),
         koduck_ai::application::NoToolExecution,
     );
     let independent_command = identified_command(
-        &tenant,
+        tenant,
         "subject-a",
         Uuid::new_v4(),
         Some(independent_thread),
@@ -431,18 +469,4 @@ pub(crate) fn cand_18_retry_completes_while_provider_blocks() {
         independent_inputs.lock().expect("inputs").as_slice(),
         ["independent input"]
     );
-
-    // Releasing the original completes it with exactly one invocation.
-    release.store(true, Ordering::Release);
-    let original_outcome = original.join().expect("the original finishes");
-    assert!(matches!(original_outcome, TurnOutcome::Owned(_)));
-    assert_eq!(
-        original_inputs.lock().expect("inputs").as_slice(),
-        ["paced input"]
-    );
-    let rows =
-        harness
-            .runtime
-            .block_on(count_rows(&harness.pool, &tenant, "subject-a", submission));
-    assert_eq!(rows, (1, 1, 1, 1), "exactly one acceptance exists");
 }

@@ -11,7 +11,7 @@ use uuid::Uuid;
 use koduck_ai::adapters::history::postgres::PostgresTurnHistory;
 use koduck_ai::application::{
     AcceptanceClock, AcceptanceInstant, HistoryError, NewItem, PriorTurnHistory, TurnCommand,
-    TurnHistory, TurnRunError,
+    TurnHistory, TurnOutcome, TurnRunError, TurnRunner,
 };
 use koduck_ai::domain::{SubmissionId, TenantId, ThreadId, TrustContext, TurnId};
 
@@ -465,15 +465,19 @@ impl TurnHistory for RecordingHistory {
 /// history double at the consuming port.
 #[test]
 fn cand_18_pre_write_read_clamp() {
-    let (provider, observed) = scripted_provider(vec![]);
+    clamped_lookup_starts_no_write();
+    permitted_write_keeps_full_budgets();
+}
 
-    // Clamped lookup: 9.5 s elapsed of the 10 s deadline leaves 500 ms, so
-    // the preliminary read receives 500 ms, and the 500 ms remaining at the
-    // write gate starts no write.
-    let clamped_history = RecordingHistory::default();
-    let mut clamped_runner = koduck_ai::runtime::compose_production_runner(
+/// Clamped lookup: 9.5 s elapsed of the 10 s deadline leaves 500 ms, so the
+/// preliminary read receives 500 ms, and the 500 ms remaining at the write
+/// gate starts no write.
+fn clamped_lookup_starts_no_write() {
+    let (provider, observed) = scripted_provider(vec![]);
+    let history = RecordingHistory::default();
+    let mut runner = koduck_ai::runtime::compose_production_runner(
         provider,
-        clamped_history.clone(),
+        history.clone(),
         koduck_ai::application::NoToolExecution,
     )
     .with_acceptance_clock(ManualClock::staged(&[
@@ -481,7 +485,7 @@ fn cand_18_pre_write_read_clamp() {
         Duration::from_millis(9_500),
         Duration::from_millis(9_500),
     ]));
-    let clamped_command = identified_command(
+    let command = identified_command(
         "tenant-clamp",
         "subject-a",
         Uuid::new_v4(),
@@ -489,32 +493,34 @@ fn cand_18_pre_write_read_clamp() {
         "clamped input",
     );
     assert!(matches!(
-        clamped_runner
-            .execute_submission_with_observer_and_cancellation(
-                clamped_command,
-                &mut |_| {},
-                &|| false
-            )
+        runner
+            .execute_submission_with_observer_and_cancellation(command, &mut |_| {}, &|| false)
             .expect_err("the clamped budget starts no write"),
         TurnRunError::History(HistoryError::Unavailable)
     ));
     assert_eq!(
-        clamped_history.lookups(),
+        history.lookups(),
         vec![Duration::from_millis(500)],
         "the preliminary read is clamped to the remaining 500 ms"
     );
     assert!(
-        clamped_history.writes().is_empty(),
+        history.writes().is_empty(),
         "less than four remaining seconds starts no write"
     );
+    assert!(
+        observed.lock().expect("inputs").is_empty(),
+        "no observation outcome starts provider work"
+    );
+}
 
-    // Full budgets: 1 s elapsed clamps nothing, and the permitted write at
-    // exactly four remaining seconds receives the full reserved 2 s attempt.
-    let (full_provider, _full_observed) = scripted_provider(vec![]);
-    let full_history = RecordingHistory::default();
-    let mut full_runner = koduck_ai::runtime::compose_production_runner(
-        full_provider,
-        full_history.clone(),
+/// Full budgets: 1 s elapsed clamps nothing, and the permitted write at
+/// exactly four remaining seconds receives the full reserved 2 s attempt.
+fn permitted_write_keeps_full_budgets() {
+    let (provider, _observed) = scripted_provider(vec![]);
+    let history = RecordingHistory::default();
+    let mut runner = koduck_ai::runtime::compose_production_runner(
+        provider,
+        history.clone(),
         koduck_ai::application::NoToolExecution,
     )
     .with_acceptance_clock(ManualClock::staged(&[
@@ -522,35 +528,28 @@ fn cand_18_pre_write_read_clamp() {
         Duration::from_secs(1),
         Duration::from_secs(6),
     ]));
-    let full_command = identified_command(
+    let command = identified_command(
         "tenant-clamp",
         "subject-a",
         Uuid::new_v4(),
         None,
         "full input",
     );
-    let outcome = full_runner
-        .execute_submission_with_observer_and_cancellation(full_command, &mut |_| {}, &|| false)
+    let outcome = runner
+        .execute_submission_with_observer_and_cancellation(command, &mut |_| {}, &|| false)
         .expect("the full budget admits the write");
-    assert!(matches!(
-        outcome,
-        koduck_ai::application::TurnOutcome::Observed(_)
-    ));
+    assert!(matches!(outcome, TurnOutcome::Observed(_)));
     assert_eq!(
-        full_history.lookups(),
+        history.lookups(),
         vec![Duration::from_secs(2)],
         "the unclamped preliminary read keeps its full two-second budget"
     );
     assert_eq!(
-        full_history.writes(),
+        history.writes(),
         vec![koduck_ai::application::WRITE_BUDGET],
         "a permitted write receives its full reserved budget, never compressed by the deadline"
     );
-    assert_eq!(full_history.writes().len(), 1);
-    assert!(
-        observed.lock().expect("inputs").is_empty(),
-        "no observation outcome starts provider work"
-    );
+    assert_eq!(history.writes().len(), 1);
 }
 
 /// AC-6/SI-07i (ADR-0018): runner cloning and Tool composition retain the
@@ -597,34 +596,15 @@ fn cand_18_clock_composition_separate_budgets() {
 
     // The Tool-composed runner retains the injected clock (request A works).
     let mut composed_runner = composed.clone();
-    let outcome = composed_runner
-        .execute_submission_with_observer_and_cancellation(
-            identified_command("tenant-compose", "subject-a", Uuid::new_v4(), None, "first"),
-            &mut |_| {},
-            &|| false,
-        )
+    let outcome = execute_clone_request(&mut composed_runner, "first")
         .expect("the composed runner executes its own budget");
-    assert!(matches!(
-        outcome,
-        koduck_ai::application::TurnOutcome::Observed(_)
-    ));
+    assert!(matches!(outcome, TurnOutcome::Observed(_)));
 
     // The clone's separate budget: 3 s precedes its own 5 s start, so the
     // request fails closed without any lookup.
     let mut cloned = composed_runner.clone();
     assert!(matches!(
-        cloned
-            .execute_submission_with_observer_and_cancellation(
-                identified_command(
-                    "tenant-compose",
-                    "subject-a",
-                    Uuid::new_v4(),
-                    None,
-                    "backward"
-                ),
-                &mut |_| {},
-                &|| false
-            )
+        execute_clone_request(&mut cloned, "backward")
             .expect_err("the clone's earlier reading fails closed"),
         TurnRunError::History(HistoryError::Unavailable)
     ));
@@ -636,21 +616,23 @@ fn cand_18_clock_composition_separate_budgets() {
 
     // A later request on the same clone derives a fresh budget from its own
     // start and proceeds normally.
-    let outcome = cloned
-        .execute_submission_with_observer_and_cancellation(
-            identified_command("tenant-compose", "subject-a", Uuid::new_v4(), None, "third"),
-            &mut |_| {},
-            &|| false,
-        )
+    let outcome = execute_clone_request(&mut cloned, "third")
         .expect("the clone's later request uses its own budget");
-    assert!(matches!(
-        outcome,
-        koduck_ai::application::TurnOutcome::Observed(_)
-    ));
+    assert!(matches!(outcome, TurnOutcome::Observed(_)));
     assert_eq!(
         history.lookups(),
         vec![Duration::from_secs(2), Duration::from_secs(2)],
         "every request's lookup keeps the full clamped budget"
     );
     assert_eq!(history.writes().len(), 2);
+}
+
+/// Runs one identified request on the composed or cloned runner with the
+/// shared no-op observer and cancellation closures.
+fn execute_clone_request(
+    runner: &mut TurnRunner<CloneableProvider, RecordingHistory>,
+    input: &str,
+) -> Result<TurnOutcome, TurnRunError> {
+    let command = identified_command("tenant-compose", "subject-a", Uuid::new_v4(), None, input);
+    runner.execute_submission_with_observer_and_cancellation(command, &mut |_| {}, &|| false)
 }
