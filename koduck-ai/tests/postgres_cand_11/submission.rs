@@ -1519,3 +1519,53 @@ fn cand_18_oversized_stored_input_fails_unavailable() {
         HistoryError::Unavailable
     );
 }
+
+/// SI-01d (review round 2, finding 2): the direct observation port rejects an
+/// invalid identified command before any database query — proven by an
+/// exclusive table lock that would otherwise stall the lookup until its
+/// deadline.
+#[test]
+fn cand_18_observation_entry_guard_precedes_query() {
+    let _database_guard = super::serialize_database_tests();
+    let (harness, history, tenant) = connected_history();
+    let submission = Uuid::new_v4();
+
+    // Hold an exclusive lock on the binding relation for the whole case.
+    let lock_pool = harness.pool.clone();
+    let mut lock = harness
+        .runtime
+        .block_on(lock_pool.begin())
+        .expect("lock transaction starts");
+    harness.runtime.block_on(async {
+        sqlx::query("LOCK TABLE chat_submissions IN ACCESS EXCLUSIVE MODE")
+            .execute(&mut *lock)
+            .await
+            .expect("hold the binding relation exclusively");
+    });
+
+    // Invalid commands return the typed unavailability immediately, without
+    // waiting out the lookup deadline the locked query would consume.
+    for input in [String::new(), "a".repeat(65_537)] {
+        let command = TurnCommand {
+            trust: trust(&tenant, "subject-a"),
+            thread_id: None,
+            input,
+            submission_id: Some(SubmissionId::from_uuid(submission).expect("non-nil")),
+        };
+        let started = std::time::Instant::now();
+        assert_eq!(
+            history
+                .submission_observation(&command, Duration::from_secs(2))
+                .expect_err("the guard rejects the invalid command"),
+            HistoryError::Unavailable
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "the guard rejected in {:?} without the locked database query",
+            started.elapsed()
+        );
+    }
+    harness.runtime.block_on(async move {
+        drop(lock);
+    });
+}

@@ -601,6 +601,11 @@ impl PostgresExecutor for SqlxPostgresExecutor {
         command: &TurnCommand,
         deadline: Duration,
     ) -> Result<Option<crate::application::SubmissionObservation>, HistoryError> {
+        // SI-01d: every direct acceptance-port entry point independently
+        // validates the owned input bound and submission identity before any
+        // database I/O.
+        crate::application::validate_identified_command(command)
+            .map_err(|_| HistoryError::Unavailable)?;
         let command = command.clone();
         self.wait_with_deadline(
             deadline,

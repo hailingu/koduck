@@ -168,6 +168,13 @@ pub trait TurnService {
         observer: &mut dyn FnMut(TurnStreamEvent),
         cancelled: &dyn Fn() -> bool,
     ) -> Result<TurnOutcome, ServiceError> {
+        if command.submission_id.is_some() {
+            // SI-01d: a default implementation must never silently ignore a
+            // supplied key by executing it as a fresh unidentified submission;
+            // it fails closed until an identity-aware implementation is
+            // provided.
+            return Err(ServiceError::DurabilityUnavailable);
+        }
         self.execute_stream_controlled(command, observer, cancelled)
             .map(TurnOutcome::Owned)
     }

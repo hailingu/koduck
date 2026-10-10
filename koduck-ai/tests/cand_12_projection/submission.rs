@@ -438,3 +438,45 @@ fn cand_18_default_service_delegation() {
         assert_eq!(response.status(), StatusCode::OK);
     });
 }
+
+/// SI-01d (review round 2, finding 1): the `TurnService` default submission
+/// entry must fail closed for an identified command instead of silently
+/// executing it as a fresh unidentified submission.
+#[test]
+fn cand_18_default_service_rejects_identified_commands() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("default rejection runtime");
+    runtime.block_on(async {
+        let mut request = Request::builder()
+            .method("POST")
+            .uri("/api/v1/ai/chat")
+            .header("content-type", "application/json");
+        for (name, value) in trust_header() {
+            request = request.header(name, value);
+        }
+        let request = request
+            .body(Body::from(
+                r#"{"input":"hello","submission_id":"0f0e0d0c-0b0a-4987-8654-321098765432"}"#,
+            ))
+            .expect("request builds");
+        let response = build_router(DefaultOnlyService, UnconfiguredApprovals)
+            .oneshot(request)
+            .await
+            .expect("router responds");
+        assert_eq!(
+            response.status(),
+            StatusCode::SERVICE_UNAVAILABLE,
+            "the default path fails closed rather than executing the identified command"
+        );
+        let body = to_bytes(response.into_body(), 1_048_576)
+            .await
+            .expect("body reads");
+        let body = String::from_utf8(body.to_vec()).expect("utf-8");
+        assert!(
+            body.contains(r#""code":"durability-unavailable""#),
+            "the fail-closed outcome uses the existing problem: {body}"
+        );
+    });
+}
