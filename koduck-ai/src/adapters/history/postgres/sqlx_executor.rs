@@ -2,6 +2,7 @@
 // ADR: koduck-ai/docs/adr/ADR-0003-correction-item-schema-and-raw-replay.md
 // ADR: koduck-ai/docs/adr/ADR-0004-authenticated-correction-admission.md
 // ADR: koduck-ai/docs/adr/ADR-0006-effective-provider-context-integration.md
+// ADR: docs/adr/ADR-0018-chat-submission-identity-and-atomic-acceptance.md
 
 //! `SQLx`-backed implementation of the canonical `PostgreSQL` transaction boundary.
 

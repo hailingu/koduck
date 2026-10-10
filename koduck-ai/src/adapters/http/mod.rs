@@ -1,6 +1,7 @@
 // ADR: docs/adr/ADR-0001-provider-neutral-turn-kernel.md
 // ADR: docs/adr/ADR-0005-provider-delta-coalescing-and-512-item-turn-budget.md
 // ADR: koduck-ai/docs/adr/ADR-0006-effective-provider-context-integration.md
+// ADR: docs/adr/ADR-0018-chat-submission-identity-and-atomic-acceptance.md
 
 //! Owned HTTP/SSE v1 presentation contract around the application turn kernel.
 

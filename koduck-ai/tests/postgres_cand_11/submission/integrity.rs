@@ -652,3 +652,47 @@ fn cand_18_duplicate_member_payload_fails_unavailable() {
         HistoryError::Unavailable
     );
 }
+
+/// SI-08c (review round 9, finding 2): a sequence-1 `user_message` row
+/// marked terminal is inconsistent canonical structure — it occupies the
+/// Turn's one-terminal slot — so every binding read fails unavailable
+/// instead of returning a receipt.
+#[test]
+fn cand_18_terminal_marked_input_fails_unavailable() {
+    let _database_guard = super::serialize_database_tests();
+    let (harness, mut history, tenant) = connected_history();
+    let submission = Uuid::new_v4();
+    let command = identified_command(&tenant, "subject-a", submission, None, "bounded input");
+    let IdentifiedAcceptance::Created(accepted) =
+        TurnHistory::accept_initial_with_submission(&mut history, &command, Duration::from_secs(2))
+            .expect("the bounded acceptance creates")
+    else {
+        panic!("the bounded acceptance must create");
+    };
+
+    // Corrupt the stored sequence-1 row with the terminal flag.
+    harness.runtime.block_on(async {
+        sqlx::query(
+            "UPDATE turn_items SET is_terminal = TRUE WHERE tenant_id = $1 \
+             AND thread_id = $2 AND turn_id = $3 AND sequence = 1",
+        )
+        .bind(&tenant)
+        .bind(accepted.thread_id.as_uuid())
+        .bind(accepted.turn_id.as_uuid())
+        .execute(&harness.pool)
+        .await
+        .expect("mark the stored input terminal");
+    });
+
+    assert_eq!(
+        history
+            .submission_observation(&command, Duration::from_secs(2))
+            .expect_err("a terminal-marked input row is inconsistent structure"),
+        HistoryError::Unavailable
+    );
+    assert_eq!(
+        TurnHistory::accept_initial_with_submission(&mut history, &command, Duration::from_secs(2))
+            .expect_err("the transaction recheck stays unavailable"),
+        HistoryError::Unavailable
+    );
+}

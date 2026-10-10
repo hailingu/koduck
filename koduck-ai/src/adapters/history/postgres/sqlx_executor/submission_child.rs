@@ -102,7 +102,7 @@ fn binding_read_sql() -> String {
     format!(
         "SELECT s.thread_id, s.turn_id, s.original_thread_id, \
          i.item_type, CASE WHEN octet_length(i.payload) <= {MAX_BINDING_PAYLOAD_BYTES} \
-         THEN i.payload ELSE NULL END AS payload, h.subject_id = $2 AS owned, \
+         THEN i.payload ELSE NULL END AS payload, i.is_terminal, h.subject_id = $2 AS owned, \
          (t.turn_id IS NOT NULL AND l.generation IS NOT NULL \
           AND i.item_id IS NOT NULL) AS joined \
          FROM chat_submissions s \
@@ -132,6 +132,12 @@ fn binding_from_row(row: &sqlx::postgres::PgRow) -> Result<Option<BindingRow>, H
     let original_thread_id: Option<Uuid> =
         row.try_get("original_thread_id").map_err(unavailable)?;
     let item_type: String = row.try_get("item_type").map_err(unavailable)?;
+    let terminal_marked: bool = row.try_get("is_terminal").map_err(unavailable)?;
+    if terminal_marked {
+        // A terminal-marked sequence-1 user row is inconsistent canonical
+        // structure occupying the Turn's one-terminal slot (SI-08c).
+        return Err(HistoryError::Unavailable);
+    }
     let payload: Option<String> = row.try_get("payload").map_err(unavailable)?;
     // An envelope-rejected payload never left the database; the lookup
     // fails unavailable rather than allocating it (SI-09).
@@ -335,7 +341,7 @@ async fn read_proof_row(
     let row = sqlx::query(sqlx::AssertSqlSafe(format!(
         "SELECT s.thread_id, s.turn_id, s.original_thread_id, s.creator_operation_id, \
          i.item_type, CASE WHEN octet_length(i.payload) <= {MAX_BINDING_PAYLOAD_BYTES} \
-         THEN i.payload ELSE NULL END AS payload, h.subject_id = $2 AS owned, \
+         THEN i.payload ELSE NULL END AS payload, i.is_terminal, h.subject_id = $2 AS owned, \
          (t.turn_id IS NOT NULL AND l.generation IS NOT NULL \
           AND i.item_id IS NOT NULL) AS joined, \
          t.status, l.generation, l.fenced, \

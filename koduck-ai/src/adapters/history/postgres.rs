@@ -1,6 +1,7 @@
 // ADR: docs/adr/ADR-0001-provider-neutral-turn-kernel.md
 // ADR: koduck-ai/docs/adr/ADR-0003-correction-item-schema-and-raw-replay.md
 // ADR: koduck-ai/docs/adr/ADR-0006-effective-provider-context-integration.md
+// ADR: docs/adr/ADR-0018-chat-submission-identity-and-atomic-acceptance.md
 
 //! `PostgreSQL` history translation and exact foreground-lease policy.
 
