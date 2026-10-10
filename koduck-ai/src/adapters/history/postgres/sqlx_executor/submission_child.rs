@@ -411,17 +411,21 @@ async fn reconciled_acceptance_async(
     };
     // Proven drift conflicts even during reconciliation (SI-06e).
     let receipt = compare_binding(&proof.binding, command)?;
-    let same_invocation = proof.committed_creator == creator_operation_id
-        && proof.committed_thread == thread_id.as_uuid()
-        && proof.committed_turn == turn_id.as_uuid();
-    if same_invocation && proof.binding.input_item_id != input.item_id.as_uuid() {
-        // SI-06a/SI-06e: this invocation's binding committed, but its
-        // sequence-1 item identity is not the retained proposed identity —
-        // corrupt, unprovable state stays unavailable instead of granting
-        // authority or a receipt.
+    let creator_matches = proof.committed_creator == creator_operation_id;
+    if creator_matches
+        && (proof.committed_thread != thread_id.as_uuid()
+            || proof.committed_turn != turn_id.as_uuid()
+            || proof.binding.input_item_id != input.item_id.as_uuid())
+    {
+        // SI-06a/SI-06e: the private creator proves this invocation's row,
+        // but its retained Thread, Turn, or input identity does not match
+        // the committed binding — corrupt, unprovable state stays
+        // unavailable instead of granting authority or publishing the
+        // rewritten identities as a receipt. Only a genuinely different
+        // creator takes the SI-06d observation branch.
         return Err(HistoryError::Unavailable);
     }
-    let creator_is_live = same_invocation
+    let creator_is_live = creator_matches
         && started_with_live_initial_lease(
             &proof.status,
             proof.generation,

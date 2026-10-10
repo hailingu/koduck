@@ -742,3 +742,62 @@ fn cand_18_reconciliation_verifies_input_identity() {
     );
     fixture.teardown();
 }
+
+/// SI-06a/SI-06e (review round 11): when the deferred commit repoints this
+/// invocation's binding at a twin Turn it seeds on the same Thread with
+/// matching input, the private creator proves the row belongs to this
+/// invocation, so the mismatched retained Turn identity is unprovable state —
+/// the reconciliation stays unavailable instead of publishing the rewritten
+/// identity as an observation receipt. The trigger performs the whole
+/// rewrite inside the writer's own COMMIT transaction, so the proof
+/// deterministically observes the retargeted committed binding.
+#[test]
+fn cand_18_reconciliation_rejects_rewritten_binding_target() {
+    let _database_guard = super::serialize_database_tests();
+    let fixture = SubmissionFixture::create(
+        "retarget",
+        "PERFORM pg_sleep(2.5); \
+         INSERT INTO turns (tenant_id, thread_id, turn_id, status, next_sequence) \
+             VALUES (NEW.tenant_id, NEW.thread_id, gen_random_uuid(), 'started', 2); \
+         INSERT INTO turn_leases (tenant_id, thread_id, turn_id, generation, \
+             renewed_at, expires_at) SELECT tenant_id, thread_id, turn_id, 1, \
+             CURRENT_TIMESTAMP, CURRENT_TIMESTAMP + INTERVAL '1 hour' \
+             FROM turns WHERE tenant_id = NEW.tenant_id \
+             AND thread_id = NEW.thread_id AND turn_id <> NEW.turn_id; \
+         INSERT INTO turn_items (tenant_id, thread_id, turn_id, sequence, \
+             item_id, item_type, payload, is_terminal) SELECT i.tenant_id, \
+             i.thread_id, t.turn_id, 1, gen_random_uuid(), 'user_message', \
+             i.payload, FALSE FROM turn_items i JOIN turns t \
+             ON t.tenant_id = i.tenant_id AND t.thread_id = i.thread_id \
+             AND t.turn_id <> i.turn_id WHERE i.tenant_id = NEW.tenant_id \
+             AND i.thread_id = NEW.thread_id AND i.turn_id = NEW.turn_id \
+             AND i.sequence = 1; \
+         UPDATE chat_submissions SET turn_id = ( \
+             SELECT t.turn_id FROM turns t WHERE t.tenant_id = NEW.tenant_id \
+             AND t.thread_id = NEW.thread_id AND t.turn_id <> NEW.turn_id \
+             LIMIT 1) WHERE submission_id = NEW.submission_id;",
+    );
+    let mut history = fixture.history();
+    let submission = Uuid::new_v4();
+    let command = identified_command(
+        &fixture.tenant,
+        "subject-a",
+        submission,
+        None,
+        "retargeted input",
+    );
+    assert_eq!(
+        TurnHistory::accept_initial_with_submission(&mut history, &command, Duration::from_secs(2))
+            .expect_err("the rewritten binding target stays unavailable"),
+        HistoryError::Unavailable
+    );
+    let bindings: i64 = fixture.harness.runtime.block_on(async {
+        sqlx::query_scalar("SELECT count(*) FROM chat_submissions WHERE tenant_id = $1")
+            .bind(&fixture.tenant)
+            .fetch_one(&fixture.pool)
+            .await
+            .expect("count the committed binding")
+    });
+    assert_eq!(bindings, 1, "the delayed commit still produced the binding");
+    fixture.teardown();
+}
