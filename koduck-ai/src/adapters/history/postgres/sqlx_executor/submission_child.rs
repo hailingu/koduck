@@ -409,9 +409,16 @@ async fn reconciled_acceptance_async(
         // Nothing committed: the write provably rolled back or never ran.
         return Ok(None);
     };
-    // Proven drift conflicts even during reconciliation (SI-06e).
-    let receipt = compare_binding(&proof.binding, command)?;
     let creator_matches = proof.committed_creator == creator_operation_id;
+    // SI-06a/SI-06e: with this invocation's private creator on the committed
+    // row, an input or selector differing from its exact original request is
+    // corrupt, unprovable evidence — never the client's drift conflict, which
+    // SI-02d reserves for a genuinely different creator under the same key.
+    let comparison = compare_binding(&proof.binding, command);
+    if creator_matches && comparison.is_err() {
+        return Err(HistoryError::Unavailable);
+    }
+    let receipt = comparison?;
     if creator_matches
         && (proof.committed_thread != thread_id.as_uuid()
             || proof.committed_turn != turn_id.as_uuid()
