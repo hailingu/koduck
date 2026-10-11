@@ -1,6 +1,7 @@
 // ADR: docs/adr/ADR-0001-provider-neutral-turn-kernel.md
 // ADR: docs/adr/ADR-0005-provider-delta-coalescing-and-512-item-turn-budget.md
 // ADR: koduck-ai/docs/adr/ADR-0006-effective-provider-context-integration.md
+// ADR: docs/adr/ADR-0018-chat-submission-identity-and-atomic-acceptance.md
 
 //! Owned HTTP/SSE v1 presentation contract around the application turn kernel.
 
@@ -14,14 +15,14 @@ use thiserror::Error;
 use uuid::Uuid;
 
 use crate::application::{
-    HistoryError, ModelProvider, ToolCallExecutor, TurnCommand, TurnHistory, TurnResult,
-    TurnRunError, TurnRunner, TurnStreamEvent,
+    HistoryError, ModelProvider, ToolCallExecutor, TurnCommand, TurnHistory, TurnOutcome,
+    TurnResult, TurnRunError, TurnRunner, TurnStreamEvent,
 };
 use crate::domain::{TrustContext, TurnId};
 
 use self::wire::{
     interrupt_body, parse_turn_request, problem_body, sse_body, stream_error_body,
-    stream_event_body, sync_body,
+    stream_event_body, submission_receipt_body, sync_body,
 };
 
 /// Supported HTTP methods for the owned v1 routes.
@@ -88,6 +89,14 @@ pub enum ServiceError {
     /// The provider failed before a normal owned result was available.
     #[error("provider unavailable")]
     ProviderUnavailable,
+    /// An owned submission key arrived with changed semantic input
+    /// (ADR-0018 SI-02d).
+    #[error("submission identity conflict")]
+    SubmissionConflict,
+    /// The identified creator's cancellation was observed before its
+    /// acceptance write began (ADR-0018 SI-07g).
+    #[error("turn cancelled")]
+    Cancelled,
 }
 
 /// Presentation-owned service boundary used by the REST/SSE adapter.
@@ -145,6 +154,31 @@ pub trait TurnService {
     /// Returns [`ServiceError::NotFound`] for both unknown and non-owned turns,
     /// or [`ServiceError::AlreadyTerminal`] for a known terminal turn.
     fn interrupt(&mut self, trust: &TrustContext, turn_id: TurnId) -> Result<(), ServiceError>;
+
+    /// Executes one identified or unidentified submission through the
+    /// kernel, separating the created owner from an observed existing key
+    /// (ADR-0018 SI-04).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServiceError`] when no normal owned result or receipt can
+    /// be exposed.
+    fn execute_submission_controlled(
+        &mut self,
+        command: TurnCommand,
+        observer: &mut dyn FnMut(TurnStreamEvent),
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<TurnOutcome, ServiceError> {
+        if command.submission_id.is_some() {
+            // SI-01d: a default implementation must never silently ignore a
+            // supplied key by executing it as a fresh unidentified submission;
+            // it fails closed until an identity-aware implementation is
+            // provided.
+            return Err(ServiceError::DurabilityUnavailable);
+        }
+        self.execute_stream_controlled(command, observer, cancelled)
+            .map(TurnOutcome::Owned)
+    }
 }
 
 impl<P, H, T> TurnService for TurnRunner<P, H, T>
@@ -178,6 +212,16 @@ where
 
     fn interrupt(&mut self, trust: &TrustContext, turn_id: TurnId) -> Result<(), ServiceError> {
         self.request_interrupt(trust, turn_id)
+            .map_err(|error| map_turn_run_error(&error))
+    }
+
+    fn execute_submission_controlled(
+        &mut self,
+        command: TurnCommand,
+        observer: &mut dyn FnMut(TurnStreamEvent),
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<TurnOutcome, ServiceError> {
+        self.execute_submission_with_observer_and_cancellation(command, observer, cancelled)
             .map_err(|error| map_turn_run_error(&error))
     }
 }
@@ -220,6 +264,36 @@ impl<S: TurnService> HttpAdapter<S> {
         }
     }
 
+    /// Maps one execution outcome to its response, returning the exact 202
+    /// acceptance receipt for an observed existing key (SI-05).
+    fn outcome_response(outcome: TurnOutcome, stream: bool) -> HttpResponse {
+        match outcome {
+            TurnOutcome::Observed(receipt) => {
+                response(202, "application/json", submission_receipt_body(&receipt))
+            }
+            TurnOutcome::Owned(result) => Self::owned_response(&result, stream),
+        }
+    }
+
+    /// Maps one owned lifecycle result to its existing response shape.
+    fn owned_response(result: &TurnResult, stream: bool) -> HttpResponse {
+        if stream {
+            return response(200, "text/event-stream", sse_body(result));
+        }
+        match result.status {
+            crate::domain::TurnStatus::Completed => {
+                response(200, "application/json", sync_body(result))
+            }
+            crate::domain::TurnStatus::Interrupted => problem(409, "turn-interrupted", false),
+            crate::domain::TurnStatus::Cancelled => problem(409, "turn-cancelled", false),
+            crate::domain::TurnStatus::Failed
+            | crate::domain::TurnStatus::Started
+            | crate::domain::TurnStatus::RecoveryPending => {
+                map_service_error(&ServiceError::ProviderUnavailable)
+            }
+        }
+    }
+
     /// Handles the SSE route and emits each durable event as it becomes available.
     #[must_use]
     pub fn handle_stream(
@@ -254,7 +328,7 @@ impl<S: TurnService> HttpAdapter<S> {
         };
         let mut started = false;
         let mut terminal_emitted = false;
-        let result = self.service.execute_stream_controlled(
+        let result = self.service.execute_submission_controlled(
             command,
             &mut |event| {
                 started = true;
@@ -271,7 +345,14 @@ impl<S: TurnService> HttpAdapter<S> {
             cancelled,
         );
         match result {
-            Ok(_) => response(200, "text/event-stream", String::new()),
+            // The exact 202 receipt is decided before any SSE header or
+            // event; an observed key never starts a stream (SI-05).
+            Ok(TurnOutcome::Observed(receipt)) => {
+                response(202, "application/json", submission_receipt_body(&receipt))
+            }
+            // The owned result has already been streamed through the
+            // observer; the stream response carries no buffered body.
+            Ok(TurnOutcome::Owned(_)) => response(200, "text/event-stream", String::new()),
             Err(_) if terminal_emitted => response(200, "text/event-stream", String::new()),
             Err(error) if started => {
                 let problem = map_service_error(&error);
@@ -283,20 +364,11 @@ impl<S: TurnService> HttpAdapter<S> {
     }
 
     fn execute(&mut self, command: TurnCommand, stream: bool) -> HttpResponse {
-        match self.service.execute(command) {
-            Ok(result) if stream => response(200, "text/event-stream", sse_body(&result)),
-            Ok(result) => match result.status {
-                crate::domain::TurnStatus::Completed => {
-                    response(200, "application/json", sync_body(&result))
-                }
-                crate::domain::TurnStatus::Interrupted => problem(409, "turn-interrupted", false),
-                crate::domain::TurnStatus::Cancelled => problem(409, "turn-cancelled", false),
-                crate::domain::TurnStatus::Failed
-                | crate::domain::TurnStatus::Started
-                | crate::domain::TurnStatus::RecoveryPending => {
-                    map_service_error(&ServiceError::ProviderUnavailable)
-                }
-            },
+        match self
+            .service
+            .execute_submission_controlled(command, &mut |_| {}, &|| false)
+        {
+            Ok(outcome) => Self::outcome_response(outcome, stream),
             Err(error) => map_service_error(&error),
         }
     }
@@ -343,6 +415,8 @@ fn map_service_error(error: &ServiceError) -> HttpResponse {
         ServiceError::DurabilityUnavailable => problem(503, "durability-unavailable", false),
         ServiceError::ResourceLimitExceeded => problem(422, "resource-limit-exceeded", false),
         ServiceError::ProviderUnavailable => problem(503, "provider-unavailable", false),
+        ServiceError::SubmissionConflict => problem(409, "submission-identity-conflict", false),
+        ServiceError::Cancelled => problem(409, "turn-cancelled", false),
     }
 }
 
@@ -356,11 +430,18 @@ fn map_turn_run_error(error: &TurnRunError) -> ServiceError {
         TurnRunError::History(HistoryError::NotFound | HistoryError::Fenced) => {
             ServiceError::NotFound
         }
+        TurnRunError::History(HistoryError::SubmissionConflict) => ServiceError::SubmissionConflict,
         TurnRunError::History(HistoryError::AlreadyTerminal) => ServiceError::AlreadyTerminal,
-        TurnRunError::History(HistoryError::ContextLimit) => ServiceError::InvalidRequest,
+        // Both invalid-input causes map to the existing 400 problem: the
+        // context limit from the wire path and the SI-01d direct-command
+        // guard share the invalid-request presentation.
+        TurnRunError::History(HistoryError::ContextLimit) | TurnRunError::InvalidCommand(_) => {
+            ServiceError::InvalidRequest
+        }
         TurnRunError::Provider(_) | TurnRunError::Transition(_) => {
             ServiceError::ProviderUnavailable
         }
+        TurnRunError::Cancelled => ServiceError::Cancelled,
     }
 }
 

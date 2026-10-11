@@ -840,6 +840,7 @@ fn command() -> TurnCommand {
         .expect("valid principal"),
         thread_id: None,
         input: "use the fixture tool".to_owned(),
+        submission_id: None,
     }
 }
 

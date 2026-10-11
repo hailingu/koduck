@@ -19,7 +19,7 @@ use sha2::{Digest, Sha256};
 use sqlx::postgres::{PgPool, PgPoolOptions, PgQueryResult};
 use uuid::Uuid;
 
-const MIGRATIONS: [&str; 9] = [
+const MIGRATIONS: [&str; 10] = [
     include_str!("../migrations/0001_cand_1_history.sql"),
     include_str!("../migrations/0002_cand_2_policy_execution.sql"),
     include_str!("../migrations/0003_cand_2_requester_ownership.sql"),
@@ -29,6 +29,7 @@ const MIGRATIONS: [&str; 9] = [
     include_str!("../migrations/0007_cand_2_tool_audit.sql"),
     include_str!("../migrations/0008_cand_2_interruption_approval_cancellation.sql"),
     include_str!("../migrations/0009_cand_3_correction_items.sql"),
+    include_str!("../migrations/0010_cand_18_chat_submissions.sql"),
 ];
 
 /// `koduck_ai::runtime::STARTUP_MIGRATION_LOCK_KEY`, replicated here because

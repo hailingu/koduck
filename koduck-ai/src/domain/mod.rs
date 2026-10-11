@@ -1,12 +1,16 @@
 // ADR: docs/adr/ADR-0001-provider-neutral-turn-kernel.md
 // ADR: docs/adr/ADR-0003-default-deny-tool-approval-execution-boundary.md
 // ADR: koduck-ai/docs/adr/ADR-0003-correction-item-schema-and-raw-replay.md
+// ADR: docs/adr/ADR-0018-chat-submission-identity-and-atomic-acceptance.md
 
 //! Domain-owned lifecycle rules for a foreground model turn.
 
 pub mod execution;
 pub mod item_correction;
+pub mod submission;
 pub mod tool;
+
+pub use submission::{SubmissionId, SubmissionIdError};
 
 use std::collections::BTreeSet;
 
