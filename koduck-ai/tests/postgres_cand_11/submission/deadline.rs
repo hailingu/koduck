@@ -364,6 +364,35 @@ fn cand_18_default_observation_entry_guards_commands() {
     );
 }
 
+/// SI-01d/SI-09 (review round 15): the direct acceptance entry rejects a
+/// directly constructed oversized command with the typed unavailability and
+/// no database I/O. The guard now runs before the entry's input clone, so the
+/// invalid command is cheaply refused instead of doubling its footprint; the
+/// clone-versus-validate memory ordering itself is source-evident and cannot
+/// be red-tested here because the workspace's non-waivable `unsafe_code`
+/// forbid rules out an allocation-probe double.
+#[test]
+fn cand_18_acceptance_entry_rejects_oversized_commands() {
+    let _database_guard = super::serialize_database_tests();
+    let (harness, _history, tenant) = connected_history();
+    let command = TurnCommand {
+        trust: TrustContext::new(TenantId::new(tenant).expect("valid tenant"), "subject-a")
+            .expect("valid trust"),
+        thread_id: None,
+        input: "x".repeat(65_537),
+        submission_id: Some(SubmissionId::from_uuid(Uuid::new_v4()).expect("non-nil")),
+    };
+    assert_eq!(
+        koduck_ai::adapters::history::postgres::PostgresExecutor::accept_initial_with_submission(
+            &harness.executor(),
+            &command,
+            Duration::from_secs(2),
+        )
+        .expect_err("the oversized command is rejected at the direct entry guard"),
+        HistoryError::Unavailable
+    );
+}
+
 /// A history double recording every identified-port deadline so the staged
 /// acceptance clock's clamp and reservation arithmetic is observable at the
 /// consuming port (AC-6/SI-07c, SI-07i).

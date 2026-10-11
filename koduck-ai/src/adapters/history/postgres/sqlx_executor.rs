@@ -634,6 +634,11 @@ impl PostgresExecutor for SqlxPostgresExecutor {
         command: &TurnCommand,
         attempt_budget: Duration,
     ) -> Result<crate::application::IdentifiedAcceptance, HistoryError> {
+        // SI-01d/SI-09: the direct entry validates before cloning the
+        // unbounded input, so an invalid command is cheaply rejected at the
+        // guard instead of doubling its memory footprint.
+        crate::application::validate_identified_command(command)
+            .map_err(|_| HistoryError::Unavailable)?;
         let command = command.clone();
         self.runtime
             .block_on(submission_child::settle_identified_acceptance(
