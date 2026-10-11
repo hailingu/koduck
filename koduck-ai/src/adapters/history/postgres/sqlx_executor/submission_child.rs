@@ -94,7 +94,8 @@ fn compare_binding(
 ///
 /// A present binding whose Thread owner, Turn, lease, or sequence-1 input is
 /// missing, non-owned, or undecodable fails unavailable (SI-08c), as does
-/// inconsistent terminal presence/status. The `joined` marker distinguishes
+/// inconsistent terminal presence, terminal-kind/status, or an unmarked
+/// terminal-kind item. The `joined` marker distinguishes
 /// missing canonical rows from a genuinely absent binding.
 /// The canonical binding read with the payload bounded by
 /// [`MAX_BINDING_PAYLOAD_BYTES`].
@@ -107,6 +108,15 @@ fn binding_read_sql() -> String {
          EXISTS (SELECT 1 FROM turn_items terminal \
              WHERE terminal.tenant_id = s.tenant_id AND terminal.thread_id = s.thread_id \
              AND terminal.turn_id = s.turn_id AND terminal.is_terminal) AS has_terminal, \
+         EXISTS (SELECT 1 FROM turn_items terminal \
+             WHERE terminal.tenant_id = s.tenant_id AND terminal.thread_id = s.thread_id \
+             AND terminal.turn_id = s.turn_id AND terminal.is_terminal \
+             AND terminal.item_type = t.status) AS terminal_kind_matches, \
+         NOT EXISTS (SELECT 1 FROM turn_items stray \
+             WHERE stray.tenant_id = s.tenant_id AND stray.thread_id = s.thread_id \
+             AND stray.turn_id = s.turn_id AND NOT stray.is_terminal \
+             AND stray.item_type IN ('completed', 'failed', 'interrupted', 'cancelled')) \
+             AS no_stray_terminal_kind, \
          (t.turn_id IS NOT NULL AND l.generation IS NOT NULL \
           AND i.item_id IS NOT NULL AND t.next_sequence > 1) AS joined \
          FROM chat_submissions s \
@@ -133,9 +143,17 @@ fn binding_from_row(row: &sqlx::postgres::PgRow) -> Result<Option<BindingRow>, H
     }
     let status: String = row.try_get("status").map_err(unavailable)?;
     let has_terminal: bool = row.try_get("has_terminal").map_err(unavailable)?;
-    if is_terminal_status(&status) != has_terminal {
-        // Terminal append changes the item and status atomically; an
-        // inconsistent snapshot proves neither a receipt nor authority
+    let terminal_kind_matches: bool = row.try_get("terminal_kind_matches").map_err(unavailable)?;
+    let no_stray_terminal_kind: bool =
+        row.try_get("no_stray_terminal_kind").map_err(unavailable)?;
+    if is_terminal_status(&status) != has_terminal
+        || terminal_kind_matches != has_terminal
+        || !no_stray_terminal_kind
+    {
+        // Terminal append writes the terminal item's kind and the Turn's
+        // final status as one value in one transaction and marks every
+        // terminal kind; any other combination is inconsistent canonical
+        // structure that proves neither a receipt nor authority
         // (SI-08c/SI-06e).
         return Err(HistoryError::Unavailable);
     }
@@ -368,6 +386,15 @@ async fn read_proof_row(
          EXISTS (SELECT 1 FROM turn_items terminal \
              WHERE terminal.tenant_id = s.tenant_id AND terminal.thread_id = s.thread_id \
              AND terminal.turn_id = s.turn_id AND terminal.is_terminal) AS has_terminal, \
+         EXISTS (SELECT 1 FROM turn_items terminal \
+             WHERE terminal.tenant_id = s.tenant_id AND terminal.thread_id = s.thread_id \
+             AND terminal.turn_id = s.turn_id AND terminal.is_terminal \
+             AND terminal.item_type = t.status) AS terminal_kind_matches, \
+         NOT EXISTS (SELECT 1 FROM turn_items stray \
+             WHERE stray.tenant_id = s.tenant_id AND stray.thread_id = s.thread_id \
+             AND stray.turn_id = s.turn_id AND NOT stray.is_terminal \
+             AND stray.item_type IN ('completed', 'failed', 'interrupted', 'cancelled')) \
+             AS no_stray_terminal_kind, \
          (t.turn_id IS NOT NULL AND l.generation IS NOT NULL \
           AND i.item_id IS NOT NULL AND t.next_sequence > 1) AS joined, \
          t.status, l.generation, l.fenced, \

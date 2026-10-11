@@ -14,7 +14,8 @@ use koduck_ai::adapters::history::postgres::{
     PostgresExecutor, PostgresTurnHistory, SqlxPostgresExecutor,
 };
 use koduck_ai::application::{
-    AcceptedTurn, HistoryError, IdentifiedAcceptance, NewItem, TurnHistory, TurnOutcome,
+    AcceptedTurn, HistoryError, IdentifiedAcceptance, NewItem, TurnCommand, TurnHistory,
+    TurnOutcome,
 };
 
 use super::super::harness::Harness;
@@ -221,7 +222,7 @@ fn cand_18_integrity_existing_output_still_observes() {
 fn cand_18_terminal_item_without_terminal_status_is_unprovable() {
     let _database_guard = super::serialize_database_tests();
     assert_eq!(
-        inconsistent_terminal_commit("started", true),
+        inconsistent_terminal_commit("started", "cancelled", true),
         Err(HistoryError::Unavailable)
     );
 }
@@ -232,9 +233,97 @@ fn cand_18_terminal_item_without_terminal_status_is_unprovable() {
 fn cand_18_terminal_status_without_terminal_item_is_unprovable() {
     let _database_guard = super::serialize_database_tests();
     assert_eq!(
-        inconsistent_terminal_commit("cancelled", false),
+        inconsistent_terminal_commit("cancelled", "cancelled", false),
         Err(HistoryError::Unavailable)
     );
+}
+
+/// SI-06e: after an uncertain COMMIT binds a terminal Turn status to a
+/// differently kinded marked terminal, even this creator's reconciliation
+/// proof fails unavailable instead of observing or granting authority.
+#[test]
+fn cand_18_terminal_kind_mismatch_is_unprovable_after_commit() {
+    let _database_guard = super::serialize_database_tests();
+    assert_eq!(
+        inconsistent_terminal_commit("completed", "failed", true),
+        Err(HistoryError::Unavailable)
+    );
+}
+
+/// SI-08c: a marked terminal whose kind disagrees with the terminal Turn
+/// status is inconsistent canonical structure in both binding read entry
+/// points — never a receipt, drift classification, or authority.
+#[test]
+fn cand_18_terminal_kind_mismatch_fails_lookup_and_recheck() {
+    let _database_guard = super::serialize_database_tests();
+    let (harness, mut history, tenant) = connected_history();
+    let (accepted, command) = corrupt_terminal_read_case(&mut history, &tenant);
+    corrupt_terminal_state(&harness, &accepted, "completed", "failed", true);
+    assert_inconsistent_reads_fail_closed(&harness, &mut history, &command, "terminal kind");
+}
+
+/// SI-08c: an unmarked terminal-kind item is inconsistent canonical
+/// structure even beside a kind-matching marked terminal; no valid writer
+/// leaves a terminal kind unmarked.
+#[test]
+fn cand_18_unmarked_terminal_kind_fails_lookup_and_recheck() {
+    let _database_guard = super::serialize_database_tests();
+    let (harness, mut history, tenant) = connected_history();
+    let (accepted, command) = corrupt_terminal_read_case(&mut history, &tenant);
+    corrupt_terminal_state(&harness, &accepted, "cancelled", "cancelled", true);
+    seed_unmarked_terminal_kind(&harness, &accepted, "failed");
+    assert_inconsistent_reads_fail_closed(&harness, &mut history, &command, "terminal kind");
+}
+
+/// Creates the accepted submission every corrupt-read case starts from and
+/// returns its accepted Turn plus its exact original command.
+fn corrupt_terminal_read_case(
+    history: &mut koduck_ai::adapters::history::postgres::PostgresTurnHistory<
+        koduck_ai::adapters::history::postgres::SqlxPostgresExecutor,
+    >,
+    tenant: &str,
+) -> (AcceptedTurn, TurnCommand) {
+    let submission = Uuid::new_v4();
+    let command = identified_command(tenant, "subject-a", submission, None, "terminal kind");
+    let IdentifiedAcceptance::Created(accepted) =
+        TurnHistory::accept_initial_with_submission(history, &command, Duration::from_secs(2))
+            .expect("the fresh fixture key must create")
+    else {
+        panic!("the fresh fixture key must create");
+    };
+    (accepted, command)
+}
+
+/// Asserts that both binding read entry points classify the seeded corrupt
+/// state as unavailable — for the exact retry and the drifted input — while
+/// mutating no canonical state and allocating no second acceptance.
+fn assert_inconsistent_reads_fail_closed(
+    harness: &Harness,
+    history: &mut koduck_ai::adapters::history::postgres::PostgresTurnHistory<
+        koduck_ai::adapters::history::postgres::SqlxPostgresExecutor,
+    >,
+    command: &TurnCommand,
+    original: &str,
+) {
+    for input in [original, "drifted terminal kind"] {
+        let mut candidate = command.clone();
+        candidate.input = input.into();
+        let lookup = history.submission_observation(&candidate, Duration::from_secs(2));
+        let recheck = TurnHistory::accept_initial_with_submission(
+            history,
+            &candidate,
+            Duration::from_secs(2),
+        );
+        assert_eq!(lookup, Err(HistoryError::Unavailable), "input {input}");
+        assert_eq!(recheck, Err(HistoryError::Unavailable), "input {input}");
+    }
+    let rows = harness.runtime.block_on(count_rows(
+        &harness.pool,
+        command.trust.tenant_id.as_str(),
+        "subject-a",
+        command.submission_id.expect("identified command").as_uuid(),
+    ));
+    assert_eq!(rows, (1, 1, 1, 1), "no second acceptance was allocated");
 }
 
 /// Drives one isolated deferred COMMIT with inconsistent terminal presence.
@@ -242,15 +331,18 @@ fn cand_18_terminal_status_without_terminal_item_is_unprovable() {
 /// cannot leak the fixture schema into later preservation checks.
 fn inconsistent_terminal_commit(
     status: &str,
+    kind: &str,
     has_terminal: bool,
 ) -> Result<IdentifiedAcceptance, HistoryError> {
     let terminal_insert = if has_terminal {
-        "INSERT INTO turn_items \
-         (tenant_id, thread_id, turn_id, sequence, item_id, item_type, payload, is_terminal) \
-         VALUES (NEW.tenant_id, NEW.thread_id, NEW.turn_id, 2, gen_random_uuid(), \
-         'cancelled', '{}', TRUE);"
+        format!(
+            "INSERT INTO turn_items \
+             (tenant_id, thread_id, turn_id, sequence, item_id, item_type, payload, is_terminal) \
+             VALUES (NEW.tenant_id, NEW.thread_id, NEW.turn_id, 2, gen_random_uuid(), \
+             '{kind}', '{{}}', TRUE);"
+        )
     } else {
-        ""
+        String::new()
     };
     let trigger = format!(
         "PERFORM pg_sleep(2.5); {terminal_insert} \
@@ -308,7 +400,7 @@ fn cand_18_terminal_status_inconsistency_fails_lookup_and_recheck() {
         .expect("the fixture's valid acceptance creates") else {
             panic!("the fresh fixture key must create");
         };
-        corrupt_terminal_state(&harness, &accepted, status, has_terminal);
+        corrupt_terminal_state(&harness, &accepted, status, "cancelled", has_terminal);
         let state_before = terminal_integrity_state(&harness, &harness.pool, &tenant);
         for input in ["terminal state", "drifted terminal state"] {
             let mut candidate = command.clone();
@@ -336,18 +428,25 @@ fn cand_18_terminal_status_inconsistency_fails_lookup_and_recheck() {
 }
 
 /// Seeds one corrupt terminal/status pair atomically in the test tenant.
-fn corrupt_terminal_state(harness: &Harness, accepted: &AcceptedTurn, status: &str, present: bool) {
+fn corrupt_terminal_state(
+    harness: &Harness,
+    accepted: &AcceptedTurn,
+    status: &str,
+    kind: &str,
+    present: bool,
+) {
     harness.runtime.block_on(async {
         let mut transaction = harness.pool.begin().await.expect("seed transaction");
         sqlx::query(
             "INSERT INTO turn_items \
              (tenant_id, thread_id, turn_id, sequence, item_id, item_type, payload, is_terminal) \
-             SELECT $1, $2, $3, 2, gen_random_uuid(), 'cancelled', '{}', TRUE WHERE $4",
+             SELECT $1, $2, $3, 2, gen_random_uuid(), $5, '{}', TRUE WHERE $4",
         )
         .bind(accepted.tenant_id.as_str())
         .bind(accepted.thread_id.as_uuid())
         .bind(accepted.turn_id.as_uuid())
         .bind(present)
+        .bind(kind)
         .execute(&mut *transaction)
         .await
         .expect("seed terminal presence");
@@ -370,6 +469,39 @@ fn corrupt_terminal_state(harness: &Harness, accepted: &AcceptedTurn, status: &s
     });
 }
 
+/// Inserts one terminal-kind item that no valid writer leaves unmarked,
+/// advancing the sequence counter exactly as its marked counterpart would.
+fn seed_unmarked_terminal_kind(harness: &Harness, accepted: &AcceptedTurn, kind: &str) {
+    harness.runtime.block_on(async {
+        let mut transaction = harness.pool.begin().await.expect("seed transaction");
+        sqlx::query(
+            "INSERT INTO turn_items \
+             (tenant_id, thread_id, turn_id, sequence, item_id, item_type, payload, is_terminal) \
+             VALUES ($1, $2, $3, 3, gen_random_uuid(), $4, '{}', FALSE)",
+        )
+        .bind(accepted.tenant_id.as_str())
+        .bind(accepted.thread_id.as_uuid())
+        .bind(accepted.turn_id.as_uuid())
+        .bind(kind)
+        .execute(&mut *transaction)
+        .await
+        .expect("seed unmarked terminal-kind item");
+        sqlx::query(
+            "UPDATE turns SET next_sequence = 4 \
+             WHERE tenant_id = $1 AND thread_id = $2 AND turn_id = $3",
+        )
+        .bind(accepted.tenant_id.as_str())
+        .bind(accepted.thread_id.as_uuid())
+        .bind(accepted.turn_id.as_uuid())
+        .execute(&mut *transaction)
+        .await
+        .expect("advance the counter past the stray item");
+        transaction
+            .commit()
+            .await
+            .expect("commit the corrupt fixture");
+    });
+}
 /// Reads the fixture's status, initial lease, and scoped terminal presence.
 fn terminal_integrity_state(
     harness: &Harness,
