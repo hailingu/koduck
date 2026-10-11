@@ -711,6 +711,9 @@ impl<E: PostgresExecutor + Send + 'static> TurnHistory for PostgresTurnHistory<E
         thread_id: ThreadId,
         deadline: Duration,
     ) -> Result<Vec<PriorTurnHistory>, HistoryError> {
+        // SI-07c: the history read's two-second maximum is absolute; a
+        // direct caller's longer deadline cannot extend it.
+        let deadline = deadline.min(crate::application::LOOKUP_BUDGET);
         self.executor
             .prior_thread_turns_bounded(trust, thread_id, deadline)
     }

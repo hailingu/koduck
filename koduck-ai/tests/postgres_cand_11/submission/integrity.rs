@@ -1097,3 +1097,53 @@ fn cand_18_live_recovery_pending_creator_is_unprovable() {
     );
     fixture.teardown();
 }
+
+/// SI-07c (review round 19): the `SQLx` bounded history read is capped at the
+/// absolute two-second maximum. Under an exclusive `turn_items` lock a
+/// caller-supplied eight-second deadline must still reject within the capped
+/// budget instead of blocking for the supplied interval.
+#[test]
+fn cand_18_bounded_read_deadline_is_capped() {
+    let _database_guard = super::serialize_database_tests();
+    let (harness, _history, tenant) = connected_history();
+    let thread = ThreadId::new();
+    harness.runtime.block_on(async {
+        sqlx::query("INSERT INTO threads (tenant_id, subject_id, thread_id) VALUES ($1, $2, $3)")
+            .bind(&tenant)
+            .bind("subject-a")
+            .bind(thread.as_uuid())
+            .execute(&harness.pool)
+            .await
+            .expect("seed the owned thread");
+    });
+    let executor = SqlxPostgresExecutor::new(harness.pool.clone(), harness.handle());
+    let lock_pool = harness.pool.clone();
+    let mut lock = harness
+        .runtime
+        .block_on(lock_pool.begin())
+        .expect("lock transaction starts");
+    harness.runtime.block_on(async {
+        sqlx::query("LOCK TABLE turn_items IN ACCESS EXCLUSIVE MODE")
+            .execute(&mut *lock)
+            .await
+            .expect("hold the item relation exclusively");
+    });
+    let started = std::time::Instant::now();
+    let result = executor.prior_thread_turns_bounded(
+        &trust(&tenant, "subject-a"),
+        thread,
+        Duration::from_secs(8),
+    );
+    let elapsed = started.elapsed();
+    harness.runtime.block_on(async move {
+        drop(lock);
+    });
+    assert_eq!(
+        result.expect_err("the blocked read times out"),
+        HistoryError::Unavailable
+    );
+    assert!(
+        elapsed < Duration::from_secs(4),
+        "the bounded read is capped at the two-second maximum, blocked for {elapsed:?}"
+    );
+}

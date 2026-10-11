@@ -586,6 +586,9 @@ impl PostgresExecutor for SqlxPostgresExecutor {
         thread_id: ThreadId,
         deadline: Duration,
     ) -> Result<Vec<PriorTurnHistory>, HistoryError> {
+        // SI-07c: the history read's two-second maximum is absolute; a
+        // direct caller's longer deadline cannot extend it.
+        let deadline = deadline.min(crate::application::LOOKUP_BUDGET);
         self.wait_with_deadline(
             deadline,
             prior_turn_history::read(&self.pool, trust, thread_id),

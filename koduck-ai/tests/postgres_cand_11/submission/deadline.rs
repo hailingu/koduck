@@ -716,10 +716,13 @@ impl koduck_ai::adapters::history::postgres::PostgresExecutor for UnguardedExecu
         thread_id: ThreadId,
         deadline: Duration,
     ) -> Result<Vec<PriorTurnHistory>, HistoryError> {
+        self.delegated_deadlines
+            .lock()
+            .expect("deadline log")
+            .push(deadline);
         self.prior_thread_turns(trust, thread_id)
             .map_err(|_| HistoryError::Unavailable)
             .map(|mut turns| {
-                let _ = deadline;
                 turns.clear();
                 turns
             })
@@ -865,10 +868,11 @@ fn cand_18_wrapper_guards_identified_commands_before_delegation() {
     );
 }
 
-/// SI-07c (review round 18): the generic wrapper clamps direct budgets
-/// before delegating, so a caller-supplied eight-second lookup deadline and
-/// nine-second acceptance budget reach a custom executor only as the fixed
-/// `LOOKUP_BUDGET` and `WRITE_BUDGET` values.
+/// SI-07c (review rounds 18–19): the generic wrapper clamps direct budgets
+/// before delegating, so a caller-supplied eight-second lookup deadline,
+/// nine-second acceptance budget, and seven-second bounded history read
+/// reach a custom executor only as the fixed `LOOKUP_BUDGET` and
+/// `WRITE_BUDGET` values.
 #[test]
 fn cand_18_wrapper_clamps_direct_budgets() {
     let probe = UnguardedExecutor::default();
@@ -889,6 +893,18 @@ fn cand_18_wrapper_clamps_direct_budgets() {
         .expect("the observation delegates");
     TurnHistory::accept_initial_with_submission(&mut history, &command, Duration::from_secs(9))
         .expect("the acceptance delegates");
+    let trust = TrustContext::new(
+        TenantId::new("tenant-wrapper-budgets".to_owned()).expect("valid"),
+        "subject-a",
+    )
+    .expect("valid trust");
+    TurnHistory::prior_thread_turns_bounded(
+        &history,
+        &trust,
+        command.thread_id.unwrap_or_default(),
+        Duration::from_secs(7),
+    )
+    .expect("the bounded history read delegates");
     assert_eq!(
         probe
             .delegated_deadlines
@@ -897,7 +913,8 @@ fn cand_18_wrapper_clamps_direct_budgets() {
             .as_slice(),
         [
             koduck_ai::application::LOOKUP_BUDGET,
-            koduck_ai::application::WRITE_BUDGET
+            koduck_ai::application::WRITE_BUDGET,
+            koduck_ai::application::LOOKUP_BUDGET
         ],
         "the wrapper clamps both direct budgets before delegation"
     );
