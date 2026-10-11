@@ -133,6 +133,13 @@ fn binding_from_row(row: &sqlx::postgres::PgRow) -> Result<Option<BindingRow>, H
     let turn_id: Uuid = row.try_get("turn_id").map_err(unavailable)?;
     let original_thread_id: Option<Uuid> =
         row.try_get("original_thread_id").map_err(unavailable)?;
+    if original_thread_id.is_some_and(|original| original != thread_id) {
+        // A stored explicit selector that differs from its accepted Thread is
+        // inconsistent structure no valid writer can produce (SI-08b's
+        // equality check); it fails unavailable instead of classifying a
+        // corrupt-selector request as drift or issuing a receipt (SI-08c).
+        return Err(HistoryError::Unavailable);
+    }
     let item_type: String = row.try_get("item_type").map_err(unavailable)?;
     let item_id: Uuid = row.try_get("item_id").map_err(unavailable)?;
     let terminal_marked: bool = row.try_get("is_terminal").map_err(unavailable)?;
@@ -350,7 +357,7 @@ async fn read_proof_row(
          (t.turn_id IS NOT NULL AND l.generation IS NOT NULL \
           AND i.item_id IS NOT NULL) AS joined, \
          t.status, l.generation, l.fenced, \
-         (l.expires_at > CURRENT_TIMESTAMP) AS lease_live \
+         (l.expires_at > clock_timestamp()) AS lease_live \
          FROM chat_submissions s \
          LEFT JOIN threads h ON h.tenant_id = s.tenant_id AND h.thread_id = s.thread_id \
          LEFT JOIN turns t ON t.tenant_id = s.tenant_id \

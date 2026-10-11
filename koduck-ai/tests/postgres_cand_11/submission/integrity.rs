@@ -850,3 +850,131 @@ fn cand_18_reconciliation_rejects_rewritten_input_content() {
     );
     fixture.teardown();
 }
+
+/// SI-06c (review round 15): lease expiry is evaluated with the statement
+/// clock after the submission lock is acquired, not with the transaction's
+/// frozen `CURRENT_TIMESTAMP`. The deferred COMMIT rewrites this invocation's
+/// lease to expire 150 ms later and then holds the writer's transaction — and
+/// with it the submission advisory lock — for another second, so the
+/// reconciliation transaction begins before the expiry but reads its proof
+/// only after the lease is truly dead; a stale timestamp would grant the
+/// same creator `Created` for an already expired lease.
+#[test]
+fn cand_18_lease_expiry_evaluated_after_lock_wait() {
+    let _database_guard = super::serialize_database_tests();
+    let fixture = SubmissionFixture::create(
+        "fused-lease",
+        "PERFORM pg_sleep(2.5); \
+         UPDATE turn_leases SET renewed_at = clock_timestamp(), \
+         expires_at = clock_timestamp() + INTERVAL '150 milliseconds' \
+         WHERE tenant_id = NEW.tenant_id AND thread_id = NEW.thread_id \
+         AND turn_id = NEW.turn_id; \
+         PERFORM pg_sleep(1.0);",
+    );
+    let mut history = fixture.history();
+    let submission = Uuid::new_v4();
+    let command = identified_command(
+        &fixture.tenant,
+        "subject-a",
+        submission,
+        None,
+        "fused lease input",
+    );
+    let outcome =
+        TurnHistory::accept_initial_with_submission(&mut history, &command, Duration::from_secs(2))
+            .expect("the expired-lease proof resolves");
+    let IdentifiedAcceptance::Existing(receipt) = &outcome else {
+        panic!("an expired lease never grants Created, got {outcome:?}")
+    };
+    assert_eq!(
+        receipt.submission_id.as_uuid(),
+        submission,
+        "the observation publishes only the client's identity"
+    );
+    let rows = fixture.harness.runtime.block_on(count_rows(
+        &fixture.pool,
+        &fixture.tenant,
+        "subject-a",
+        submission,
+    ));
+    assert_eq!(
+        rows,
+        (1, 1, 1, 1),
+        "the delayed commit still produced exactly one durable acceptance"
+    );
+    fixture.teardown();
+}
+
+/// SI-08c (review round 15): a stored binding whose non-null original
+/// selector differs from its accepted Thread is inconsistent structure no
+/// valid writer can produce. Inside the isolated fixture schema the equality
+/// CHECK is dropped to seed the corrupt row, and both a selectorless retry
+/// and a retry carrying the corrupt selector must fail unavailable instead
+/// of yielding a conflict or a valid-looking receipt for a different Thread.
+#[test]
+fn cand_18_inconsistent_stored_selector_fails_unavailable() {
+    let _database_guard = super::serialize_database_tests();
+    let fixture = SubmissionFixture::create("corrupt-selector", "PERFORM 1;");
+    let mut history = fixture.history();
+    let submission = Uuid::new_v4();
+    let command = identified_command(
+        &fixture.tenant,
+        "subject-a",
+        submission,
+        None,
+        "selector input",
+    );
+    let IdentifiedAcceptance::Created(_accepted) =
+        TurnHistory::accept_initial_with_submission(&mut history, &command, Duration::from_secs(2))
+            .expect("the selector fixture acceptance creates")
+    else {
+        panic!("the selector key must create");
+    };
+    let corrupt_selector = ThreadId::new();
+    fixture.harness.runtime.block_on(async {
+        sqlx::raw_sql(
+            "ALTER TABLE chat_submissions \
+             DROP CONSTRAINT chat_submissions_original_selector_check",
+        )
+        .execute(&fixture.pool)
+        .await
+        .expect("drop the fixture's equality check for the seed");
+        sqlx::query(
+            "UPDATE chat_submissions SET original_thread_id = $3 \
+             WHERE tenant_id = $1 AND submission_id = $2",
+        )
+        .bind(&fixture.tenant)
+        .bind(submission)
+        .bind(corrupt_selector.as_uuid())
+        .execute(&fixture.pool)
+        .await
+        .expect("seed the inconsistent stored selector");
+    });
+    for drifted in [
+        command.clone(),
+        identified_command(
+            &fixture.tenant,
+            "subject-a",
+            submission,
+            Some(corrupt_selector),
+            "selector input",
+        ),
+    ] {
+        assert_eq!(
+            history
+                .submission_observation(&drifted, Duration::from_secs(2))
+                .expect_err("an inconsistent stored selector is corrupt structure"),
+            HistoryError::Unavailable
+        );
+        assert_eq!(
+            TurnHistory::accept_initial_with_submission(
+                &mut history,
+                &drifted,
+                Duration::from_secs(2)
+            )
+            .expect_err("the transaction recheck stays unavailable"),
+            HistoryError::Unavailable
+        );
+    }
+    fixture.teardown();
+}
