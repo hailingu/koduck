@@ -538,17 +538,16 @@ impl<E: PostgresExecutor + Send + 'static> TurnHistory for PostgresTurnHistory<E
     fn accept_initial_with_submission(
         &mut self,
         command: &TurnCommand,
-        deadline: std::time::Duration,
+        _deadline: std::time::Duration,
     ) -> Result<crate::application::IdentifiedAcceptance, HistoryError> {
         // SI-01d: the wrapper validates before delegation so a custom
         // executor cannot receive an invalid command's database I/O.
         crate::application::validate_identified_command(command)
             .map_err(|_| HistoryError::Unavailable)?;
-        // SI-07c: the write attempt's reserved budget is fixed at two
-        // seconds; a direct caller's longer budget cannot extend it.
-        let deadline = deadline.min(crate::application::WRITE_BUDGET);
+        // SI-07c: each reserved write/proof attempt receives two seconds;
+        // a direct caller cannot shorten or extend either attempt.
         self.executor
-            .accept_initial_with_submission(command, deadline)
+            .accept_initial_with_submission(command, crate::application::WRITE_BUDGET)
     }
 
     fn append(&mut self, turn: &AcceptedTurn, item: NewItem) -> Result<Item, HistoryError> {

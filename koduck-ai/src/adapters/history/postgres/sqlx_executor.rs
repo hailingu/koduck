@@ -638,22 +638,21 @@ impl PostgresExecutor for SqlxPostgresExecutor {
     fn accept_initial_with_submission(
         &self,
         command: &TurnCommand,
-        attempt_budget: Duration,
+        _attempt_budget: Duration,
     ) -> Result<crate::application::IdentifiedAcceptance, HistoryError> {
         // SI-01d/SI-09: the direct entry validates before cloning the
         // unbounded input, so an invalid command is cheaply rejected at the
         // guard instead of doubling its memory footprint.
         crate::application::validate_identified_command(command)
             .map_err(|_| HistoryError::Unavailable)?;
-        // SI-07c: the write attempt's reserved budget is fixed at two
-        // seconds; a direct caller's longer budget cannot extend it.
-        let attempt_budget = attempt_budget.min(crate::application::WRITE_BUDGET);
+        // SI-07c: each reserved write/proof attempt receives two seconds;
+        // a direct caller cannot shorten or extend either attempt.
         let command = command.clone();
         self.runtime
             .block_on(submission_child::settle_identified_acceptance(
                 &self.pool,
                 &command,
-                attempt_budget,
+                crate::application::WRITE_BUDGET,
             ))
     }
 

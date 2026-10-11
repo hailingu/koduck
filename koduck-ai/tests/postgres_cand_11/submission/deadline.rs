@@ -868,11 +868,9 @@ fn cand_18_wrapper_guards_identified_commands_before_delegation() {
     );
 }
 
-/// SI-07c (review rounds 18–19): the generic wrapper clamps direct budgets
-/// before delegating, so a caller-supplied eight-second lookup deadline,
-/// nine-second acceptance budget, and seven-second bounded history read
-/// reach a custom executor only as the fixed `LOOKUP_BUDGET` and
-/// `WRITE_BUDGET` values.
+/// SI-07c: the generic wrapper caps read deadlines while preserving short
+/// reads, and always delegates the full reserved write/proof budget, even
+/// when a direct caller supplies zero or less than two seconds.
 #[test]
 fn cand_18_wrapper_clamps_direct_budgets() {
     let probe = UnguardedExecutor::default();
@@ -888,34 +886,38 @@ fn cand_18_wrapper_clamps_direct_budgets() {
         input: "clamped budget".to_owned(),
         submission_id: Some(SubmissionId::from_uuid(Uuid::new_v4()).expect("non-nil")),
     };
-    history
-        .submission_observation(&command, Duration::from_secs(8))
-        .expect("the observation delegates");
-    TurnHistory::accept_initial_with_submission(&mut history, &command, Duration::from_secs(9))
-        .expect("the acceptance delegates");
-    let trust = TrustContext::new(
-        TenantId::new("tenant-wrapper-budgets".to_owned()).expect("valid"),
-        "subject-a",
-    )
-    .expect("valid trust");
-    TurnHistory::prior_thread_turns_bounded(
-        &history,
-        &trust,
-        command.thread_id.unwrap_or_default(),
-        Duration::from_secs(7),
-    )
-    .expect("the bounded history read delegates");
+    let mut expected = Vec::new();
+    for supplied in [
+        Duration::ZERO,
+        Duration::from_millis(500),
+        koduck_ai::application::WRITE_BUDGET,
+        Duration::from_secs(9),
+    ] {
+        history
+            .submission_observation(&command, supplied)
+            .expect("the observation delegates");
+        TurnHistory::accept_initial_with_submission(&mut history, &command, supplied)
+            .expect("the acceptance delegates");
+        TurnHistory::prior_thread_turns_bounded(
+            &history,
+            &command.trust,
+            command.thread_id.unwrap_or_default(),
+            supplied,
+        )
+        .expect("the bounded history read delegates");
+        expected.extend([
+            supplied.min(koduck_ai::application::LOOKUP_BUDGET),
+            koduck_ai::application::WRITE_BUDGET,
+            supplied.min(koduck_ai::application::LOOKUP_BUDGET),
+        ]);
+    }
     assert_eq!(
         probe
             .delegated_deadlines
             .lock()
             .expect("deadline log")
             .as_slice(),
-        [
-            koduck_ai::application::LOOKUP_BUDGET,
-            koduck_ai::application::WRITE_BUDGET,
-            koduck_ai::application::LOOKUP_BUDGET
-        ],
-        "the wrapper clamps both direct budgets before delegation"
+        expected.as_slice(),
+        "reads retain short deadlines; settlement always receives its full budget"
     );
 }

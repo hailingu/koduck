@@ -1131,6 +1131,52 @@ none above 80, and A-6 records Pass. No size-limit waiver is recorded.
 
 ### Current Verification
 
+The owner-supplied implementation review round 22 examined
+`01a1f0b8bf73f18ff2517b3fc31710a873e11ab4` and reported the
+[undersized settlement-budget finding](https://github.com/hailingu/koduck/pull/37#discussion_r4240342076).
+Both identified acceptance entries now supply `WRITE_BUDGET` unconditionally:
+a direct caller cannot shorten or extend either the one write attempt or its
+one permitted read-only proof (SI-06b, SI-07c). The public port documentation
+clarifies this already accepted invariant. Read deadlines retain their
+existing maximum and remaining-time clamps. The pre-change task matrix is
+mapped to actual passing evidence below; the three regressions were first
+observed failing for the reported defect, then passed in the 65-case focused
+`postgres_cand_11 cand_18_ --all-features` suite on an isolated migrated
+PostgreSQL 18 fixture. This supplements AC-5/AC-6 and the existing contract
+traceability and baseline risk coverage without changing their criteria.
+
+| State/precondition | Action/ordering | Observable result and invariant | Owner/entry points | Verification result |
+| --- | --- | --- | --- | --- |
+| Valid command; caller supplies zero, 500 ms, 2 s, or 9 s | Invoke generic identified acceptance | Exactly `WRITE_BUDGET` delegated; neither reserved attempt can be shortened or extended | C-6: `PostgresTurnHistory::accept_initial_with_submission` with any executor | Pass — extended `cand_18_wrapper_clamps_direct_budgets`; red showed zero/500 ms delegated |
+| Direct SQLx caller supplies 500 ms; live submission-lock waiter | Hold beyond 500 ms, then release before 2 s | Created with one binding/Turn/input/lease; a healthy write retains its full reserved attempt | C-6: `SqlxPostgresExecutor::accept_initial_with_submission` | Pass — `cand_18_direct_write_preserves_full_budget`; red returned Unavailable |
+| Direct SQLx caller supplies 500 ms; deferred COMMIT lasts 3 s | Write acknowledgement expires at 2 s, then one separate read-only proof | Created with exactly one atomic acceptance; proof retains its own full 2 s and no second write occurs | Same C-6 entry and settlement helper | Pass — `cand_18_direct_proof_preserves_full_budget`; red returned Unavailable |
+| Short remaining pre-write budget or oversized read deadline | Lookup or bounded history read | Short read deadline retained; long deadline capped at `LOOKUP_BUDGET` | C-6 wrapper and SQLx read entries | Pass — extended wrapper case, `cand_18_pre_write_read_clamp`, `cand_18_direct_lookup_deadline_is_capped`, `cand_18_bounded_read_deadline_is_capped` |
+| Invalid command, cancelled creator, unavailable storage, exact retry, or expired/fenced/terminal proof | Existing guard, admission, write/proof, or observation path | No invalid I/O, extra write/proof, invented authority, or retry mutation; cancellation and recovery ordering remain valid | C-6 acceptance and C-1/C-2 runner | Pass — focused guard, deadline, cancellation, atomic acceptance and dead-creator settlement cases; routed preservation results accompany this repair |
+
+Full routed verification for this repair: `cargo fmt --all --check` Pass;
+`cargo clippy -p koduck-ai --all-targets --all-features -- -D warnings` Pass;
+`cargo test -p koduck-ai --all-targets --all-features` 602 passed across 26
+targets, zero failures or skips; governance tests 208/0 and repository
+validation Pass; whitespace check clean and zero leaked fixture schemas.
+The fixing revision's canonical Sonar admission, required CI, and
+original-thread disposition are recorded in PR #37 after publication.
+Implementation Status and AC-9 remain In Progress until their remaining
+revision-bound gates, including authorized review coverage, pass.
+
+Concurrency and failure/recovery ordering are covered by the live lock waiter
+and deferred-COMMIT fixture. No new schema, dependency, error, resource limit,
+trust rule, or cancellation transition is introduced. Decomposition assessment:
+the two changed acceptance methods are 14/20 lines; the extended and new test
+functions are 49/42/34 lines, all below the 60-line review threshold and
+80-line hard limit, with nesting below four. The cohesive SQLx adapter stays
+at 791 lines and the application port facade at 723; both exceed the 600-line
+review threshold but remain below 800. This repair adds only the existing
+budget constant and intent documentation to their established responsibilities;
+further extraction would expand this two-entry fix without separating an
+independent behavior. The generic wrapper is 596 lines, its executor port
+225, and the touched test modules 923/519/298, all below their review
+thresholds. No engineering exception is invoked.
+
 The round-20 P2 (production-file limit) was repaired by decomposition with
 no behavior change: the two round-18/19 clamps had grown `postgres.rs` to
 802 physical lines, past the 800-line engineering-exception limit this
@@ -1325,6 +1371,7 @@ future-lifecycle instructions do not establish present approval or completion.
 
 | Date | Change | Author |
 | --- | --- | --- |
+| 2026-10-11 | Repaired the owner-supplied round-22 P2 on `01a1f0b8bf73f18ff2517b3fc31710a873e11ab4` ([thread](https://github.com/hailingu/koduck/pull/37#discussion_r4240342076)): the generic PostgreSQL wrapper and direct SQLx identified acceptance now always supply `WRITE_BUDGET`, preserving the full two-second write and separate full two-second read-only proof even for an undersized caller argument (SI-07c). Port intent docs clarify the existing contract. The extended wrapper budget matrix and two new real-PostgreSQL regressions were observed red as short delegation / Unavailable, then passed with the 65-case focused CAND-18 suite; the blocked write and delayed COMMIT each retain exactly one atomic acceptance. Current Verification records the selected states, preservation checks, owners, and file/unit decomposition assessment. No contract, schema, dependency, scope, acceptance criterion, approval, or lifecycle change; this supplied repair does not initiate or reset automatic review. | @codex |
 | 2026-10-11 | Repaired both round-21 P2s from the review of `81a3c98035ae40706d99343da26cf21ec26f7213`. (1) [Timestamp the lease after the submission-lock wait](https://github.com/hailingu/koduck/pull/37#discussion_r4240265555): `write_initial_canonical_state`'s initial-lease INSERT used the transaction's frozen `CURRENT_TIMESTAMP`, so a contended winning request committed with `renewed_at` already stale and a lease window shortened by its own lock wait, risking earlier fencing than the authoritative CAND-1 window; the INSERT now uses `clock_timestamp()`, mirroring the reconciliation proof. `cand_18_contended_lease_window_is_full` holds the submission lock for 1.5 s while the contender's transaction has begun and observed red with 18,475 ms remaining of the twenty-second window, green with the full window after the fix (SI-03a). (2) [Synchronize the CAND-18 selection evidence](https://github.com/hailingu/koduck/pull/37#discussion_r4240265562): the ADD-0001 CAND-18 row still described the linked ADR as `Proposed, Not Started`; the row's status reason/evidence and the ADD change log now record the Accepted (2026-10-09T14:26:36Z), In Progress lifecycle — a status-evidence correction that changes no requirement, capability, flow, or scope content and keeps the candidate `Selected`. Verification: fmt clean, clippy `-D warnings` zero findings, 600 tests across all targets with 0 failures, governance validator 208/0 and validation passed (ADD included), zero leaked fixture schemas; `sqlx_executor.rs` at 792 lines stays under the 800 hard limit. Each original thread received its own reply citing the fixing revision before resolution. No scope, contract, acceptance-criterion, dependency, schema, or approval change; the automatic-review budget is not reset. | @codex |
 | 2026-10-11 | Repaired the round-20 P2 from the review of `93804d4189735b3862856c99c257d24ee1ca42da` ([thread](https://github.com/hailingu/koduck/pull/37#discussion_r4240211895)): the round-18/19 clamp additions had grown `koduck-ai/src/adapters/history/postgres.rs` to 802 physical lines, exceeding the maintained production-file engineering-exception limit of 800 that this record's Engineering Exceptions section refuses to waive. Decomposed with no behavior change: the cohesive `PostgresExecutor` port definition (206 lines with its method contracts, including the identified-submission entries this slice added) moved to `postgres/executor_port.rs` (222 lines, marker header included), re-exported from the parent so every existing `postgres::PostgresExecutor` path is unchanged; `postgres.rs` returns to 597 lines, below both the hard limit and the 600-line review threshold. Verification: fmt clean, clippy `-D warnings` zero findings, 599 tests across all targets with 0 failures, governance validator 208/0 and validation passed, zero leaked fixture schemas. The original thread received its reply citing the fixing revision before resolution. No scope, contract, acceptance-criterion, dependency, schema, or approval change; the automatic-review budget is not reset. | @codex |
 | 2026-10-11 | Repaired the round-19 P2 from the review of `781b9ef5631f3a1eabe738c8668b87673ca35aa2` ([thread](https://github.com/hailingu/koduck/pull/37#discussion_r4240152220)) test-first, closing the SI-07c clamp family: `prior_thread_turns_bounded` forwarded a caller-supplied deadline above two seconds unchanged at both the generic `PostgresTurnHistory` wrapper and the production `SqlxPostgresExecutor`. Both public entries now clamp to `LOOKUP_BUDGET` before delegating or awaiting. Red observed by stashing the fix: `cand_18_bounded_read_deadline_is_capped` blocked the full eight seconds under an exclusive `turn_items` lock, and the extended `cand_18_wrapper_clamps_direct_budgets` showed the wrapper forwarding a seven-second read (`[2s, 2s, 7s]`); green as the capped ~2 s rejection and the clamped delegation log. Verification: fmt clean, clippy `-D warnings` zero findings, 599 tests across all targets with 0 failures, governance validator 208/0 and validation passed, zero leaked fixture schemas. The original thread received its reply citing the fixing revision before resolution. No scope, contract, acceptance-criterion, dependency, schema, or approval change; the automatic-review budget is not reset. | @codex |

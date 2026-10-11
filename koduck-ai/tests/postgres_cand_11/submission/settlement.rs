@@ -9,7 +9,9 @@
 use std::time::Duration;
 use uuid::Uuid;
 
-use koduck_ai::adapters::history::postgres::PostgresTurnHistory;
+use koduck_ai::adapters::history::postgres::{
+    PostgresExecutor, PostgresTurnHistory, SqlxPostgresExecutor,
+};
 use koduck_ai::application::{
     HistoryError, IdentifiedAcceptance, NewItem, TurnHistory, TurnOutcome,
 };
@@ -18,6 +20,45 @@ use super::super::harness::Harness;
 use super::integrity::SubmissionFixture;
 use super::runner::{completed_events, scripted_provider};
 use super::{connected_history, count_rows, identified_command};
+
+/// SI-06b/SI-07c: a direct caller's 500 ms cannot compress either attempt.
+/// A three-second deferred COMMIT exceeds the full write budget but fits the
+/// separate proof budget, proving one acceptance without a second write.
+#[test]
+fn cand_18_direct_proof_preserves_full_budget() {
+    let _database_guard = super::serialize_database_tests();
+    let fixture = SubmissionFixture::create("full-settlement-budgets", "PERFORM pg_sleep(3);");
+    let submission = Uuid::new_v4();
+    let command = identified_command(
+        &fixture.tenant,
+        "subject-a",
+        submission,
+        None,
+        "full settlement budgets",
+    );
+    let executor = SqlxPostgresExecutor::new(fixture.pool.clone(), fixture.harness.handle());
+    let outcome = PostgresExecutor::accept_initial_with_submission(
+        &executor,
+        &command,
+        Duration::from_millis(500),
+    );
+    let rows = fixture.harness.runtime.block_on(count_rows(
+        &fixture.pool,
+        &fixture.tenant,
+        "subject-a",
+        submission,
+    ));
+    fixture.teardown();
+    assert!(
+        matches!(outcome, Ok(IdentifiedAcceptance::Created(_))),
+        "both reserved attempts retain two seconds: {outcome:?}"
+    );
+    assert_eq!(
+        rows,
+        (1, 1, 1, 1),
+        "settlement proves one atomic acceptance"
+    );
+}
 
 /// SI-06c/SI-06e: a live same-invocation lease rewritten to generation 2 inside
 /// the delayed COMMIT is unprovable, so settlement cannot publish a receipt or

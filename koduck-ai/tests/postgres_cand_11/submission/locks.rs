@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use uuid::Uuid;
 
-use koduck_ai::adapters::history::postgres::PostgresTurnHistory;
+use koduck_ai::adapters::history::postgres::{PostgresExecutor, PostgresTurnHistory};
 use koduck_ai::application::{
     IdentifiedAcceptance, ModelInput, ModelProvider, ProviderError, ProviderEvent, ProviderStream,
     TurnCommand, TurnHistory, TurnOutcome, submission_lock_keys,
@@ -88,6 +88,53 @@ fn waiter_granted_advisory_locks(harness: &Harness, keys: (i32, i32)) -> i64 {
         .await
         .expect("count the waiter's granted advisory locks")
     })
+}
+
+/// SI-07c: a direct `SQLx` caller cannot shorten the reserved write attempt.
+/// A live submission-lock wait outlasts the supplied 500 ms before release;
+/// the healthy acceptance still creates exactly one canonical outcome.
+#[test]
+fn cand_18_direct_write_preserves_full_budget() {
+    let _database_guard = super::serialize_database_tests();
+    let (harness, _history, tenant) = connected_history();
+    let submission = Uuid::new_v4();
+    let keys = submission_lock_keys(
+        &trust(&tenant, "subject-a"),
+        SubmissionId::from_uuid(submission).expect("non-nil submission"),
+    );
+    let holder = hold_submission_lock(&harness, keys);
+    let executor = harness.executor();
+    let contender_tenant = tenant.clone();
+    let contender = std::thread::spawn(move || {
+        let command = identified_command(
+            &contender_tenant,
+            "subject-a",
+            submission,
+            None,
+            "full write budget",
+        );
+        PostgresExecutor::accept_initial_with_submission(
+            &executor,
+            &command,
+            Duration::from_millis(500),
+        )
+    });
+    wait_for_submission_waiter(&harness, keys);
+    std::thread::sleep(Duration::from_millis(750));
+    harness
+        .runtime
+        .block_on(holder.rollback())
+        .expect("release the submission lock");
+    let outcome = contender.join().expect("the contender finishes");
+    let rows =
+        harness
+            .runtime
+            .block_on(count_rows(&harness.pool, &tenant, "subject-a", submission));
+    assert!(
+        matches!(outcome, Ok(IdentifiedAcceptance::Created(_))),
+        "the permitted write retains two seconds: {outcome:?}"
+    );
+    assert_eq!(rows, (1, 1, 1, 1), "one atomic acceptance commits");
 }
 
 /// AC-3/SI-03b: the two-int4 submission lock namespace is separate from the

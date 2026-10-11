@@ -562,9 +562,10 @@ pub trait TurnHistory {
     /// mutation, a drifted key returns [`HistoryError::SubmissionConflict`],
     /// and only the winning invocation receives `Created`.
     ///
-    /// `deadline` bounds this single write attempt at its full reserved
-    /// budget; the implementation owes the one permitted read-only
-    /// reconciliation its own identical full budget (SI-06b, SI-07c).
+    /// This single write attempt receives the full [`super::WRITE_BUDGET`];
+    /// the one permitted read-only reconciliation receives its own identical
+    /// full budget. A supplied `deadline` cannot shorten or extend either
+    /// reserved attempt (SI-06b, SI-07c).
     ///
     /// # Errors
     ///

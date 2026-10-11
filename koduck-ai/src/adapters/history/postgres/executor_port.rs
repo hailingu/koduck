@@ -109,6 +109,9 @@ pub trait PostgresExecutor: Clone {
 
     /// Atomically rechecks and accepts one identified submission with its
     /// binding and bounded settlement (ADR-0018 SI-03a, SI-06, SI-07c).
+    /// Each write/proof attempt receives the full
+    /// [`crate::application::WRITE_BUDGET`]; a supplied `attempt_budget`
+    /// cannot shorten or extend either reserved attempt.
     ///
     /// # Errors
     ///
