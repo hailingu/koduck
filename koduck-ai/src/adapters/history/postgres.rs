@@ -731,6 +731,9 @@ impl<E: PostgresExecutor + Send + 'static> TurnHistory for PostgresTurnHistory<E
         // executor cannot receive an invalid command's database I/O.
         crate::application::validate_identified_command(command)
             .map_err(|_| HistoryError::Unavailable)?;
+        // SI-07c: the lookup's two-second maximum is absolute; a direct
+        // caller's longer deadline cannot extend it.
+        let deadline = deadline.min(crate::application::LOOKUP_BUDGET);
         self.executor.submission_observation(command, deadline)
     }
 
@@ -743,6 +746,9 @@ impl<E: PostgresExecutor + Send + 'static> TurnHistory for PostgresTurnHistory<E
         // executor cannot receive an invalid command's database I/O.
         crate::application::validate_identified_command(command)
             .map_err(|_| HistoryError::Unavailable)?;
+        // SI-07c: the write attempt's reserved budget is fixed at two
+        // seconds; a direct caller's longer budget cannot extend it.
+        let deadline = deadline.min(crate::application::WRITE_BUDGET);
         self.executor
             .accept_initial_with_submission(command, deadline)
     }

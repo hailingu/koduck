@@ -668,10 +668,13 @@ fn execute_clone_request(
 
 /// A `PostgresExecutor` double that performs no validation of its own, so the
 /// generic wrapper's direct-port guard (SI-01d) is the only barrier between
-/// an invalid command and this executor's simulated I/O.
+/// an invalid command and this executor's simulated I/O. It also records
+/// every delegated deadline so a test can prove the wrapper clamps direct
+/// budgets (SI-07c).
 #[derive(Clone, Default)]
 struct UnguardedExecutor {
     reached: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    delegated_deadlines: std::sync::Arc<std::sync::Mutex<Vec<Duration>>>,
 }
 
 fn receipt() -> koduck_ai::application::SubmissionObservation {
@@ -732,20 +735,28 @@ impl koduck_ai::adapters::history::postgres::PostgresExecutor for UnguardedExecu
     fn submission_observation(
         &self,
         _command: &TurnCommand,
-        _deadline: Duration,
+        deadline: Duration,
     ) -> Result<Option<koduck_ai::application::SubmissionObservation>, HistoryError> {
         self.reached
             .store(true, std::sync::atomic::Ordering::Relaxed);
+        self.delegated_deadlines
+            .lock()
+            .expect("deadline log")
+            .push(deadline);
         Ok(Some(receipt()))
     }
 
     fn accept_initial_with_submission(
         &self,
         _command: &TurnCommand,
-        _attempt_budget: Duration,
+        attempt_budget: Duration,
     ) -> Result<koduck_ai::application::IdentifiedAcceptance, HistoryError> {
         self.reached
             .store(true, std::sync::atomic::Ordering::Relaxed);
+        self.delegated_deadlines
+            .lock()
+            .expect("deadline log")
+            .push(attempt_budget);
         Ok(koduck_ai::application::IdentifiedAcceptance::Existing(
             receipt(),
         ))
@@ -851,5 +862,43 @@ fn cand_18_wrapper_guards_identified_commands_before_delegation() {
     assert!(
         !probe.reached.load(std::sync::atomic::Ordering::Relaxed),
         "no invalid command reaches a custom executor's I/O"
+    );
+}
+
+/// SI-07c (review round 18): the generic wrapper clamps direct budgets
+/// before delegating, so a caller-supplied eight-second lookup deadline and
+/// nine-second acceptance budget reach a custom executor only as the fixed
+/// `LOOKUP_BUDGET` and `WRITE_BUDGET` values.
+#[test]
+fn cand_18_wrapper_clamps_direct_budgets() {
+    let probe = UnguardedExecutor::default();
+    let mut history =
+        koduck_ai::adapters::history::postgres::PostgresTurnHistory::new(probe.clone());
+    let command = TurnCommand {
+        trust: TrustContext::new(
+            TenantId::new("tenant-wrapper-budgets".to_owned()).expect("valid"),
+            "subject-a",
+        )
+        .expect("valid trust"),
+        thread_id: None,
+        input: "clamped budget".to_owned(),
+        submission_id: Some(SubmissionId::from_uuid(Uuid::new_v4()).expect("non-nil")),
+    };
+    history
+        .submission_observation(&command, Duration::from_secs(8))
+        .expect("the observation delegates");
+    TurnHistory::accept_initial_with_submission(&mut history, &command, Duration::from_secs(9))
+        .expect("the acceptance delegates");
+    assert_eq!(
+        probe
+            .delegated_deadlines
+            .lock()
+            .expect("deadline log")
+            .as_slice(),
+        [
+            koduck_ai::application::LOOKUP_BUDGET,
+            koduck_ai::application::WRITE_BUDGET
+        ],
+        "the wrapper clamps both direct budgets before delegation"
     );
 }

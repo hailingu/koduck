@@ -1055,3 +1055,45 @@ fn cand_18_direct_lookup_deadline_is_capped() {
         "the direct lookup is capped at the two-second maximum, blocked for {elapsed:?}"
     );
 }
+
+/// SI-06e (review round 18): a commit-time trigger moving this invocation's
+/// Turn to `recovery-pending` while its generation-1 lease stays live and
+/// unfenced is neither SI-06c's started live proof nor one of SI-06d's
+/// terminal, fenced, or expired same-creator outcomes, so the reconciliation
+/// stays unavailable instead of publishing the accepted identities.
+#[test]
+fn cand_18_live_recovery_pending_creator_is_unprovable() {
+    let _database_guard = super::serialize_database_tests();
+    let fixture = SubmissionFixture::create(
+        "recovery-pending",
+        "PERFORM pg_sleep(2.5); \
+         UPDATE turns SET status = 'recovery-pending' WHERE tenant_id = NEW.tenant_id \
+         AND thread_id = NEW.thread_id AND turn_id = NEW.turn_id;",
+    );
+    let mut history = fixture.history();
+    let submission = Uuid::new_v4();
+    let command = identified_command(
+        &fixture.tenant,
+        "subject-a",
+        submission,
+        None,
+        "recovery pending input",
+    );
+    assert_eq!(
+        TurnHistory::accept_initial_with_submission(&mut history, &command, Duration::from_secs(2))
+            .expect_err("the live recovery-pending creator stays unprovable"),
+        HistoryError::Unavailable
+    );
+    let rows = fixture.harness.runtime.block_on(count_rows(
+        &fixture.pool,
+        &fixture.tenant,
+        "subject-a",
+        submission,
+    ));
+    assert_eq!(
+        rows,
+        (1, 1, 1, 1),
+        "the delayed commit still produced exactly one durable acceptance"
+    );
+    fixture.teardown();
+}

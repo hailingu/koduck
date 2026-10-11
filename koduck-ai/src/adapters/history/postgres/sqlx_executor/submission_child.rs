@@ -446,14 +446,17 @@ async fn reconciled_acceptance_async(
             proof.fenced,
             proof.lease_live,
         );
-    if creator_matches
-        && proof.status == "started"
-        && proof.fenced == Some(false)
-        && proof.lease_live == Some(true)
-        && !creator_is_live
-    {
-        // SI-06e: a live same-invocation lease with a non-initial generation
-        // cannot prove acceptance or publish identities as an observation.
+    if live_lease_cannot_classify_same_creator(
+        creator_matches,
+        creator_is_live,
+        &proof.status,
+        proof.fenced,
+        proof.lease_live,
+    ) {
+        // SI-06e: this creator's still-live, unfenced lease that can neither
+        // prove the initial live creator (a non-initial generation) nor take
+        // a dead-creator observation (a live `recovery-pending` Turn) is
+        // unprovable and publishes no identities.
         return Err(HistoryError::Unavailable);
     }
     if creator_is_live {
@@ -470,6 +473,24 @@ async fn reconciled_acceptance_async(
     // SI-06d: another invocation's binding, or this creator's terminal,
     // fenced, or expired Turn, is observation without authority.
     Ok(Some(IdentifiedAcceptance::Existing(receipt)))
+}
+
+/// SI-06e's same-creator unclassifiable predicate: a still-live, unfenced
+/// lease under this invocation's creator whose Turn is neither the `started`
+/// initial-live proof (the generation is non-initial) nor a state SI-06d
+/// accepts (a `started` non-initial generation, or `recovery-pending`).
+fn live_lease_cannot_classify_same_creator(
+    creator_matches: bool,
+    creator_is_live: bool,
+    status: &str,
+    fenced: Option<bool>,
+    lease_live: Option<bool>,
+) -> bool {
+    creator_matches
+        && !creator_is_live
+        && fenced == Some(false)
+        && lease_live == Some(true)
+        && matches!(status, "started" | "recovery-pending")
 }
 
 /// SI-06c's liveness predicate: the committed Turn is still `started` with
