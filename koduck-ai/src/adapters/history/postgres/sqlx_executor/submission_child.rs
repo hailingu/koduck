@@ -35,8 +35,8 @@ pub(super) fn decode_original_user_input(
                 .get("content")
                 .and_then(serde_json::Value::as_str)
                 .ok_or(HistoryError::Unavailable)?;
-            if content.len() > 65_536 {
-                // Oversized stored input is corrupt structure, never a
+            if content.is_empty() || content.len() > 65_536 {
+                // Stored input outside SI-01b's byte bound is corrupt, never a
                 // semantic-conflict comparison basis (ADR-0018 SI-08c/SI-09).
                 return Err(HistoryError::Unavailable);
             }
@@ -347,6 +347,7 @@ struct ProofRow {
     committed_turn: Uuid,
     binding: BindingRow,
     status: String,
+    initial_items_intact: bool,
     generation: Option<i64>,
     fenced: Option<bool>,
     lease_live: Option<bool>,
@@ -370,6 +371,9 @@ async fn read_proof_row(
          (t.turn_id IS NOT NULL AND l.generation IS NOT NULL \
           AND i.item_id IS NOT NULL AND t.next_sequence > 1) AS joined, \
          t.status, l.generation, l.fenced, \
+         (t.next_sequence = 2 AND NOT EXISTS (SELECT 1 FROM turn_items extra \
+             WHERE extra.tenant_id = s.tenant_id AND extra.thread_id = s.thread_id \
+             AND extra.turn_id = s.turn_id AND extra.sequence <> 1)) AS initial_items_intact, \
          (l.expires_at > clock_timestamp()) AS lease_live \
          FROM chat_submissions s \
          LEFT JOIN threads h ON h.tenant_id = s.tenant_id AND h.thread_id = s.thread_id \
@@ -401,6 +405,7 @@ async fn read_proof_row(
         committed_turn: row.try_get("turn_id").map_err(unavailable)?,
         binding,
         status: row.try_get("status").map_err(unavailable)?,
+        initial_items_intact: row.try_get("initial_items_intact").map_err(unavailable)?,
         generation: row.try_get("generation").map_err(unavailable)?,
         fenced: row.try_get("fenced").map_err(unavailable)?,
         lease_live: row.try_get("lease_live").map_err(unavailable)?,
@@ -462,14 +467,14 @@ async fn reconciled_acceptance_async(
     if live_lease_cannot_classify_same_creator(
         creator_matches,
         creator_is_live,
+        proof.initial_items_intact,
         &proof.status,
         proof.fenced,
         proof.lease_live,
     ) {
-        // SI-06e: this creator's still-live, unfenced lease that can neither
-        // prove the initial live creator (a non-initial generation) nor take
-        // a dead-creator observation (a live `recovery-pending` Turn) is
-        // unprovable and publishes no identities.
+        // SI-06e: a live, unfenced same-creator proof with non-initial
+        // items/counter, non-initial generation, or recovery-pending status
+        // is unprovable and publishes no identities.
         return Err(HistoryError::Unavailable);
     }
     if creator_is_live {
@@ -489,21 +494,21 @@ async fn reconciled_acceptance_async(
 }
 
 /// SI-06e's same-creator unclassifiable predicate: a still-live, unfenced
-/// lease under this invocation's creator whose Turn is neither the `started`
-/// initial-live proof (the generation is non-initial) nor a state SI-06d
-/// accepts (a `started` non-initial generation, or `recovery-pending`).
+/// started/recovery-pending Turn must prove its initial lease and pristine
+/// acceptance before granting authority; it cannot take SI-06d's dead path.
 fn live_lease_cannot_classify_same_creator(
     creator_matches: bool,
     creator_is_live: bool,
+    initial_items_intact: bool,
     status: &str,
     fenced: Option<bool>,
     lease_live: Option<bool>,
 ) -> bool {
     creator_matches
-        && !creator_is_live
         && fenced == Some(false)
         && lease_live == Some(true)
         && matches!(status, "started" | "recovery-pending")
+        && (!creator_is_live || !initial_items_intact)
 }
 
 /// SI-06c's liveness predicate: the committed Turn is still `started` with

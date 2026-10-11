@@ -1096,10 +1096,10 @@ Allowed final check statuses are `Pass`, `Fail`, or `N/A — <specific reason>`.
 
 | Review context | Current record |
 | --- | --- |
-| Conversation and supplied report | PR #37; the prior supplied findings are repaired with their original threads resolved. The owner supplied implementation review round 23 on `9770c1d9cac4511ebbf67f9a6ef38934b0b3de3d`: [reject terminal/status inconsistencies before granting authority](https://github.com/hailingu/koduck/pull/37#discussion_r4240437736). The confirmed P2 is repaired test-first; Current Verification records its actual state matrix, fail-closed behavior, and preservation evidence. Fixing-revision publication and the original-thread disposition are recorded in the PR |
+| Conversation and supplied report | PR #37; round 23 on `9770c1d9cac4511ebbf67f9a6ef38934b0b3de3d` is fixed in `0178776f0b5dc26f04d71d34b0d4e16539388578` with its original thread resolved. Later round-24 empty-input and round-25 non-initial-item findings are repaired in the owner-authorized bounded follow-up. Current Verification records their actual matrix and passing focused evidence; fixing-revision publication and each original-thread disposition are recorded in the PR |
 | Historical passes | Seven local drafting rounds and twelve recorded implementation automatic-review rounds remain in Change Log with their identities, results, and owner extensions; they do not cover a later pushed revision |
-| Owner extension | Recorded twelve-round implementation review budget consumed; remaining agent-driven automatic review rounds: zero without a new bounded owner extension. The owner-supplied round-23 finding authorizes its in-scope remediation, verification, push, and original-thread reply/resolution; it does not initiate or reset automatic review or provide coverage for the fixing revision |
-| Authorization boundary | Source/test remediation within Accepted SI-06c/SI-06e/SI-08c, preserving the canonical atomic terminal/status invariant, plus actual-evidence synchronization. The accepted scope, SI contract, acceptance criteria, approval, dependencies, and schema are unchanged |
+| Owner extension | The prior implementation review budget remains consumed. In the PR #37 task conversation, @linhai explicitly authorized one cycle to fix the two newly arrived findings and one final review of the resulting commit; recorded 2026-10-11T06:34:37Z. This permits round 26 only and does not reset the budget. Any further iteration after that review requires a new owner disposition |
+| Authorization boundary | Narrow source/test integrity remediation within Accepted SI-01b/SI-06c/SI-06e/SI-08c, preserving valid output-bearing observation receipts and the canonical atomic terminal/status invariant, plus actual-evidence synchronization. Accepted scope, SI contract, acceptance criteria, approval, dependencies, and schema are unchanged |
 | Historical round 7 result | Drafting pass completed by @codex at 2026-10-09T10:19:48Z on ADR blob `911501ab73a7768e803412bc9cae2b467f888a87`; subsequent formal approval and implementation evidence supersede its drafting-only lifecycle snapshot |
 | Approval/lifecycle gates | Approval closed — Q-2/Q-3/Q-4 determinations and explicit `Approve` from @linhai recorded at 2026-10-09T14:26:36Z. Decision Status is `Accepted`, Implementation Status is `In Progress`; AC-0 through AC-8, all baseline risk rows, and A-6 Pass, AC-9 In Progress; CAND-18 remains Selected |
 | Formal approval audit | Satisfied — the distinct approval Change Log entry cites the owner's 2026-10-09T14:26:36Z response and back-references the owner clarification at 2026-10-09T08:22:13Z. The historical round-3 reply remains non-approval history |
@@ -1130,6 +1130,68 @@ full line-span audit of every unit in the four touched test files now finds
 none above 80, and A-6 records Pass. No size-limit waiver is recorded.
 
 ### Current Verification
+
+Two later configured reports arrived during round-23 verification:
+round 24 on `9770c1d9cac4511ebbf67f9a6ef38934b0b3de3d`
+([empty canonical input](https://github.com/hailingu/koduck/pull/37#discussion_r4240500640))
+and round 25 on `0178776f0b5dc26f04d71d34b0d4e16539388578`
+([unexpected non-initial proof items](https://github.com/hailingu/koduck/pull/37#discussion_r4240533134)).
+They have distinct triggers and invariants, rather than reopening the repaired
+terminal/status finding. In the PR #37 task conversation, the repository owner
+@linhai answered "Fix both and run one final review (Recommended)" to the
+explicit request for one further remediation cycle and one final review of its
+resulting commit; the instruction is recorded at 2026-10-11T06:34:37Z.
+This authorizes these two repairs and round 26 only, without resetting the
+consumed review budget, changing ADR approval, or waiving delivery gates.
+After that final review, any further actionable finding requires a new owner
+disposition and keeps the PR Draft.
+
+The stored-input decoder now enforces SI-01b's complete 1..65,536-byte bound
+before treating the row as a retry comparison basis (SI-08c). Only the locked
+reconciliation query also reads a scoped boolean proving that sequence 1 is
+the only committed item and `next_sequence` is exactly 2. The existing
+same-creator live-proof classifier requires this pristine acceptance before
+granting Created; corrupt live state returns Unavailable, without identities
+or another write (SI-06c/SI-06e). Another creator or a terminal/fenced/expired
+creator still receives the valid observation receipt even when output exists.
+The initial-items check is deliberately absent from normal lookup/recheck:
+provider output cannot invalidate an existing receipt. The boolean transfers
+no output payload or history and introduces no new lock (SI-07a/SI-09).
+
+| State/precondition | Action/ordering | Observable result and invariant | Owner/entry points | Verification result |
+| --- | --- | --- | --- | --- |
+| Empty stored sequence-1 content; valid one-byte or longer retry | Unlocked lookup and locked acceptance recheck | Unavailable before conflict classification; one canonical acceptance retained | C-6 shared input decoder | Pass — `cand_18_integrity_empty_input_fails_both_reads`; red returned SubmissionConflict |
+| Same creator, started, live unfenced generation 1, extra sequence-2 output and advanced counter | Deferred COMMIT exceeds acknowledgement budget, then read-only proof | Unavailable with no authority/identities; one durable acceptance, no second write | C-6 proof query and existing same-creator classifier | Pass — `cand_18_integrity_live_proof_rejects_output`; red granted Created |
+| Same live creator, sparse extra row with initial counter, or advanced counter with no extra row | Same bounded proof | Both item set and exact initial counter must prove pristine acceptance | Same C-6 proof entry | Pass — `cand_18_integrity_live_proof_rejects_sparse_output`, `cand_18_integrity_live_proof_rejects_advanced_counter`; both red as Created |
+| Valid one-byte input and committed provider output | Normal lookup/recheck, then creator appends again | Existing receipt remains truthful; creator's authority and next sequence preserved | C-6 observation, acceptance and append | Pass — `cand_18_integrity_existing_output_still_observes` |
+| Other creator or terminal/fenced/expired creator with output | Deferred COMMIT and one proof | Existing receipt without renewed authority; valid output does not forbid observation | C-6 reconciliation | Pass — strengthened `cand_18_dead_creator_settlement_branches`; each branch now includes nonterminal output, terminal branch also has its canonical terminal |
+| Pristine live proof, invalid/maximum/oversized input, live non-initial/recovery-pending lease, cancellation, terminal corruption and provider-held retry | Existing admission, guard, settlement and observation paths | Complete valid proof alone grants Created; bounds, failure ordering and concurrency retained | C-6 storage and C-1/C-2 runner | Pass — all 73 focused CAND-18 cases, including prior integrity/budget/cancellation and receipt-preservation cases |
+
+The four behavior regressions were observed failing against the actual
+isolated migrated PostgreSQL 18 adapter before either production change, then
+passed with the positive output-preservation case. An initial fixture-path
+mistake caused a setup-only failure with no database settings; it was corrected
+and discarded as red evidence. Its timestamp-bounded generated package output
+was removed without cleaning unrelated cache files. Structural assessment:
+production module 573 lines, settlement tests 680; every unit remains at most
+80. The 61-line shared decoder and 80-line reconciler retain their single
+integrity/settlement responsibilities; the strengthened 78-line dead-creator
+table still proves one receipt invariant across four states. New regression
+functions and helpers stay below 60. No size exception, contract, schema,
+dependency, acceptance-criterion, approval, or lifecycle change is introduced.
+Fixing-revision delivery results, original-thread dispositions, and the
+owner-authorized final round-26 result are recorded in PR #37.
+
+The bounded follow-up's complete local verification passes: `cargo test -p
+koduck-ai --all-targets --all-features` executes 610 tests across 26 targets,
+with zero failures or ignored tests; `cargo test -p koduck-ai --test
+postgres_cand_11 cand_18 --all-features` executes all 73 focused cases.
+`cargo fmt --all --check` and `cargo clippy -p koduck-ai --all-targets
+--all-features -- -D warnings` pass, as do all 208 governance tests,
+governance validation, and `git diff --check`. The isolated PostgreSQL 18
+fixture has zero remaining test schemas after the full run. These local
+results do not substitute for the resulting commit's push admission, required
+CI, or the single authorized final review.
 
 The owner-supplied implementation review round 23 examined
 `9770c1d9cac4511ebbf67f9a6ef38934b0b3de3d` and reported the
@@ -1426,6 +1488,7 @@ future-lifecycle instructions do not establish present approval or completion.
 
 | Date | Change | Author |
 | --- | --- | --- |
+| 2026-10-11 | During round-23 verification, two distinct P2s arrived: round 24 on `9770c1d9cac4511ebbf67f9a6ef38934b0b3de3d` ([empty canonical input](https://github.com/hailingu/koduck/pull/37#discussion_r4240500640)) and round 25 on `0178776f0b5dc26f04d71d34b0d4e16539388578` ([non-initial live-proof items](https://github.com/hailingu/koduck/pull/37#discussion_r4240533134)). After the required pause/request, the repository owner @linhai authorized one repair cycle for both and one final review in the PR #37 task conversation, recorded at 2026-10-11T06:34:37Z. The shared stored-input decoder now rejects empty content under SI-01b/SI-08c. The proof-only query/classifier requires sequence 1 alone and next_sequence exactly 2 before granting a matching live creator authority (SI-06c/SI-06e); ordinary existing receipts and dead/other-creator proof branches retain valid output. Four real-PostgreSQL regressions failed first as SubmissionConflict/Created, then passed with all 73 focused CAND-18 cases; a positive provider-output retry and strengthened output-bearing dead-creator fixtures prove preservation. Current Verification records the state matrix and structural assessment. The extension permits final round 26 only, without resetting the consumed budget. No scope, contract, schema, dependency, acceptance criterion, approval, or lifecycle change. | @codex |
 | 2026-10-11 | Repaired the owner-supplied round-23 P2 on `9770c1d9cac4511ebbf67f9a6ef38934b0b3de3d` ([thread](https://github.com/hailingu/koduck/pull/37#discussion_r4240437736)): the proof and unlocked/recheck binding reads previously ignored terminal presence, so a live started creator with a terminal item could regain Created authority after an acknowledgement timeout. Both queries now select scoped terminal presence in the same snapshot as status; their shared decoder rejects either inconsistent direction before receipt/equality/authority classification (SI-06c/SI-06e/SI-08c), without loading terminal payloads, adding locks, or writing during proof. Three real-PostgreSQL regressions were observed red as Created/Existing/receipt and passed after the guard with all 68 focused CAND-18 cases; six inconsistent status pairs and exact/drift commands cover both lookup entry points. The valid lifecycle and terminal-creator preservation fixtures now include their canonical terminal item. Current Verification records the selected states and decomposition assessment. No contract, schema, dependency, scope, acceptance criterion, approval, or lifecycle change; this supplied repair does not initiate or reset automatic review. | @codex |
 | 2026-10-11 | Repaired the owner-supplied round-22 P2 on `01a1f0b8bf73f18ff2517b3fc31710a873e11ab4` ([thread](https://github.com/hailingu/koduck/pull/37#discussion_r4240342076)): the generic PostgreSQL wrapper and direct SQLx identified acceptance now always supply `WRITE_BUDGET`, preserving the full two-second write and separate full two-second read-only proof even for an undersized caller argument (SI-07c). Port intent docs clarify the existing contract. The extended wrapper budget matrix and two new real-PostgreSQL regressions were observed red as short delegation / Unavailable, then passed with the 65-case focused CAND-18 suite; the blocked write and delayed COMMIT each retain exactly one atomic acceptance. Current Verification records the selected states, preservation checks, owners, and file/unit decomposition assessment. No contract, schema, dependency, scope, acceptance criterion, approval, or lifecycle change; this supplied repair does not initiate or reset automatic review. | @codex |
 | 2026-10-11 | Repaired both round-21 P2s from the review of `81a3c98035ae40706d99343da26cf21ec26f7213`. (1) [Timestamp the lease after the submission-lock wait](https://github.com/hailingu/koduck/pull/37#discussion_r4240265555): `write_initial_canonical_state`'s initial-lease INSERT used the transaction's frozen `CURRENT_TIMESTAMP`, so a contended winning request committed with `renewed_at` already stale and a lease window shortened by its own lock wait, risking earlier fencing than the authoritative CAND-1 window; the INSERT now uses `clock_timestamp()`, mirroring the reconciliation proof. `cand_18_contended_lease_window_is_full` holds the submission lock for 1.5 s while the contender's transaction has begun and observed red with 18,475 ms remaining of the twenty-second window, green with the full window after the fix (SI-03a). (2) [Synchronize the CAND-18 selection evidence](https://github.com/hailingu/koduck/pull/37#discussion_r4240265562): the ADD-0001 CAND-18 row still described the linked ADR as `Proposed, Not Started`; the row's status reason/evidence and the ADD change log now record the Accepted (2026-10-09T14:26:36Z), In Progress lifecycle — a status-evidence correction that changes no requirement, capability, flow, or scope content and keeps the candidate `Selected`. Verification: fmt clean, clippy `-D warnings` zero findings, 600 tests across all targets with 0 failures, governance validator 208/0 and validation passed (ADD included), zero leaked fixture schemas; `sqlx_executor.rs` at 792 lines stays under the 800 hard limit. Each original thread received its own reply citing the fixing revision before resolution. No scope, contract, acceptance-criterion, dependency, schema, or approval change; the automatic-review budget is not reset. | @codex |

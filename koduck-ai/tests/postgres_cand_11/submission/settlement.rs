@@ -4,7 +4,8 @@
 //! another invocation's committed creator, or this creator's fenced, expired,
 //! or terminal Turn — reconciles to the observation receipt without authority
 //! (SI-06c/SI-06d), and a recreated runner handle can never regain execution
-//! authority for an existing key (SI-04).
+//! authority for an existing key (SI-04). Corrupt initial input, item sets,
+//! counters, or terminal/status pairs fail closed before identities or authority.
 
 use std::time::Duration;
 use uuid::Uuid;
@@ -20,6 +21,199 @@ use super::super::harness::Harness;
 use super::integrity::SubmissionFixture;
 use super::runner::{completed_events, scripted_provider};
 use super::{connected_history, count_rows, identified_command};
+
+/// SI-01b/SI-08c: an empty stored input is malformed canonical state,
+/// never a valid basis for classifying a nonempty retry as a conflict.
+#[test]
+fn cand_18_integrity_empty_input_fails_both_reads() {
+    let _database_guard = super::serialize_database_tests();
+    let (harness, mut history, tenant) = connected_history();
+    let submission = Uuid::new_v4();
+    let command = identified_command(&tenant, "subject-a", submission, None, "a");
+    let IdentifiedAcceptance::Created(accepted) =
+        TurnHistory::accept_initial_with_submission(&mut history, &command, Duration::from_secs(2))
+            .expect("one-byte input creates")
+    else {
+        panic!("the fresh key must create");
+    };
+    harness.runtime.block_on(async {
+        sqlx::query(
+            "UPDATE turn_items SET payload = '{\"content\":\"\"}' \
+             WHERE tenant_id = $1 AND thread_id = $2 AND turn_id = $3 AND sequence = 1",
+        )
+        .bind(&tenant)
+        .bind(accepted.thread_id.as_uuid())
+        .bind(accepted.turn_id.as_uuid())
+        .execute(&harness.pool)
+        .await
+        .expect("seed empty canonical input");
+    });
+    for input in ["a", "different valid input"] {
+        let mut candidate = command.clone();
+        candidate.input = input.to_owned();
+        let lookup = history.submission_observation(&candidate, Duration::from_secs(2));
+        let recheck = TurnHistory::accept_initial_with_submission(
+            &mut history,
+            &candidate,
+            Duration::from_secs(2),
+        );
+        assert_eq!(lookup, Err(HistoryError::Unavailable));
+        assert_eq!(recheck, Err(HistoryError::Unavailable));
+    }
+    assert_eq!(
+        harness
+            .runtime
+            .block_on(count_rows(&harness.pool, &tenant, "subject-a", submission,)),
+        (1, 1, 1, 1)
+    );
+    assert_eq!(initial_item_state(&harness, &harness.pool, &tenant), (1, 2));
+}
+
+/// SI-06c/SI-06e: initial acceptance has no committed output when the
+/// same creator's live proof is allowed to grant execution authority.
+#[test]
+fn cand_18_integrity_live_proof_rejects_output() {
+    let _database_guard = super::serialize_database_tests();
+    assert_eq!(
+        noninitial_items_commit(3, Some(2)),
+        Err(HistoryError::Unavailable)
+    );
+}
+
+/// The row-set proof must detect a sparse extra item even if the counter
+/// still has its initial value; checking only `next_sequence` is insufficient.
+#[test]
+fn cand_18_integrity_live_proof_rejects_sparse_output() {
+    let _database_guard = super::serialize_database_tests();
+    assert_eq!(
+        noninitial_items_commit(2, Some(3)),
+        Err(HistoryError::Unavailable)
+    );
+}
+
+/// The pristine acceptance proof also retains the exact initial next
+/// sequence; a counter advanced without its item is incomplete evidence.
+#[test]
+fn cand_18_integrity_live_proof_rejects_advanced_counter() {
+    let _database_guard = super::serialize_database_tests();
+    assert_eq!(
+        noninitial_items_commit(3, None),
+        Err(HistoryError::Unavailable)
+    );
+}
+
+/// Drives one COMMIT-time nonterminal row/counter corruption. Schema
+/// teardown precedes assertions so intentional red outcomes cannot leak it.
+fn noninitial_items_commit(
+    next_sequence: i64,
+    extra_sequence: Option<i64>,
+) -> Result<IdentifiedAcceptance, HistoryError> {
+    let insert = extra_sequence.map_or_else(String::new, |sequence| {
+        format!(
+            "INSERT INTO turn_items \
+         (tenant_id, thread_id, turn_id, sequence, item_id, item_type, payload, is_terminal) \
+         VALUES (NEW.tenant_id, NEW.thread_id, NEW.turn_id, {sequence}, gen_random_uuid(), \
+         'agent_message_delta', '{{\"content\":\"unexpected output\"}}', FALSE);"
+        )
+    });
+    let trigger = format!(
+        "PERFORM pg_sleep(2.5); {insert} UPDATE turns SET next_sequence = {next_sequence} \
+         WHERE tenant_id = NEW.tenant_id AND thread_id = NEW.thread_id AND turn_id = NEW.turn_id;"
+    );
+    let fixture = SubmissionFixture::create("initial-items", &trigger);
+    let mut history = fixture.history();
+    let submission = Uuid::new_v4();
+    let command = identified_command(
+        &fixture.tenant,
+        "subject-a",
+        submission,
+        None,
+        "initial items",
+    );
+    let outcome =
+        TurnHistory::accept_initial_with_submission(&mut history, &command, Duration::from_secs(2));
+    let rows = fixture.harness.runtime.block_on(count_rows(
+        &fixture.pool,
+        &fixture.tenant,
+        "subject-a",
+        submission,
+    ));
+    let item_state = initial_item_state(&fixture.harness, &fixture.pool, &fixture.tenant);
+    let state = terminal_integrity_state(&fixture.harness, &fixture.pool, &fixture.tenant);
+    fixture.teardown();
+    assert_eq!(rows, (1, 1, 1, 1));
+    assert_eq!(
+        item_state,
+        (1 + i64::from(extra_sequence.is_some()), next_sequence)
+    );
+    assert_eq!(state, ("started".to_owned(), 1, false, true, false));
+    outcome
+}
+
+/// Reads actual item count and next sequence for the fixture's single Turn.
+fn initial_item_state(harness: &Harness, pool: &sqlx::PgPool, tenant: &str) -> (i64, i64) {
+    harness.runtime.block_on(async {
+        sqlx::query_as(
+            "SELECT count(i.item_id), t.next_sequence FROM turns t \
+             JOIN turn_items i USING (tenant_id, thread_id, turn_id) \
+             WHERE t.tenant_id = $1 GROUP BY t.next_sequence",
+        )
+        .bind(tenant)
+        .fetch_one(pool)
+        .await
+        .expect("read fixture's initial-item state")
+    })
+}
+
+/// SI-05/SI-08c: another invocation's valid receipt still resolves after
+/// provider output, and the creator retains its append authority and counter.
+#[test]
+fn cand_18_integrity_existing_output_still_observes() {
+    let _database_guard = super::serialize_database_tests();
+    let (harness, mut history, tenant) = connected_history();
+    let submission = Uuid::new_v4();
+    let command = identified_command(&tenant, "subject-a", submission, None, "a");
+    let IdentifiedAcceptance::Created(accepted) =
+        TurnHistory::accept_initial_with_submission(&mut history, &command, Duration::from_secs(2))
+            .expect("one-byte input creates")
+    else {
+        panic!("the fresh key must create");
+    };
+    let first = TurnHistory::append(
+        &mut history,
+        &accepted,
+        NewItem::AgentMessageDelta {
+            content: "provider output".to_owned(),
+        },
+    )
+    .expect("append actual provider output");
+    assert_eq!(first.sequence, 2);
+    let observed = history
+        .submission_observation(&command, Duration::from_secs(2))
+        .expect("output does not corrupt a receipt")
+        .expect("binding exists");
+    assert_eq!(observed.turn_id, accepted.turn_id);
+    assert_eq!(
+        TurnHistory::accept_initial_with_submission(&mut history, &command, Duration::from_secs(2),),
+        Ok(IdentifiedAcceptance::Existing(observed))
+    );
+    assert_eq!(initial_item_state(&harness, &harness.pool, &tenant), (2, 3));
+    let next = TurnHistory::append(
+        &mut history,
+        &accepted,
+        NewItem::AgentMessageDelta {
+            content: "continued provider output".to_owned(),
+        },
+    )
+    .expect("observation leaves the creator's authority intact");
+    assert_eq!(next.sequence, 3);
+    assert_eq!(
+        harness
+            .runtime
+            .block_on(count_rows(&harness.pool, &tenant, "subject-a", submission,)),
+        (1, 1, 1, 1)
+    );
+}
 
 /// SI-06c/SI-06e: a terminal item cannot coexist with a started Turn and
 /// authorize its live creator after the write acknowledgement times out.
@@ -316,15 +510,22 @@ pub(crate) fn cand_18_dead_creator_settlement_branches() {
             "terminal-creator",
             "INSERT INTO turn_items \
              (tenant_id, thread_id, turn_id, sequence, item_id, item_type, payload, is_terminal) \
-             VALUES (NEW.tenant_id, NEW.thread_id, NEW.turn_id, 2, gen_random_uuid(), \
+             VALUES (NEW.tenant_id, NEW.thread_id, NEW.turn_id, 3, gen_random_uuid(), \
              'completed', '{\"input_tokens\":0,\"output_tokens\":0,\"total_tokens\":0}', TRUE); \
-             UPDATE turns SET status = 'completed', next_sequence = 3 \
+             UPDATE turns SET status = 'completed', next_sequence = 4 \
              WHERE tenant_id = NEW.tenant_id AND thread_id = NEW.thread_id \
              AND turn_id = NEW.turn_id;",
         ),
     ];
     for (label, rewrite) in branches {
-        let trigger = format!("PERFORM pg_sleep(2.5); {rewrite}");
+        let trigger = format!(
+            "PERFORM pg_sleep(2.5); INSERT INTO turn_items \
+             (tenant_id, thread_id, turn_id, sequence, item_id, item_type, payload, is_terminal) \
+             VALUES (NEW.tenant_id, NEW.thread_id, NEW.turn_id, 2, gen_random_uuid(), \
+             'agent_message_delta', '{{\"content\":\"prior output\"}}', FALSE); \
+             UPDATE turns SET next_sequence = 3 WHERE tenant_id = NEW.tenant_id \
+             AND thread_id = NEW.thread_id AND turn_id = NEW.turn_id; {rewrite}"
+        );
         let fixture = SubmissionFixture::create(label, &trigger);
         let mut history = fixture.history();
         let submission = Uuid::new_v4();
