@@ -665,3 +665,191 @@ fn execute_clone_request(
     let command = identified_command("tenant-compose", "subject-a", Uuid::new_v4(), None, input);
     runner.execute_submission_with_observer_and_cancellation(command, &mut |_| {}, &|| false)
 }
+
+/// A `PostgresExecutor` double that performs no validation of its own, so the
+/// generic wrapper's direct-port guard (SI-01d) is the only barrier between
+/// an invalid command and this executor's simulated I/O.
+#[derive(Clone, Default)]
+struct UnguardedExecutor {
+    reached: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+fn receipt() -> koduck_ai::application::SubmissionObservation {
+    koduck_ai::application::SubmissionObservation {
+        submission_id: SubmissionId::from_uuid(Uuid::new_v4()).expect("non-nil"),
+        thread_id: ThreadId::new(),
+        turn_id: TurnId::new(),
+    }
+}
+
+impl koduck_ai::adapters::history::postgres::PostgresExecutor for UnguardedExecutor {
+    fn request_interrupt(
+        &self,
+        _trust: &TrustContext,
+        _turn_id: TurnId,
+        _tool_terminals: Vec<NewItem>,
+    ) -> Result<(), HistoryError> {
+        Err(HistoryError::NotFound)
+    }
+
+    fn interruption_requested(
+        &self,
+        _turn: &koduck_ai::application::AcceptedTurn,
+    ) -> Result<bool, HistoryError> {
+        Ok(false)
+    }
+
+    fn prior_thread_turns(
+        &self,
+        _trust: &TrustContext,
+        _thread_id: ThreadId,
+    ) -> Result<Vec<PriorTurnHistory>, HistoryError> {
+        Ok(Vec::new())
+    }
+
+    fn prior_thread_turns_bounded(
+        &self,
+        trust: &TrustContext,
+        thread_id: ThreadId,
+        deadline: Duration,
+    ) -> Result<Vec<PriorTurnHistory>, HistoryError> {
+        self.prior_thread_turns(trust, thread_id)
+            .map_err(|_| HistoryError::Unavailable)
+            .map(|mut turns| {
+                let _ = deadline;
+                turns.clear();
+                turns
+            })
+    }
+
+    fn accept_initial(
+        &self,
+        _command: &TurnCommand,
+    ) -> Result<koduck_ai::application::AcceptedTurn, HistoryError> {
+        Err(HistoryError::Unavailable)
+    }
+
+    fn submission_observation(
+        &self,
+        _command: &TurnCommand,
+        _deadline: Duration,
+    ) -> Result<Option<koduck_ai::application::SubmissionObservation>, HistoryError> {
+        self.reached
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        Ok(Some(receipt()))
+    }
+
+    fn accept_initial_with_submission(
+        &self,
+        _command: &TurnCommand,
+        _attempt_budget: Duration,
+    ) -> Result<koduck_ai::application::IdentifiedAcceptance, HistoryError> {
+        self.reached
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        Ok(koduck_ai::application::IdentifiedAcceptance::Existing(
+            receipt(),
+        ))
+    }
+
+    fn append(
+        &self,
+        _turn: &koduck_ai::application::AcceptedTurn,
+        _item: NewItem,
+    ) -> Result<koduck_ai::domain::Item, HistoryError> {
+        Err(HistoryError::Unavailable)
+    }
+
+    fn replay(
+        &self,
+        _tenant_id: &TenantId,
+        _turn_id: TurnId,
+    ) -> Result<Vec<koduck_ai::domain::Item>, HistoryError> {
+        Ok(Vec::new())
+    }
+
+    fn renew_lease(
+        &self,
+        _key: &koduck_ai::adapters::history::postgres::LeaseKey,
+        _now_ms: u64,
+    ) -> Result<(), HistoryError> {
+        Err(HistoryError::Unavailable)
+    }
+
+    fn reconcile_expired(
+        &self,
+        _key: &koduck_ai::adapters::history::postgres::LeaseKey,
+        _now_ms: u64,
+        _timing: koduck_ai::adapters::history::postgres::LeaseTiming,
+    ) -> Result<koduck_ai::adapters::history::postgres::ReconcileOutcome, HistoryError> {
+        Err(HistoryError::Unavailable)
+    }
+
+    fn recover_failed(
+        &self,
+        _turn: &koduck_ai::application::AcceptedTurn,
+        _timing: koduck_ai::adapters::history::postgres::LeaseTiming,
+    ) -> Result<koduck_ai::adapters::history::postgres::RecoveryOutcome, HistoryError> {
+        Err(HistoryError::Unavailable)
+    }
+}
+
+/// SI-01d (review round 15's concurrently arriving finding on the wrapper):
+/// the generic `PostgresTurnHistory` entry points validate an identified
+/// command before delegating, so an empty, oversized, or identity-less
+/// command never reaches a custom executor's I/O. The nil-identity form is
+/// unrepresentable through the typed constructor and stays covered by the
+/// validation's own defense-in-depth arm.
+#[test]
+fn cand_18_wrapper_guards_identified_commands_before_delegation() {
+    let probe = UnguardedExecutor::default();
+    let mut history =
+        koduck_ai::adapters::history::postgres::PostgresTurnHistory::new(probe.clone());
+    let valid_trust = || {
+        TrustContext::new(
+            TenantId::new("tenant-wrapper-guards".to_owned()).expect("valid"),
+            "subject-a",
+        )
+        .expect("valid trust")
+    };
+    let commands = [
+        TurnCommand {
+            trust: valid_trust(),
+            thread_id: None,
+            input: String::new(),
+            submission_id: Some(SubmissionId::from_uuid(Uuid::new_v4()).expect("non-nil")),
+        },
+        TurnCommand {
+            trust: valid_trust(),
+            thread_id: None,
+            input: "x".repeat(65_537),
+            submission_id: Some(SubmissionId::from_uuid(Uuid::new_v4()).expect("non-nil")),
+        },
+        TurnCommand {
+            trust: valid_trust(),
+            thread_id: None,
+            input: "wrapper input".to_owned(),
+            submission_id: None,
+        },
+    ];
+    for command in &commands {
+        assert_eq!(
+            history
+                .submission_observation(command, Duration::from_secs(2))
+                .expect_err("the wrapper guards the observation entry"),
+            HistoryError::Unavailable
+        );
+        assert_eq!(
+            TurnHistory::accept_initial_with_submission(
+                &mut history,
+                command,
+                Duration::from_secs(2)
+            )
+            .expect_err("the wrapper guards the acceptance entry"),
+            HistoryError::Unavailable
+        );
+    }
+    assert!(
+        !probe.reached.load(std::sync::atomic::Ordering::Relaxed),
+        "no invalid command reaches a custom executor's I/O"
+    );
+}

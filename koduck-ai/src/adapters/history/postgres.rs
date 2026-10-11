@@ -727,6 +727,10 @@ impl<E: PostgresExecutor + Send + 'static> TurnHistory for PostgresTurnHistory<E
         command: &TurnCommand,
         deadline: Duration,
     ) -> Result<Option<crate::application::SubmissionObservation>, HistoryError> {
+        // SI-01d: the wrapper validates before delegation so a custom
+        // executor cannot receive an invalid command's database I/O.
+        crate::application::validate_identified_command(command)
+            .map_err(|_| HistoryError::Unavailable)?;
         self.executor.submission_observation(command, deadline)
     }
 
@@ -735,6 +739,10 @@ impl<E: PostgresExecutor + Send + 'static> TurnHistory for PostgresTurnHistory<E
         command: &TurnCommand,
         deadline: std::time::Duration,
     ) -> Result<crate::application::IdentifiedAcceptance, HistoryError> {
+        // SI-01d: the wrapper validates before delegation so a custom
+        // executor cannot receive an invalid command's database I/O.
+        crate::application::validate_identified_command(command)
+            .map_err(|_| HistoryError::Unavailable)?;
         self.executor
             .accept_initial_with_submission(command, deadline)
     }
