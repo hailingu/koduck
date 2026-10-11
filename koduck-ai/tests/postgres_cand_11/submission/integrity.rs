@@ -978,3 +978,40 @@ fn cand_18_inconsistent_stored_selector_fails_unavailable() {
     }
     fixture.teardown();
 }
+
+/// SI-08c (review round 16): a Turn whose `next_sequence` is still 1 while
+/// its sequence-1 user item exists is inconsistent canonical data — the
+/// next append would collide at sequence 1 — so every binding lookup fails
+/// unavailable instead of issuing a receipt for the corrupt state.
+#[test]
+fn cand_18_initial_sequence_counter_fails_unavailable() {
+    let _database_guard = super::serialize_database_tests();
+    let (harness, mut history, tenant) = connected_history();
+    let submission = Uuid::new_v4();
+    let command = identified_command(&tenant, "subject-a", submission, None, "counter input");
+    let IdentifiedAcceptance::Created(accepted) =
+        TurnHistory::accept_initial_with_submission(&mut history, &command, Duration::from_secs(2))
+            .expect("the counter fixture acceptance creates")
+    else {
+        panic!("the counter key must create");
+    };
+    harness.runtime.block_on(async {
+        sqlx::query("UPDATE turns SET next_sequence = 1 WHERE tenant_id = $1 AND turn_id = $2")
+            .bind(&tenant)
+            .bind(accepted.turn_id.as_uuid())
+            .execute(&harness.pool)
+            .await
+            .expect("rewind the turn's sequence counter");
+    });
+    assert_eq!(
+        history
+            .submission_observation(&command, Duration::from_secs(2))
+            .expect_err("a rewound sequence counter is inconsistent structure"),
+        HistoryError::Unavailable
+    );
+    assert_eq!(
+        TurnHistory::accept_initial_with_submission(&mut history, &command, Duration::from_secs(2))
+            .expect_err("the transaction recheck stays unavailable"),
+        HistoryError::Unavailable
+    );
+}

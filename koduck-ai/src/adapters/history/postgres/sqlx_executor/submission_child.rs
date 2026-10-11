@@ -106,7 +106,7 @@ fn binding_read_sql() -> String {
          THEN i.payload ELSE NULL END AS payload, i.is_terminal, i.item_id, \
          h.subject_id = $2 AS owned, \
          (t.turn_id IS NOT NULL AND l.generation IS NOT NULL \
-          AND i.item_id IS NOT NULL) AS joined \
+          AND i.item_id IS NOT NULL AND t.next_sequence > 1) AS joined \
          FROM chat_submissions s \
          LEFT JOIN threads h ON h.tenant_id = s.tenant_id AND h.thread_id = s.thread_id \
          LEFT JOIN turns t ON t.tenant_id = s.tenant_id \
@@ -355,7 +355,7 @@ async fn read_proof_row(
          THEN i.payload ELSE NULL END AS payload, i.is_terminal, i.item_id, \
          h.subject_id = $2 AS owned, \
          (t.turn_id IS NOT NULL AND l.generation IS NOT NULL \
-          AND i.item_id IS NOT NULL) AS joined, \
+          AND i.item_id IS NOT NULL AND t.next_sequence > 1) AS joined, \
          t.status, l.generation, l.fenced, \
          (l.expires_at > clock_timestamp()) AS lease_live \
          FROM chat_submissions s \
