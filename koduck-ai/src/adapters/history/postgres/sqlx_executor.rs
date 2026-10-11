@@ -452,8 +452,8 @@ pub(super) async fn write_initial_canonical_state(
     sqlx::query(
         "INSERT INTO turn_leases \
          (tenant_id, thread_id, turn_id, generation, renewed_at, expires_at) \
-         VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP, \
-                 CURRENT_TIMESTAMP + INTERVAL '20 seconds')",
+         VALUES ($1, $2, $3, $4, clock_timestamp(), \
+                 clock_timestamp() + INTERVAL '20 seconds')",
     )
     .bind(tenant_id.as_str())
     .bind(thread_id.as_uuid())

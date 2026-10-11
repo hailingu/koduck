@@ -450,3 +450,85 @@ fn cand_18_explicit_thread_row_locks_through_acceptance() {
             .expect("the released row accepts");
     assert!(matches!(outcome, IdentifiedAcceptance::Created(_)));
 }
+
+/// SI-03a (review round 21): the initial lease is timestamped with the
+/// statement clock after the submission-lock wait, so a contended winning
+/// request commits with the full authoritative lease window ahead of it
+/// instead of one already shortened by its own lock wait.
+#[test]
+fn cand_18_contended_lease_window_is_full() {
+    let _database_guard = super::serialize_database_tests();
+    let (harness, _history, tenant) = connected_history();
+    let submission = Uuid::new_v4();
+    let trust_context = trust(&tenant, "subject-a");
+    let keys = koduck_ai::application::submission_lock_keys(
+        &trust_context,
+        koduck_ai::domain::SubmissionId::from_uuid(submission).expect("non-nil submission"),
+    );
+
+    // Hold the submission lock while the contender's transaction has already
+    // begun, so a transaction-start timestamp predates the lock wait.
+    let lock_pool = harness.pool.clone();
+    let mut holder = harness
+        .runtime
+        .block_on(lock_pool.begin())
+        .expect("holder transaction starts");
+    harness.runtime.block_on(async {
+        sqlx::query("SELECT pg_advisory_xact_lock($1, $2)")
+            .bind(keys.0)
+            .bind(keys.1)
+            .execute(&mut *holder)
+            .await
+            .expect("hold the submission lock");
+    });
+    let executor = harness.executor();
+    let contender_tenant = tenant.clone();
+    let handle = std::thread::spawn(move || {
+        let mut contender = PostgresTurnHistory::new(executor);
+        let command = identified_command(
+            &contender_tenant,
+            "subject-a",
+            submission,
+            None,
+            "contended lease input",
+        );
+        TurnHistory::accept_initial_with_submission(
+            &mut contender,
+            &command,
+            Duration::from_secs(2),
+        )
+        .expect("the contender accepts once the lock releases")
+    });
+    std::thread::sleep(Duration::from_millis(1_500));
+    harness.runtime.block_on(async move {
+        drop(holder);
+    });
+    let outcome = handle.join().expect("the contender finishes");
+    assert!(
+        matches!(outcome, IdentifiedAcceptance::Created(_)),
+        "the released lock lets the contender create: {outcome:?}"
+    );
+
+    // The remaining lease window at observation time keeps (nearly) the full
+    // twenty seconds: the lease was renewed at statement time, after the
+    // wait, not at the transaction's frozen start.
+    let remaining_ms: f64 = harness.runtime.block_on(async {
+        sqlx::query_scalar(
+            "SELECT (EXTRACT(EPOCH FROM (l.expires_at - clock_timestamp())) \
+             * 1000.0)::FLOAT8 \
+             FROM turn_leases l JOIN chat_submissions s \
+             ON s.tenant_id = l.tenant_id AND s.thread_id = l.thread_id \
+             AND s.turn_id = l.turn_id \
+             WHERE s.tenant_id = $1 AND s.submission_id = $2 AND l.generation = 1",
+        )
+        .bind(&tenant)
+        .bind(submission)
+        .fetch_one(&harness.pool)
+        .await
+        .expect("read the contended lease window")
+    });
+    assert!(
+        remaining_ms > 19_000.0,
+        "the contended lease keeps the full window, {remaining_ms} ms remain"
+    );
+}
