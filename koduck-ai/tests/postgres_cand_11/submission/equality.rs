@@ -15,7 +15,7 @@ use koduck_ai::application::{
     AcceptedTurn, CorrectionCommand, CorrectionStore, HistoryError, IdentifiedAcceptance, NewItem,
     TurnHistory,
 };
-use koduck_ai::domain::ThreadId;
+use koduck_ai::domain::{TerminalOutcome, ThreadId, Usage};
 
 use super::super::harness::Harness;
 use super::{connected_history, count_rows, identified_command, trust};
@@ -204,16 +204,7 @@ pub(crate) fn cand_18_receipt_constant_across_lifecycle() {
         "interrupted",
         "cancelled",
     ] {
-        harness.runtime.block_on(async {
-            sqlx::query("UPDATE turns SET status = $4 WHERE tenant_id = $1 AND thread_id = $2 AND turn_id = $3")
-                .bind(&tenant)
-                .bind(accepted.thread_id.as_uuid())
-                .bind(accepted.turn_id.as_uuid())
-                .bind(status)
-                .execute(&harness.pool)
-                .await
-                .expect("set the lifecycle status");
-        });
+        set_lifecycle_fixture(&harness, &mut history, &accepted, status);
         let observed = history
             .submission_observation(&command, Duration::from_secs(2))
             .expect("the receipt resolves")
@@ -259,6 +250,64 @@ pub(crate) fn cand_18_receipt_constant_across_lifecycle() {
             .runtime
             .block_on(count_rows(&harness.pool, &tenant, "subject-a", submission));
     assert_eq!(rows, (1, 1, 1, 1), "every lifecycle retry mutated nothing");
+}
+
+/// Resets this fixture's terminal slot, then uses canonical append for each
+/// terminal lifecycle state so receipt preservation exercises valid history.
+fn set_lifecycle_fixture(
+    harness: &Harness,
+    history: &mut PostgresTurnHistory<SqlxPostgresExecutor>,
+    accepted: &AcceptedTurn,
+    status: &str,
+) {
+    let terminal = match status {
+        "completed" => Some(TerminalOutcome::Completed {
+            usage: Usage::zero(),
+        }),
+        "failed" => Some(TerminalOutcome::Failed {
+            code: "fixture-failure".to_owned(),
+        }),
+        "interrupted" => Some(TerminalOutcome::Interrupted),
+        "cancelled" => Some(TerminalOutcome::Cancelled),
+        _ => None,
+    };
+    let seed_status = if terminal.is_some() {
+        "started"
+    } else {
+        status
+    };
+    harness.runtime.block_on(async {
+        let mut transaction = harness.pool.begin().await.expect("reset lifecycle fixture");
+        sqlx::query(
+            "DELETE FROM turn_items WHERE tenant_id = $1 AND thread_id = $2 \
+             AND turn_id = $3 AND is_terminal",
+        )
+        .bind(accepted.tenant_id.as_str())
+        .bind(accepted.thread_id.as_uuid())
+        .bind(accepted.turn_id.as_uuid())
+        .execute(&mut *transaction)
+        .await
+        .expect("clear the fixture's prior terminal");
+        sqlx::query(
+            "UPDATE turns SET status = $4, next_sequence = 2 \
+             WHERE tenant_id = $1 AND thread_id = $2 AND turn_id = $3",
+        )
+        .bind(accepted.tenant_id.as_str())
+        .bind(accepted.thread_id.as_uuid())
+        .bind(accepted.turn_id.as_uuid())
+        .bind(seed_status)
+        .execute(&mut *transaction)
+        .await
+        .expect("set a consistent nonterminal fixture state");
+        transaction
+            .commit()
+            .await
+            .expect("commit lifecycle fixture");
+    });
+    if let Some(terminal) = terminal {
+        TurnHistory::append(history, accepted, NewItem::Terminal(terminal))
+            .expect("append the fixture's canonical terminal");
+    }
 }
 
 /// SI-10: an exact retry after a post-terminal correction still observes the

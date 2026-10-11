@@ -14,7 +14,7 @@ use crate::application::{
 use crate::domain::{Item, ItemPayload, LeaseGeneration, ThreadId, TrustContext, TurnId};
 
 use super::super::settle_commit_attempt;
-use super::{generation_i64, unavailable, write_initial_canonical_state};
+use super::{generation_i64, is_terminal_status, unavailable, write_initial_canonical_state};
 
 /// The transport envelope for one stored sequence-1 payload (SI-09).
 ///
@@ -92,11 +92,10 @@ fn compare_binding(
 /// The single canonical binding read: one row only when the owned key exists,
 /// with every joined canonical column intact.
 ///
-/// A present binding whose joined Thread owner, Turn, lease, or sequence-1
-/// input is missing, non-owned, or undecodable fails unavailable instead of
-/// establishing absence (SI-08c). The optional-turn marker keeps that
-/// distinction decidable: `joined` is false exactly when the binding exists
-/// but its canonical structure is broken.
+/// A present binding whose Thread owner, Turn, lease, or sequence-1 input is
+/// missing, non-owned, or undecodable fails unavailable (SI-08c), as does
+/// inconsistent terminal presence/status. The `joined` marker distinguishes
+/// missing canonical rows from a genuinely absent binding.
 /// The canonical binding read with the payload bounded by
 /// [`MAX_BINDING_PAYLOAD_BYTES`].
 fn binding_read_sql() -> String {
@@ -104,7 +103,10 @@ fn binding_read_sql() -> String {
         "SELECT s.thread_id, s.turn_id, s.original_thread_id, \
          i.item_type, CASE WHEN octet_length(i.payload) <= {MAX_BINDING_PAYLOAD_BYTES} \
          THEN i.payload ELSE NULL END AS payload, i.is_terminal, i.item_id, \
-         h.subject_id = $2 AS owned, \
+         h.subject_id = $2 AS owned, t.status, \
+         EXISTS (SELECT 1 FROM turn_items terminal \
+             WHERE terminal.tenant_id = s.tenant_id AND terminal.thread_id = s.thread_id \
+             AND terminal.turn_id = s.turn_id AND terminal.is_terminal) AS has_terminal, \
          (t.turn_id IS NOT NULL AND l.generation IS NOT NULL \
           AND i.item_id IS NOT NULL AND t.next_sequence > 1) AS joined \
          FROM chat_submissions s \
@@ -127,6 +129,14 @@ fn binding_from_row(row: &sqlx::postgres::PgRow) -> Result<Option<BindingRow>, H
     if !owned || !joined {
         // A present binding with missing or non-owned canonical data is
         // corrupt structure, never absence and never authority (SI-08c).
+        return Err(HistoryError::Unavailable);
+    }
+    let status: String = row.try_get("status").map_err(unavailable)?;
+    let has_terminal: bool = row.try_get("has_terminal").map_err(unavailable)?;
+    if is_terminal_status(&status) != has_terminal {
+        // Terminal append changes the item and status atomically; an
+        // inconsistent snapshot proves neither a receipt nor authority
+        // (SI-08c/SI-06e).
         return Err(HistoryError::Unavailable);
     }
     let thread_id: Uuid = row.try_get("thread_id").map_err(unavailable)?;
@@ -354,6 +364,9 @@ async fn read_proof_row(
          i.item_type, CASE WHEN octet_length(i.payload) <= {MAX_BINDING_PAYLOAD_BYTES} \
          THEN i.payload ELSE NULL END AS payload, i.is_terminal, i.item_id, \
          h.subject_id = $2 AS owned, \
+         EXISTS (SELECT 1 FROM turn_items terminal \
+             WHERE terminal.tenant_id = s.tenant_id AND terminal.thread_id = s.thread_id \
+             AND terminal.turn_id = s.turn_id AND terminal.is_terminal) AS has_terminal, \
          (t.turn_id IS NOT NULL AND l.generation IS NOT NULL \
           AND i.item_id IS NOT NULL AND t.next_sequence > 1) AS joined, \
          t.status, l.generation, l.fenced, \
