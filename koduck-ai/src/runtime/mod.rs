@@ -1,6 +1,7 @@
 // ADR: docs/adr/ADR-0001-provider-neutral-turn-kernel.md
 // ADR: koduck-ai/docs/adr/ADR-0003-correction-item-schema-and-raw-replay.md
 // ADR: docs/adr/ADR-0005-provider-delta-coalescing-and-512-item-turn-budget.md
+// ADR: docs/adr/ADR-0018-chat-submission-identity-and-atomic-acceptance.md
 
 //! Production runtime configuration and executable assembly.
 
@@ -39,7 +40,7 @@ use crate::adapters::http::{
     approvals::ApprovalDecisionTransport, invalid_request_response,
 };
 use crate::adapters::provider::{OpenAiCompatibleProvider, ReqwestOpenAiTransport};
-use crate::application::{AppendPolicy, ApprovalDecisionRoute, TurnRunner};
+use crate::application::{AppendPolicy, ApprovalDecisionRoute, TurnRunner, system_clock};
 use crate::domain::{TenantId, ThreadId, TrustContext};
 
 const BIND_ADDR: &str = "KODUCK_AI_BIND_ADDR";
@@ -210,6 +211,9 @@ pub async fn run(config: RuntimeConfig) -> Result<(), RuntimeError> {
     // canonical trail (ADR-0003 TC-14).
     let audit_trail =
         SerializingToolAuditTrail::new(SqlxToolAuditSink::new(pool.clone(), runtime.clone()));
+    let tool_boundary = runtime_state
+        .tool_call_executor(attempts.clone(), lease, audit_trail, attempts.clone())
+        .with_pending_approval_canceller(approval_store);
     let history = PostgresTurnHistory::new(SqlxPostgresExecutor::new(pool, runtime.clone()))
         .with_terminal_observer(runtime_state.terminal_observer(attempts.clone()));
     let _reconciliation_worker = history
@@ -227,17 +231,30 @@ pub async fn run(config: RuntimeConfig) -> Result<(), RuntimeError> {
         config.provider_api_key(),
     );
     let provider = OpenAiCompatibleProvider::new(transport);
-    let runner = TurnRunner::new(provider, history).with_tool_executor(
-        runtime_state
-            .tool_call_executor(attempts.clone(), lease, audit_trail, attempts)
-            .with_pending_approval_canceller(approval_store),
-    );
+    let runner = compose_production_runner(provider, history, tool_boundary);
     let listener = tokio::net::TcpListener::bind(config.bind_addr())
         .await
         .map_err(RuntimeError::Bind)?;
     axum::serve(listener, build_router(runner, approvals))
         .await
         .map_err(RuntimeError::Serve)
+}
+
+/// Composes the production turn runner with the explicit system acceptance
+/// clock (ADR-0018 SI-07i) and the supplied C-5 tool-execution boundary.
+///
+/// Each identified request derives its own acceptance budget from one start
+/// reading on this clock; the composition is kept as a named step so the
+/// exact production assembly is directly testable.
+pub fn compose_production_runner<P, H, E>(provider: P, history: H, tools: E) -> TurnRunner<P, H, E>
+where
+    P: crate::application::ModelProvider,
+    H: crate::application::TurnHistory,
+    E: crate::application::ToolCallExecutor,
+{
+    TurnRunner::new(provider, history)
+        .with_acceptance_clock(system_clock())
+        .with_tool_executor(tools)
 }
 
 async fn database_setup_attempt<T>(
@@ -261,7 +278,12 @@ pub(crate) const STARTUP_MIGRATION_LOCK_KEY: i64 = 0x6B6F_6475_636B_3031;
 /// transaction-scoped advisory lock: a second replica waits for the first to
 /// finish — and sees the finished schema — instead of racing the catalog. The
 /// whole serialized sequence is bounded by the approved startup deadline.
-pub(crate) async fn apply_startup_migrations(
+///
+/// # Errors
+///
+/// Returns [`RuntimeError`] when any migration statement fails or the
+/// sequence exceeds the supplied startup deadline.
+pub async fn apply_startup_migrations(
     pool: &sqlx::PgPool,
     deadline: Duration,
 ) -> Result<(), RuntimeError> {
@@ -282,6 +304,7 @@ pub(crate) async fn apply_startup_migrations(
             include_str!("../../migrations/0007_cand_2_tool_audit.sql"),
             include_str!("../../migrations/0008_cand_2_interruption_approval_cancellation.sql"),
             include_str!("../../migrations/0009_cand_3_correction_items.sql"),
+            include_str!("../../migrations/0010_cand_18_chat_submissions.sql"),
         ] {
             sqlx::raw_sql(migration)
                 .execute(&mut *transaction)

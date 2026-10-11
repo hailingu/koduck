@@ -157,6 +157,33 @@ impl SimulatedPostgres {
 }
 
 impl PostgresExecutor for SimulatedPostgres {
+    fn prior_thread_turns_bounded(
+        &self,
+        trust: &TrustContext,
+        thread_id: koduck_ai::domain::ThreadId,
+        _deadline: std::time::Duration,
+    ) -> Result<Vec<PriorTurnHistory>, HistoryError> {
+        // The simulated executor has no real waits, so the bounded read
+        // delegates to its unbounded simulation.
+        self.prior_thread_turns(trust, thread_id)
+    }
+
+    fn submission_observation(
+        &self,
+        _command: &TurnCommand,
+        _deadline: std::time::Duration,
+    ) -> Result<Option<koduck_ai::application::SubmissionObservation>, HistoryError> {
+        Ok(None)
+    }
+
+    fn accept_initial_with_submission(
+        &self,
+        _command: &TurnCommand,
+        _attempt_budget: std::time::Duration,
+    ) -> Result<koduck_ai::application::IdentifiedAcceptance, HistoryError> {
+        Err(HistoryError::Unavailable)
+    }
+
     fn request_interrupt(
         &self,
         _trust: &TrustContext,
