@@ -622,6 +622,9 @@ impl PostgresExecutor for SqlxPostgresExecutor {
         // database I/O.
         crate::application::validate_identified_command(command)
             .map_err(|_| HistoryError::Unavailable)?;
+        // SI-07c: the lookup's two-second maximum is absolute; a direct
+        // caller's longer deadline cannot extend it.
+        let deadline = deadline.min(crate::application::LOOKUP_BUDGET);
         let command = command.clone();
         self.wait_with_deadline(
             deadline,
@@ -639,6 +642,9 @@ impl PostgresExecutor for SqlxPostgresExecutor {
         // guard instead of doubling its memory footprint.
         crate::application::validate_identified_command(command)
             .map_err(|_| HistoryError::Unavailable)?;
+        // SI-07c: the write attempt's reserved budget is fixed at two
+        // seconds; a direct caller's longer budget cannot extend it.
+        let attempt_budget = attempt_budget.min(crate::application::WRITE_BUDGET);
         let command = command.clone();
         self.runtime
             .block_on(submission_child::settle_identified_acceptance(

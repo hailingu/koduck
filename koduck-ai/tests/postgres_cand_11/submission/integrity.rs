@@ -1015,3 +1015,43 @@ fn cand_18_initial_sequence_counter_fails_unavailable() {
         HistoryError::Unavailable
     );
 }
+
+/// SI-07c (review round 17): the direct binding lookup is capped at the
+/// absolute two-second maximum. Under an exclusive `chat_submissions` lock a
+/// caller-supplied eight-second deadline must still reject within the
+/// capped budget instead of blocking for the supplied interval.
+#[test]
+fn cand_18_direct_lookup_deadline_is_capped() {
+    let _database_guard = super::serialize_database_tests();
+    let (harness, _history, tenant) = connected_history();
+    let command = identified_command(&tenant, "subject-a", Uuid::new_v4(), None, "capped lookup");
+    let lock_pool = harness.pool.clone();
+    let mut lock = harness
+        .runtime
+        .block_on(lock_pool.begin())
+        .expect("lock transaction starts");
+    harness.runtime.block_on(async {
+        sqlx::query("LOCK TABLE chat_submissions IN ACCESS EXCLUSIVE MODE")
+            .execute(&mut *lock)
+            .await
+            .expect("hold the binding relation exclusively");
+    });
+    let started = std::time::Instant::now();
+    let result = PostgresExecutor::submission_observation(
+        &harness.executor(),
+        &command,
+        Duration::from_secs(8),
+    );
+    let elapsed = started.elapsed();
+    harness.runtime.block_on(async move {
+        drop(lock);
+    });
+    assert_eq!(
+        result.expect_err("the blocked lookup times out"),
+        HistoryError::Unavailable
+    );
+    assert!(
+        elapsed < Duration::from_secs(4),
+        "the direct lookup is capped at the two-second maximum, blocked for {elapsed:?}"
+    );
+}
